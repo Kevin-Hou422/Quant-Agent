@@ -18,8 +18,8 @@ import sys
 import numpy as np
 import pandas as pd
 
-# ── 把 backend/ 加入 sys.path（此文件位于 backend/app/，需上溯两级）
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# ── 把 backend/ 加入 sys.path ────────────────────────────────────────────────
+_ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
@@ -75,8 +75,8 @@ def _make_synthetic_dataset(
 
 def run_agent(args: argparse.Namespace) -> None:
     """agent 模式：假设 → DSL → 评估 → 修正 → 持久化。"""
-    from app.core.ml_engine.alpha_agent import AlphaAgent
-    from app.core.ml_engine.alpha_store import AlphaStore
+    from app.core.alpha_discovery.alpha_agent import AlphaAgent
+    from app.core.alpha_discovery.alpha_store import AlphaStore
 
     dataset = _make_synthetic_dataset()
     store   = AlphaStore()
@@ -96,8 +96,8 @@ def run_agent(args: argparse.Namespace) -> None:
 
 def run_gp(args: argparse.Namespace) -> None:
     """gp 模式：遗传规划种群进化。"""
-    from app.core.gp_engine.gp_engine import AlphaEvolver
-    from app.core.ml_engine.alpha_store import AlphaStore, AlphaResult
+    from app.core.alpha_discovery.gp_engine import AlphaEvolver
+    from app.core.alpha_discovery.alpha_store import AlphaStore, AlphaResult
 
     dataset = _make_synthetic_dataset(n_tickers=args.n_tickers, n_days=args.n_days)
     store   = AlphaStore()
@@ -127,7 +127,7 @@ def run_gp(args: argparse.Namespace) -> None:
 
 def run_backtest(args: argparse.Namespace) -> None:
     """backtest 模式：对单条 DSL 执行完整回测并打印 RiskReport。"""
-    from app.core.alpha_engine.dsl_executor import Executor
+    from app.core.alpha_engine.dsl_executor import DSLExecutor
     from app.core.alpha_engine.parser import Parser
     from app.core.alpha_engine.validator import AlphaValidator
     from app.core.backtest_engine.backtest_engine import BacktestEngine
@@ -145,8 +145,8 @@ def run_backtest(args: argparse.Namespace) -> None:
     AlphaValidator().validate(node)
 
     # 生成信号
-    executor = Executor()
-    signal   = executor.run_expr(dsl, dataset)
+    executor = DSLExecutor()
+    signal   = executor.run(dsl, dataset)
 
     # 构建权重
     constructor = SignalWeightedPortfolio()
@@ -172,7 +172,7 @@ def run_backtest(args: argparse.Namespace) -> None:
 
 def run_report(args: argparse.Namespace) -> None:
     """report 模式：从 SQLite 读取 Alpha 记录并打印。"""
-    from app.core.ml_engine.alpha_store import AlphaStore
+    from app.core.alpha_discovery.alpha_store import AlphaStore
 
     store = AlphaStore()
     if args.alpha_id:
