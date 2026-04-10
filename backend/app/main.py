@@ -1,11 +1,14 @@
 """
-main.py — Quant Agent 全流程入口
+main.py — Quant Agent 双模式入口
 
-用法:
-  python main.py --mode agent   --hypothesis "Post-earnings drift"
-  python main.py --mode gp      --generations 5 --pop-size 10
-  python main.py --mode backtest --dsl "rank(ts_delta(log(close),5))"
-  python main.py --mode report  --alpha-id 1
+FastAPI 应用:
+  uvicorn app.main:app --reload --app-dir backend
+
+CLI 模式:
+  python app/main.py --mode agent   --hypothesis "Post-earnings drift"
+  python app/main.py --mode gp      --generations 5 --pop-size 10
+  python app/main.py --mode backtest --dsl "rank(ts_delta(log(close),5))"
+  python app/main.py --mode report  --alpha-id 1
 """
 
 from __future__ import annotations
@@ -18,21 +21,54 @@ import sys
 import numpy as np
 import pandas as pd
 
-# ── 把 backend/ 加入 sys.path（此文件位于 backend/app/，需上溯两级）
+# ── 把 backend/ 加入 sys.path（此文件位于 backend/app/，需上溯一级到 backend/）
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+# ── FastAPI 应用 ───────────────────────────────────────────────────────────
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.config import settings
+from app.api.router import router
+
+app = FastAPI(
+    title   = settings.app_title,
+    version = settings.app_version,
+    debug   = settings.debug,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins     = settings.cors_origins,
+    allow_credentials = True,
+    allow_methods     = ["*"],
+    allow_headers     = ["*"],
+)
+
+app.include_router(router)
+
+
+@app.get("/health", tags=["System"])
+def health() -> dict:
+    return {"status": "ok", "version": settings.app_version}
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    datefmt="%H:%M:%S",
+    level   = logging.INFO,
+    format  = "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    datefmt = "%H:%M:%S",
 )
 logger = logging.getLogger("main")
 
 
 # ---------------------------------------------------------------------------
-# 合成数据集（用于演示与测试）
+# 合成数据集（CLI 演示用）
 # ---------------------------------------------------------------------------
 
 def _make_synthetic_dataset(
@@ -40,22 +76,22 @@ def _make_synthetic_dataset(
     n_days:    int = 120,
     seed:      int = 42,
 ) -> dict[str, pd.DataFrame]:
-    rng   = np.random.default_rng(seed)
-    dates = pd.bdate_range("2022-01-03", periods=n_days)
+    rng     = np.random.default_rng(seed)
+    dates   = pd.bdate_range("2022-01-03", periods=n_days)
     tickers = [f"T{i:03d}" for i in range(n_tickers)]
 
     close  = pd.DataFrame(
-        (100 * np.cumprod(1 + rng.normal(0, 0.01, (n_days, n_tickers)), axis=0)),
+        100 * np.cumprod(1 + rng.normal(0, 0.01, (n_days, n_tickers)), axis=0),
         index=dates, columns=tickers,
     )
     volume = pd.DataFrame(
         rng.integers(500_000, 5_000_000, (n_days, n_tickers)).astype(float),
         index=dates, columns=tickers,
     )
-    high   = close * (1 + rng.uniform(0, 0.02, close.shape))
-    low    = close * (1 - rng.uniform(0, 0.02, close.shape))
-    open_  = close.shift(1).fillna(close)
-    vwap   = (high + low + close) / 3
+    high    = close * (1 + rng.uniform(0, 0.02, close.shape))
+    low     = close * (1 - rng.uniform(0, 0.02, close.shape))
+    open_   = close.shift(1).fillna(close)
+    vwap    = (high + low + close) / 3
     returns = close.pct_change().fillna(0.0)
 
     return {
@@ -70,7 +106,7 @@ def _make_synthetic_dataset(
 
 
 # ---------------------------------------------------------------------------
-# 模式实现
+# CLI 模式函数
 # ---------------------------------------------------------------------------
 
 def run_agent(args: argparse.Namespace) -> None:
@@ -114,15 +150,17 @@ def run_gp(args: argparse.Namespace) -> None:
     print("\n" + "=" * 60)
     print(f"Hall of Fame ({len(hof)} Alpha):")
     for i, r in enumerate(hof[:10], 1):
-        print(f"  {i:2d}. IC-IR={r.ic_ir:.4f}  DSL={r.dsl[:80]}")
+        print(f"  {i:2d}. fitness={r.fitness:.4f}  IC-IR={r.ic_ir:.4f}  "
+              f"Turnover={r.ann_turnover:.2f}  DSL={r.dsl[:80]}")
         ar = AlphaResult(
-            dsl     = r.dsl,
-            sharpe  = r.sharpe,
-            ic_ir   = r.ic_ir,
-            status  = "active",
+            dsl          = r.dsl,
+            sharpe       = r.sharpe,
+            ic_ir        = r.ic_ir,
+            ann_turnover = r.ann_turnover,
+            status       = "active",
         )
         store.save(ar)
-    print(f"\nHoF 已保存到 AlphaStore。")
+    print("\nHoF 已保存到 AlphaStore。")
 
 
 def run_backtest(args: argparse.Namespace) -> None:
@@ -131,8 +169,9 @@ def run_backtest(args: argparse.Namespace) -> None:
     from app.core.alpha_engine.parser import Parser
     from app.core.alpha_engine.validator import AlphaValidator
     from app.core.backtest_engine.backtest_engine import BacktestEngine
-    from app.core.backtest_engine.portfolio_constructor import SignalWeightedPortfolio, NeutralizationLayer
-    from app.core.backtest_engine.performance_analyzer import PerformanceAnalyzer
+    from app.core.backtest_engine.portfolio_constructor import (
+        SignalWeightedPortfolio, NeutralizationLayer,
+    )
     from app.core.backtest_engine.risk_report import RiskReport
 
     dsl = args.dsl
@@ -149,8 +188,7 @@ def run_backtest(args: argparse.Namespace) -> None:
     signal   = executor.run_expr(dsl, dataset)
 
     # 构建权重
-    constructor = SignalWeightedPortfolio()
-    weights     = constructor.construct(signal)
+    weights = SignalWeightedPortfolio().construct(signal)
     NeutralizationLayer.market_neutral(weights)
 
     # 回测
@@ -162,9 +200,8 @@ def run_backtest(args: argparse.Namespace) -> None:
         signal  = signal,
     )
 
-    # 指标
-    analyzer = PerformanceAnalyzer()
-    report   = RiskReport.from_result(result, analyzer)
+    # 指标（RiskReport.from_result 内部构造 PerformanceAnalyzer）
+    report = RiskReport.from_result(result, prices=dataset["close"])
 
     print("\n" + "=" * 60)
     print(report.summary())
@@ -192,14 +229,15 @@ def run_report(args: argparse.Namespace) -> None:
         records = store.query(min_sharpe=-999, limit=50)
         print(f"\n共 {len(records)} 条 Alpha 记录（按 Sharpe 降序）:")
         for r in records[:20]:
-            print(f"  id={r.id:4d}  sharpe={r.sharpe:6.3f}  ic_ir={r.ic_ir:6.3f}  dsl={r.dsl[:60]}")
+            print(f"  id={r.id:4d}  sharpe={r.sharpe:6.3f}  "
+                  f"ic_ir={r.ic_ir:6.3f}  dsl={r.dsl[:60]}")
 
 
 # ---------------------------------------------------------------------------
 # CLI 入口
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def _cli_main() -> None:
     parser = argparse.ArgumentParser(
         description="Quant Agent — 自主 Alpha 发现流水线",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -207,21 +245,18 @@ def main() -> None:
     parser.add_argument("--mode", choices=["agent", "gp", "backtest", "report"],
                         required=True, help="运行模式")
 
-    # agent / backtest
     parser.add_argument("--hypothesis", type=str, default="momentum",
                         help="市场假设（agent 模式）")
     parser.add_argument("--dsl", type=str,
                         default="rank(ts_delta(log(close),5))",
                         help="DSL 表达式（backtest 模式）")
 
-    # gp
     parser.add_argument("--generations", type=int, default=5)
     parser.add_argument("--pop-size",    type=int, default=20)
     parser.add_argument("--workers",     type=int, default=1)
     parser.add_argument("--n-tickers",   type=int, default=20)
     parser.add_argument("--n-days",      type=int, default=120)
 
-    # report
     parser.add_argument("--alpha-id", type=int, default=None,
                         help="查询指定 id 的 Alpha（report 模式）")
 
@@ -237,4 +272,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    _cli_main()

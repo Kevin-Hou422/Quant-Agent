@@ -87,15 +87,23 @@ def _evaluate_individual(
 ) -> GPAlphaResult:
     """
     对一条 DSL 字符串计算 fitness。
-    使用 IC（信号与下期收益的截面 Spearman 相关）作为代理 Sharpe。
-    不依赖 BacktestEngine（纯信号质量快速评估）。
+
+    完整公式（对标基线规格）:
+        fitness = ic_ir + 0.5 × mean_IC - 0.1 × ann_turnover
+
+    其中：
+      - ic_ir        = mean(IC) / std(IC)    （截面 Spearman Rank IC 的 IC-IR）
+      - mean_IC      = mean(IC series)        （平均 IC，体现方向性）
+      - ann_turnover = mean(daily L1 signal Δ) × 252  （年化换手估算）
+
+    不依赖 BacktestEngine（纯信号质量快速评估，支持多进程序列化）。
     """
     dsl, dataset = args
     try:
         # dataset values 是 numpy arrays（为可序列化）
         # 构建带 DatetimeIndex 的 DataFrame 供 Executor 使用
-        T = next(iter(dataset.values())).shape[0]
-        dates = pd.bdate_range("2020-01-02", periods=T)
+        T_raw = next(iter(dataset.values())).shape[0]
+        dates = pd.bdate_range("2020-01-02", periods=T_raw)
         df_dataset = {
             k: pd.DataFrame(v, index=dates)
             for k, v in dataset.items()
@@ -107,32 +115,53 @@ def _evaluate_individual(
 
         close = close_arr
 
-        # 前向收益
+        # ── 前向收益 ──────────────────────────────────────────────────────
         fwd_ret = (close[1:] - close[:-1]) / np.where(close[:-1] == 0, np.nan, close[:-1])
         sig_arr = signal.to_numpy() if hasattr(signal, "to_numpy") else np.array(signal)
 
-        # 截面 Rank IC
-        T = min(fwd_ret.shape[0], sig_arr.shape[0] - 1)
-        ics = []
-        for t in range(T):
+        # ── 截面 Rank IC（向量化 Spearman via double-argsort）────────────
+        T_ic = min(fwd_ret.shape[0], sig_arr.shape[0] - 1)
+        ics: list[float] = []
+        for t in range(T_ic):
             s = sig_arr[t]
             r = fwd_ret[t]
             mask = ~(np.isnan(s) | np.isnan(r))
-            if mask.sum() < 5:
+            n_valid = mask.sum()
+            if n_valid < 5:
                 continue
-            from scipy.stats import spearmanr
-            rho, _ = spearmanr(s[mask], r[mask])
-            if not np.isnan(rho):
-                ics.append(rho)
+            # Vectorised rank correlation via argsort (no scipy import per call)
+            rs = np.argsort(np.argsort(s[mask])).astype(float)
+            rr = np.argsort(np.argsort(r[mask])).astype(float)
+            rs -= rs.mean(); rr -= rr.mean()
+            denom = np.sqrt((rs ** 2).sum() * (rr ** 2).sum())
+            if denom > 0:
+                ics.append(float(np.dot(rs, rr) / denom))
 
         if not ics:
             return GPAlphaResult(dsl=dsl, fitness=-1.0)
 
-        ic_arr = np.array(ics)
-        ic_ir  = float(np.mean(ic_arr) / (np.std(ic_arr) + 1e-9))
-        sharpe = ic_ir  # 用 IC-IR 作为 fitness 代理
+        ic_arr  = np.array(ics)
+        mean_ic = float(np.mean(ic_arr))
+        ic_ir   = float(mean_ic / (np.std(ic_arr) + 1e-9))
 
-        return GPAlphaResult(dsl=dsl, fitness=sharpe, sharpe=sharpe, ic_ir=ic_ir)
+        # ── 年化换手（信号的截面 L1 日变化量）────────────────────────────
+        # pct-rank the signal cross-sectionally then measure daily L1 change
+        sig_float = sig_arr.astype(float)
+        # simple abs-diff of raw signal normalised by cross-sectional std
+        daily_delta = np.abs(np.diff(sig_float, axis=0))
+        ann_turnover = float(np.nanmean(daily_delta) * 252)
+
+        # ── Composite fitness (baseline formula) ─────────────────────────
+        fitness = ic_ir + 0.5 * mean_ic - 0.1 * ann_turnover
+
+        return GPAlphaResult(
+            dsl          = dsl,
+            fitness      = fitness,
+            sharpe       = ic_ir,      # IC-IR used as Sharpe proxy
+            ic_ir        = ic_ir,
+            ann_return   = mean_ic,    # mean IC as directional proxy
+            ann_turnover = ann_turnover,
+        )
     except Exception as e:
         logger.debug("Eval failed for '%s': %s", dsl[:80], e)
         return GPAlphaResult(dsl=dsl, fitness=-1.0)

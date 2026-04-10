@@ -31,12 +31,13 @@ from app.core.alpha_engine.typed_nodes import (
 from app.core.alpha_engine.generator import generate_random_alpha
 from app.core.alpha_engine.validator import AlphaValidator
 
-from app.core.alpha_discovery.mutations import (
+from app.core.gp_engine.mutations import (
     point_mutation, hoist_mutation, param_mutation, subtree_crossover,
+    _collect_nodes,
 )
-from app.core.alpha_discovery.proxy_model import ProxyModel, extract_features, _FEATURE_SIZE
-from app.core.alpha_discovery.alpha_store import AlphaStore, AlphaResult
-from app.core.alpha_discovery.gp_engine import AlphaEvolver
+from app.core.ml_engine.proxy_model import ProxyModel, extract_features, _FEATURE_SIZE
+from app.core.ml_engine.alpha_store import AlphaStore, AlphaResult
+from app.core.gp_engine.gp_engine import AlphaEvolver
 
 _validator = AlphaValidator()
 
@@ -94,7 +95,6 @@ def _make_dataset(n_days: int = 60, n_tickers: int = 10) -> dict:
 def test_point_mutation():
     """变异后算子改变（或结构改变），NodeType 不变。"""
     original = _make_ts_node()
-    orig_type = original.node_type
 
     # 运行多次取非原算子
     mutated = None
@@ -108,7 +108,6 @@ def test_point_mutation():
     assert mutated is not None, "point_mutation 应产生至少一种不同结果"
 
     # NodeType 保持不变
-    from app.core.alpha_discovery.mutations import _collect_nodes
     orig_ts = [n for n in _collect_nodes(original) if isinstance(n, TimeSeriesNode)]
     mut_ts  = [n for n in _collect_nodes(mutated)   if isinstance(n, TimeSeriesNode)]
     assert len(orig_ts) == len(mut_ts), "TS 节点数量应保持不变"

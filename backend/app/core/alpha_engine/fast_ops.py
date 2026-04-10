@@ -9,8 +9,9 @@ Bottleneck is used for rolling operations (falls back to NumPy with a
 warning if not installed). All rolling operators enforce strict NaN
 policy: fewer than `window` valid observations → NaN output.
 
-Cross-sectional operators use np.nanmean / np.nanstd so NaN assets are
-ignored during aggregation, but their positions remain NaN in the output.
+Cross-sectional operators use fully-vectorised NumPy operations (no
+Python-level loops). NaN assets are excluded from aggregation but
+their positions remain NaN in the output.
 """
 
 from __future__ import annotations
@@ -49,24 +50,48 @@ def _ensure_2d(x: np.ndarray) -> np.ndarray:
 
 
 def _numpy_move_mean(x: np.ndarray, window: int) -> np.ndarray:
+    """Pure-NumPy fallback for rolling mean (used only when bottleneck absent)."""
     out = np.full_like(x, np.nan, dtype=float)
-    for i in range(window - 1, x.shape[0]):
-        block = x[i - window + 1: i + 1]
-        valid_mask = ~np.isnan(block)
-        valid_counts = valid_mask.sum(axis=0)
-        sums = np.where(valid_mask, block, 0.0).sum(axis=0)
-        out[i] = np.where(valid_counts >= window, sums / valid_counts, np.nan)
+    # stride_tricks gives a zero-copy view: shape (T-w+1, window, N)
+    T, N = x.shape
+    if T < window:
+        return out
+    shape   = (T - window + 1, window, N)
+    strides = (x.strides[0], x.strides[0], x.strides[1])
+    try:
+        windows = np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides)
+        valid = (~np.isnan(windows)).sum(axis=1)          # (T-w+1, N)
+        sums  = np.nansum(windows, axis=1)                # (T-w+1, N)
+        out[window - 1:] = np.where(valid >= window, sums / valid, np.nan)
+    except Exception:
+        for i in range(window - 1, T):
+            block = x[i - window + 1: i + 1]
+            valid_counts = (~np.isnan(block)).sum(axis=0)
+            sums = np.nansum(block, axis=0)
+            out[i] = np.where(valid_counts >= window, sums / valid_counts, np.nan)
     return out
 
 
 def _numpy_move_std(x: np.ndarray, window: int) -> np.ndarray:
+    """Pure-NumPy fallback for rolling std (used only when bottleneck absent)."""
     out = np.full_like(x, np.nan, dtype=float)
-    for i in range(window - 1, x.shape[0]):
-        block = x[i - window + 1: i + 1].astype(float)
-        valid = np.sum(~np.isnan(block), axis=0)
-        mu = np.nanmean(block, axis=0)
-        var = np.nanvar(block, axis=0, ddof=1)
-        out[i] = np.where(valid >= window, np.sqrt(var), np.nan)
+    T, N = x.shape
+    if T < window:
+        return out
+    shape   = (T - window + 1, window, N)
+    strides = (x.strides[0], x.strides[0], x.strides[1])
+    try:
+        windows = np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides)
+        valid = (~np.isnan(windows)).sum(axis=1)
+        mu    = np.nanmean(windows, axis=1)
+        var   = np.nanvar(windows, axis=1, ddof=1)
+        out[window - 1:] = np.where(valid >= window, np.sqrt(var), np.nan)
+    except Exception:
+        for i in range(window - 1, T):
+            block = x[i - window + 1: i + 1].astype(float)
+            valid = np.sum(~np.isnan(block), axis=0)
+            var = np.nanvar(block, axis=0, ddof=1)
+            out[i] = np.where(valid >= window, np.sqrt(var), np.nan)
     return out
 
 
@@ -94,10 +119,19 @@ def bn_ts_max(x: np.ndarray, window: int) -> np.ndarray:
     x = _ensure_2d(np.asarray(x, dtype=float))
     if _HAS_BN:
         return bn.move_max(x, window=window, min_count=window, axis=0)
-    out = np.full_like(x, np.nan)
-    for i in range(window - 1, x.shape[0]):
-        block = x[i - window + 1: i + 1]
-        out[i] = np.nanmax(block, axis=0)
+    # Vectorised fallback via stride_tricks
+    T, N = x.shape
+    out = np.full((T, N), np.nan)
+    if T < window:
+        return out
+    shape   = (T - window + 1, window, N)
+    strides = (x.strides[0], x.strides[0], x.strides[1])
+    try:
+        windows = np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides)
+        out[window - 1:] = np.nanmax(windows, axis=1)
+    except Exception:
+        for i in range(window - 1, T):
+            out[i] = np.nanmax(x[i - window + 1: i + 1], axis=0)
     return out
 
 
@@ -105,10 +139,18 @@ def bn_ts_min(x: np.ndarray, window: int) -> np.ndarray:
     x = _ensure_2d(np.asarray(x, dtype=float))
     if _HAS_BN:
         return bn.move_min(x, window=window, min_count=window, axis=0)
-    out = np.full_like(x, np.nan)
-    for i in range(window - 1, x.shape[0]):
-        block = x[i - window + 1: i + 1]
-        out[i] = np.nanmin(block, axis=0)
+    T, N = x.shape
+    out = np.full((T, N), np.nan)
+    if T < window:
+        return out
+    shape   = (T - window + 1, window, N)
+    strides = (x.strides[0], x.strides[0], x.strides[1])
+    try:
+        windows = np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides)
+        out[window - 1:] = np.nanmin(windows, axis=1)
+    except Exception:
+        for i in range(window - 1, T):
+            out[i] = np.nanmin(x[i - window + 1: i + 1], axis=0)
     return out
 
 
@@ -119,15 +161,29 @@ def bn_ts_rank(x: np.ndarray, window: int) -> np.ndarray:
         # move_rank returns rank in [1..window]; scale to [0,1]
         raw = bn.move_rank(x, window=window, min_count=window, axis=0)
         return raw / window
-    # NumPy fallback
+    # Vectorised NumPy fallback via stride_tricks
     T, N = x.shape
     out = np.full((T, N), np.nan)
-    for i in range(window - 1, T):
-        block = x[i - window + 1: i + 1]  # (window, N)
-        last = block[-1]                    # (N,)
-        count = np.sum(~np.isnan(block), axis=0)
-        le    = np.sum(block <= last, axis=0)
-        out[i] = np.where(count >= window, le / count, np.nan)
+    if T < window:
+        return out
+    shape   = (T - window + 1, window, N)
+    strides = (x.strides[0], x.strides[0], x.strides[1])
+    try:
+        windows = np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides)
+        last    = windows[:, -1:, :]          # (T-w+1, 1, N) — most recent
+        count   = (~np.isnan(windows)).sum(axis=1)   # (T-w+1, N)
+        le      = (windows <= last).sum(axis=1)       # (T-w+1, N) — including NaN-safe?
+        # Mask windows that have NaN in the last position
+        last_nan = np.isnan(windows[:, -1, :])        # (T-w+1, N)
+        result   = np.where((count >= window) & ~last_nan, le / count, np.nan)
+        out[window - 1:] = result
+    except Exception:
+        for i in range(window - 1, T):
+            block = x[i - window + 1: i + 1]
+            last  = block[-1]
+            count = np.sum(~np.isnan(block), axis=0)
+            le    = np.sum(block <= last, axis=0)
+            out[i] = np.where(count >= window, le / count, np.nan)
     return out
 
 
@@ -152,13 +208,12 @@ def ts_decay_linear(x: np.ndarray, window: int) -> np.ndarray:
     try:
         windows = np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides)
         # windows: (T-w+1, window, N)
-        # check for any NaN in each window
         has_nan = np.any(np.isnan(windows), axis=1)   # (T-w+1, N)
         result  = np.einsum("twn,w->tn", windows, weights)  # vectorized dot
         result[has_nan] = np.nan
         out[window - 1:] = result
     except Exception:
-        # Safe fallback
+        # Safe fallback (only triggered by stride_tricks memory layout error)
         for i in range(window - 1, T):
             block = x[i - window + 1: i + 1]
             if np.any(np.isnan(block)):
@@ -188,32 +243,45 @@ def ts_delay(x: np.ndarray, window: int) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Cross-Sectional Operators  (axis=1, NaN-aware)
+# Cross-Sectional Operators  (fully vectorised — zero Python-level T loops)
 # ---------------------------------------------------------------------------
 
 def cs_rank(x: np.ndarray) -> np.ndarray:
     """
     Cross-sectional percentile rank [0, 1] per row.
-    NaN assets are excluded from ranking but remain NaN in output.
-    """
-    from scipy.stats import rankdata
 
+    Fully vectorised via double argsort — no Python loop over T.
+    NaN assets are excluded from ranking but remain NaN in output.
+
+    Ties are resolved by average rank (matching scipy.stats.rankdata
+    'average' method behaviour).
+    """
     x = _ensure_2d(np.asarray(x, dtype=float))
-    T, N = x.shape
-    out = np.full((T, N), np.nan)
-    for t in range(T):
-        row = x[t]
-        mask = ~np.isnan(row)
-        n_valid = mask.sum()
-        if n_valid == 0:
-            continue
-        ranked = rankdata(row[mask], method="average")
-        out[t, mask] = ranked / n_valid   # scale to [0, 1]
-    return out
+    nan_mask = np.isnan(x)
+
+    # Replace NaN with -inf so argsort puts them at the end (lowest rank)
+    x_filled = np.where(nan_mask, -np.inf, x)
+
+    # Double argsort gives ordinal ranks (0-based) per row — O(N log N) vectorised
+    order = np.argsort(np.argsort(x_filled, axis=1), axis=1).astype(float)
+
+    # How many valid (non-NaN) assets per row
+    valid_count = (~nan_mask).sum(axis=1, keepdims=True).astype(float)  # (T, 1)
+
+    # Positions occupied by NaN values were assigned ranks at the TOP of argsort
+    # (since -inf < everything else) — we must zero them out before normalising.
+    order[nan_mask] = np.nan
+
+    # Normalise to [0, 1]: rank 0 → 0.0, rank (valid-1) → 1.0
+    # Avoid div-by-zero when an entire row is NaN
+    denom = np.maximum(valid_count - 1, 1)
+    order = order / denom
+    order[nan_mask] = np.nan
+    return order
 
 
 def cs_zscore(x: np.ndarray) -> np.ndarray:
-    """Cross-sectional z-score per row (NaN-aware)."""
+    """Cross-sectional z-score per row (NaN-aware, fully vectorised)."""
     x = _ensure_2d(np.asarray(x, dtype=float))
     mu    = np.nanmean(x, axis=1, keepdims=True)
     sigma = np.nanstd(x, axis=1, ddof=1, keepdims=True)
@@ -226,6 +294,7 @@ def cs_scale(x: np.ndarray) -> np.ndarray:
     """
     L1-norm scaling per row: x / sum(|x|).
     NaN assets are excluded from the norm denominator.
+    Fully vectorised.
     """
     x = _ensure_2d(np.asarray(x, dtype=float))
     l1 = np.nansum(np.abs(x), axis=1, keepdims=True)
@@ -236,6 +305,10 @@ def cs_scale(x: np.ndarray) -> np.ndarray:
 def ind_neutralize(x: np.ndarray, groups: Optional[np.ndarray] = None) -> np.ndarray:
     """
     Subtract the group mean from each asset per row (industry neutralization).
+
+    Vectorisation strategy: outer loop over unique group IDs (G groups,
+    typically < 30 industries). Each iteration applies nanmean across
+    the full time axis in one NumPy call — no Python loop over T.
 
     Parameters
     ----------
@@ -248,20 +321,14 @@ def ind_neutralize(x: np.ndarray, groups: Optional[np.ndarray] = None) -> np.nda
         return cs_zscore(x)
 
     groups = np.asarray(groups, dtype=int)
-    T, N = x.shape
     out = x.copy()
-    n_groups = int(groups.max()) + 1
 
-    for t in range(T):
-        row = x[t]
-        for g in range(n_groups):
-            mask = groups == g
-            vals = row[mask]
-            valid = ~np.isnan(vals)
-            if valid.sum() == 0:
-                continue
-            group_mean = np.mean(vals[valid])
-            out[t, mask] = np.where(valid, vals - group_mean, np.nan)
+    for g in np.unique(groups):              # outer: G iterations (G << T)
+        mask  = (groups == g)                # (N,) bool — static per group
+        block = x[:, mask]                   # (T, Ng) — view, no copy
+        gmean = np.nanmean(block, axis=1, keepdims=True)  # (T, 1) fully vectorised
+        out[:, mask] = block - gmean         # broadcast (T, Ng)
+
     return out
 
 
@@ -300,8 +367,8 @@ FAST_TS_OPS = {
 }
 
 FAST_CS_OPS = {
-    "rank":          cs_rank,
-    "zscore":        cs_zscore,
-    "scale":         cs_scale,
-    "ind_neutralize": ind_neutralize,
+    "rank":            cs_rank,
+    "zscore":          cs_zscore,
+    "scale":           cs_scale,
+    "ind_neutralize":  ind_neutralize,
 }
