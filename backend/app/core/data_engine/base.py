@@ -3,21 +3,30 @@ Abstract DataProvider base class for the Data Engine.
 
 All data providers must implement this interface so that the rest of the
 system can consume market data in a uniform way.
+
+v2 扩展（向后兼容）：
+- fetch_panel()  返回标准 long-format DataFrame
+- metadata()     返回 provider 元信息
 """
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import Dict, List, Optional
+
 import pandas as pd
 
 
 # ---------------------------------------------------------------------------
-# Return type alias
+# Return type aliases
 # ---------------------------------------------------------------------------
 
 # A "RawDataset" is a dict mapping field name -> DataFrame(time × assets)
 RawDataset = dict[str, pd.DataFrame]
+
+# Long-format panel DataFrame: columns include timestamp, ticker, + OHLCV fields
+PanelFrame = pd.DataFrame
 
 
 # ---------------------------------------------------------------------------
@@ -29,10 +38,12 @@ class DataProvider(ABC):
     Abstract market data provider.
 
     Concrete subclasses must implement ``fetch`` and ``available_fields``.
+    ``fetch_panel`` and ``metadata`` have default implementations and are
+    optional to override.
     """
 
     # ------------------------------------------------------------------
-    # Abstract interface
+    # Abstract interface (must implement)
     # ------------------------------------------------------------------
 
     @abstractmethod
@@ -67,7 +78,59 @@ class DataProvider(ABC):
         ...
 
     # ------------------------------------------------------------------
-    # Optional helpers (may be overridden)
+    # Extended interface (default implementations, safe to override)
+    # ------------------------------------------------------------------
+
+    def fetch_panel(
+        self,
+        tickers: List[str],
+        start: str,
+        end: str,
+        fields: Optional[List[str]] = None,
+    ) -> PanelFrame:
+        """
+        返回 long-format DataFrame，列包含 [timestamp, ticker, ...fields]。
+
+        默认实现：调用 fetch() 并将 wide-format 转为 long-format。
+        子类可覆盖此方法直接返回 long-format（更高效）。
+
+        Returns
+        -------
+        pd.DataFrame  长表，每行 = 一个 ticker 在一个时间点的全量字段。
+        """
+        from .schema import wide_to_long, SchemaEnforcer
+
+        t0 = time.monotonic()
+        raw = self.fetch(tickers=tickers, start=start, end=end, fields=fields)
+        if not raw:
+            return pd.DataFrame()
+
+        long_df = wide_to_long(raw)
+        enforcer = SchemaEnforcer(allow_extra=True)
+        panel = enforcer.enforce(long_df)
+
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        self._last_latency_ms = elapsed_ms
+        return panel
+
+    def metadata(self) -> Dict:
+        """
+        返回 provider 的元信息字典。
+        子类可覆盖以提供实际值。
+
+        Returns
+        -------
+        dict  包含 name, latency_ms, rate_limit, available_fields 等键
+        """
+        return {
+            "name":             self.__class__.__name__,
+            "latency_ms":       getattr(self, "_last_latency_ms", None),
+            "rate_limit":       None,
+            "available_fields": self.available_fields(),
+        }
+
+    # ------------------------------------------------------------------
+    # Utility helpers
     # ------------------------------------------------------------------
 
     def validate_fields(self, fields: List[str]) -> None:
