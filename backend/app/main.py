@@ -32,6 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.api.router import router
+from app.api.chat_router import chat_router
 
 app = FastAPI(
     title   = settings.app_title,
@@ -48,6 +49,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(chat_router)
 
 
 @app.get("/health", tags=["System"])
