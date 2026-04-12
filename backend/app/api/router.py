@@ -389,3 +389,223 @@ def backtest_realistic(req: RealisticBacktestRequest) -> RealisticBacktestRespon
         oos_report = result.oos_report.to_dict() if result.oos_report else None,
         config     = result.to_dict()["config"],
     )
+
+
+# ===========================================================================
+# Phase 2 — /alpha/simulate  &  /alpha/optimize
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Phase 2 Pydantic Schemas
+# ---------------------------------------------------------------------------
+
+class SearchSpaceSchema(BaseModel):
+    delay_range:      List[int]   = Field([0, 5],   min_length=2, max_length=2)
+    decay_range:      List[int]   = Field([0, 10],  min_length=2, max_length=2)
+    trunc_min_range:  List[float] = Field([0.01, 0.10], min_length=2, max_length=2)
+    trunc_max_range:  List[float] = Field([0.90, 0.99], min_length=2, max_length=2)
+    portfolio_modes:  List[str]   = Field(["long_short", "decile"])
+    allow_neutralize: bool        = Field(False)
+
+
+class SimulateRequest(BaseModel):
+    dsl:       str                   = Field("rank(ts_delta(log(close),5))")
+    config:    SimulationConfigSchema = Field(default_factory=SimulationConfigSchema)
+    n_tickers: int                   = Field(20, ge=5, le=200)
+    n_days:    int                   = Field(252, ge=60, le=2000)
+    oos_ratio: float                 = Field(0.30, ge=0.0, lt=1.0)
+    seed:      int                   = Field(42)
+
+
+class OptimizeRequest(BaseModel):
+    dsl:          str               = Field("rank(ts_delta(log(close),5))")
+    search_space: SearchSpaceSchema = Field(default_factory=SearchSpaceSchema)
+    n_trials:     int               = Field(30, ge=1, le=200)
+    n_tickers:    int               = Field(20, ge=5, le=200)
+    n_days:       int               = Field(252, ge=60, le=2000)
+    oos_ratio:    float             = Field(0.30, ge=0.0, lt=1.0)
+    seed:         int               = Field(42)
+
+
+class EvalResponse(BaseModel):
+    dsl:               str
+    best_config:       Optional[Dict[str, Any]]
+    is_metrics:        Dict[str, Any]
+    oos_metrics:       Optional[Dict[str, Any]]
+    overfitting_score: float
+    is_overfit:        bool
+    ic_decay:          Dict[str, Any]
+    n_trials_run:      Optional[int]
+
+
+# ---------------------------------------------------------------------------
+# 共享辅助：分区 + 评估
+# ---------------------------------------------------------------------------
+
+def _partition_dataset(dataset, oos_ratio: float, seed: int = 42):
+    """返回 (is_data, oos_data)，oos_ratio=0 时 oos_data=None。"""
+    from app.core.data_engine.data_partitioner import DataPartitioner
+
+    if oos_ratio <= 0:
+        return dataset, None
+
+    dates = next(iter(dataset.values())).index
+    dp = DataPartitioner(
+        start     = str(dates[0].date()),
+        end       = str(dates[-1].date()),
+        oos_ratio = oos_ratio,
+    )
+    part = dp.partition(dataset)
+    return part.train(), part.test()
+
+
+def _run_evaluate(
+    dsl:         str,
+    config,                 # SimulationConfig
+    is_data:     dict,
+    oos_data:    Optional[dict],
+    best_config: Optional[dict] = None,
+    n_trials:    Optional[int]  = None,
+) -> EvalResponse:
+    """
+    共享逻辑：用给定 config 执行 IS+OOS 回测 + AlphaEvaluator 高级评估。
+    """
+    from app.core.backtest_engine.realistic_backtester import RealisticBacktester
+    from app.core.ml_engine.alpha_evaluator import AlphaEvaluator
+
+    bt     = RealisticBacktester(config=config)
+    result = bt.run(dsl, is_data, oos_dataset=oos_data)
+
+    evaluator = AlphaEvaluator()
+
+    is_prices = is_data.get("close")
+    is_signal = result.processed_signal
+
+    oos_prices = oos_data.get("close") if oos_data else None
+    oos_signal: Optional[Any] = None
+    if result.oos_result is not None and oos_prices is not None:
+        # OOS 段信号：通过重新运行 SignalProcessor 得到
+        # （result.processed_signal 是 IS 段的）
+        from app.core.alpha_engine.signal_processor import SignalProcessor
+        from app.core.alpha_engine.parser import Parser
+        from app.core.alpha_engine.dsl_executor import Executor
+        node       = Parser().parse(dsl)
+        raw_oos    = Executor().run(node, oos_data)
+        oos_signal = SignalProcessor(config).process(raw_oos)
+
+    eval_result = evaluator.evaluate(
+        is_report  = result.is_report,
+        is_prices  = is_prices,
+        is_signal  = is_signal,
+        oos_report = result.oos_report,
+        oos_prices = oos_prices,
+        oos_signal = oos_signal,
+    )
+
+    # IC Decay 回填到 is_metrics
+    eval_dict = eval_result.to_dict()
+    eval_dict["is_metrics"]["ic_decay_t1"] = eval_result.ic_decay.get("t1")
+    eval_dict["is_metrics"]["ic_decay_t5"] = eval_result.ic_decay.get("t5")
+
+    return EvalResponse(
+        dsl               = dsl,
+        best_config       = best_config,
+        is_metrics        = eval_dict["is_metrics"],
+        oos_metrics       = eval_dict["oos_metrics"],
+        overfitting_score = eval_result.overfitting_score,
+        is_overfit        = eval_result.is_overfit,
+        ic_decay          = eval_result.ic_decay,
+        n_trials_run      = n_trials,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /alpha/simulate
+# ---------------------------------------------------------------------------
+
+@router.post("/alpha/simulate", response_model=EvalResponse, tags=["Phase2"])
+def alpha_simulate(req: SimulateRequest) -> EvalResponse:
+    """
+    手动模式：用用户提供的 SimulationConfig 执行 IS+OOS 回测，
+    返回 IS 和 OOS 完整高级指标（含过拟合评分、IC Decay）。
+    """
+    from app.core.alpha_engine.signal_processor import SimulationConfig
+
+    dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
+    is_data, oos_data = _partition_dataset(dataset, req.oos_ratio)
+
+    cfg = SimulationConfig(
+        delay            = req.config.delay,
+        decay_window     = req.config.decay_window,
+        truncation_min_q = req.config.truncation_min_q,
+        truncation_max_q = req.config.truncation_max_q,
+        portfolio_mode   = req.config.portfolio_mode,
+        top_pct          = req.config.top_pct,
+    )
+
+    try:
+        return _run_evaluate(req.dsl, cfg, is_data, oos_data)
+    except Exception as exc:
+        logger.exception("alpha_simulate failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# POST /alpha/optimize
+# ---------------------------------------------------------------------------
+
+@router.post("/alpha/optimize", response_model=EvalResponse, tags=["Phase2"])
+def alpha_optimize(req: OptimizeRequest) -> EvalResponse:
+    """
+    Auto-ML 模式：
+      1. Optuna 在 IS 数据集上搜索最优 SimulationConfig（OOS 全程锁定）
+      2. 用最优参数对 IS+OOS 进行最终评估
+      3. 返回最优参数 + IS/OOS 高级指标 + 过拟合评分
+
+    严格遵循 Train → Optimize → Lock → Test 工作流。
+    """
+    from app.core.ml_engine.alpha_optimizer import AlphaOptimizer, SearchSpace
+
+    dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
+
+    # Step 1: 分区 — OOS 此后物理隔离
+    is_data, oos_data = _partition_dataset(dataset, req.oos_ratio)
+
+    # Step 2: 构造搜索空间
+    ss = req.search_space
+    search_space = SearchSpace(
+        delay_range      = tuple(ss.delay_range),
+        decay_range      = tuple(ss.decay_range),
+        trunc_min_range  = tuple(ss.trunc_min_range),
+        trunc_max_range  = tuple(ss.trunc_max_range),
+        portfolio_modes  = tuple(ss.portfolio_modes),
+        allow_neutralize = ss.allow_neutralize,
+    )
+
+    # Step 3: Optuna 优化（仅传入 IS）
+    try:
+        optimizer = AlphaOptimizer(
+            dsl          = req.dsl,
+            is_dataset   = is_data,   # OOS 完全不传入
+            search_space = search_space,
+            n_trials     = req.n_trials,
+            seed         = req.seed,
+        )
+        best_config, study_summary = optimizer.optimize()
+    except Exception as exc:
+        logger.exception("AlphaOptimizer.optimize failed")
+        raise HTTPException(status_code=500, detail=f"优化失败: {exc}")
+
+    # Step 4: 最优参数锁定后，执行 IS+OOS 最终评估（OOS 解锁）
+    try:
+        return _run_evaluate(
+            dsl         = req.dsl,
+            config      = best_config,
+            is_data     = is_data,
+            oos_data    = oos_data,
+            best_config = study_summary.best_params,
+            n_trials    = study_summary.n_trials,
+        )
+    except Exception as exc:
+        logger.exception("alpha_optimize final evaluation failed")
+        raise HTTPException(status_code=500, detail=f"最终评估失败: {exc}")
