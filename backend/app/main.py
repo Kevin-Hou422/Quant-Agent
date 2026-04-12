@@ -237,12 +237,49 @@ def run_report(args: argparse.Namespace) -> None:
 # CLI 入口
 # ---------------------------------------------------------------------------
 
+def run_realistic(args: argparse.Namespace) -> None:
+    """realistic 模式：带信号处理管道的 IS+OOS 双段回测。"""
+    from app.core.alpha_engine.signal_processor import SimulationConfig
+    from app.core.backtest_engine.realistic_backtester import RealisticBacktester
+    from app.core.data_engine.data_partitioner import DataPartitioner
+
+    dataset = _make_synthetic_dataset(n_tickers=args.n_tickers, n_days=args.n_days)
+
+    cfg = SimulationConfig(
+        delay            = args.delay,
+        decay_window     = args.decay_window,
+        truncation_min_q = args.truncation_min_q,
+        truncation_max_q = args.truncation_max_q,
+        portfolio_mode   = args.portfolio_mode,
+        top_pct          = args.top_pct,
+    )
+
+    oos_dataset = None
+    if args.oos_ratio > 0:
+        dates = next(iter(dataset.values())).index
+        partitioner = DataPartitioner(
+            start     = str(dates[0].date()),
+            end       = str(dates[-1].date()),
+            oos_ratio = args.oos_ratio,
+        )
+        partitioned = partitioner.partition(dataset)
+        is_data     = partitioned.train()
+        oos_dataset = partitioned.test()
+        print(partitioner.summary())
+    else:
+        is_data = dataset
+
+    backtester = RealisticBacktester(config=cfg)
+    result = backtester.run(args.dsl, is_data, oos_dataset=oos_dataset)
+    print(result.summary())
+
+
 def _cli_main() -> None:
     parser = argparse.ArgumentParser(
         description="Quant Agent — 自主 Alpha 发现流水线",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--mode", choices=["agent", "gp", "backtest", "report"],
+    parser.add_argument("--mode", choices=["agent", "gp", "backtest", "report", "realistic"],
                         required=True, help="运行模式")
 
     parser.add_argument("--hypothesis", type=str, default="momentum",
@@ -260,13 +297,23 @@ def _cli_main() -> None:
     parser.add_argument("--alpha-id", type=int, default=None,
                         help="查询指定 id 的 Alpha（report 模式）")
 
+    # realistic 模式专属参数
+    parser.add_argument("--delay",            type=int,   default=1)
+    parser.add_argument("--decay-window",     type=int,   default=0,    dest="decay_window")
+    parser.add_argument("--truncation-min-q", type=float, default=0.05, dest="truncation_min_q")
+    parser.add_argument("--truncation-max-q", type=float, default=0.95, dest="truncation_max_q")
+    parser.add_argument("--portfolio-mode",   type=str,   default="long_short", dest="portfolio_mode")
+    parser.add_argument("--top-pct",          type=float, default=0.10, dest="top_pct")
+    parser.add_argument("--oos-ratio",        type=float, default=0.30, dest="oos_ratio")
+
     args = parser.parse_args()
 
     dispatch = {
-        "agent":    run_agent,
-        "gp":       run_gp,
-        "backtest": run_backtest,
-        "report":   run_report,
+        "agent":     run_agent,
+        "gp":        run_gp,
+        "backtest":  run_backtest,
+        "report":    run_report,
+        "realistic": run_realistic,
     }
     dispatch[args.mode](args)
 

@@ -42,4 +42,9 @@ __all__ = [
     "RiskReport",
     # Visualization
     "BacktestVisualizer",
+    # Realistic Backtester
+    "RealisticBacktester",
+    "RealisticBacktestResult",
 ]
+
+from .realistic_backtester import RealisticBacktester, RealisticBacktestResult

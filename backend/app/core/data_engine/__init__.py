@@ -90,4 +90,12 @@ __all__ = [
     "ParquetFeatureStore", "DataChunker",
     # Manager
     "DataManager",
+    # Partitioner
+    "DataPartitioner",
+    "PartitionedDataset",
 ]
+
+# ============================================================
+# 新增：数据分区器（IS/OOS 严格隔离）
+# ============================================================
+from .data_partitioner import DataPartitioner, PartitionedDataset

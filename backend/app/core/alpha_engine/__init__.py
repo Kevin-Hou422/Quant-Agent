@@ -47,4 +47,10 @@ __all__ = [
     "ParseError",
     # executor
     "Executor",
+    # signal processor
+    "SimulationConfig",
+    "SignalProcessor",
 ]
+
+# --- Signal Processor ---
+from .signal_processor import SimulationConfig, SignalProcessor

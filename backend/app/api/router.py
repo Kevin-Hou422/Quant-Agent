@@ -113,6 +113,31 @@ class BacktestResponse(BaseModel):
     report: Dict[str, Any]
 
 
+class SimulationConfigSchema(BaseModel):
+    delay:            int   = Field(1,    ge=0, le=20)
+    decay_window:     int   = Field(0,    ge=0, le=60)
+    truncation_min_q: float = Field(0.05, ge=0.0, le=0.5)
+    truncation_max_q: float = Field(0.95, ge=0.5, le=1.0)
+    portfolio_mode:   str   = Field("long_short")
+    top_pct:          float = Field(0.10, gt=0.0, lt=0.5)
+
+
+class RealisticBacktestRequest(BaseModel):
+    dsl:       str                  = Field("rank(ts_delta(log(close),5))")
+    config:    SimulationConfigSchema = Field(default_factory=SimulationConfigSchema)
+    n_tickers: int                  = Field(20, ge=5, le=200)
+    n_days:    int                  = Field(120, ge=60, le=1000)
+    oos_ratio: float                = Field(0.30, ge=0.0, lt=1.0)
+    seed:      int                  = Field(42)
+
+
+class RealisticBacktestResponse(BaseModel):
+    dsl:    str
+    is_report:  Dict[str, Any]
+    oos_report: Optional[Dict[str, Any]]
+    config: Dict[str, Any]
+
+
 class AlphaRecord(BaseModel):
     id: int
     dsl: str
@@ -305,3 +330,62 @@ def report_query(
         for r in records
     ]
     return ReportQueryResponse(total=len(items), records=items)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/backtest/realistic
+# ---------------------------------------------------------------------------
+
+@router.post("/backtest/realistic", response_model=RealisticBacktestResponse, tags=["Backtest"])
+def backtest_realistic(req: RealisticBacktestRequest) -> RealisticBacktestResponse:
+    """
+    执行带信号处理管道（截断→衰减→中性化→延迟）的增强型 IS+OOS 双段回测。
+    """
+    from app.core.alpha_engine.signal_processor import SimulationConfig
+    from app.core.backtest_engine.realistic_backtester import RealisticBacktester
+    from app.core.data_engine.data_partitioner import DataPartitioner
+
+    dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
+
+    # 构造 SimulationConfig
+    cfg = SimulationConfig(
+        delay            = req.config.delay,
+        decay_window     = req.config.decay_window,
+        truncation_min_q = req.config.truncation_min_q,
+        truncation_max_q = req.config.truncation_max_q,
+        portfolio_mode   = req.config.portfolio_mode,
+        top_pct          = req.config.top_pct,
+    )
+
+    # IS/OOS 分割
+    oos_dataset = None
+    if req.oos_ratio > 0:
+        try:
+            dates = next(iter(dataset.values())).index
+            partitioner = DataPartitioner(
+                start     = str(dates[0].date()),
+                end       = str(dates[-1].date()),
+                oos_ratio = req.oos_ratio,
+            )
+            partitioned = partitioner.partition(dataset)
+            is_data  = partitioned.train()
+            oos_dataset = partitioned.test()
+        except Exception as exc:
+            logger.warning("DataPartitioner 分割失败，使用全量数据作 IS: %s", exc)
+            is_data = dataset
+    else:
+        is_data = dataset
+
+    backtester = RealisticBacktester(config=cfg)
+    try:
+        result = backtester.run(req.dsl, is_data, oos_dataset=oos_dataset)
+    except Exception as exc:
+        logger.exception("RealisticBacktester.run failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return RealisticBacktestResponse(
+        dsl        = req.dsl,
+        is_report  = result.is_report.to_dict(),
+        oos_report = result.oos_report.to_dict() if result.oos_report else None,
+        config     = result.to_dict()["config"],
+    )
