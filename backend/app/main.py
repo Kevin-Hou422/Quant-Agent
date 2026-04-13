@@ -113,8 +113,8 @@ def _make_synthetic_dataset(
 
 def run_agent(args: argparse.Namespace) -> None:
     """agent 模式：假设 → DSL → 评估 → 修正 → 持久化。"""
-    from app.core.ml_engine.alpha_agent import AlphaAgent
-    from app.core.ml_engine.alpha_store import AlphaStore
+    from app.agent.alpha_agent import AlphaAgent
+    from app.db.alpha_store import AlphaStore
 
     dataset = _make_synthetic_dataset()
     store   = AlphaStore()
@@ -135,7 +135,7 @@ def run_agent(args: argparse.Namespace) -> None:
 def run_gp(args: argparse.Namespace) -> None:
     """gp 模式：遗传规划种群进化。"""
     from app.core.gp_engine.gp_engine import AlphaEvolver
-    from app.core.ml_engine.alpha_store import AlphaStore, AlphaResult
+    from app.db.alpha_store import AlphaStore, AlphaResult
 
     dataset = _make_synthetic_dataset(n_tickers=args.n_tickers, n_days=args.n_days)
     store   = AlphaStore()
@@ -211,7 +211,7 @@ def run_backtest(args: argparse.Namespace) -> None:
 
 def run_report(args: argparse.Namespace) -> None:
     """report 模式：从 SQLite 读取 Alpha 记录并打印。"""
-    from app.core.ml_engine.alpha_store import AlphaStore
+    from app.db.alpha_store import AlphaStore
 
     store = AlphaStore()
     if args.alpha_id:

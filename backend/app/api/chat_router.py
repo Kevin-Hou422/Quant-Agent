@@ -67,7 +67,7 @@ _sessions = _SessionStore()
 def _get_or_create_agent(session_id: str):
     agent = _sessions.get(session_id)
     if agent is None:
-        from app.core.ml_engine.quant_agent import QuantAgent
+        from app.agent.quant_agent import QuantAgent
         agent = QuantAgent(
             n_tickers = 20,
             n_days    = 252,

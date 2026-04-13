@@ -10,7 +10,7 @@ from functools import lru_cache
 from typing import Generator
 
 from app.config import settings
-from app.core.ml_engine.alpha_store import AlphaStore
+from app.db.alpha_store import AlphaStore
 
 
 @lru_cache(maxsize=1)

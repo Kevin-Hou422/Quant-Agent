@@ -24,7 +24,7 @@ from ..alpha_engine.typed_nodes import Node
 from ..alpha_engine.validator import AlphaValidator
 from ..alpha_engine.dsl_executor import Executor as DSLExecutor
 from .mutations import point_mutation, hoist_mutation, param_mutation, subtree_crossover
-from ..ml_engine.alpha_store import AlphaResult, AlphaStore
+from ...db.alpha_store import AlphaResult, AlphaStore
 from ..ml_engine.proxy_model import ProxyModel
 
 logger = logging.getLogger(__name__)

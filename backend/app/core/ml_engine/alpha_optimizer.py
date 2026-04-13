@@ -16,6 +16,7 @@ import logging
 import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+from ..backtest_engine.realistic_backtester import SimulationConfig
 
 import numpy as np
 import pandas as pd

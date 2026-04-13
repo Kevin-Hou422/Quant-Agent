@@ -406,7 +406,7 @@ class QuantTools:
         将 Alpha 策略持久化到 SQLite AlphaStore。
         返回 JSON: {"id": int, "status": "saved"}
         """
-        from app.core.ml_engine.alpha_store import AlphaStore, AlphaResult
+        from app.db.alpha_store import AlphaStore, AlphaResult
 
         metrics = json.loads(metrics_json) if metrics_json.strip() else {}
 

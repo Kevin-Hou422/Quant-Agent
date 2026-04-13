@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
+from ..backtest_engine.realistic_backtester import RiskReport
 
 logger = logging.getLogger(__name__)
 

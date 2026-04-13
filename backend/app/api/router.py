@@ -19,7 +19,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.dependencies import get_store
-from app.core.ml_engine.alpha_store import AlphaStore
+from app.db.alpha_store import AlphaStore
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +167,7 @@ def agent_run(
     使用 AlphaAgent（LangChain + GPT-4o）执行一轮假设→DSL→评估→修正循环。
     无 OPENAI_API_KEY 时自动使用内置默认 DSL 列表（降级模式）。
     """
-    from app.core.ml_engine.alpha_agent import AlphaAgent
+    from app.agent.alpha_agent import AlphaAgent
 
     dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
     agent   = AlphaAgent(store=store)
@@ -201,7 +201,7 @@ def gp_evolve(
     启动 GP 遗传规划进化，返回 Hall of Fame，并将结果持久化到 AlphaStore。
     """
     from app.core.gp_engine.gp_engine import AlphaEvolver
-    from app.core.ml_engine.alpha_store import AlphaResult
+    from app.db.alpha_store import AlphaResult
 
     dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
     evolver = AlphaEvolver(
