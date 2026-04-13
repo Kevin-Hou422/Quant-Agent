@@ -8,6 +8,7 @@ config.py — Quant Agent 全局配置
 from __future__ import annotations
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 
 class Settings(BaseSettings):
@@ -22,7 +23,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./alphas.db"
 
     # ── LLM ──────────────────────────────────────────────────────────────
-    openai_api_key: str = ""
+    openai_api_key: str = Field("", validation_alias="OPENAI_API_KEY")
 
     # ── FastAPI ───────────────────────────────────────────────────────────
     app_title: str = "Quant Agent API"

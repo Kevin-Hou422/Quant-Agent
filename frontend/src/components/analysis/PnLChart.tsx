@@ -1,32 +1,53 @@
 import ReactECharts from 'echarts-for-react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { useMemo } from 'react'
+import ErrorBoundary from '../ErrorBoundary'
 
-export default function PnLChart() {
+// Defensive cumulative product — handles empty arrays and NaN gracefully
+function cumulativeReturns(rets: number[]): number[] {
+  if (!rets || rets.length === 0) return []
+  let cum = 1
+  return rets.map((r) => {
+    const safe = isFinite(r) ? r : 0
+    cum *= 1 + safe
+    return +(cum - 1).toFixed(4)
+  })
+}
+
+function PnLChartInner() {
   const { simulationResult } = useWorkspaceStore()
 
   const option = useMemo(() => {
+    // ── Empty state ─────────────────────────────────────────────────────────
     if (!simulationResult) {
       return {
         backgroundColor: 'transparent',
-        textStyle: { color: '#94a3b8' },
         graphic: [{
-          type: 'text',
-          left: 'center', top: 'middle',
-          style: { text: 'Run a backtest to see results', fill: '#475569', fontSize: 14 },
+          type: 'text', left: 'center', top: 'middle',
+          style: { text: 'Run a backtest to see results', fill: '#475569', fontSize: 13 },
         }],
-        xAxis: { show: false },
-        yAxis: { show: false },
-        series: [],
+        xAxis: { show: false }, yAxis: { show: false }, series: [],
       }
     }
 
-    // Use pnl_is/pnl_oos if available, otherwise show empty series
     const isReturns: number[] = simulationResult.pnl_is ?? []
     const oosReturns: number[] = simulationResult.pnl_oos ?? []
 
-    // Generate synthetic date labels
+    // ── No data guard ────────────────────────────────────────────────────────
+    if (isReturns.length === 0 && oosReturns.length === 0) {
+      return {
+        backgroundColor: 'transparent',
+        graphic: [{
+          type: 'text', left: 'center', top: 'middle',
+          style: { text: 'No PnL data returned by backend', fill: '#64748b', fontSize: 12 },
+        }],
+        xAxis: { show: false }, yAxis: { show: false }, series: [],
+      }
+    }
+
     const totalLen = isReturns.length + oosReturns.length
+
+    // Synthesize date labels (descending days from today)
     const today = new Date()
     const dates: string[] = Array.from({ length: totalLen }, (_, i) => {
       const d = new Date(today)
@@ -34,18 +55,25 @@ export default function PnLChart() {
       return d.toISOString().slice(0, 10)
     })
 
-    const splitDate = dates[isReturns.length - 1] ?? dates[0]
+    const isCum = cumulativeReturns(isReturns)
+    // OOS curve starts where IS ends
+    const isEndValue = isCum[isCum.length - 1] ?? 0
+    const oosCumRaw = cumulativeReturns(oosReturns)
+    const oosCum = oosCumRaw.map(v => +(v + isEndValue).toFixed(4))
 
-    // Cumulative product
-    const cumProd = (rets: number[]) => {
-      let cum = 1
-      return rets.map(r => { cum *= (1 + r); return +(cum - 1).toFixed(4) })
-    }
+    // Build padded series data: IS series fills OOS positions with null, vice versa
+    const isData: (number | null)[] = [
+      ...isCum,
+      ...Array(oosReturns.length).fill(null),
+    ]
+    // OOS starts at the IS endpoint so lines connect
+    const oosData: (number | null)[] = [
+      ...Array(isReturns.length - 1).fill(null),
+      isEndValue,   // connect point
+      ...oosCum,
+    ]
 
-    const isCum = cumProd(isReturns)
-    const oosCum = cumProd(oosReturns).map(v => v + (isCum[isCum.length - 1] ?? 0))
-
-    const allCum = [...isCum, ...oosCum]
+    const yPct = (v: number) => `${(v * 100).toFixed(2)}%`
 
     return {
       backgroundColor: 'transparent',
@@ -54,18 +82,27 @@ export default function PnLChart() {
         trigger: 'axis',
         backgroundColor: '#1e293b',
         borderColor: '#334155',
-        textStyle: { color: '#e2e8f0', fontSize: 12 },
+        textStyle: { color: '#e2e8f0', fontSize: 11 },
         formatter: (params: any[]) => {
-          const p = params[0]
-          return `${p.axisValue}<br/>${p.marker} PnL: <b>${(p.value * 100).toFixed(2)}%</b>`
+          const date = params[0]?.axisValue ?? ''
+          const lines = params
+            .filter(p => p.value != null)
+            .map(p => `${p.marker}${p.seriesName}: <b>${yPct(p.value)}</b>`)
+          return `${date}<br/>${lines.join('<br/>')}`
         },
       },
-      grid: { left: 48, right: 24, top: 32, bottom: 40 },
+      legend: {
+        top: 4, right: 8,
+        textStyle: { color: '#64748b', fontSize: 10 },
+        itemWidth: 12, itemHeight: 4,
+      },
+      grid: { left: 52, right: 12, top: 32, bottom: 40 },
       xAxis: {
         type: 'category',
         data: dates,
         axisLine: { lineStyle: { color: '#334155' } },
-        axisLabel: { color: '#64748b', fontSize: 10, rotate: 30 },
+        axisLabel: { color: '#475569', fontSize: 9, rotate: 30,
+          formatter: (v: string) => v.slice(5) },  // show MM-DD
         splitLine: { show: false },
       },
       yAxis: {
@@ -73,45 +110,59 @@ export default function PnLChart() {
         axisLine: { show: false },
         axisLabel: {
           color: '#64748b', fontSize: 10,
-          formatter: (v: number) => `${(v * 100).toFixed(1)}%`,
+          formatter: yPct,
         },
-        splitLine: { lineStyle: { color: '#1e293b' } },
+        splitLine: { lineStyle: { color: '#1e293b', type: 'dashed' } },
       },
       series: [
         {
+          name: 'IN-SAMPLE',
           type: 'line',
-          data: allCum,
-          smooth: false,
+          data: isData,
           symbol: 'none',
+          connectNulls: false,
           lineStyle: { color: '#10b981', width: 2 },
           areaStyle: {
             color: {
               type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
               colorStops: [
-                { offset: 0, color: 'rgba(16,185,129,0.15)' },
+                { offset: 0, color: 'rgba(16,185,129,0.18)' },
                 { offset: 1, color: 'rgba(16,185,129,0)' },
+              ],
+            },
+          },
+          // Label on the IS region
+          markArea: {
+            silent: true,
+            label: { show: true, color: '#10b981', fontSize: 9, position: 'insideTopLeft' },
+            itemStyle: { color: 'rgba(16,185,129,0.04)' },
+            data: [[{ name: 'IS', xAxis: dates[0] }, { xAxis: dates[isReturns.length - 1] ?? dates[0] }]],
+          },
+        },
+        {
+          name: 'OUT-OF-SAMPLE',
+          type: 'line',
+          data: oosData,
+          symbol: 'none',
+          connectNulls: false,
+          lineStyle: { color: '#38bdf8', width: 2 },
+          areaStyle: {
+            color: {
+              type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [
+                { offset: 0, color: 'rgba(56,189,248,0.15)' },
+                { offset: 1, color: 'rgba(56,189,248,0)' },
               ],
             },
           },
           markArea: {
             silent: true,
-            data: [
-              [
-                { name: 'IN-SAMPLE', xAxis: dates[0], itemStyle: { color: 'rgba(59,130,246,0.06)' }, label: { color: '#3b82f6', fontSize: 10 } },
-                { xAxis: splitDate },
-              ],
-              [
-                { name: 'UNSEEN DATA', xAxis: splitDate, itemStyle: { color: 'rgba(244,63,94,0.06)' }, label: { color: '#f43f5e', fontSize: 10 } },
-                { xAxis: dates[dates.length - 1] },
-              ],
-            ],
-          },
-          markLine: {
-            silent: true,
-            data: [{ xAxis: splitDate, name: 'OOS Split' }],
-            lineStyle: { color: '#f43f5e', type: 'dashed', width: 1.5 },
-            label: { show: true, position: 'insideEndTop', color: '#f43f5e', fontSize: 10, formatter: 'OOS →' },
-            symbol: ['none', 'none'],
+            label: { show: true, color: '#38bdf8', fontSize: 9, position: 'insideTopRight' },
+            itemStyle: { color: 'rgba(56,189,248,0.04)' },
+            data: [[
+              { name: 'OOS (UNSEEN)', xAxis: dates[isReturns.length] ?? dates[0] },
+              { xAxis: dates[dates.length - 1] },
+            ]],
           },
         },
       ],
@@ -119,13 +170,20 @@ export default function PnLChart() {
   }, [simulationResult])
 
   return (
-    <div className="w-full h-full">
-      <ReactECharts
-        option={option}
-        style={{ height: '100%', width: '100%' }}
-        theme="dark"
-        opts={{ renderer: 'canvas' }}
-      />
-    </div>
+    <ReactECharts
+      option={option}
+      style={{ height: '100%', width: '100%' }}
+      theme="dark"
+      opts={{ renderer: 'canvas' }}
+      notMerge
+    />
+  )
+}
+
+export default function PnLChart() {
+  return (
+    <ErrorBoundary>
+      <PnLChartInner />
+    </ErrorBoundary>
   )
 }

@@ -1,4 +1,4 @@
-import { MessageSquare, Code2, Play, Zap } from 'lucide-react'
+import { MessageSquare, Code2, BookOpen, Play, Zap } from 'lucide-react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { useQuantWorkspace } from '../../hooks/useQuantWorkspace'
 
@@ -7,75 +7,89 @@ const NavBtn = ({
   label,
   active,
   onClick,
-}: { icon: React.FC<any>; label: string; active?: boolean; onClick: () => void }) => (
+}: {
+  icon: React.ElementType
+  label: string
+  active?: boolean
+  onClick: () => void
+}) => (
   <button
-    title={label}
     onClick={onClick}
-    className={`flex flex-col items-center gap-1 px-2 py-3 rounded-lg w-full text-xs transition-colors
+    title={label}
+    className={`
+      flex flex-col items-center justify-center gap-1 w-full py-3 text-xs transition-colors
       ${active
-        ? 'bg-emerald-500/20 text-emerald-400'
-        : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'}`}
+        ? 'text-emerald-400 bg-slate-800'
+        : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/60'}
+    `}
   >
-    <Icon size={20} />
-    <span className="leading-tight text-center">{label}</span>
+    <Icon size={20} strokeWidth={1.5} />
+    <span className="text-[10px] leading-none">{label}</span>
   </button>
 )
 
 export default function GlobalSidebar() {
-  const { activeView, setActiveView, status } = useWorkspaceStore()
+  const { activeView, setActiveView, status, ledgerOpen, toggleLedger } = useWorkspaceStore()
   const { runBacktest, runOptimize } = useQuantWorkspace()
 
   const isRunning = status === 'backtesting' || status === 'optimizing'
 
   return (
-    <aside className="w-20 flex flex-col items-center gap-2 bg-slate-900 border-r border-slate-800 py-4 px-2 shrink-0">
+    <aside className="w-20 shrink-0 flex flex-col bg-slate-900 border-r border-slate-800 z-40">
       {/* Logo */}
-      <div className="mb-3 text-emerald-400">
-        <Zap size={28} />
+      <div className="flex items-center justify-center h-14 border-b border-slate-800">
+        <span className="text-lg font-bold text-emerald-400 tracking-tight">QA</span>
       </div>
 
-      <div className="w-full h-px bg-slate-700 mb-2" />
+      {/* Nav */}
+      <nav className="flex flex-col flex-1 pt-2">
+        <NavBtn
+          icon={MessageSquare}
+          label="Chat"
+          active={activeView === 'CHAT'}
+          onClick={() => setActiveView('CHAT')}
+        />
+        <NavBtn
+          icon={Code2}
+          label="Compiler"
+          active={activeView === 'COMPILER'}
+          onClick={() => setActiveView('COMPILER')}
+        />
+        <NavBtn
+          icon={BookOpen}
+          label="Ledger"
+          active={ledgerOpen}
+          onClick={toggleLedger}
+        />
+      </nav>
 
-      <NavBtn
-        icon={MessageSquare}
-        label="Chat"
-        active={activeView === 'CHAT'}
-        onClick={() => setActiveView('CHAT')}
-      />
-      <NavBtn
-        icon={Code2}
-        label="Compiler"
-        active={activeView === 'COMPILER'}
-        onClick={() => setActiveView('COMPILER')}
-      />
-
-      <div className="flex-1" />
-
-      {/* Run Backtest */}
-      <button
-        title="Run Manual Backtest"
-        onClick={() => { setActiveView('COMPILER'); runBacktest() }}
-        disabled={isRunning}
-        className="flex flex-col items-center gap-1 px-2 py-3 rounded-lg w-full text-xs
-          bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed
-          text-white transition-colors"
-      >
-        <Play size={20} />
-        <span className="leading-tight text-center">{isRunning ? '...' : 'Run'}</span>
-      </button>
-
-      {/* AI Optimize */}
-      <button
-        title="AI Optimize via Optuna"
-        onClick={() => { setActiveView('COMPILER'); runOptimize() }}
-        disabled={isRunning}
-        className="flex flex-col items-center gap-1 px-2 py-3 rounded-lg w-full text-xs
-          bg-violet-700 hover:bg-violet-600 disabled:opacity-40 disabled:cursor-not-allowed
-          text-white transition-colors"
-      >
-        <Zap size={20} />
-        <span className="leading-tight text-center">Optuna</span>
-      </button>
+      {/* Action buttons */}
+      <div className="flex flex-col gap-2 px-2 pb-4 border-t border-slate-800 pt-3">
+        <button
+          onClick={runOptimize}
+          disabled={isRunning}
+          title="AI Optimize"
+          className="flex flex-col items-center justify-center gap-1 py-2 rounded-lg bg-violet-800/60 hover:bg-violet-700 disabled:opacity-40 text-violet-300 text-[10px] transition-colors"
+        >
+          <Zap size={16} strokeWidth={1.5} />
+          AI Opt
+        </button>
+        <button
+          onClick={runBacktest}
+          disabled={isRunning}
+          title="Run Backtest"
+          className={`
+            flex flex-col items-center justify-center gap-1 py-2 rounded-lg text-[10px] transition-colors
+            ${isRunning
+              ? 'bg-amber-800/60 text-amber-300 animate-pulse'
+              : 'bg-emerald-700 hover:bg-emerald-600 text-white'}
+            disabled:opacity-40
+          `}
+        >
+          <Play size={16} strokeWidth={1.5} />
+          {isRunning ? 'Running' : 'Run'}
+        </button>
+      </div>
     </aside>
   )
 }

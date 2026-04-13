@@ -1,6 +1,6 @@
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { useQuantWorkspace } from '../../hooks/useQuantWorkspace'
-import { RefreshCw } from 'lucide-react'
+import { RefreshCw, X } from 'lucide-react'
 
 const statusColor: Record<string, string> = {
   active:      'bg-emerald-500',
@@ -15,28 +15,37 @@ const StatusBadge = ({ s }: { s?: string }) => (
 )
 
 export default function LeftLedgerPane() {
-  const { alphaHistory, setEditorDsl, setActiveView } = useWorkspaceStore()
+  const { alphaHistory, setEditorDsl, setActiveView, setLedgerOpen } = useWorkspaceStore()
   const { loadHistory } = useQuantWorkspace()
 
   return (
-    <aside className="w-64 flex flex-col bg-slate-900 border-r border-slate-800 shrink-0">
+    <aside className="w-64 h-full flex flex-col bg-slate-900 border-r border-slate-800 shadow-2xl">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-3 border-b border-slate-800">
         <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Alpha Ledger</span>
-        <button
-          onClick={loadHistory}
-          className="text-slate-500 hover:text-slate-300 transition-colors"
-          title="Refresh"
-        >
-          <RefreshCw size={14} />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={loadHistory}
+            className="text-slate-500 hover:text-slate-300 transition-colors"
+            title="Refresh"
+          >
+            <RefreshCw size={13} />
+          </button>
+          <button
+            onClick={() => setLedgerOpen(false)}
+            className="text-slate-500 hover:text-slate-300 transition-colors"
+            title="Close"
+          >
+            <X size={13} />
+          </button>
+        </div>
       </div>
 
       {/* List */}
       <div className="flex-1 overflow-y-auto">
         {alphaHistory.length === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-slate-600">
-            No alphas yet.<br/>Run a backtest to generate results.
+            No alphas yet.<br />Run a backtest to generate results.
           </div>
         ) : (
           alphaHistory.map((rec) => (
@@ -45,6 +54,7 @@ export default function LeftLedgerPane() {
               onClick={() => {
                 setEditorDsl(rec.dsl)
                 setActiveView('COMPILER')
+                setLedgerOpen(false)
               }}
               className="w-full text-left px-3 py-2.5 border-b border-slate-800 hover:bg-slate-800 transition-colors group"
             >
@@ -74,7 +84,7 @@ export default function LeftLedgerPane() {
         )}
       </div>
 
-      {/* Footer count */}
+      {/* Footer */}
       <div className="px-3 py-2 border-t border-slate-800 text-xs text-slate-600">
         {alphaHistory.length} alphas stored
       </div>

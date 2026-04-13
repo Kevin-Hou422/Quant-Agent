@@ -13,40 +13,37 @@ const DEFAULT_CONFIG: SimulationConfig = {
 }
 
 interface WorkspaceState {
-  // View
   activeView: ActiveView
   setActiveView: (v: ActiveView) => void
 
-  // Editor
   editorDsl: string
   setEditorDsl: (dsl: string) => void
 
-  // Chat
   sessionId: string
   chatMessages: ChatMessage[]
   addMessage: (msg: Omit<ChatMessage, 'id' | 'timestamp'>) => void
   clearChat: () => void
 
-  // Alpha history
   alphaHistory: AlphaRecord[]
   setAlphaHistory: (records: AlphaRecord[]) => void
 
-  // Simulation result
   simulationResult: SimResult | null
   setSimulationResult: (r: SimResult | null) => void
 
-  // Status
   status: Status
   setStatus: (s: Status) => void
 
-  // Console log
   consoleLogs: string[]
   appendLog: (line: string) => void
   clearLogs: () => void
 
-  // Simulation config
   simConfig: SimulationConfig
   setSimConfig: (c: Partial<SimulationConfig>) => void
+
+  // Ledger slide-out state
+  ledgerOpen: boolean
+  toggleLedger: () => void
+  setLedgerOpen: (open: boolean) => void
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
@@ -60,10 +57,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   chatMessages: [],
   addMessage: (msg) =>
     set((s) => ({
-      chatMessages: [
-        ...s.chatMessages,
-        { ...msg, id: genId(), timestamp: Date.now() },
-      ],
+      chatMessages: [...s.chatMessages, { ...msg, id: genId(), timestamp: Date.now() }],
     })),
   clearChat: () => set({ chatMessages: [] }),
 
@@ -82,6 +76,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   clearLogs: () => set({ consoleLogs: [] }),
 
   simConfig: DEFAULT_CONFIG,
-  setSimConfig: (c) =>
-    set((s) => ({ simConfig: { ...s.simConfig, ...c } })),
+  setSimConfig: (c) => set((s) => ({ simConfig: { ...s.simConfig, ...c } })),
+
+  ledgerOpen: false,
+  toggleLedger: () => set((s) => ({ ledgerOpen: !s.ledgerOpen })),
+  setLedgerOpen: (open) => set({ ledgerOpen: open }),
 }))
