@@ -2,7 +2,6 @@ import { useState } from 'react'
 import MonacoEditor from '@monaco-editor/react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { useQuantWorkspace } from '../../hooks/useQuantWorkspace'
-import ConsoleOutput from './ConsoleOutput'
 import { Play, Zap, Settings } from 'lucide-react'
 import ConfigModal from './ConfigModal'
 
@@ -209,9 +208,6 @@ export default function CompilerView() {
           }}
         />
       </div>
-
-      {/* Console */}
-      <ConsoleOutput />
 
       {showConfig && <ConfigModal onClose={() => setShowConfig(false)} />}
     </div>

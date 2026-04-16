@@ -16,9 +16,9 @@ import pandas as pd
 
 from app.core.alpha_engine.parser import Parser, ParseError
 from app.core.alpha_engine.validator import AlphaValidator, ValidationError
-from backend.app.db.alpha_store import AlphaResult, AlphaStore
+from app.db.alpha_store import AlphaResult, AlphaStore
 from app.core.ml_engine.proxy_model import ProxyModel
-from backend.app.tasks.reasoning_log import ReasoningLog
+from app.tasks.reasoning_log import ReasoningLog
 
 logger = logging.getLogger(__name__)
 

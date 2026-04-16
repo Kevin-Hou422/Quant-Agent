@@ -8,7 +8,7 @@ export default function RightPane() {
   const { simulationResult } = useWorkspaceStore()
 
   return (
-    <aside className="w-80 xl:w-96 flex flex-col bg-slate-900 border-l border-slate-800 shrink-0 overflow-hidden">
+    <aside className="h-full flex flex-col bg-slate-900 border-l border-slate-800 overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-3 border-b border-slate-800">
         <BarChart2 size={16} className="text-emerald-400" />
         <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Analysis</span>
