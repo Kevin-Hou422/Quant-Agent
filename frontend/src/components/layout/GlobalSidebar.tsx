@@ -35,7 +35,7 @@ export default function GlobalSidebar() {
   const isRunning = status === 'backtesting' || status === 'optimizing'
 
   return (
-    <aside className="w-20 shrink-0 flex flex-col bg-slate-900 border-r border-slate-800 z-40">
+    <aside className="w-full h-full flex flex-col bg-slate-900 border-r border-slate-800 overflow-hidden">
       {/* Logo */}
       <div className="flex items-center justify-center h-14 border-b border-slate-800">
         <span className="text-lg font-bold text-emerald-400 tracking-tight">QA</span>

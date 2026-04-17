@@ -42,10 +42,13 @@ export function useQuantWorkspace() {
     store.appendLog('[Backtest] Sending to /alpha/simulate...')
     try {
       const res = await apiSimulate(dsl, store.simConfig)
+      console.log('[runBacktest] raw response:', JSON.stringify(res.data).slice(0, 400))
+      console.log('[runBacktest] pnl_is length:', res.data.pnl_is?.length, 'pnl_oos length:', res.data.pnl_oos?.length)
       store.setSimulationResult(res.data)
       store.appendLog(`[Backtest] IS Sharpe: ${res.data.is_metrics?.sharpe_ratio?.toFixed(4) ?? 'N/A'}`)
       store.appendLog(`[Backtest] OOS Sharpe: ${res.data.oos_metrics?.sharpe_ratio?.toFixed(4) ?? 'N/A'}`)
       store.appendLog(`[Backtest] Overfitting Score: ${res.data.overfitting_score?.toFixed(3)}`)
+      store.appendLog(`[Backtest] PnL series: IS=${res.data.pnl_is?.length ?? 0} pts, OOS=${res.data.pnl_oos?.length ?? 0} pts`)
       store.appendLog(res.data.is_overfit ? '[WARN] Overfitting detected!' : '[OK] Passed anti-overfitting check.')
       store.setStatus('ready')
       await loadHistory()

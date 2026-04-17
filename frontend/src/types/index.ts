@@ -48,21 +48,19 @@ export interface SimMetrics {
 
 export interface SimResult {
   dsl: string
-  is_metrics: SimMetrics
-  oos_metrics?: SimMetrics | null
-  // Aliases used by analysis components
-  is_report?: SimMetrics | null
-  oos_report?: SimMetrics | null
+  is_metrics: SimMetrics & Record<string, unknown>
+  oos_metrics?: (SimMetrics & Record<string, unknown>) | null
   overfitting_score: number
   is_overfit: boolean
   ic_decay: Record<string, number>
   best_config?: Record<string, unknown> | null
   n_trials_run?: number | null
-  // PnL series (optional)
-  pnl_dates?: string[]
-  pnl_is?: number[]
-  pnl_oos?: number[]
-  split_date?: string
+  /** PnL daily returns from backtest (IS period) */
+  pnl_is: number[]
+  /** PnL daily returns from backtest (OOS period) */
+  pnl_oos: number[]
+  /** Last IS date (ISO string) */
+  split_date?: string | null
 }
 
 export interface BacktestRunResponse {

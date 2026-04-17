@@ -436,6 +436,10 @@ class EvalResponse(BaseModel):
     is_overfit:        bool
     ic_decay:          Dict[str, Any]
     n_trials_run:      Optional[int]
+    # PnL series for visualization (daily net returns, IS then OOS)
+    pnl_is:            List[float] = Field(default_factory=list)
+    pnl_oos:           List[float] = Field(default_factory=list)
+    split_date:        Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +511,38 @@ def _run_evaluate(
     eval_dict["is_metrics"]["ic_decay_t1"] = eval_result.ic_decay.get("t1")
     eval_dict["is_metrics"]["ic_decay_t5"] = eval_result.ic_decay.get("t5")
 
+    # ── Extract PnL series for frontend visualization ───────────────────────
+    import pandas as pd, numpy as np
+
+    def _series_to_list(s) -> list:
+        """Convert pd.Series / np.ndarray / list to plain Python float list."""
+        if s is None:
+            return []
+        if isinstance(s, pd.Series):
+            return [float(v) for v in s.dropna().values]
+        if isinstance(s, np.ndarray):
+            return [float(v) for v in s[~np.isnan(s)]]
+        return list(s)
+
+    pnl_is:   list = []
+    pnl_oos:  list = []
+    split_dt: str | None = None
+
+    # Try net_returns → equity_curve in that priority
+    if result.is_report is not None:
+        nr = getattr(result.is_report, "net_returns", None)
+        if nr is None:
+            nr = getattr(result.is_report, "equity_curve", None)
+        pnl_is = _series_to_list(nr)
+        if isinstance(nr, pd.Series) and len(nr) > 0:
+            split_dt = str(nr.index[-1].date())
+
+    if result.oos_report is not None:
+        nr_oos = getattr(result.oos_report, "net_returns", None)
+        if nr_oos is None:
+            nr_oos = getattr(result.oos_report, "equity_curve", None)
+        pnl_oos = _series_to_list(nr_oos)
+
     return EvalResponse(
         dsl               = dsl,
         best_config       = best_config,
@@ -516,6 +552,9 @@ def _run_evaluate(
         is_overfit        = eval_result.is_overfit,
         ic_decay          = eval_result.ic_decay,
         n_trials_run      = n_trials,
+        pnl_is            = pnl_is,
+        pnl_oos           = pnl_oos,
+        split_date        = split_dt,
     )
 
 
