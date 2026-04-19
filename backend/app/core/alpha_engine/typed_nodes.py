@@ -265,6 +265,12 @@ class ArithmeticNode(Node):
         if self.op in _BINOP_SYMBOLS:
             sym = _BINOP_SYMBOLS[self.op]
             return f"({repr(self._children[0])}{sym}{repr(self._children[1])})"
+        # Unary minus: emit  -(expr)  so the repr round-trips through the Lark parser
+        # (the grammar rule  ?factor: _MINUS factor -> neg  expects a literal "-", not
+        # the word "neg").  All other unary ops (log, abs, sqrt, sign) are real function
+        # calls and keep their name-prefixed form.
+        if self.op == "neg":
+            return f"(-{repr(self._children[0])})"
         if self.op in _UNARY_OPS:
             return f"{self.op}({repr(self._children[0])})"
         if self.op == "signed_power":

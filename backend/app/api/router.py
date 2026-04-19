@@ -569,6 +569,18 @@ def alpha_simulate(req: SimulateRequest) -> EvalResponse:
     返回 IS 和 OOS 完整高级指标（含过拟合评分、IC Decay）。
     """
     from app.core.alpha_engine.signal_processor import SimulationConfig
+    from app.core.alpha_engine.parser import Parser, ParseError
+    from app.core.alpha_engine.validator import AlphaValidator, ValidationError
+
+    # ── Step 0: 提前验证 DSL，语法错误返回 400（而非 500）──────────────────
+    try:
+        node = Parser().parse(req.dsl)
+        AlphaValidator().validate(node)
+    except (ParseError, ValidationError, SyntaxError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"[Syntax Error] {exc}",
+        )
 
     dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
     is_data, oos_data = _partition_dataset(dataset, req.oos_ratio)
@@ -604,6 +616,18 @@ def alpha_optimize(req: OptimizeRequest) -> EvalResponse:
     严格遵循 Train → Optimize → Lock → Test 工作流。
     """
     from app.core.ml_engine.alpha_optimizer import AlphaOptimizer, SearchSpace
+    from app.core.alpha_engine.parser import Parser, ParseError
+    from app.core.alpha_engine.validator import AlphaValidator, ValidationError
+
+    # ── Step 0: 提前验证 DSL，语法错误返回 400 ────────────────────────────
+    try:
+        node = Parser().parse(req.dsl)
+        AlphaValidator().validate(node)
+    except (ParseError, ValidationError, SyntaxError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"[Syntax Error] {exc}",
+        )
 
     dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
 

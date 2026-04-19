@@ -61,6 +61,39 @@ _FALLBACK_DSL_MAP: Dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
+# 模块级辅助：从文本中提取带平衡括号的 DSL 子串
+# ---------------------------------------------------------------------------
+
+def _extract_balanced(text: str, start: int) -> Optional[str]:
+    """
+    从 ``text[start:]`` 提取第一个带平衡括号的 DSL 表达式。
+
+    处理可选前导 ``-``、嵌套括号（如 ``rank(ts_delta(log(close),5))``），
+    以及操作符前后的空白字符。
+
+    Returns
+    -------
+    完整 DSL 字符串（已 strip），若未找到左括号则返回 None。
+    """
+    # 找到第一个 "(" 的位置
+    paren_idx = text.find("(", start)
+    if paren_idx == -1:
+        return None
+
+    depth = 0
+    for i in range(paren_idx, len(text)):
+        ch = text[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1].strip()
+
+    return None   # 括号未闭合
+
+
+# ---------------------------------------------------------------------------
 # ConversationMemory — 轻量对话记忆（无 LangChain 依赖的独立版本）
 # ---------------------------------------------------------------------------
 
@@ -827,9 +860,19 @@ class QuantAgent:
         """
         import re
         # Workflow B：消息中直接包含 DSL（含括号的算子表达式）
-        dsl_pattern = re.search(r'(rank|ts_mean|ts_std|ts_delta|ts_decay_linear)\([^)]+\)', message)
-        if dsl_pattern:
-            return "workflow_b", dsl_pattern.group(0)
+        # Fix: capture optional leading minus so `-rank(returns)` is not silently
+        # stripped to `rank(returns)`, which would invert the intended strategy.
+        # Also use a balanced-paren scan to handle nested expressions like
+        # rank(ts_delta(log(close),5)).
+        dsl_match = re.search(
+            r'(-?\s*(?:rank|ts_mean|ts_std|ts_delta|ts_decay_linear|log|abs|sign|zscore|scale)'
+            r'\s*\()',
+            message,
+        )
+        if dsl_match:
+            dsl_hint = _extract_balanced(message, dsl_match.start())
+            if dsl_hint:
+                return "workflow_b", dsl_hint
 
         # Workflow B：引用上一个 + "optimize/improve"
         lower = message.lower()
