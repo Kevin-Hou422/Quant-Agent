@@ -10,12 +10,14 @@ import ConfigModal from './ConfigModal'
 const TS_OPS = [
   { name: 'ts_mean',         doc: 'ts_mean(x, window) — Rolling mean over past `window` days.' },
   { name: 'ts_std',          doc: 'ts_std(x, window) — Rolling standard deviation.' },
+  { name: 'ts_sum',          doc: 'ts_sum(x, window) — Rolling sum over past `window` days.' },
   { name: 'ts_delta',        doc: 'ts_delta(x, window) — x[t] - x[t-window].' },
   { name: 'ts_delay',        doc: 'ts_delay(x, d) — Lag x by d days.' },
   { name: 'ts_rank',         doc: 'ts_rank(x, window) — Time-series percentile rank.' },
   { name: 'ts_max',          doc: 'ts_max(x, window) — Rolling maximum.' },
   { name: 'ts_min',          doc: 'ts_min(x, window) — Rolling minimum.' },
   { name: 'ts_decay_linear', doc: 'ts_decay_linear(x, window) — Linearly-weighted decay.' },
+  { name: 'ts_corr',         doc: 'ts_corr(x, y, window) — Rolling correlation between x and y.' },
 ]
 
 const CS_OPS = [
@@ -49,32 +51,36 @@ const ALL_OPS = [...TS_OPS, ...CS_OPS, ...SCALAR_OPS]
 
 // ── Monaco setup (called once before mount) ─────────────────────────────────
 
+// Guard: prevent re-registration across hot-reloads / re-mounts
+let _monacoSetupDone = false
+
 function setupMonaco(monaco: any) {
-  // Avoid re-registering on hot-reload
+  if (_monacoSetupDone) return
+  _monacoSetupDone = true
+
   const lang = 'quantdsl'
-  const existingLangs: string[] = monaco.languages.getLanguages().map((l: any) => l.id)
-  if (!existingLangs.includes(lang)) {
-    monaco.languages.register({ id: lang, extensions: ['.dsl'], aliases: ['QuantDSL'] })
-  }
+  monaco.languages.register({ id: lang, extensions: ['.dsl'], aliases: ['QuantDSL'] })
 
   // ── Monarch tokenizer (syntax highlighting) ──────────────────────────────
   monaco.languages.setMonarchTokensProvider(lang, {
     tokenizer: {
       root: [
-        // TS operators
-        [/\b(ts_mean|ts_std|ts_delta|ts_delay|ts_rank|ts_max|ts_min|ts_decay_linear)\b/, 'keyword.ts'],
+        // TS operators (must come before CS to avoid partial matches on 'rank')
+        [/\b(ts_mean|ts_std|ts_sum|ts_delta|ts_delay|ts_rank|ts_max|ts_min|ts_decay_linear|ts_corr)\b/, 'keyword.ts'],
         // CS operators
         [/\b(rank|zscore|cs_rank|cs_zscore|ind_neutralize|scale|signed_power)\b/, 'keyword.cs'],
         // Scalar operators
-        [/\b(log|abs|sign|sqrt)\b/, 'keyword.scalar'],
-        // Price fields
+        [/\b(log|abs|sign|sqrt|if_else)\b/, 'keyword.scalar'],
+        // Price fields — sky blue, must NOT default to white when unrecognized
         [/\b(close|open|high|low|volume|vwap|returns)\b/, 'variable.price'],
         // Numbers
         [/\b\d+(\.\d+)?\b/, 'number'],
-        // Operators
+        // Arithmetic operators
         [/[+\-*/]/, 'operator'],
-        // Brackets
+        // Brackets / commas
         [/[(),]/, 'delimiter'],
+        // Everything else → default foreground (white)
+        [/[a-zA-Z_]\w*/, 'identifier'],
       ],
     },
   })
@@ -91,6 +97,7 @@ function setupMonaco(monaco: any) {
       { token: 'number',         foreground: 'fbbf24' },                     // amber
       { token: 'operator',       foreground: 'e2e8f0' },
       { token: 'delimiter',      foreground: '94a3b8' },
+      { token: 'identifier',     foreground: 'e2e8f0' },                     // unrecognized → white
     ],
     colors: {
       'editor.background': '#020617',  // slate-950
@@ -102,37 +109,42 @@ function setupMonaco(monaco: any) {
   })
 
   // ── Auto-completion provider ────────────────────────────────────────────
+  // Critical fix: use model.getWordUntilPosition() so the typed prefix is
+  // replaced rather than duplicated when a suggestion is accepted.
   monaco.languages.registerCompletionItemProvider(lang, {
-    triggerCharacters: ['(', '_', ...Array.from('abcdefghijklmnopqrstuvwxyz')],
-    provideCompletionItems: (_model: any, position: any) => ({
-      suggestions: [
-        ...ALL_OPS.map((op) => ({
-          label: op.name,
-          kind: monaco.languages.CompletionItemKind.Function,
-          insertText: op.name + '(',
-          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-          documentation: { value: `**${op.name}**\n\n${op.doc}` },
-          range: {
-            startLineNumber: position.lineNumber,
-            endLineNumber: position.lineNumber,
-            startColumn: position.column,
-            endColumn: position.column,
-          },
-        })),
-        ...PRICE_FIELDS.map((f) => ({
-          label: f.name,
-          kind: monaco.languages.CompletionItemKind.Variable,
-          insertText: f.name,
-          documentation: { value: `**${f.name}**\n\n${f.doc}` },
-          range: {
-            startLineNumber: position.lineNumber,
-            endLineNumber: position.lineNumber,
-            startColumn: position.column,
-            endColumn: position.column,
-          },
-        })),
-      ],
-    }),
+    triggerCharacters: ['_', '(', ...Array.from('abcdefghijklmnopqrstuvwxyz')],
+    provideCompletionItems: (model: any, position: any) => {
+      const word = model.getWordUntilPosition(position)
+      const range = {
+        startLineNumber: position.lineNumber,
+        endLineNumber:   position.lineNumber,
+        startColumn:     word.startColumn,
+        endColumn:       word.endColumn,
+      }
+      return {
+        suggestions: [
+          ...ALL_OPS.map((op) => ({
+            label:            op.name,
+            kind:             monaco.languages.CompletionItemKind.Function,
+            insertText:       op.name + '(${1})',
+            insertTextRules:  monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+            documentation:    { value: `**${op.name}**\n\n${op.doc}` },
+            filterText:       op.name,
+            sortText:         op.name,
+            range,
+          })),
+          ...PRICE_FIELDS.map((f) => ({
+            label:         f.name,
+            kind:          monaco.languages.CompletionItemKind.Variable,
+            insertText:    f.name,
+            documentation: { value: `**${f.name}**\n\n${f.doc}` },
+            filterText:    f.name,
+            sortText:      f.name,
+            range,
+          })),
+        ],
+      }
+    },
   })
 }
 

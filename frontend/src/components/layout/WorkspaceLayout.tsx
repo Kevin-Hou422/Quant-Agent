@@ -10,8 +10,14 @@ import { useWorkspaceStore } from '../../store/workspaceStore'
 /** Vertical drag handle between horizontal panels */
 function VHandle() {
   return (
-    <PanelResizeHandle className="relative w-1 bg-slate-800 hover:bg-emerald-600/50 transition-colors duration-150 cursor-col-resize group">
-      <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5 bg-slate-700 group-hover:bg-emerald-500 transition-colors" />
+    <PanelResizeHandle className="relative w-1.5 bg-slate-800 hover:bg-emerald-600/60 active:bg-emerald-500 transition-colors duration-150 cursor-col-resize group">
+      <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-slate-700 group-hover:bg-emerald-500 transition-colors" />
+      {/* Grip dots */}
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        {[0,1,2].map(i => (
+          <div key={i} className="w-0.5 h-0.5 rounded-full bg-emerald-400" />
+        ))}
+      </div>
     </PanelResizeHandle>
   )
 }
@@ -32,8 +38,8 @@ export default function WorkspaceLayout() {
     <div className="h-screen w-screen bg-slate-950 overflow-hidden" style={{ fontFamily: "'Inter','system-ui',sans-serif" }}>
       <PanelGroup direction="horizontal" className="h-full w-full">
 
-        {/* ── Panel 1: Sidebar (always visible, collapsible to icon strip) ── */}
-        <Panel defaultSize={5} minSize={4} maxSize={10} style={{ minWidth: 56 }}>
+        {/* ── Panel 1: Sidebar (collapsible, never squeezed to 0) ────────── */}
+        <Panel defaultSize={15} minSize={12} collapsible={true}>
           <div className="relative h-full">
             {/* Alpha Ledger slide-out (absolute, overlays workspace) */}
             <div className={`
