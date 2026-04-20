@@ -1,6 +1,6 @@
 import axios from 'axios'
 import type {
-  SimulationConfig, SimResult, AlphaRecord, BacktestRunResponse,
+  SimulationConfig, SimResult, AlphaRecord, BacktestRunResponse, ChatSession,
 } from '../types'
 
 const http = axios.create({ baseURL: '/api', timeout: 120_000 })
@@ -42,3 +42,23 @@ export const apiBacktest = (dsl: string) =>
 // ── Alpha Ledger (history) ────────────────────────────────────────────────
 export const apiFetchAlphaHistory = (limit = 30) =>
   http.get<{ total: number; records: AlphaRecord[] }>(`/report/query?limit=${limit}`)
+
+// ── Chat Session Management ───────────────────────────────────────────────
+export const apiCreateSession = (title: string) =>
+  http.post<{ session_id: string; title: string; created_at: string }>(
+    '/chat/sessions',
+    { title },
+  )
+
+export const apiListSessions = () =>
+  http.get<{ sessions: Array<{ session_id: string; title: string; created_at: string }>; count: number }>(
+    '/chat/sessions',
+  )
+
+export const apiGetSession = (sessionId: string) =>
+  http.get<{
+    session_id: string
+    title:      string
+    created_at: string
+    messages:   Array<{ id: number; role: string; content: string; created_at: string }>
+  }>(`/chat/sessions/${sessionId}`)

@@ -3,6 +3,12 @@
 export type ActiveView = 'CHAT' | 'COMPILER'
 export type Status = 'idle' | 'optimizing' | 'backtesting' | 'ready' | 'error'
 
+export interface ChatSession {
+  id:        string
+  title:     string
+  createdAt: string
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'

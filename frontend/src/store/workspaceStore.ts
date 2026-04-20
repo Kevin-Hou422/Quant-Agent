@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ActiveView, Status, ChatMessage, AlphaRecord, SimResult, SimulationConfig } from '../types'
+import type { ActiveView, Status, ChatMessage, AlphaRecord, SimResult, SimulationConfig, ChatSession } from '../types'
 
 const genId = () => Math.random().toString(36).slice(2)
 
@@ -19,9 +19,18 @@ interface WorkspaceState {
   editorDsl: string
   setEditorDsl: (dsl: string) => void
 
+  // ── Session management ──────────────────────────────────────────────────
   sessionId: string
+  setSessionId: (id: string) => void
+
+  sessions: ChatSession[]
+  setSessions: (sessions: ChatSession[]) => void
+  addSession: (s: ChatSession) => void
+
+  // ── Chat messages ───────────────────────────────────────────────────────
   chatMessages: ChatMessage[]
   addMessage: (msg: Omit<ChatMessage, 'id' | 'timestamp'>) => void
+  setMessages: (msgs: ChatMessage[]) => void
   clearChat: () => void
 
   alphaHistory: AlphaRecord[]
@@ -53,12 +62,23 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   editorDsl: 'rank(ts_delta(log(close), 5))',
   setEditorDsl: (dsl) => set({ editorDsl: dsl }),
 
+  // ── Session management ────────────────────────────────────────────────
   sessionId: genId(),
+  setSessionId: (id) => set({ sessionId: id }),
+
+  sessions: [],
+  setSessions: (sessions) => set({ sessions }),
+  addSession: (s) => set((st) => ({
+    sessions: [s, ...st.sessions.filter((x) => x.id !== s.id)],
+  })),
+
+  // ── Chat messages ─────────────────────────────────────────────────────
   chatMessages: [],
   addMessage: (msg) =>
     set((s) => ({
       chatMessages: [...s.chatMessages, { ...msg, id: genId(), timestamp: Date.now() }],
     })),
+  setMessages: (msgs) => set({ chatMessages: msgs }),
   clearChat: () => set({ chatMessages: [] }),
 
   alphaHistory: [],
