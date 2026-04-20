@@ -2,7 +2,15 @@
 _lc_agent.py — _build_langchain_agent.
 
 Wires QuantTools into a LangChain AgentExecutor and wraps it with
-RunnableWithMessageHistory so every session gets its own DB-backed history.
+RunnableWithMessageHistory for per-session DB-backed memory.
+
+GP-first tool ordering (Phase 2/4 compliance):
+  tool_generate_alpha_dsl  — seed DSL from hypothesis
+  tool_run_gp_optimization — PRIMARY optimizer (structural GP search)
+  tool_run_backtest        — final IS+OOS validation
+  tool_mutate_ast          — single AST mutation (real GP ops, no strings)
+  tool_run_optuna          — SECONDARY (parameter fine-tuning only)
+  tool_save_alpha          — persist to AlphaStore
 """
 from __future__ import annotations
 
@@ -22,14 +30,8 @@ def _build_langchain_agent(
     chat_store: Optional[Any] = None,
 ) -> Any:
     """
-    Build a LangChain AgentExecutor (5 tools) optionally wrapped with
+    Build a LangChain AgentExecutor (6 tools) optionally wrapped with
     RunnableWithMessageHistory for per-session SQLite-backed memory.
-
-    Parameters
-    ----------
-    llm        : initialised ChatOpenAI instance
-    tools_obj  : shared QuantTools instance
-    chat_store : ChatStore; if provided, wraps executor with history; else returns bare executor
     """
     try:
         from langchain.agents import AgentExecutor, create_tool_calling_agent
@@ -41,33 +43,74 @@ def _build_langchain_agent(
             "pip install langchain langchain-openai langchain-core"
         ) from exc
 
-    # ── Wrap 5 tools as LangChain @tool callables ─────────────────────
+    # ── Tool 1: hypothesis → seed DSL ─────────────────────────────────
 
     @lc_tool
     def tool_generate_alpha_dsl(hypothesis: str) -> str:
-        """Translate a natural language market hypothesis into an Alpha DSL expression.
+        """Translate a natural language market hypothesis into a seed Alpha DSL expression.
         CRITICAL: if the hypothesis mentions a specific data field (vwap, volume, etc.),
-        the generated DSL MUST include that field."""
+        the generated DSL MUST include that field. This seed is then evolved by GP."""
         return tools_obj.tool_generate_alpha_dsl(hypothesis)
 
+    # ── Tool 2: GP structural search (PRIMARY optimizer) ──────────────
+
     @lc_tool
-    def tool_run_optuna(dsl: str, n_trials: int = 15) -> str:
-        """Run Optuna hyperparameter search on IS dataset only (OOS is locked).
-        Returns best config (delay, decay, truncation) and IS fitness score."""
-        return tools_obj.tool_run_optuna(dsl, n_trials)
+    def tool_run_gp_optimization(
+        seed_dsl: str = "",
+        n_generations: int = 4,
+        pop_size: int = 12,
+        n_optuna_trials: int = 8,
+    ) -> str:
+        """
+        PRIMARY OPTIMIZER. Run GP-driven alpha evolution.
+
+        1. Initialises population with seed_dsl + random AST variants.
+        2. Evolves for n_generations using AST mutation + subtree crossover + selection.
+        3. Multi-objective fitness: sharpe_oos - 0.2*turnover - 0.3*overfit_penalty.
+        4. Diversity filter: rejects alphas with signal correlation > 0.9.
+        5. After evolution, Optuna fine-tunes ONLY the best structure's parameters.
+
+        Returns: best_dsl, metrics, generations_run, pool_top5, evolution_log.
+        Use this as the MAIN optimizer — NOT tool_run_optuna standalone.
+        """
+        return tools_obj.tool_run_gp_optimization(
+            seed_dsl        = seed_dsl,
+            n_generations   = n_generations,
+            pop_size        = pop_size,
+            n_optuna_trials = n_optuna_trials,
+        )
+
+    # ── Tool 3: IS+OOS validation backtest ────────────────────────────
 
     @lc_tool
     def tool_run_backtest(dsl: str, config_json: str = "{}") -> str:
-        """Run full IS+OOS backtest.
-        Returns IS/OOS Sharpe, overfitting_score, is_overfit flag."""
+        """Run full IS+OOS validation backtest with a given config.
+        Returns IS/OOS Sharpe, overfitting_score, is_overfit flag.
+        Use after GP to validate the final selected alpha."""
         return tools_obj.tool_run_backtest(dsl, config_json)
+
+    # ── Tool 4: Single AST structural mutation ────────────────────────
 
     @lc_tool
     def tool_mutate_ast(current_dsl: str, overfit_reason: str = "") -> str:
-        """Structurally mutate an overfitting Alpha DSL using Genetic Programming.
-        Changes mathematical structure (operators, fields, signal combinations),
-        not just Optuna parameters.  Call when is_overfit=true BEFORE re-running Optuna."""
+        """
+        Apply ONE real AST-level structural mutation (NOT string templates).
+        Uses GP engine operations: point_mutation, hoist_mutation, param_mutation.
+        Adaptive weights based on overfit_reason (turnover / sharpe / overfitting).
+        Call when GP result still shows overfitting after tool_run_gp_optimization.
+        """
         return tools_obj.tool_mutate_ast(current_dsl, overfit_reason)
+
+    # ── Tool 5: Optuna parameter fine-tuning (SECONDARY) ──────────────
+
+    @lc_tool
+    def tool_run_optuna(dsl: str, n_trials: int = 10) -> str:
+        """SECONDARY optimizer — fine-tunes execution parameters (delay, decay, truncation)
+        for a FIXED DSL structure. OOS is never seen during optimization.
+        NOTE: GP already calls this internally. Only call manually if GP was skipped."""
+        return tools_obj.tool_run_optuna(dsl, n_trials)
+
+    # ── Tool 6: Persist to AlphaStore ─────────────────────────────────
 
     @lc_tool
     def tool_save_alpha(name: str, dsl: str, metrics_json: str = "{}") -> str:
@@ -76,9 +119,10 @@ def _build_langchain_agent(
 
     lc_tools = [
         tool_generate_alpha_dsl,
-        tool_run_optuna,
+        tool_run_gp_optimization,
         tool_run_backtest,
         tool_mutate_ast,
+        tool_run_optuna,
         tool_save_alpha,
     ]
 
@@ -96,7 +140,7 @@ def _build_langchain_agent(
         agent                 = agent,
         tools                 = lc_tools,
         verbose               = False,
-        max_iterations        = 12,
+        max_iterations        = 15,
         handle_parsing_errors = True,
     )
 
