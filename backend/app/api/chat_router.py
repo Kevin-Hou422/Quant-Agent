@@ -1,5 +1,5 @@
 """
-chat_router.py — 对话式 Quant Agent HTTP API (Phase 3)
+chat_router.py — 对话式 Quant Agent HTTP API (Phase 4)
 
 端点：
   POST /api/chat                          — 发送消息，返回 Agent 回复 + DSL + 绩效指标
@@ -7,19 +7,18 @@ chat_router.py — 对话式 Quant Agent HTTP API (Phase 3)
   GET  /api/chat/sessions                 — 列出所有会话（摘要，不含消息体）
   GET  /api/chat/sessions/{session_id}    — 获取指定会话及其完整消息历史
 
-设计：
-  - 每个 session_id 映射到独立的 QuantAgent 实例（含 ConversationMemory）
-  - 内存层：最多保留 MAX_SESSIONS 个活跃 QuantAgent，LRU 淘汰（纯内存，重启清空）
-  - 持久层：每轮 user/assistant 消息写入 SQLite chat_messages 表，跨重启可读取历史
-  - 新 session 通过 POST /api/chat/sessions 创建，或在 POST /api/chat 时自动幂等创建
+设计（Phase 4 升级）：
+  - 全局单例 QuantAgent：构造时注入 ChatStore，跨 session 共享
+  - 会话隔离：agent.chat(message, session_id=...) 路由到正确的历史记录
+  - LangChain 路径：RunnableWithMessageHistory 通过 SQLAlchemyChatMessageHistory 自动持久化
+  - Fallback 路径：QuantAgent._fallback_chat 内部直接调用 chat_store.save_message
+  - 路由层不再重复调用 save_message（防止双写）
   - 无 OPENAI_API_KEY 时自动降级（不崩溃）
 """
 
 from __future__ import annotations
 
 import logging
-import time
-from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -34,58 +33,29 @@ chat_router = APIRouter(prefix="/api/chat", tags=["Chat Agent"])
 
 
 # ---------------------------------------------------------------------------
-# QuantAgent 内存 Session 管理（LRU）
+# 全局单例 QuantAgent（Phase 4：注入 ChatStore，跨 session 共享）
 # ---------------------------------------------------------------------------
 
-MAX_SESSIONS = 50
+_agent: Optional[Any] = None
 
 
-class _AgentStore:
-    """LRU 内存缓存：session_id → QuantAgent 实例。"""
-
-    def __init__(self, max_size: int = MAX_SESSIONS) -> None:
-        self._store: OrderedDict[str, Any] = OrderedDict()
-        self._atime: Dict[str, float] = {}
-        self._max = max_size
-
-    def get(self, session_id: str) -> Optional[Any]:
-        if session_id in self._store:
-            self._store.move_to_end(session_id)
-            self._atime[session_id] = time.time()
-            return self._store[session_id]
-        return None
-
-    def set(self, session_id: str, agent: Any) -> None:
-        if session_id in self._store:
-            self._store.move_to_end(session_id)
-        else:
-            if len(self._store) >= self._max:
-                oldest = next(iter(self._store))
-                self._store.pop(oldest)
-                self._atime.pop(oldest, None)
-            self._store[session_id] = agent
-        self._atime[session_id] = time.time()
-
-    def list_ids(self) -> List[str]:
-        return list(self._store.keys())
-
-
-_agents = _AgentStore()
-
-
-def _get_or_create_agent(session_id: str) -> Any:
-    agent = _agents.get(session_id)
-    if agent is None:
+def _get_agent(store: ChatStore) -> Any:
+    """
+    惰性初始化全局 QuantAgent 单例。
+    首次调用时将 ChatStore 注入，后续直接复用同一实例。
+    """
+    global _agent
+    if _agent is None:
         from app.agent.quant_agent import QuantAgent
-        agent = QuantAgent(
-            n_tickers=20,
-            n_days=252,
-            oos_ratio=0.30,
-            n_trials=10,
+        _agent = QuantAgent(
+            n_tickers  = 20,
+            n_days     = 252,
+            oos_ratio  = 0.30,
+            n_trials   = 10,
+            chat_store = store,
         )
-        _agents.set(session_id, agent)
-        logger.info("新建 QuantAgent session: %s", session_id)
-    return agent
+        logger.info("全局 QuantAgent 单例已创建（ChatStore 已注入）")
+    return _agent
 
 
 # ---------------------------------------------------------------------------
@@ -231,42 +201,24 @@ def chat(
     """
     向 Quant Agent 发送一条消息。
 
-    - 若 session_id 对应的 ChatSession 不存在，自动创建（幂等）。
-    - user 消息和 assistant 回复均持久化到 chat_messages 表。
+    - LangChain 路径：RunnableWithMessageHistory 通过 SQLAlchemyChatMessageHistory
+      自动持久化 user + assistant 消息（不重复写入）
+    - Fallback 路径：QuantAgent._fallback_chat 内部调用 chat_store.save_message
+    - 路由层不再手动调用 save_message，防止双写
     - 有 OPENAI_API_KEY：LangChain AgentExecutor（Workflow A/B 全功能）
-    - 无 API Key：FallbackOrchestrator（纯 Python，关键词映射）
-    - 跨请求记忆：session_id 相同则保持对话上下文
+    - 无 API Key：FallbackOrchestrator（纯 Python，关键词映射 + 结构变异）
+    - 跨请求记忆：session_id 相同则保持对话上下文（DB 持久化，重启不丢失）
     """
-    # 1. 确保 ChatSession 存在（幂等）
-    store.ensure_session(req.session_id)
-
-    # 2. 持久化 user 消息
-    store.save_message(
-        session_id = req.session_id,
-        role       = "user",
-        content    = req.message,
-    )
-
-    # 3. 运行 Agent
-    agent = _get_or_create_agent(req.session_id)
+    agent = _get_agent(store)
     try:
-        result = agent.chat(req.message)
+        result = agent.chat(req.message, session_id=req.session_id)
     except Exception as exc:
         logger.exception("agent.chat 异常 session=%s", req.session_id)
         raise HTTPException(status_code=500, detail=str(exc))
 
-    reply = result.get("reply", "")
-
-    # 4. 持久化 assistant 回复
-    store.save_message(
-        session_id = req.session_id,
-        role       = "assistant",
-        content    = reply,
-    )
-
     return ChatResponse(
         session_id = req.session_id,
-        reply      = reply,
+        reply      = result.get("reply", ""),
         dsl        = result.get("dsl"),
         metrics    = result.get("metrics"),
     )
