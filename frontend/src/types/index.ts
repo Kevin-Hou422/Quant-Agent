@@ -9,6 +9,14 @@ export interface ChatSession {
   createdAt: string
 }
 
+export interface EditorTab {
+  id:         string
+  label:      string   // display name in tab bar
+  dsl:        string   // current DSL content
+  alphaId?:   number   // set when loaded from a saved alpha
+  isModified: boolean  // unsaved edits since last save/load
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'

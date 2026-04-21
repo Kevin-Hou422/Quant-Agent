@@ -104,7 +104,18 @@ class SignalWeightedPortfolio(PortfolioConstructor):
         sig = signal.to_numpy(dtype=float)
         T, N = sig.shape
 
-        # 截面 z-score（忽略 NaN）
+        # Zero out rows that are entirely NaN (burn-in period).
+        # Without this guard, np.nanmean / np.nanstd emit "All-NaN slice"
+        # RuntimeWarnings and return NaN for those rows, propagating NaN
+        # through the z-score and ultimately into the PnL series.
+        # By setting them to 0.0 upfront, those rows produce 0-weight
+        # (no position) cleanly and without any warnings.
+        all_nan = np.all(np.isnan(sig), axis=1)   # (T,) bool
+        if all_nan.any():
+            sig = sig.copy()
+            sig[all_nan] = 0.0
+
+        # 截面 z-score（忽略局部 NaN，全零行会得到 mu=0 sigma=nan → z=0）
         mu    = np.nanmean(sig, axis=1, keepdims=True)
         sigma = np.nanstd(sig,  axis=1, keepdims=True, ddof=1)
         sigma = np.where(sigma == 0, np.nan, sigma)

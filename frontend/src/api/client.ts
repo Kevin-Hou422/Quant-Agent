@@ -43,6 +43,17 @@ export const apiBacktest = (dsl: string) =>
 export const apiFetchAlphaHistory = (limit = 30) =>
   http.get<{ total: number; records: AlphaRecord[] }>(`/report/query?limit=${limit}`)
 
+// ── Alpha Save (persist manual backtest result) ───────────────────────────
+export const apiSaveAlpha = (body: {
+  dsl: string
+  hypothesis?: string
+  sharpe?: number
+  ic_ir?: number
+  ann_turnover?: number
+  ann_return?: number
+}) =>
+  http.post<{ id: number; status: string }>('/alpha/save', body)
+
 // ── Chat Session Management ───────────────────────────────────────────────
 export const apiCreateSession = (title: string) =>
   http.post<{ session_id: string; title: string; created_at: string }>(

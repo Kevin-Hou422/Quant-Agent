@@ -1,11 +1,11 @@
 import { useWorkspaceStore } from '../store/workspaceStore'
 import {
-  apiChat, apiSimulate, apiOptimize, apiFetchAlphaHistory,
+  apiChat, apiSimulate, apiOptimize, apiFetchAlphaHistory, apiSaveAlpha,
   apiCreateSession, apiListSessions, apiGetSession,
 } from '../api/client'
 import type { ChatSession } from '../types'
 
-// ── Progress log sequences (streamed with delay while API runs) ──────────────
+// ── Progress log sequences ────────────────────────────────────────────────────
 
 const BACKTEST_STEPS = [
   '[System] Parsing DSL expression...',
@@ -27,7 +27,6 @@ const OPTIMIZE_STEPS = [
   '[System] Running final IS+OOS validation...',
 ]
 
-/** Stream log lines at a fixed interval. Returns a cancel function. */
 function startProgressStream(steps: string[], appendLog: (l: string) => void, ms = 750): () => void {
   let i = 0
   const timer = setInterval(() => {
@@ -37,7 +36,6 @@ function startProgressStream(steps: string[], appendLog: (l: string) => void, ms
   return () => clearInterval(timer)
 }
 
-/** Classify axios error into a user-visible console log line. */
 function classifyError(err: any): string {
   const status = err?.response?.status
   const detail = err?.response?.data?.detail ?? err?.message ?? 'Unknown error'
@@ -52,7 +50,7 @@ function classifyError(err: any): string {
 export function useQuantWorkspace() {
   const store = useWorkspaceStore()
 
-  // ── Load session list from backend ────────────────────────────────────
+  // ── Session management ────────────────────────────────────────────────
   const loadSessions = async () => {
     try {
       const res = await apiListSessions()
@@ -62,10 +60,9 @@ export function useQuantWorkspace() {
         createdAt: s.created_at,
       }))
       store.setSessions(sessions)
-    } catch { /* silently ignore — session list is non-critical */ }
+    } catch { /* non-critical */ }
   }
 
-  // ── Create a fresh session (backend + store) ──────────────────────────
   const newSession = async () => {
     try {
       const res = await apiCreateSession('New Research')
@@ -77,8 +74,7 @@ export function useQuantWorkspace() {
       store.setSessionId(s.id)
       store.setMessages([])
       store.addSession(s)
-    } catch (err: any) {
-      // Fallback: generate a local-only session (backend may be unavailable)
+    } catch {
       const id = Math.random().toString(36).slice(2)
       store.setSessionId(id)
       store.setMessages([])
@@ -86,7 +82,6 @@ export function useQuantWorkspace() {
     }
   }
 
-  // ── Switch to an existing session (fetch history from backend) ────────
   const switchSession = async (sessionId: string) => {
     if (sessionId === store.sessionId) return
     store.setSessionId(sessionId)
@@ -101,10 +96,10 @@ export function useQuantWorkspace() {
         type:      'message' as const,
       }))
       store.setMessages(msgs)
-    } catch { /* history unavailable — start with empty */ }
+    } catch { /* start fresh */ }
   }
 
-  // ── Send a chat message ───────────────────────────────────────────────
+  // ── Chat ──────────────────────────────────────────────────────────────
   const sendChat = async (text: string) => {
     if (!text.trim()) return
     store.addMessage({ role: 'user', content: text })
@@ -117,7 +112,7 @@ export function useQuantWorkspace() {
       store.setStatus('ready')
     } catch (err: any) {
       store.addMessage({
-        role: 'assistant',
+        role:    'assistant',
         content: err?.response?.status === 400
           ? 'DSL syntax error — please check your formula and try again.'
           : `Error: ${err?.message ?? 'Unknown error'}`,
@@ -127,7 +122,7 @@ export function useQuantWorkspace() {
     }
   }
 
-  // ── Run manual backtest (simulate) ───────────────────────────────────
+  // ── Run backtest ──────────────────────────────────────────────────────
   const runBacktest = async () => {
     const dsl = store.editorDsl.trim()
     if (!dsl) return
@@ -140,11 +135,29 @@ export function useQuantWorkspace() {
       const res = await apiSimulate(dsl, store.simConfig)
       cancelStream()
       store.setSimulationResult(res.data)
-      store.appendLog(`[Backtest] IS  Sharpe : ${res.data.is_metrics?.sharpe_ratio?.toFixed(4) ?? 'N/A'}`)
-      store.appendLog(`[Backtest] OOS Sharpe : ${res.data.oos_metrics?.sharpe_ratio?.toFixed(4) ?? 'N/A'}`)
+
+      const is  = res.data.is_metrics
+      const oos = res.data.oos_metrics
+      store.appendLog(`[Backtest] IS  Sharpe : ${is?.sharpe_ratio?.toFixed(4) ?? 'N/A'}`)
+      store.appendLog(`[Backtest] OOS Sharpe : ${oos?.sharpe_ratio?.toFixed(4) ?? 'N/A'}`)
       store.appendLog(`[Backtest] Overfitting: ${res.data.overfitting_score?.toFixed(3)}`)
       store.appendLog(`[Backtest] PnL pts    : IS=${res.data.pnl_is?.length ?? 0}  OOS=${res.data.pnl_oos?.length ?? 0}`)
       store.appendLog(res.data.is_overfit ? '[WARN] Overfitting detected!' : '[OK] Passed anti-overfitting check.')
+
+      // Auto-save to Alpha Ledger
+      const activeTab = store.editorTabs.find((t) => t.id === store.activeTabId)
+      try {
+        await apiSaveAlpha({
+          dsl,
+          hypothesis:   activeTab?.label ?? dsl.slice(0, 40),
+          sharpe:       is?.sharpe_ratio      ?? 0,
+          ic_ir:        is?.ic_ir             ?? 0,
+          ann_turnover: is?.ann_turnover      ?? 0,
+          ann_return:   is?.annualized_return ?? 0,
+        })
+        store.appendLog('[OK] Alpha saved to Ledger.')
+      } catch { /* save failure is non-fatal */ }
+
       store.setStatus('ready')
       await loadHistory()
     } catch (err: any) {
@@ -154,7 +167,7 @@ export function useQuantWorkspace() {
     }
   }
 
-  // ── AI Optimize via GP ────────────────────────────────────────────────
+  // ── AI Optimize ───────────────────────────────────────────────────────
   const runOptimize = async () => {
     const dsl = store.editorDsl.trim()
     if (!dsl) return
@@ -167,12 +180,30 @@ export function useQuantWorkspace() {
       const res = await apiOptimize(dsl, 20)
       cancelStream()
       store.setSimulationResult(res.data)
+
       if (res.data.best_config) {
         store.appendLog(`[Optuna] Best config: ${JSON.stringify(res.data.best_config)}`)
       }
-      store.appendLog(`[GP] IS  Sharpe : ${res.data.is_metrics?.sharpe_ratio?.toFixed(4) ?? 'N/A'}`)
-      store.appendLog(`[GP] OOS Sharpe : ${res.data.oos_metrics?.sharpe_ratio?.toFixed(4) ?? 'N/A'}`)
+      const is  = res.data.is_metrics
+      const oos = res.data.oos_metrics
+      store.appendLog(`[GP] IS  Sharpe : ${is?.sharpe_ratio?.toFixed(4) ?? 'N/A'}`)
+      store.appendLog(`[GP] OOS Sharpe : ${oos?.sharpe_ratio?.toFixed(4) ?? 'N/A'}`)
       store.appendLog(res.data.is_overfit ? '[WARN] Overfitting in optimized result!' : '[OK] Optimization passed anti-overfitting check.')
+
+      // Auto-save optimized alpha
+      const activeTab = store.editorTabs.find((t) => t.id === store.activeTabId)
+      try {
+        await apiSaveAlpha({
+          dsl,
+          hypothesis:   `Optimized: ${activeTab?.label ?? dsl.slice(0, 30)}`,
+          sharpe:       is?.sharpe_ratio      ?? 0,
+          ic_ir:        is?.ic_ir             ?? 0,
+          ann_turnover: is?.ann_turnover      ?? 0,
+          ann_return:   is?.annualized_return ?? 0,
+        })
+        store.appendLog('[OK] Optimized alpha saved to Ledger.')
+      } catch { /* non-fatal */ }
+
       store.setStatus('ready')
       await loadHistory()
     } catch (err: any) {
@@ -182,7 +213,7 @@ export function useQuantWorkspace() {
     }
   }
 
-  // ── Load alpha history ────────────────────────────────────────────────
+  // ── Alpha history ─────────────────────────────────────────────────────
   const loadHistory = async () => {
     try {
       const res = await apiFetchAlphaHistory(30)
@@ -190,5 +221,9 @@ export function useQuantWorkspace() {
     } catch { /* silently ignore */ }
   }
 
-  return { sendChat, runBacktest, runOptimize, loadHistory, loadSessions, newSession, switchSession, store }
+  return {
+    sendChat, runBacktest, runOptimize, loadHistory,
+    loadSessions, newSession, switchSession,
+    store,
+  }
 }

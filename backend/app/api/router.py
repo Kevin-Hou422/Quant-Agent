@@ -293,6 +293,45 @@ def backtest_run(req: BacktestRequest) -> BacktestResponse:
 
 
 # ---------------------------------------------------------------------------
+# POST /api/alpha/save  — persist a manually-run backtest result
+# ---------------------------------------------------------------------------
+
+class SaveAlphaRequest(BaseModel):
+    dsl:          str   = Field(...)
+    hypothesis:   str   = Field("")
+    sharpe:       float = Field(0.0)
+    ic_ir:        float = Field(0.0)
+    ann_turnover: float = Field(0.0)
+    ann_return:   float = Field(0.0)
+
+
+class SaveAlphaResponse(BaseModel):
+    id:     int
+    status: str
+
+
+@router.post("/alpha/save", response_model=SaveAlphaResponse, tags=["Phase2"])
+def alpha_save(
+    req:   SaveAlphaRequest,
+    store: AlphaStore = Depends(get_store),
+) -> SaveAlphaResponse:
+    """Persist a backtest result to the AlphaStore ledger."""
+    from app.db.alpha_store import AlphaResult
+
+    ar = AlphaResult(
+        dsl          = req.dsl,
+        hypothesis   = req.hypothesis or req.dsl[:60],
+        sharpe       = req.sharpe,
+        ann_return   = req.ann_return,
+        ann_turnover = req.ann_turnover,
+        ic_ir        = req.ic_ir,
+        status       = "active",
+    )
+    alpha_id = store.save(ar)
+    return SaveAlphaResponse(id=alpha_id, status="saved")
+
+
+# ---------------------------------------------------------------------------
 # GET /api/report/query
 # ---------------------------------------------------------------------------
 

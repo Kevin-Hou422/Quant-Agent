@@ -2,7 +2,7 @@ import { useState } from 'react'
 import MonacoEditor from '@monaco-editor/react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { useQuantWorkspace } from '../../hooks/useQuantWorkspace'
-import { Play, Zap, Settings } from 'lucide-react'
+import { Play, Zap, Settings, X, Plus } from 'lucide-react'
 import ConfigModal from './ConfigModal'
 
 // ── DSL operator catalogue with documentation ────────────────────────────────
@@ -148,7 +148,56 @@ function setupMonaco(monaco: any) {
   })
 }
 
-// ── Component ────────────────────────────────────────────────────────────────
+// ── Editor Tab Bar ───────────────────────────────────────────────────────────
+
+function TabBar() {
+  const { editorTabs, activeTabId, setActiveTab, closeTab, newEmptyTab } = useWorkspaceStore()
+
+  return (
+    <div className="flex items-end bg-slate-950 border-b border-slate-800 overflow-x-auto shrink-0" style={{ minHeight: 32 }}>
+      {editorTabs.map((tab) => {
+        const isActive = tab.id === activeTabId
+        return (
+          <div
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`
+              flex items-center gap-1.5 px-3 py-1.5 border-r border-slate-800
+              cursor-pointer select-none shrink-0 transition-colors group
+              ${isActive
+                ? 'bg-slate-900 border-t-2 border-t-emerald-500 text-slate-200'
+                : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900/50 border-t-2 border-t-transparent'}
+            `}
+            style={{ maxWidth: 160 }}
+          >
+            <span className="text-[11px] truncate flex-1">
+              {tab.label}
+              {tab.isModified && <span className="ml-1 text-amber-400">●</span>}
+            </span>
+            {editorTabs.length > 1 && (
+              <button
+                onClick={(e) => { e.stopPropagation(); closeTab(tab.id) }}
+                className="shrink-0 text-slate-600 hover:text-slate-300 transition-colors -mr-0.5"
+              >
+                <X size={10} />
+              </button>
+            )}
+          </div>
+        )
+      })}
+      {/* New tab button */}
+      <button
+        onClick={newEmptyTab}
+        title="New tab"
+        className="px-2 py-1.5 text-slate-600 hover:text-slate-300 hover:bg-slate-900/50 transition-colors shrink-0"
+      >
+        <Plus size={12} />
+      </button>
+    </div>
+  )
+}
+
+// ── CompilerView ─────────────────────────────────────────────────────────────
 
 export default function CompilerView() {
   const { editorDsl, setEditorDsl, status } = useWorkspaceStore()
@@ -160,9 +209,13 @@ export default function CompilerView() {
 
   return (
     <div className="flex flex-col h-full bg-slate-950">
-      {/* Toolbar */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-800 bg-slate-900 shrink-0">
-        <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex-1">
+
+      {/* ── Tab bar ──────────────────────────────────────────────────── */}
+      <TabBar />
+
+      {/* ── Action toolbar ───────────────────────────────────────────── */}
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-slate-800 bg-slate-900 shrink-0">
+        <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider flex-1">
           DSL Compiler
           {monacoReady && (
             <span className="ml-2 text-emerald-500/60 font-normal normal-case">● QuantDSL</span>
@@ -173,7 +226,7 @@ export default function CompilerView() {
           onClick={() => setShowConfig(true)}
           className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 px-2 py-1 rounded transition-colors"
         >
-          <Settings size={13} /> Config
+          <Settings size={12} /> Config
         </button>
 
         <button
@@ -181,7 +234,7 @@ export default function CompilerView() {
           disabled={isRunning}
           className="flex items-center gap-1.5 text-xs bg-violet-700 hover:bg-violet-600 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors"
         >
-          <Zap size={13} /> AI Optimize
+          <Zap size={12} /> AI Optimize
         </button>
 
         <button
@@ -189,11 +242,11 @@ export default function CompilerView() {
           disabled={isRunning}
           className="flex items-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors"
         >
-          <Play size={13} /> {isRunning ? 'Running…' : 'Run Backtest'}
+          <Play size={12} /> {isRunning ? 'Running…' : 'Run Backtest'}
         </button>
       </div>
 
-      {/* Monaco Editor */}
+      {/* ── Monaco Editor ────────────────────────────────────────────── */}
       <div className="flex-1 min-h-0">
         <MonacoEditor
           height="100%"
@@ -204,7 +257,7 @@ export default function CompilerView() {
           beforeMount={setupMonaco}
           onMount={() => setMonacoReady(true)}
           options={{
-            fontSize: 15,
+            fontSize: 14,
             fontFamily: "'Fira Code', 'Cascadia Code', 'Consolas', monospace",
             fontLigatures: true,
             minimap: { enabled: false },

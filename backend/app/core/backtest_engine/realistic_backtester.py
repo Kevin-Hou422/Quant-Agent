@@ -255,6 +255,29 @@ class RealisticBacktester:
         # Step 3: SignalProcessor 4 步管道（截断→衰减→中性化→延迟）
         proc_signal = self._processor.process(raw_signal)
 
+        # ── Burn-in trim ────────────────────────────────────────────────────
+        # Time-series operators (ts_mean, ts_delta, …) produce all-NaN rows
+        # for the first `window` days. Without trimming, those rows create
+        # zero-weight positions and a flat equity-curve leading section.
+        # We locate the first date where at least one asset has a valid
+        # signal and restrict the entire backtest window to that date onward.
+        valid_rows = proc_signal.notna().any(axis=1)
+        if valid_rows.any():
+            first_valid = proc_signal.index[valid_rows.to_numpy().argmax()]
+            n_trimmed   = int((proc_signal.index < first_valid).sum())
+            if n_trimmed > 0:
+                logger.info(
+                    "[%s] Trimming %d burn-in row(s) — backtest starts %s",
+                    label, n_trimmed,
+                    first_valid.date() if hasattr(first_valid, "date") else first_valid,
+                )
+                proc_signal = proc_signal.loc[first_valid:]
+                dataset = {
+                    k: v.loc[v.index >= first_valid] if isinstance(v, pd.DataFrame) else v
+                    for k, v in dataset.items()
+                }
+        # ────────────────────────────────────────────────────────────────────
+
         logger.debug("[%s] 信号处理完成 | shape=%s | NaN率=%.1f%%",
                      label, proc_signal.shape,
                      proc_signal.isna().mean().mean() * 100)
