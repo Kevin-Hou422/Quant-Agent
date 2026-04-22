@@ -175,8 +175,9 @@ class PopulationEvolver:
 
     def run(
         self,
-        seed_dsl:        Optional[str] = None,
-        n_optuna_trials: int           = 8,
+        seed_dsl:        Optional[str]       = None,
+        seed_dsls:       Optional[List[str]] = None,
+        n_optuna_trials: int                 = 8,
     ) -> GPEvolutionResult:
         """
         Run the full GP optimization pipeline.
@@ -189,16 +190,20 @@ class PopulationEvolver:
 
         Parameters
         ----------
-        seed_dsl        : Starting DSL (user-provided hypothesis or prior alpha)
+        seed_dsl        : Single starting DSL (backward compat)
+        seed_dsls       : List of starting DSLs; if provided, all are used as
+                          initial population seeds (Workflow A / B multi-seed init)
         n_optuna_trials : Optuna trials for parameter fine-tuning (0 = skip)
         """
         evolution_log: List[Dict] = []
 
         # ── Step 1: Initialize population ─────────────────────────────
-        population = self._init_population(seed_dsl)
+        population = self._init_population(seed_dsl, seed_dsls)
+        n_seeds = len(seed_dsls or []) + (1 if seed_dsl else 0)
         logger.info(
-            "GP start | pop=%d | gen=%d | seed='%s'",
-            len(population), self._n_gen, (seed_dsl or "")[:60],
+            "GP start | pop=%d | gen=%d | n_seeds=%d | seed0='%s'",
+            len(population), self._n_gen, n_seeds,
+            (seed_dsl or (seed_dsls[0] if seed_dsls else ""))[:60],
         )
 
         # ── Step 2: Evolution loop ─────────────────────────────────────
@@ -284,20 +289,40 @@ class PopulationEvolver:
     # Population initialisation
     # ------------------------------------------------------------------
 
-    def _init_population(self, seed_dsl: Optional[str]) -> List[Node]:
-        """Seed DSL + random nodes from _SEED_DSLS to fill pop_size slots."""
+    def _init_population(
+        self,
+        seed_dsl:  Optional[str],
+        seed_dsls: Optional[List[str]] = None,
+    ) -> List[Node]:
+        """
+        Build the initial population from seed DSL(s) + random fill.
+
+        If seed_dsls is provided (Workflow A / B multi-seed mode), all valid
+        DSLs in the list are parsed and inserted first.  seed_dsl (single) is
+        also included for backward compatibility.  Remaining pop_size slots are
+        filled with mutations of existing seeds and random alphas.
+        """
         pop:  List[Node] = []
         seen: set        = set()
 
-        # 1. Parse seed DSL if provided
+        # 1. Collect all seeds (deduplicated, preserving order)
+        all_seeds: List[str] = []
         if seed_dsl:
+            all_seeds.append(seed_dsl)
+        for d in (seed_dsls or []):
+            if d not in all_seeds:
+                all_seeds.append(d)
+
+        for dsl in all_seeds:
             try:
-                node = _parser.parse(seed_dsl)
+                node = _parser.parse(dsl)
                 _validator.validate(node)
-                pop.append(node)
-                seen.add(repr(node))
+                key = repr(node)
+                if key not in seen:
+                    pop.append(node)
+                    seen.add(key)
             except Exception as exc:
-                logger.warning("Failed to parse seed DSL '%s': %s", seed_dsl[:60], exc)
+                logger.warning("Failed to parse seed DSL '%s': %s", dsl[:60], exc)
 
         # 2. Fill remainder from random pool + mutations of seed
         attempts = 0

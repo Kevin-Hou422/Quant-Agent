@@ -644,7 +644,7 @@ def alpha_simulate(req: SimulateRequest) -> EvalResponse:
 # POST /alpha/optimize
 # ---------------------------------------------------------------------------
 
-@router.post("/alpha/optimize", response_model=EvalResponse, tags=["Phase2"])
+@router.post("/alpha/optimize", response_model=EvalResponse, tags=["Phase2"])  # noqa: E302
 def alpha_optimize(req: OptimizeRequest) -> EvalResponse:
     """
     Auto-ML 模式：
@@ -711,3 +711,268 @@ def alpha_optimize(req: OptimizeRequest) -> EvalResponse:
     except Exception as exc:
         logger.exception("alpha_optimize final evaluation failed")
         raise HTTPException(status_code=500, detail=f"最终评估失败: {exc}")
+
+
+# ===========================================================================
+# Workflow API  —  POST /api/workflow/generate  &  POST /api/workflow/optimize
+#
+# These two endpoints wire together ALL existing engines into the two full
+# production pipelines specified by the system design:
+#
+#   Workflow A (generate):  hypothesis → ≥10 DSLs → GP evolution → Optuna tune
+#   Workflow B (optimize):  DSL → expand → GP evolution → targeted mutation → Optuna
+#
+# Both share PopulationEvolver as the GP core.  Optuna is called ONLY for
+# parameter fine-tuning after GP selects the best structure.
+# ===========================================================================
+
+class WorkflowGenerateRequest(BaseModel):
+    hypothesis:    str   = Field("momentum", description="Natural language market hypothesis")
+    n_tickers:     int   = Field(20,   ge=5,  le=200)
+    n_days:        int   = Field(252,  ge=120, le=1000)
+    n_generations: int   = Field(7,    ge=2,  le=20)
+    pop_size:      int   = Field(20,   ge=8,  le=100)
+    n_optuna:      int   = Field(10,   ge=0,  le=50)
+    n_seed_dsls:   int   = Field(12,   ge=5,  le=30)
+    oos_ratio:     float = Field(0.30, ge=0.0, lt=1.0)
+    seed:          int   = Field(42)
+
+
+class WorkflowOptimizeRequest(BaseModel):
+    dsl:           str   = Field("rank(ts_delta(log(close),5))")
+    n_tickers:     int   = Field(20,   ge=5,  le=200)
+    n_days:        int   = Field(252,  ge=120, le=1000)
+    n_generations: int   = Field(7,    ge=2,  le=20)
+    pop_size:      int   = Field(20,   ge=8,  le=100)
+    n_optuna:      int   = Field(10,   ge=0,  le=50)
+    n_mutations:   int   = Field(8,    ge=2,  le=20)
+    oos_ratio:     float = Field(0.30, ge=0.0, lt=1.0)
+    seed:          int   = Field(42)
+
+
+class WorkflowResponse(BaseModel):
+    workflow:        str
+    best_dsl:        str
+    metrics:         Dict[str, Any]
+    evolution_log:   List[Dict[str, Any]]
+    pool_top5:       List[Dict[str, Any]]
+    best_config:     Optional[Dict[str, Any]]
+    seed_dsls:       List[str]
+    generations_run: int
+    explanation:     str
+    # PnL series for frontend chart (same format as EvalResponse)
+    pnl_is:          List[float] = []
+    pnl_oos:         List[float] = []
+    split_date:      Optional[str] = None
+    # Flat metrics for direct frontend consumption (mirrors EvalResponse fields)
+    overfitting_score: float = 0.0
+    is_overfit:        bool  = False
+
+
+def _add_workflow_pnl(
+    response_dict: Dict[str, Any],
+    best_dsl:      str,
+    best_config:   Optional[Dict],
+    is_data:       dict,
+    oos_data:      dict,
+) -> None:
+    """
+    Run one final IS+OOS backtest with best_config and inject PnL series +
+    flat metrics into response_dict (in-place).
+    Used by workflow endpoints to supply chart data to the frontend.
+    """
+    from app.core.backtest_engine.realistic_backtester import RealisticBacktester
+    from app.core.alpha_engine.signal_processor import SimulationConfig
+    import pandas as pd
+
+    try:
+        if best_config:
+            cfg = SimulationConfig(
+                delay            = best_config.get("delay", 1),
+                decay_window     = best_config.get("decay_window", 0),
+                truncation_min_q = best_config.get("truncation_min_q", 0.05),
+                truncation_max_q = best_config.get("truncation_max_q", 0.95),
+                portfolio_mode   = best_config.get("portfolio_mode", "long_short"),
+            )
+        else:
+            cfg = SimulationConfig(delay=1, decay_window=0,
+                                   truncation_min_q=0.05, truncation_max_q=0.95)
+
+        bt     = RealisticBacktester(config=cfg)
+        result = bt.run(best_dsl, is_data, oos_dataset=oos_data or None)
+
+        def _to_list(s) -> list:
+            if s is None:
+                return []
+            if isinstance(s, pd.Series):
+                return [float(v) for v in s.dropna().values]
+            if isinstance(s, np.ndarray):
+                return [float(v) for v in s[~np.isnan(s)]]
+            return list(s)
+
+        is_nr  = getattr(result.is_report,  "net_returns", None)
+        oos_nr = getattr(result.oos_report, "net_returns", None) if result.oos_report else None
+
+        pnl_is  = _to_list(is_nr)
+        pnl_oos = _to_list(oos_nr)
+
+        split_dt = None
+        if isinstance(is_nr, pd.Series) and len(is_nr) > 0:
+            split_dt = str(is_nr.index[-1].date())
+
+        # Overfit score from metrics (already computed by GP)
+        m       = response_dict.get("metrics", {})
+        s_is    = float(m.get("is_sharpe")  or 0.0)
+        s_oos   = float(m.get("oos_sharpe") or 0.0)
+        overfit = float(np.clip((s_is - s_oos) / abs(s_is), 0.0, 1.0)) if abs(s_is) > 1e-9 else 0.0
+
+        response_dict["pnl_is"]           = pnl_is
+        response_dict["pnl_oos"]          = pnl_oos
+        response_dict["split_date"]       = split_dt
+        response_dict["overfitting_score"] = overfit
+        response_dict["is_overfit"]        = overfit > 0.5
+
+    except Exception as exc:
+        logger.warning("_add_workflow_pnl failed for '%s': %s", best_dsl[:60], exc)
+        response_dict.setdefault("pnl_is",  [])
+        response_dict.setdefault("pnl_oos", [])
+        response_dict.setdefault("overfitting_score", 0.0)
+        response_dict.setdefault("is_overfit", False)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/workflow/generate  — Workflow A
+# ---------------------------------------------------------------------------
+
+@router.post("/workflow/generate", response_model=WorkflowResponse, tags=["Workflow"])
+def workflow_generate(
+    req:   WorkflowGenerateRequest,
+    store: AlphaStore = Depends(get_store),
+) -> WorkflowResponse:
+    """
+    Workflow A: natural language hypothesis → GP-optimized alpha.
+
+    Pipeline:
+      1. Generate ≥n_seed_dsls diverse DSLs (LLM + templates + mutations)
+      2. Seed PopulationEvolver with all of them
+      3. GP evolution for n_generations
+         - fitness = OOS Sharpe − 0.2×turnover − 0.3×max(0, IS−OOS)
+         - AlphaPool diversity filter (corr < 0.9)
+      4. Optuna fine-tunes execution params of best structure
+      5. Auto-save best alpha to AlphaStore ledger
+    """
+    from app.core.workflows.alpha_workflows import GenerationWorkflow
+    from app.db.alpha_store import AlphaResult
+
+    dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
+    wf = GenerationWorkflow(
+        pop_size        = req.pop_size,
+        n_generations   = req.n_generations,
+        n_optuna_trials = req.n_optuna,
+        n_seed_dsls     = req.n_seed_dsls,
+        oos_ratio       = req.oos_ratio,
+        seed            = req.seed,
+    )
+
+    try:
+        result = wf.run(hypothesis=req.hypothesis, dataset=dataset)
+    except Exception as exc:
+        logger.exception("workflow_generate failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    # Build response dict + inject PnL series for frontend chart
+    is_data, oos_data = _partition_dataset(dataset, req.oos_ratio)
+    resp_dict = result.to_dict()
+    _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
+
+    # Auto-save best alpha
+    try:
+        m = result.metrics
+        store.save(AlphaResult(
+            dsl          = result.best_dsl,
+            hypothesis   = req.hypothesis,
+            sharpe       = float(m.get("is_sharpe") or 0.0),
+            ann_return   = float(m.get("is_return") or 0.0),
+            ic_ir        = float(m.get("is_ic") or 0.0),
+            ann_turnover = float(m.get("is_turnover") or 0.0),
+            reasoning    = result.explanation,
+            status       = "active",
+        ))
+    except Exception:
+        pass
+
+    return WorkflowResponse(**resp_dict)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/workflow/optimize  — Workflow B
+# ---------------------------------------------------------------------------
+
+@router.post("/workflow/optimize", response_model=WorkflowResponse, tags=["Workflow"])
+def workflow_optimize(
+    req:   WorkflowOptimizeRequest,
+    store: AlphaStore = Depends(get_store),
+) -> WorkflowResponse:
+    """
+    Workflow B: existing DSL → GP-optimized alpha.
+
+    Pipeline:
+      1. Parse + validate DSL; quick IS/OOS evaluation to diagnose quality
+      2. Expand: original + n_mutations structural variants + targeted variants
+         - high turnover → ts_decay_linear wrappers
+         - low OOS Sharpe → signal combination / rank wrapping
+         - overfitting → ts_mean smoothing
+      3. GP evolution with expanded population (same core as Workflow A)
+      4. Optuna fine-tunes best structure's execution parameters
+      5. Auto-save best alpha to AlphaStore ledger
+    """
+    from app.core.workflows.alpha_workflows import OptimizationWorkflow
+    from app.core.alpha_engine.parser import Parser, ParseError
+    from app.core.alpha_engine.validator import AlphaValidator, ValidationError
+    from app.db.alpha_store import AlphaResult
+
+    # Pre-validate DSL — return 400 on syntax error
+    try:
+        node = Parser().parse(req.dsl)
+        AlphaValidator().validate(node)
+    except (ParseError, ValidationError, SyntaxError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"[Syntax Error] {exc}")
+
+    dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
+    wf = OptimizationWorkflow(
+        pop_size        = req.pop_size,
+        n_generations   = req.n_generations,
+        n_optuna_trials = req.n_optuna,
+        n_mutations     = req.n_mutations,
+        oos_ratio       = req.oos_ratio,
+        seed            = req.seed,
+    )
+
+    try:
+        result = wf.run(dsl=req.dsl, dataset=dataset)
+    except Exception as exc:
+        logger.exception("workflow_optimize failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    # Build response dict + inject PnL series for frontend chart
+    is_data, oos_data = _partition_dataset(dataset, req.oos_ratio)
+    resp_dict = result.to_dict()
+    _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
+
+    # Auto-save best alpha
+    try:
+        m = result.metrics
+        store.save(AlphaResult(
+            dsl          = result.best_dsl,
+            hypothesis   = req.dsl[:100],
+            sharpe       = float(m.get("is_sharpe") or 0.0),
+            ann_return   = float(m.get("is_return") or 0.0),
+            ic_ir        = float(m.get("is_ic") or 0.0),
+            ann_turnover = float(m.get("is_turnover") or 0.0),
+            reasoning    = result.explanation,
+            status       = "active",
+        ))
+    except Exception:
+        pass
+
+    return WorkflowResponse(**resp_dict)

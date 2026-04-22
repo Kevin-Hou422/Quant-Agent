@@ -1,6 +1,6 @@
 import { useWorkspaceStore } from '../store/workspaceStore'
 import {
-  apiChat, apiSimulate, apiOptimize, apiFetchAlphaHistory, apiSaveAlpha,
+  apiChat, apiSimulate, apiWorkflowOptimize, apiFetchAlphaHistory, apiSaveAlpha,
   apiCreateSession, apiListSessions, apiGetSession,
 } from '../api/client'
 import type { ChatSession } from '../types'
@@ -18,13 +18,18 @@ const BACKTEST_STEPS = [
 ]
 
 const OPTIMIZE_STEPS = [
-  '[GP] Initializing population (12 individuals)...',
-  '[GP] Generation 1/4 — evaluating fitness scores...',
-  '[GP] Generation 2/4 — AST mutation + subtree crossover...',
-  '[GP] Generation 3/4 — tournament selection + diversity filter...',
-  '[GP] Generation 4/4 — elite preservation...',
-  '[Optuna] Fine-tuning winner structure parameters...',
-  '[System] Running final IS+OOS validation...',
+  '[GP] Parsing DSL → AST node tree...',
+  '[GP] Diagnosing initial quality (IS+OOS backtest)...',
+  '[GP] Expanding population: original + mutations + targeted variants...',
+  '[GP] Generation 1/7 — evaluating fitness (OOS Sharpe - overfitting penalty)...',
+  '[GP] Generation 2/7 — AST mutation + subtree crossover...',
+  '[GP] Generation 3/7 — tournament selection + diversity filter (corr < 0.9)...',
+  '[GP] Generation 4/7 — adaptive mutation weights from pool diagnostics...',
+  '[GP] Generation 5/7 — elite preservation + random exploration...',
+  '[GP] Generation 6/7 — AlphaPool diversity-filtered accumulation...',
+  '[GP] Generation 7/7 — selecting best structure from pool...',
+  '[Optuna] Fine-tuning execution parameters (delay, decay, truncation)...',
+  '[System] Running final IS+OOS validation with tuned config...',
 ]
 
 function startProgressStream(steps: string[], appendLog: (l: string) => void, ms = 750): () => void {
@@ -167,41 +172,94 @@ export function useQuantWorkspace() {
     }
   }
 
-  // ── AI Optimize ───────────────────────────────────────────────────────
+  // ── AI Optimize (Workflow B: GP evolution + Optuna fine-tuning) ──────────
   const runOptimize = async () => {
     const dsl = store.editorDsl.trim()
     if (!dsl) return
     store.setStatus('optimizing')
     store.clearLogs()
-    store.appendLog(`[GP] Seed DSL: ${dsl}`)
+    store.appendLog(`[GP] Input DSL: ${dsl}`)
 
-    const cancelStream = startProgressStream(OPTIMIZE_STEPS, store.appendLog, 900)
+    const cancelStream = startProgressStream(OPTIMIZE_STEPS, store.appendLog, 850)
     try {
-      const res = await apiOptimize(dsl, 20)
+      const res = await apiWorkflowOptimize(dsl)
       cancelStream()
-      store.setSimulationResult(res.data)
 
-      if (res.data.best_config) {
-        store.appendLog(`[Optuna] Best config: ${JSON.stringify(res.data.best_config)}`)
+      const wf = res.data
+
+      // Log GP evolution trace
+      for (const gen of (wf.evolution_log ?? [])) {
+        store.appendLog(
+          `[GP] Gen ${gen.generation}/${wf.generations_run} | ` +
+          `pop=${gen.population_size} | ` +
+          `best_fitness=${gen.best_fitness.toFixed(4)} | ` +
+          `oos_sharpe=${gen.best_oos_sharpe.toFixed(4)} | ` +
+          `dsl=${gen.best_dsl.slice(0, 60)}`
+        )
       }
-      const is  = res.data.is_metrics
-      const oos = res.data.oos_metrics
-      store.appendLog(`[GP] IS  Sharpe : ${is?.sharpe_ratio?.toFixed(4) ?? 'N/A'}`)
-      store.appendLog(`[GP] OOS Sharpe : ${oos?.sharpe_ratio?.toFixed(4) ?? 'N/A'}`)
-      store.appendLog(res.data.is_overfit ? '[WARN] Overfitting in optimized result!' : '[OK] Optimization passed anti-overfitting check.')
 
-      // Auto-save optimized alpha
-      const activeTab = store.editorTabs.find((t) => t.id === store.activeTabId)
+      // Log pool top-5
+      if (wf.pool_top5?.length) {
+        store.appendLog(`[GP] AlphaPool top-${wf.pool_top5.length}:`)
+        wf.pool_top5.forEach((e: any, i: number) => {
+          store.appendLog(`  #${i + 1} fitness=${(e.fitness ?? 0).toFixed(4)}  oos=${(e.sharpe_oos ?? 0).toFixed(4)}  ${(e.dsl ?? '').slice(0, 50)}`)
+        })
+      }
+
+      // Best alpha
+      store.appendLog(`[GP] Best DSL: ${wf.best_dsl}`)
+      if (wf.best_config) {
+        store.appendLog(`[Optuna] Tuned config: ${JSON.stringify(wf.best_config)}`)
+      }
+
+      const m = wf.metrics as Record<string, any>
+      store.appendLog(`[GP] IS  Sharpe : ${m?.is_sharpe != null  ? Number(m.is_sharpe ).toFixed(4) : 'N/A'}`)
+      store.appendLog(`[GP] OOS Sharpe : ${m?.oos_sharpe != null ? Number(m.oos_sharpe).toFixed(4) : 'N/A'}`)
+      store.appendLog(wf.is_overfit ? '[WARN] Overfitting detected in GP result!' : '[OK] GP result passed anti-overfitting check.')
+      store.appendLog(`[GP] Explanation: ${wf.explanation}`)
+
+      // Adapt WorkflowResponse → SimResult format for the chart (RightPane)
+      const simResult = {
+        dsl:               wf.best_dsl,
+        is_metrics:        {
+          sharpe_ratio:      m?.is_sharpe      ?? null,
+          annualized_return: m?.is_return      ?? null,
+          ann_turnover:      m?.is_turnover    ?? null,
+          ic_ir:             m?.is_ic          ?? null,
+          mean_ic:           m?.is_ic          ?? null,
+        },
+        oos_metrics:       m?.oos_sharpe != null
+          ? { sharpe_ratio: m.oos_sharpe }
+          : null,
+        overfitting_score: wf.overfitting_score,
+        is_overfit:        wf.is_overfit,
+        ic_decay:          {},
+        best_config:       wf.best_config ?? null,
+        n_trials_run:      null,
+        pnl_is:            wf.pnl_is  ?? [],
+        pnl_oos:           wf.pnl_oos ?? [],
+        split_date:        wf.split_date ?? null,
+      }
+      store.setSimulationResult(simResult)
+
+      // Update editor to show the GP-evolved best DSL in a new tab
+      if (wf.best_dsl && wf.best_dsl !== dsl) {
+        store.newEmptyTab()
+        store.setEditorDsl(wf.best_dsl)
+        store.appendLog(`[GP] Opened best DSL in new editor tab.`)
+      }
+
+      // Auto-save
       try {
         await apiSaveAlpha({
-          dsl,
-          hypothesis:   `Optimized: ${activeTab?.label ?? dsl.slice(0, 30)}`,
-          sharpe:       is?.sharpe_ratio      ?? 0,
-          ic_ir:        is?.ic_ir             ?? 0,
-          ann_turnover: is?.ann_turnover      ?? 0,
-          ann_return:   is?.annualized_return ?? 0,
+          dsl:          wf.best_dsl,
+          hypothesis:   `GP-evolved: ${dsl.slice(0, 40)}`,
+          sharpe:       Number(m?.is_sharpe)   || 0,
+          ic_ir:        Number(m?.is_ic)       || 0,
+          ann_turnover: Number(m?.is_turnover) || 0,
+          ann_return:   Number(m?.is_return)   || 0,
         })
-        store.appendLog('[OK] Optimized alpha saved to Ledger.')
+        store.appendLog('[OK] GP-evolved alpha saved to Ledger.')
       } catch { /* non-fatal */ }
 
       store.setStatus('ready')

@@ -127,10 +127,11 @@ class QuantTools:
 
     def tool_run_gp_optimization(
         self,
-        seed_dsl:        str = "",
-        n_generations:   int = 4,
-        pop_size:        int = 12,
-        n_optuna_trials: int = 8,
+        seed_dsl:         str = "",
+        seed_dsls_json:   str = "",   # JSON list of seed DSLs for multi-seed init
+        n_generations:    int = 4,
+        pop_size:         int = 12,
+        n_optuna_trials:  int = 8,
     ) -> str:
         """
         Run GP-driven alpha optimization.
@@ -138,29 +139,44 @@ class QuantTools:
         Structure space is searched by GP (AST mutation + crossover + selection).
         Optuna fine-tunes execution parameters of the GP-selected best structure ONLY.
 
+        seed_dsls_json: optional JSON-encoded list of DSL strings used as the initial
+                        population seeds (Workflow A: ≥10 diverse; Workflow B: expanded).
+
         Returns JSON: {best_dsl, generations_run, population_size, metrics, pool_top5}
         """
         from app.core.gp_engine.population_evolver import PopulationEvolver
 
+        # Parse seed_dsls from JSON when provided (multi-seed population init)
+        seed_dsls_list = None
+        if seed_dsls_json:
+            try:
+                seed_dsls_list = json.loads(seed_dsls_json)
+                if not isinstance(seed_dsls_list, list):
+                    seed_dsls_list = None
+            except Exception:
+                pass
+
+        effective_pop = max(pop_size, len(seed_dsls_list or []) + 4)
         evolver = PopulationEvolver(
             is_data        = self._is_data,
             oos_data       = self._oos_data,
-            pop_size       = pop_size,
+            pop_size       = effective_pop,
             n_generations  = n_generations,
             seed           = self._seed,
         )
         try:
             result = evolver.run(
                 seed_dsl        = seed_dsl or None,
+                seed_dsls       = seed_dsls_list,
                 n_optuna_trials = n_optuna_trials,
             )
         except Exception as exc:
             logger.warning("GP 优化失败: %s", exc)
-            fallback_dsl = seed_dsl or "rank(ts_delta(log(close), 5))"
+            fallback_dsl = seed_dsl or (seed_dsls_list[0] if seed_dsls_list else "rank(ts_delta(log(close), 5))")
             return json.dumps({
                 "best_dsl":        fallback_dsl,
                 "generations_run": 0,
-                "population_size": pop_size,
+                "population_size": effective_pop,
                 "metrics":         {},
                 "pool_top5":       [],
                 "error":           str(exc),

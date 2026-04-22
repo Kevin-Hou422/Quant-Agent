@@ -56,20 +56,30 @@ class FallbackOrchestrator:
         Full GP-driven alpha generation from a natural language hypothesis.
 
         Steps:
-          1. tool_generate_alpha_dsl  → seed DSL
-          2. tool_run_gp_optimization → GP evolves structure + Optuna fine-tunes winner
+          1. _generate_diverse_seeds → ≥10 hypothesis-specific diverse DSLs
+          2. tool_run_gp_optimization(seed_dsls_json=...) — whole diverse pool as seeds
           3. OverfitCritic check
           4. If FAIL: up to _MAX_CORRECTION_ROUNDS of tool_mutate_ast (real AST ops)
           5. tool_save_alpha
         """
-        # Step 1: seed DSL from hypothesis
-        dsl_result = json.loads(self._tools.tool_generate_alpha_dsl(hypothesis))
-        seed_dsl   = dsl_result.get("dsl", "rank(ts_delta(log(close), 5))")
-        logger.info("Workflow A seed DSL: %s", seed_dsl)
+        from app.core.workflows.alpha_workflows import _generate_diverse_seeds
 
-        # Step 2: GP structural search (PRIMARY optimizer)
-        gp_result     = json.loads(self._tools.tool_run_gp_optimization(seed_dsl=seed_dsl))
-        best_dsl      = gp_result.get("best_dsl", seed_dsl)
+        # Step 1: Generate ≥10 diverse seed DSLs from hypothesis
+        seed_dsls = _generate_diverse_seeds(hypothesis, n_target=12)
+        if not seed_dsls:
+            dsl_result = json.loads(self._tools.tool_generate_alpha_dsl(hypothesis))
+            seed_dsls  = [dsl_result.get("dsl", "rank(ts_delta(log(close), 5))")]
+
+        logger.info(
+            "Workflow A: %d diverse seed DSLs for hypothesis='%.60s'",
+            len(seed_dsls), hypothesis,
+        )
+
+        # Step 2: GP structural search with full diverse population
+        gp_result     = json.loads(self._tools.tool_run_gp_optimization(
+            seed_dsls_json = json.dumps(seed_dsls),
+        ))
+        best_dsl      = gp_result.get("best_dsl", seed_dsls[0])
         final_metrics = gp_result.get("metrics") or {}
 
         _log_evolution(gp_result)
@@ -111,19 +121,48 @@ class FallbackOrchestrator:
         """
         GP-driven optimization of a user-provided DSL.
 
-        The user's DSL seeds the GP population; GP evolves the structure
-        and explores AST variants via mutation + crossover.
-
         Steps:
-          1. tool_run_gp_optimization(user_dsl) → GP evolves + Optuna fine-tunes
-          2. OverfitCritic check
-          3. If FAIL: up to _MAX_CORRECTION_ROUNDS of tool_mutate_ast
-          4. tool_save_alpha
+          1. Quick-eval → diagnose initial quality for targeted mutation
+          2. _expand_for_optimization + _targeted_mutations → full seed population
+          3. tool_run_gp_optimization(seed_dsls_json=...) → GP + Optuna fine-tune
+          4. OverfitCritic check
+          5. If FAIL: up to _MAX_CORRECTION_ROUNDS of tool_mutate_ast
+          6. tool_save_alpha
         """
+        from app.core.workflows.alpha_workflows import (
+            _expand_for_optimization, _targeted_mutations, _quick_metrics,
+        )
+
         logger.info("Workflow B starting with seed: %s", user_dsl[:80])
 
-        # Step 1: GP structural search seeded with user's DSL
-        gp_result     = json.loads(self._tools.tool_run_gp_optimization(seed_dsl=user_dsl))
+        # Step 1: Quick diagnosis for targeted mutation strategy
+        init_metrics = _quick_metrics(
+            user_dsl, self._tools._is_data, self._tools._oos_data,
+        )
+        logger.info(
+            "Workflow B init: is_sharpe=%.4f oos_sharpe=%.4f turnover=%.2f overfit=%.4f",
+            init_metrics["is_sharpe"], init_metrics["oos_sharpe"],
+            init_metrics["turnover"],  init_metrics["overfitting_score"],
+        )
+
+        # Step 2: Expand population (original + mutations + targeted variants)
+        seed_dsls = _expand_for_optimization(user_dsl, n_mutations=8)
+        targeted  = _targeted_mutations(user_dsl, init_metrics)
+        seen_set  = set(seed_dsls)
+        for td in targeted:
+            if td not in seen_set:
+                seed_dsls.append(td)
+                seen_set.add(td)
+
+        logger.info(
+            "Workflow B: %d seeds (%d targeted mutations) from DSL='%.60s'",
+            len(seed_dsls), len(targeted), user_dsl,
+        )
+
+        # Step 3: GP structural search with expanded population
+        gp_result     = json.loads(self._tools.tool_run_gp_optimization(
+            seed_dsls_json = json.dumps(seed_dsls),
+        ))
         best_dsl      = gp_result.get("best_dsl", user_dsl)
         final_metrics = gp_result.get("metrics") or {}
 

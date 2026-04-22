@@ -77,6 +77,31 @@ export interface SimResult {
   split_date?: string | null
 }
 
+/** Response from /api/workflow/generate and /api/workflow/optimize */
+export interface WorkflowResponse {
+  workflow:          string
+  best_dsl:          string
+  metrics:           Record<string, unknown>   // {is_sharpe, oos_sharpe, is_return, is_turnover, is_ic, overfitting_score, is_overfit}
+  evolution_log:     Array<{
+    generation:       number
+    population_size:  number
+    best_fitness:     number
+    best_oos_sharpe:  number
+    best_dsl:         string
+    mean_fitness:     number
+  }>
+  pool_top5:         Array<Record<string, unknown>>
+  best_config:       Record<string, unknown> | null
+  seed_dsls:         string[]
+  generations_run:   number
+  explanation:       string
+  pnl_is:            number[]
+  pnl_oos:           number[]
+  split_date:        string | null
+  overfitting_score: number
+  is_overfit:        boolean
+}
+
 export interface BacktestRunResponse {
   dsl: string
   report: {

@@ -1,6 +1,7 @@
 import axios from 'axios'
 import type {
   SimulationConfig, SimResult, AlphaRecord, BacktestRunResponse, ChatSession,
+  WorkflowResponse,
 } from '../types'
 
 const http = axios.create({ baseURL: '/api', timeout: 120_000 })
@@ -33,6 +34,32 @@ export const apiOptimize = (dsl: string, nTrials = 20) =>
     n_tickers: 20,
     n_days: 252,
     oos_ratio: 0.3,
+  })
+
+// ── Workflow A: hypothesis → GP-evolved alpha ─────────────────────────────
+export const apiWorkflowGenerate = (hypothesis: string, nDays = 252) =>
+  http.post<WorkflowResponse>('/workflow/generate', {
+    hypothesis,
+    n_tickers:     20,
+    n_days:        nDays,
+    n_generations: 7,
+    pop_size:      20,
+    n_optuna:      10,
+    n_seed_dsls:   12,
+    oos_ratio:     0.3,
+  })
+
+// ── Workflow B: DSL → GP-evolved + Optuna-tuned alpha ─────────────────────
+export const apiWorkflowOptimize = (dsl: string, nDays = 252) =>
+  http.post<WorkflowResponse>('/workflow/optimize', {
+    dsl,
+    n_tickers:     20,
+    n_days:        nDays,
+    n_generations: 7,
+    pop_size:      20,
+    n_optuna:      10,
+    n_mutations:   8,
+    oos_ratio:     0.3,
   })
 
 // ── Basic backtest (Phase 1 endpoint) ─────────────────────────────────────
