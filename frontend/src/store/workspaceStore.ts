@@ -50,6 +50,11 @@ interface WorkspaceState {
   setMessages:  (msgs: ChatMessage[]) => void
   clearChat:    () => void
 
+  // ── Streaming messages ───────────────────────────────────────────────────
+  startStreamingMessage:    (id: string) => void
+  appendToStreamingMessage: (id: string, chunk: string) => void
+  finalizeStreamingMessage: (id: string, extras?: Partial<ChatMessage>) => void
+
   alphaHistory:    AlphaRecord[]
   setAlphaHistory: (records: AlphaRecord[]) => void
 
@@ -161,6 +166,29 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     })),
   setMessages: (msgs) => set({ chatMessages: msgs }),
   clearChat:   () => set({ chatMessages: [] }),
+
+  // ── Streaming messages ───────────────────────────────────────────────────
+  startStreamingMessage: (id) =>
+    set((s) => ({
+      chatMessages: [
+        ...s.chatMessages,
+        { id, role: 'assistant', content: '', timestamp: Date.now(), type: 'message', isStreaming: true },
+      ],
+    })),
+
+  appendToStreamingMessage: (id, chunk) =>
+    set((s) => ({
+      chatMessages: s.chatMessages.map((m) =>
+        m.id === id ? { ...m, content: m.content + chunk } : m,
+      ),
+    })),
+
+  finalizeStreamingMessage: (id, extras = {}) =>
+    set((s) => ({
+      chatMessages: s.chatMessages.map((m) =>
+        m.id === id ? { ...m, isStreaming: false, ...extras } : m,
+      ),
+    })),
 
   alphaHistory:    [],
   setAlphaHistory: (records) => set({ alphaHistory: records }),

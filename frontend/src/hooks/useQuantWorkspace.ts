@@ -1,7 +1,8 @@
 import { useWorkspaceStore } from '../store/workspaceStore'
 import {
-  apiChat, apiSimulate, apiWorkflowOptimize, apiFetchAlphaHistory, apiSaveAlpha,
+  apiChat, apiSimulate, apiFetchAlphaHistory, apiSaveAlpha,
   apiCreateSession, apiListSessions, apiGetSession,
+  streamWorkflowOptimize,
 } from '../api/client'
 import type { ChatSession } from '../types'
 
@@ -15,21 +16,6 @@ const BACKTEST_STEPS = [
   '[System] Computing OOS signals (2023-2024)...',
   '[System] Running OOS portfolio simulation...',
   '[System] Evaluating anti-overfitting metrics...',
-]
-
-const OPTIMIZE_STEPS = [
-  '[GP] Parsing DSL → AST node tree...',
-  '[GP] Diagnosing initial quality (IS+OOS backtest)...',
-  '[GP] Expanding population: original + mutations + targeted variants...',
-  '[GP] Generation 1/7 — evaluating fitness (OOS Sharpe - overfitting penalty)...',
-  '[GP] Generation 2/7 — AST mutation + subtree crossover...',
-  '[GP] Generation 3/7 — tournament selection + diversity filter (corr < 0.9)...',
-  '[GP] Generation 4/7 — adaptive mutation weights from pool diagnostics...',
-  '[GP] Generation 5/7 — elite preservation + random exploration...',
-  '[GP] Generation 6/7 — AlphaPool diversity-filtered accumulation...',
-  '[GP] Generation 7/7 — selecting best structure from pool...',
-  '[Optuna] Fine-tuning execution parameters (delay, decay, truncation)...',
-  '[System] Running final IS+OOS validation with tuned config...',
 ]
 
 function startProgressStream(steps: string[], appendLog: (l: string) => void, ms = 750): () => void {
@@ -104,20 +90,36 @@ export function useQuantWorkspace() {
     } catch { /* start fresh */ }
   }
 
+  // ── Typing-effect helper ──────────────────────────────────────────────
+  const typeIntoMessage = async (id: string, text: string, msPerChar = 14) => {
+    for (const char of text) {
+      store.appendToStreamingMessage(id, char)
+      await new Promise<void>((r) => setTimeout(r, msPerChar))
+    }
+  }
+
   // ── Chat ──────────────────────────────────────────────────────────────
   const sendChat = async (text: string) => {
     if (!text.trim()) return
     store.addMessage({ role: 'user', content: text })
     store.setStatus('optimizing')
+
+    const streamId = Math.random().toString(36).slice(2)
+    store.startStreamingMessage(streamId)
+
     try {
       const res = await apiChat(text, store.sessionId)
       const { reply, dsl, metrics } = res.data
-      store.addMessage({ role: 'assistant', content: reply, dsl, metrics: metrics as any, type: 'message' })
+      await typeIntoMessage(streamId, reply)
+      store.finalizeStreamingMessage(streamId, {
+        dsl,
+        metrics: metrics as any,
+        type: 'message',
+      })
       if (dsl) store.setEditorDsl(dsl)
       store.setStatus('ready')
     } catch (err: any) {
-      store.addMessage({
-        role:    'assistant',
+      store.finalizeStreamingMessage(streamId, {
         content: err?.response?.status === 400
           ? 'DSL syntax error — please check your formula and try again.'
           : `Error: ${err?.message ?? 'Unknown error'}`,
@@ -172,100 +174,129 @@ export function useQuantWorkspace() {
     }
   }
 
-  // ── AI Optimize (Workflow B: GP evolution + Optuna fine-tuning) ──────────
+  // ── AI Optimize (Workflow B: GP evolution + Optuna fine-tuning, SSE streaming) ──
   const runOptimize = async () => {
     const dsl = store.editorDsl.trim()
     if (!dsl) return
+
+    // Switch to CHAT so the user sees the streaming output
+    store.setActiveView('CHAT')
     store.setStatus('optimizing')
     store.clearLogs()
     store.appendLog(`[GP] Input DSL: ${dsl}`)
 
-    const cancelStream = startProgressStream(OPTIMIZE_STEPS, store.appendLog, 850)
+    const streamId = Math.random().toString(36).slice(2)
+    store.startStreamingMessage(streamId)
+
+    // Queue of text chunks — typed out sequentially
+    const textQueue: string[] = []
+    let   typing = false
+
+    const flushQueue = async () => {
+      if (typing) return
+      typing = true
+      while (textQueue.length > 0) {
+        const chunk = textQueue.shift()!
+        await typeIntoMessage(streamId, chunk + '\n', 10)
+      }
+      typing = false
+    }
+
+    const enqueueText = (line: string) => {
+      textQueue.push(line)
+      flushQueue()
+    }
+
     try {
-      const res = await apiWorkflowOptimize(dsl)
-      cancelStream()
+      let finalWf: any = null
 
-      const wf = res.data
+      await streamWorkflowOptimize(dsl, (event) => {
+        if (event.type === 'text') {
+          enqueueText(event.text)
+          // Mirror technical GP lines to console
+          if (event.text.startsWith('[GP]') || event.text.startsWith('[Optuna]')) {
+            store.appendLog(event.text.split('\n')[0])
+          }
+        } else if (event.type === 'done') {
+          finalWf = event.result
+        } else if (event.type === 'error') {
+          enqueueText(`[ERROR] ${event.message}`)
+          store.appendLog(`[ERROR] ${event.message}`)
+        }
+      })
 
-      // Log GP evolution trace
-      for (const gen of (wf.evolution_log ?? [])) {
-        store.appendLog(
-          `[GP] Gen ${gen.generation}/${wf.generations_run} | ` +
-          `pop=${gen.population_size} | ` +
-          `best_fitness=${gen.best_fitness.toFixed(4)} | ` +
-          `oos_sharpe=${gen.best_oos_sharpe.toFixed(4)} | ` +
-          `dsl=${gen.best_dsl.slice(0, 60)}`
-        )
-      }
+      // Wait for remaining typing to finish
+      await new Promise<void>((resolve) => {
+        const check = setInterval(() => {
+          if (!typing && textQueue.length === 0) { clearInterval(check); resolve() }
+        }, 50)
+      })
 
-      // Log pool top-5
-      if (wf.pool_top5?.length) {
-        store.appendLog(`[GP] AlphaPool top-${wf.pool_top5.length}:`)
-        wf.pool_top5.forEach((e: any, i: number) => {
-          store.appendLog(`  #${i + 1} fitness=${(e.fitness ?? 0).toFixed(4)}  oos=${(e.sharpe_oos ?? 0).toFixed(4)}  ${(e.dsl ?? '').slice(0, 50)}`)
+      if (finalWf) {
+        const wf = finalWf
+        const m  = wf.metrics as Record<string, any>
+
+        // Finalize streaming message — attach DSL chip + metrics
+        store.finalizeStreamingMessage(streamId, {
+          dsl:     wf.best_dsl,
+          metrics: {
+            sharpe_ratio:      m?.is_sharpe      ?? null,
+            annualized_return: m?.is_return      ?? null,
+            ic_ir:             m?.is_ic          ?? null,
+          } as any,
+          type: 'message',
         })
-      }
 
-      // Best alpha
-      store.appendLog(`[GP] Best DSL: ${wf.best_dsl}`)
-      if (wf.best_config) {
-        store.appendLog(`[Optuna] Tuned config: ${JSON.stringify(wf.best_config)}`)
-      }
+        // Console: evolution summary
+        for (const gen of (wf.evolution_log ?? [])) {
+          store.appendLog(
+            `[GP] Gen ${gen.generation}/${wf.generations_run} | ` +
+            `fitness=${(gen.best_fitness as number).toFixed(4)} | ` +
+            `oos_sharpe=${(gen.best_oos_sharpe as number).toFixed(4)}`
+          )
+        }
+        if (wf.best_config) {
+          store.appendLog(`[Optuna] Tuned config: ${JSON.stringify(wf.best_config)}`)
+        }
+        store.appendLog(wf.is_overfit ? '[WARN] Overfitting detected!' : '[OK] GP result passed anti-overfitting check.')
 
-      const m = wf.metrics as Record<string, any>
-      store.appendLog(`[GP] IS  Sharpe : ${m?.is_sharpe != null  ? Number(m.is_sharpe ).toFixed(4) : 'N/A'}`)
-      store.appendLog(`[GP] OOS Sharpe : ${m?.oos_sharpe != null ? Number(m.oos_sharpe).toFixed(4) : 'N/A'}`)
-      store.appendLog(wf.is_overfit ? '[WARN] Overfitting detected in GP result!' : '[OK] GP result passed anti-overfitting check.')
-      store.appendLog(`[GP] Explanation: ${wf.explanation}`)
-
-      // Adapt WorkflowResponse → SimResult format for the chart (RightPane)
-      const simResult = {
-        dsl:               wf.best_dsl,
-        is_metrics:        {
-          sharpe_ratio:      m?.is_sharpe      ?? null,
-          annualized_return: m?.is_return      ?? null,
-          ann_turnover:      m?.is_turnover    ?? null,
-          ic_ir:             m?.is_ic          ?? null,
-          mean_ic:           m?.is_ic          ?? null,
-        },
-        oos_metrics:       m?.oos_sharpe != null
-          ? { sharpe_ratio: m.oos_sharpe }
-          : null,
-        overfitting_score: wf.overfitting_score,
-        is_overfit:        wf.is_overfit,
-        ic_decay:          {},
-        best_config:       wf.best_config ?? null,
-        n_trials_run:      null,
-        pnl_is:            wf.pnl_is  ?? [],
-        pnl_oos:           wf.pnl_oos ?? [],
-        split_date:        wf.split_date ?? null,
-      }
-      store.setSimulationResult(simResult)
-
-      // Update editor to show the GP-evolved best DSL in a new tab
-      if (wf.best_dsl && wf.best_dsl !== dsl) {
-        store.newEmptyTab()
-        store.setEditorDsl(wf.best_dsl)
-        store.appendLog(`[GP] Opened best DSL in new editor tab.`)
-      }
-
-      // Auto-save
-      try {
-        await apiSaveAlpha({
-          dsl:          wf.best_dsl,
-          hypothesis:   `GP-evolved: ${dsl.slice(0, 40)}`,
-          sharpe:       Number(m?.is_sharpe)   || 0,
-          ic_ir:        Number(m?.is_ic)       || 0,
-          ann_turnover: Number(m?.is_turnover) || 0,
-          ann_return:   Number(m?.is_return)   || 0,
+        // Update chart (SimResult)
+        store.setSimulationResult({
+          dsl:               wf.best_dsl,
+          is_metrics:        {
+            sharpe_ratio:      m?.is_sharpe      ?? null,
+            annualized_return: m?.is_return      ?? null,
+            ann_turnover:      m?.is_turnover    ?? null,
+            ic_ir:             m?.is_ic          ?? null,
+            mean_ic:           m?.is_ic          ?? null,
+          },
+          oos_metrics:       m?.oos_sharpe != null ? { sharpe_ratio: m.oos_sharpe } : null,
+          overfitting_score: wf.overfitting_score ?? 0,
+          is_overfit:        wf.is_overfit        ?? false,
+          ic_decay:          {},
+          best_config:       wf.best_config ?? null,
+          n_trials_run:      null,
+          pnl_is:            wf.pnl_is   ?? [],
+          pnl_oos:           wf.pnl_oos  ?? [],
+          split_date:        wf.split_date ?? null,
         })
-        store.appendLog('[OK] GP-evolved alpha saved to Ledger.')
-      } catch { /* non-fatal */ }
 
-      store.setStatus('ready')
-      await loadHistory()
+        // Open best DSL in new compiler tab
+        if (wf.best_dsl && wf.best_dsl !== dsl) {
+          store.newEmptyTab()
+          store.setEditorDsl(wf.best_dsl)
+          store.appendLog('[GP] Opened best DSL in new editor tab.')
+        }
+
+        store.setStatus('ready')
+        await loadHistory()
+      } else {
+        // SSE ended without a done event (stream cut)
+        store.finalizeStreamingMessage(streamId)
+        store.setStatus('error')
+      }
     } catch (err: any) {
-      cancelStream()
+      store.finalizeStreamingMessage(streamId)
       store.appendLog(classifyError(err))
       store.setStatus('error')
     }

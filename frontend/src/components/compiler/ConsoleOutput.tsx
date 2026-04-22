@@ -13,10 +13,16 @@ function LogLine({ line, actions }: { line: string; actions?: LogAction[] }) {
     line.includes('[Syntax Error]') ? 'text-rose-400 font-semibold' :
     line.includes('[ERROR]')        ? 'text-rose-400' :
     line.includes('[WARN]')         ? 'text-amber-400' :
+    line.includes('[NaN]')          ? 'text-amber-300' :
     line.includes('[OK]')           ? 'text-emerald-400' :
     line.includes('[GP]')           ? 'text-violet-400' :
     line.includes('[Optuna]')       ? 'text-violet-300' :
     line.includes('[Backtest]')     ? 'text-sky-400' :
+    line.includes('[BKTEST]')       ? 'text-sky-400' :
+    line.includes('[AST]')          ? 'text-cyan-400' :
+    line.includes('[DATA]')         ? 'text-teal-400' :
+    line.includes('[TELEM]')        ? 'text-indigo-400' :
+    line.includes('[PERF]')         ? 'text-lime-400' :
     line.includes('[System]')       ? 'text-slate-500' :
     'text-slate-400'
 

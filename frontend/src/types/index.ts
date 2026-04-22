@@ -25,6 +25,7 @@ export interface ChatMessage {
   metrics?: SimMetrics | null
   type?: 'message' | 'thought' | 'tool_output'
   timestamp: number
+  isStreaming?: boolean
 }
 
 export interface AlphaRecord {

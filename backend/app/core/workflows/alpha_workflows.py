@@ -429,8 +429,23 @@ class GenerationWorkflow:
         self._oos_ratio   = oos_ratio
         self._seed        = seed
 
-    def run(self, hypothesis: str, dataset: Dict[str, Any]) -> WorkflowResult:
+    def run(
+        self,
+        hypothesis:  str,
+        dataset:     Dict[str, Any],
+        on_progress: Optional[Any] = None,
+    ) -> WorkflowResult:
         logger.info("[Workflow A] START  hypothesis='%.80s'", hypothesis)
+
+        def _emit(text: str) -> None:
+            if on_progress is not None:
+                try:
+                    on_progress(text)
+                except Exception:
+                    pass
+
+        _emit(f'[Workflow A] Hypothesis: "{hypothesis[:80]}"')
+        _emit(f"[Workflow A] Generating {self._n_seeds} diverse seed DSLs...")
 
         # Step 1: IS/OOS partition
         is_data, oos_data = _partition(dataset, self._oos_ratio)
@@ -440,23 +455,55 @@ class GenerationWorkflow:
         if not seed_dsls:
             seed_dsls = [repr(generate_random_alpha())]
 
+        effective_pop = max(self._pop_size, len(seed_dsls) + 4)
+        _emit(f"[Workflow A] {len(seed_dsls)} valid seed DSLs generated")
+        _emit(
+            f"[GP] Launching evolution: pop={effective_pop} | "
+            f"gen={self._n_gen} | optuna_trials={self._n_optuna}"
+        )
         logger.info(
             "[Workflow A] Seeding GP with %d diverse DSLs | pop_size=%d | gen=%d",
-            len(seed_dsls), max(self._pop_size, len(seed_dsls) + 4), self._n_gen,
+            len(seed_dsls), effective_pop, self._n_gen,
         )
 
         # Step 3: GP evolution — seed_dsls become the entire initial population
+        def _on_gen_end(gen_log: dict) -> None:
+            _emit(
+                f"[GP] Gen {gen_log['generation']}/{self._n_gen} | "
+                f"pop={gen_log['population_size']} | "
+                f"fitness={gen_log['best_fitness']:.4f} | "
+                f"oos_sharpe={gen_log['best_oos_sharpe']:.4f}\n"
+                f"     → {gen_log['best_dsl'][:70]}"
+            )
+
         evolver = PopulationEvolver(
             is_data        = is_data,
             oos_data       = oos_data,
-            pop_size       = max(self._pop_size, len(seed_dsls) + 4),
+            pop_size       = effective_pop,
             n_generations  = self._n_gen,
             seed           = self._seed,
         )
         gp_result: GPEvolutionResult = evolver.run(
-            seed_dsls       = seed_dsls,
-            n_optuna_trials = self._n_optuna,
+            seed_dsls         = seed_dsls,
+            n_optuna_trials   = self._n_optuna,
+            on_generation_end = _on_gen_end,
         )
+
+        m = gp_result.metrics
+        oos_s = m.get("oos_sharpe")
+        _emit(
+            f"[Optuna] Fine-tuning complete | "
+            f"config: {gp_result.best_config or 'default'}"
+        )
+        _emit(
+            f"[Result] IS Sharpe={m.get('is_sharpe', 0):.4f} | "
+            f"OOS Sharpe={f'{oos_s:.4f}' if oos_s is not None else 'N/A'}"
+        )
+        _emit(
+            f"[Result] "
+            + ("\u26a0 Overfitting detected" if m.get("is_overfit") else "\u2713 Anti-overfitting check passed")
+        )
+        _emit(f"[GP] Best DSL: {gp_result.best_dsl}")
 
         explanation = self._explain(hypothesis, gp_result, seed_dsls)
         logger.info("[Workflow A] DONE  best_dsl='%.80s'", gp_result.best_dsl)
@@ -536,8 +583,23 @@ class OptimizationWorkflow:
         self._oos_ratio   = oos_ratio
         self._seed        = seed
 
-    def run(self, dsl: str, dataset: Dict[str, Any]) -> WorkflowResult:
+    def run(
+        self,
+        dsl:         str,
+        dataset:     Dict[str, Any],
+        on_progress: Optional[Any] = None,
+    ) -> WorkflowResult:
         logger.info("[Workflow B] START  dsl='%.80s'", dsl)
+
+        def _emit(text: str) -> None:
+            if on_progress is not None:
+                try:
+                    on_progress(text)
+                except Exception:
+                    pass
+
+        _emit(f"[Workflow B] Input DSL: {dsl[:80]}")
+        _emit("[Workflow B] Parsing and diagnosing initial quality...")
 
         # Step 1: Parse + validate; get canonical form
         node = _parse_valid(dsl)
@@ -554,8 +616,15 @@ class OptimizationWorkflow:
             init_metrics["is_sharpe"], init_metrics["oos_sharpe"],
             init_metrics["turnover"],  init_metrics["overfitting_score"],
         )
+        _emit(
+            f"[Diagnose] IS Sharpe={init_metrics['is_sharpe']:.4f} | "
+            f"OOS Sharpe={init_metrics['oos_sharpe']:.4f} | "
+            f"Turnover={init_metrics['turnover']:.2f} | "
+            f"Overfit={init_metrics['overfitting_score']:.4f}"
+        )
 
         # Step 3: Expand population
+        _emit("[Workflow B] Expanding population with mutations and targeted variants...")
         seed_dsls = _expand_for_optimization(canonical, n_mutations=self._n_mutations)
 
         # Step 4: Targeted structural mutations based on metric diagnosis
@@ -566,24 +635,61 @@ class OptimizationWorkflow:
                 seed_dsls.append(td)
                 seen_set.add(td)
 
+        effective_pop = max(self._pop_size, len(seed_dsls) + 4)
+        _emit(
+            f"[Workflow B] Population: {len(seed_dsls)} seeds "
+            f"({len(targeted)} targeted) | pop={effective_pop}"
+        )
+        _emit(
+            f"[GP] Launching evolution: pop={effective_pop} | "
+            f"gen={self._n_gen} | optuna_trials={self._n_optuna}"
+        )
         logger.info(
             "[Workflow B] Population: %d seeds (%d targeted) | pop_size=%d | gen=%d",
-            len(seed_dsls), len(targeted),
-            max(self._pop_size, len(seed_dsls) + 4), self._n_gen,
+            len(seed_dsls), len(targeted), effective_pop, self._n_gen,
         )
 
         # Step 5: GP evolution with expanded population
+        def _on_gen_end(gen_log: dict) -> None:
+            _emit(
+                f"[GP] Gen {gen_log['generation']}/{self._n_gen} | "
+                f"pop={gen_log['population_size']} | "
+                f"fitness={gen_log['best_fitness']:.4f} | "
+                f"oos_sharpe={gen_log['best_oos_sharpe']:.4f}\n"
+                f"     → {gen_log['best_dsl'][:70]}"
+            )
+
         evolver = PopulationEvolver(
             is_data        = is_data,
             oos_data       = oos_data,
-            pop_size       = max(self._pop_size, len(seed_dsls) + 4),
+            pop_size       = effective_pop,
             n_generations  = self._n_gen,
             seed           = self._seed,
         )
         gp_result: GPEvolutionResult = evolver.run(
-            seed_dsls       = seed_dsls,
-            n_optuna_trials = self._n_optuna,
+            seed_dsls         = seed_dsls,
+            n_optuna_trials   = self._n_optuna,
+            on_generation_end = _on_gen_end,
         )
+
+        m = gp_result.metrics
+        oos_s = m.get("oos_sharpe")
+        init_oos = init_metrics.get("oos_sharpe", 0.0) or 0.0
+        _emit(
+            f"[Optuna] Fine-tuning complete | "
+            f"config: {gp_result.best_config or 'default'}"
+        )
+        _emit(
+            f"[Result] IS Sharpe={m.get('is_sharpe', 0):.4f} | "
+            f"OOS Sharpe={f'{oos_s:.4f}' if oos_s is not None else 'N/A'} "
+            + (f"({'↑' if (oos_s or 0) > init_oos else '↓'}{abs((oos_s or 0) - init_oos):.4f} vs input)"
+               if oos_s is not None else "")
+        )
+        _emit(
+            f"[Result] "
+            + ("\u26a0 Overfitting detected" if m.get("is_overfit") else "\u2713 Anti-overfitting check passed")
+        )
+        _emit(f"[GP] Best DSL: {gp_result.best_dsl}")
 
         explanation = self._explain(dsl, gp_result, init_metrics, seed_dsls, targeted)
         logger.info("[Workflow B] DONE  best_dsl='%.80s'", gp_result.best_dsl)

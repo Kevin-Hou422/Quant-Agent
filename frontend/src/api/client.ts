@@ -100,3 +100,79 @@ export const apiGetSession = (sessionId: string) =>
     created_at: string
     messages:   Array<{ id: number; role: string; content: string; created_at: string }>
   }>(`/chat/sessions/${sessionId}`)
+
+// ── SSE Streaming Workflows ───────────────────────────────────────────────
+
+type SSEEvent =
+  | { type: 'text';  text: string }
+  | { type: 'ping' }
+  | { type: 'done';  result: Record<string, unknown> }
+  | { type: 'error'; message: string }
+
+export function streamWorkflowOptimize(
+  dsl:     string,
+  onEvent: (e: SSEEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  return fetch('/api/workflow/optimize/stream', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({
+      dsl,
+      n_tickers: 20, n_days: 252, n_generations: 7,
+      pop_size: 20, n_optuna: 10, n_mutations: 8, oos_ratio: 0.3,
+    }),
+    signal,
+  }).then(async (res) => {
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const reader  = res.body!.getReader()
+    const decoder = new TextDecoder()
+    let   buf     = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try { onEvent(JSON.parse(line.slice(6)) as SSEEvent) } catch { /* ignore */ }
+        }
+      }
+    }
+  })
+}
+
+export function streamWorkflowGenerate(
+  hypothesis: string,
+  onEvent:    (e: SSEEvent) => void,
+  signal?:    AbortSignal,
+): Promise<void> {
+  return fetch('/api/workflow/generate/stream', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({
+      hypothesis,
+      n_tickers: 20, n_days: 252, n_generations: 7,
+      pop_size: 20, n_optuna: 10, n_seed_dsls: 12, oos_ratio: 0.3,
+    }),
+    signal,
+  }).then(async (res) => {
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const reader  = res.body!.getReader()
+    const decoder = new TextDecoder()
+    let   buf     = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try { onEvent(JSON.parse(line.slice(6)) as SSEEvent) } catch { /* ignore */ }
+        }
+      }
+    }
+  })
+}

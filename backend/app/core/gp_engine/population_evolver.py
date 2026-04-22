@@ -175,9 +175,10 @@ class PopulationEvolver:
 
     def run(
         self,
-        seed_dsl:        Optional[str]       = None,
-        seed_dsls:       Optional[List[str]] = None,
-        n_optuna_trials: int                 = 8,
+        seed_dsl:           Optional[str]       = None,
+        seed_dsls:          Optional[List[str]] = None,
+        n_optuna_trials:    int                 = 8,
+        on_generation_end:  Optional[Any]       = None,
     ) -> GPEvolutionResult:
         """
         Run the full GP optimization pipeline.
@@ -247,6 +248,11 @@ class PopulationEvolver:
                 best_r.sharpe_oos,
                 best_r.dsl[:80],
             )
+            if on_generation_end is not None:
+                try:
+                    on_generation_end(gen_log)
+                except Exception:
+                    pass
 
             # d. Phase 8: adaptive mutation weights from population diagnostics
             diag    = self._pool.population_diagnostics()

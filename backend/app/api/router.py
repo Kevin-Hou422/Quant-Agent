@@ -10,12 +10,17 @@ router.py — Quant Agent FastAPI 路由层
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import queue as _queue
+import threading
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.dependencies import get_store
@@ -976,3 +981,172 @@ def workflow_optimize(
         pass
 
     return WorkflowResponse(**resp_dict)
+
+
+# ===========================================================================
+# SSE Streaming  —  POST /api/workflow/optimize/stream
+#                   POST /api/workflow/generate/stream
+#
+# Events (NDJSON over text/event-stream):
+#   {"type": "text",  "text": "...line..."}   — append to chat stream
+#   {"type": "ping"}                           — keep-alive
+#   {"type": "done",  "result": {...}}         — WorkflowResponse payload
+#   {"type": "error", "message": "..."}        — terminal error
+# ===========================================================================
+
+async def _sse_run_workflow(
+    worker_fn,          # Callable[[Callable[[str], None]], dict]  — runs in thread
+) -> StreamingResponse:
+    """
+    Generic SSE helper.
+
+    worker_fn(emit_text) should:
+      - call emit_text(line: str) for each progress message
+      - return the final WorkflowResponse-shaped dict when done
+    """
+    event_queue: _queue.Queue = _queue.Queue()
+
+    def _emit_text(line: str) -> None:
+        event_queue.put({"type": "text", "text": line})
+
+    def _run() -> None:
+        try:
+            result_dict = worker_fn(_emit_text)
+            event_queue.put({"type": "done", "result": result_dict})
+        except Exception as exc:
+            logger.exception("SSE workflow worker failed")
+            event_queue.put({"type": "error", "message": str(exc)})
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    loop = asyncio.get_event_loop()
+
+    async def _generate():
+        while True:
+            try:
+                event = await loop.run_in_executor(
+                    None, lambda: event_queue.get(timeout=180)
+                )
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if event.get("type") in ("done", "error"):
+                    break
+            except _queue.Empty:
+                yield 'data: {"type":"ping"}\n\n'
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":    "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection":       "keep-alive",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/workflow/optimize/stream  — Workflow B (streaming)
+# ---------------------------------------------------------------------------
+
+@router.post("/workflow/optimize/stream", tags=["Workflow"])
+async def workflow_optimize_stream(
+    req:   WorkflowOptimizeRequest,
+    store: AlphaStore = Depends(get_store),
+) -> StreamingResponse:
+    """Streaming SSE version of workflow_optimize."""
+    from app.core.alpha_engine.parser import Parser, ParseError
+    from app.core.alpha_engine.validator import AlphaValidator, ValidationError
+
+    try:
+        node = Parser().parse(req.dsl)
+        AlphaValidator().validate(node)
+    except (ParseError, ValidationError, SyntaxError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"[Syntax Error] {exc}")
+
+    def _worker(emit_text):
+        from app.core.workflows.alpha_workflows import OptimizationWorkflow
+        from app.db.alpha_store import AlphaResult
+
+        dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
+        wf = OptimizationWorkflow(
+            pop_size        = req.pop_size,
+            n_generations   = req.n_generations,
+            n_optuna_trials = req.n_optuna,
+            n_mutations     = req.n_mutations,
+            oos_ratio       = req.oos_ratio,
+            seed            = req.seed,
+        )
+        result = wf.run(dsl=req.dsl, dataset=dataset, on_progress=emit_text)
+
+        is_data, oos_data = _partition_dataset(dataset, req.oos_ratio)
+        resp_dict = result.to_dict()
+        _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
+
+        try:
+            m = result.metrics
+            store.save(AlphaResult(
+                dsl          = result.best_dsl,
+                hypothesis   = req.dsl[:100],
+                sharpe       = float(m.get("is_sharpe") or 0.0),
+                ann_return   = float(m.get("is_return") or 0.0),
+                ic_ir        = float(m.get("is_ic") or 0.0),
+                ann_turnover = float(m.get("is_turnover") or 0.0),
+                reasoning    = result.explanation,
+                status       = "active",
+            ))
+        except Exception:
+            pass
+
+        return resp_dict
+
+    return await _sse_run_workflow(_worker)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/workflow/generate/stream  — Workflow A (streaming)
+# ---------------------------------------------------------------------------
+
+@router.post("/workflow/generate/stream", tags=["Workflow"])
+async def workflow_generate_stream(
+    req:   WorkflowGenerateRequest,
+    store: AlphaStore = Depends(get_store),
+) -> StreamingResponse:
+    """Streaming SSE version of workflow_generate."""
+
+    def _worker(emit_text):
+        from app.core.workflows.alpha_workflows import GenerationWorkflow
+        from app.db.alpha_store import AlphaResult
+
+        dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
+        wf = GenerationWorkflow(
+            pop_size        = req.pop_size,
+            n_generations   = req.n_generations,
+            n_optuna_trials = req.n_optuna,
+            n_seed_dsls     = req.n_seed_dsls,
+            oos_ratio       = req.oos_ratio,
+            seed            = req.seed,
+        )
+        result = wf.run(hypothesis=req.hypothesis, dataset=dataset, on_progress=emit_text)
+
+        is_data, oos_data = _partition_dataset(dataset, req.oos_ratio)
+        resp_dict = result.to_dict()
+        _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
+
+        try:
+            m = result.metrics
+            store.save(AlphaResult(
+                dsl          = result.best_dsl,
+                hypothesis   = req.hypothesis,
+                sharpe       = float(m.get("is_sharpe") or 0.0),
+                ann_return   = float(m.get("is_return") or 0.0),
+                ic_ir        = float(m.get("is_ic") or 0.0),
+                ann_turnover = float(m.get("is_turnover") or 0.0),
+                reasoning    = result.explanation,
+                status       = "active",
+            ))
+        except Exception:
+            pass
+
+        return resp_dict
+
+    return await _sse_run_workflow(_worker)
