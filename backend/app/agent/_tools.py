@@ -63,6 +63,7 @@ class QuantTools:
         self._llm       = llm
 
         ds = _make_synthetic_dataset(n_tickers, n_days, seed)
+        self._full_dataset = ds
         self._is_data, self._oos_data = _partition(ds, oos_ratio)
 
     # ------------------------------------------------------------------

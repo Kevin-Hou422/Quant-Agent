@@ -109,6 +109,37 @@ type SSEEvent =
   | { type: 'done';  result: Record<string, unknown> }
   | { type: 'error'; message: string }
 
+export function streamChat(
+  message:    string,
+  sessionId:  string,
+  onEvent:    (e: SSEEvent) => void,
+  signal?:    AbortSignal,
+): Promise<void> {
+  return fetch('/api/chat/stream', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ message, session_id: sessionId }),
+    signal,
+  }).then(async (res) => {
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const reader  = res.body!.getReader()
+    const decoder = new TextDecoder()
+    let   buf     = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try { onEvent(JSON.parse(line.slice(6)) as SSEEvent) } catch { /* ignore */ }
+        }
+      }
+    }
+  })
+}
+
 export function streamWorkflowOptimize(
   dsl:     string,
   onEvent: (e: SSEEvent) => void,

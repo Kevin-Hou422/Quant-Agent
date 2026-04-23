@@ -272,6 +272,102 @@ class QuantAgent:
 
         return "workflow_a", None
 
+    # ------------------------------------------------------------------
+    # Streaming chat (SSE path)
+    # ------------------------------------------------------------------
+
+    def stream_chat(
+        self,
+        message:    str,
+        session_id: str            = "default",
+        on_event:   Optional[Any]  = None,
+    ) -> None:
+        """
+        Streaming version of chat.  Calls on_event with:
+          {"type": "text",  "text": str}          — incremental progress line
+          {"type": "done",  "result": {...}}       — final {reply, dsl, metrics}
+          {"type": "error", "message": str}        — terminal error
+        Runs synchronously — call inside a background thread for SSE.
+        """
+        def _emit_text(text: str) -> None:
+            if on_event:
+                try: on_event({"type": "text", "text": text})
+                except Exception: pass
+
+        def _emit_done(result: dict) -> None:
+            if on_event:
+                try: on_event({"type": "done", "result": result})
+                except Exception: pass
+
+        def _emit_error(msg: str) -> None:
+            if on_event:
+                try: on_event({"type": "error", "message": msg})
+                except Exception: pass
+
+        enriched          = self._enrich_message(message, session_id)
+        intent, dsl_hint  = self._detect_intent(enriched, session_id)
+        dataset           = self._tools._full_dataset
+        oos_ratio         = self._tools._oos_ratio
+        seed              = self._tools._seed
+
+        try:
+            from app.core.workflows.alpha_workflows import (
+                GenerationWorkflow, OptimizationWorkflow,
+            )
+
+            if intent == "workflow_b" and dsl_hint:
+                _emit_text(f"[Diagnose] 检测到 DSL 表达式，启动结构优化...")
+                _emit_text(f"[Workflow B] 输入: {dsl_hint[:70]}")
+                wf = OptimizationWorkflow(
+                    pop_size=20, n_generations=7, n_optuna_trials=10,
+                    n_mutations=8, oos_ratio=oos_ratio, seed=seed,
+                )
+                result = wf.run(dsl_hint, dataset, on_progress=_emit_text)
+            else:
+                _emit_text(f"[Diagnose] 解析策略假设: {message[:80]}")
+                _emit_text("[Workflow A] 启动 GP 进化生成流程...")
+                wf = GenerationWorkflow(
+                    pop_size=20, n_generations=7, n_optuna_trials=10,
+                    n_seed_dsls=12, oos_ratio=oos_ratio, seed=seed,
+                )
+                result = wf.run(message, dataset, on_progress=_emit_text)
+
+            # Persist to chat store
+            if self._chat_store is not None:
+                try:
+                    self._chat_store.ensure_session(session_id)
+                    self._chat_store.save_message(session_id, "user", message)
+                    self._chat_store.save_message(
+                        session_id, "assistant",
+                        result.explanation or result.best_dsl,
+                    )
+                except Exception:
+                    pass
+
+            # Track last DSL per session
+            self._session_last_dsl[session_id] = result.best_dsl
+
+            # Update in-process memory for Fallback path
+            if self._chain is None:
+                mem = self._get_or_create_memory(session_id)
+                mem.add_user(message)
+                mem.add_assistant(result.explanation or "", dsl=result.best_dsl)
+
+            m = result.metrics
+            _emit_done({
+                "reply":   result.explanation or f"生成完成: {result.best_dsl}",
+                "dsl":     result.best_dsl,
+                "metrics": {
+                    "sharpe_ratio":      m.get("is_sharpe"),
+                    "annualized_return": m.get("is_return"),
+                    "ic_ir":             m.get("is_ic"),
+                },
+            })
+
+        except Exception as exc:
+            logger.exception("stream_chat failed session=%s", session_id)
+            _emit_error(str(exc))
+
     def _extract_dsl_from_text(self, text: str) -> Optional[str]:
         """Try to extract a DSL expression embedded in the agent's natural-language reply."""
         m = re.search(

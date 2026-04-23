@@ -1,8 +1,8 @@
 import { useWorkspaceStore } from '../store/workspaceStore'
 import {
-  apiChat, apiSimulate, apiFetchAlphaHistory, apiSaveAlpha,
+  apiSimulate, apiFetchAlphaHistory, apiSaveAlpha,
   apiCreateSession, apiListSessions, apiGetSession,
-  streamWorkflowOptimize,
+  streamWorkflowOptimize, streamChat,
 } from '../api/client'
 import type { ChatSession } from '../types'
 
@@ -107,22 +107,62 @@ export function useQuantWorkspace() {
     const streamId = Math.random().toString(36).slice(2)
     store.startStreamingMessage(streamId)
 
+    // Queue of text chunks — typed out sequentially (same pattern as runOptimize)
+    const textQueue: string[] = []
+    let   typing = false
+
+    const flushQueue = async () => {
+      if (typing) return
+      typing = true
+      while (textQueue.length > 0) {
+        const chunk = textQueue.shift()!
+        await typeIntoMessage(streamId, chunk + '\n', 10)
+      }
+      typing = false
+    }
+
+    const enqueueText = (line: string) => {
+      textQueue.push(line)
+      flushQueue()
+    }
+
     try {
-      const res = await apiChat(text, store.sessionId)
-      const { reply, dsl, metrics } = res.data
-      await typeIntoMessage(streamId, reply)
-      store.finalizeStreamingMessage(streamId, {
-        dsl,
-        metrics: metrics as any,
-        type: 'message',
+      let finalResult: any = null
+
+      await streamChat(text, store.sessionId, (event) => {
+        if (event.type === 'text') {
+          enqueueText(event.text)
+          if (event.text.startsWith('[GP]') || event.text.startsWith('[Optuna]') ||
+              event.text.startsWith('[Workflow') || event.text.startsWith('[Diagnose]')) {
+            store.appendLog(event.text.split('\n')[0])
+          }
+        } else if (event.type === 'done') {
+          finalResult = event.result
+        } else if (event.type === 'error') {
+          enqueueText(`[ERROR] ${event.message}`)
+          store.appendLog(`[ERROR] ${event.message}`)
+        }
       })
-      if (dsl) store.setEditorDsl(dsl)
-      store.setStatus('ready')
+
+      // Wait for remaining typing to finish
+      await new Promise<void>((resolve) => {
+        const check = setInterval(() => {
+          if (!typing && textQueue.length === 0) { clearInterval(check); resolve() }
+        }, 50)
+      })
+
+      if (finalResult) {
+        const { dsl, metrics } = finalResult
+        store.finalizeStreamingMessage(streamId, { dsl, metrics, type: 'message' })
+        if (dsl) store.setEditorDsl(dsl)
+        store.setStatus('ready')
+      } else {
+        store.finalizeStreamingMessage(streamId)
+        store.setStatus('error')
+      }
     } catch (err: any) {
       store.finalizeStreamingMessage(streamId, {
-        content: err?.response?.status === 400
-          ? 'DSL syntax error — please check your formula and try again.'
-          : `Error: ${err?.message ?? 'Unknown error'}`,
+        content: `Error: ${err?.message ?? 'Unknown error'}`,
         type: 'tool_output',
       })
       store.setStatus('error')

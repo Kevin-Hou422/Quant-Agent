@@ -18,10 +18,15 @@ chat_router.py — 对话式 Quant Agent HTTP API (Phase 4)
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import queue as _queue
+import threading
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.dependencies import get_chat_store
@@ -221,4 +226,62 @@ def chat(
         reply      = result.get("reply", ""),
         dsl        = result.get("dsl"),
         metrics    = result.get("metrics"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/chat/stream — 流式对话（SSE）
+# ---------------------------------------------------------------------------
+
+@chat_router.post("/stream")
+async def chat_stream(
+    req:   ChatRequest,
+    store: ChatStore = Depends(get_chat_store),
+) -> StreamingResponse:
+    """
+    Streaming SSE version of /api/chat.
+
+    Events (NDJSON over text/event-stream):
+      {"type": "text",  "text": "..."}      — incremental progress / thinking line
+      {"type": "ping"}                       — keep-alive
+      {"type": "done",  "result": {...}}     — final {reply, dsl, metrics}
+      {"type": "error", "message": "..."}    — terminal error
+    """
+    agent        = _get_agent(store)
+    event_queue: _queue.Queue = _queue.Queue()
+
+    def _on_event(event: dict) -> None:
+        event_queue.put(event)
+
+    def _run() -> None:
+        try:
+            agent.stream_chat(req.message, session_id=req.session_id, on_event=_on_event)
+        except Exception as exc:
+            logger.exception("chat_stream worker failed session=%s", req.session_id)
+            event_queue.put({"type": "error", "message": str(exc)})
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    loop = asyncio.get_event_loop()
+
+    async def _generate():
+        while True:
+            try:
+                event = await loop.run_in_executor(
+                    None, lambda: event_queue.get(timeout=300)
+                )
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if event.get("type") in ("done", "error"):
+                    break
+            except _queue.Empty:
+                yield 'data: {"type":"ping"}\n\n'
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":     "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection":        "keep-alive",
+        },
     )
