@@ -119,7 +119,7 @@ class QuantAgent:
                 result = self._fallback_chat(intent, enriched, dsl_hint, session_id)
         except Exception as exc:
             logger.exception("QuantAgent.chat 失败 session=%s", session_id)
-            result = {"reply": f"处理失败: {exc}", "dsl": None, "metrics": None}
+            result = {"reply": f"Processing failed: {exc}", "dsl": None, "metrics": None}
 
         # Track last DSL per session (used for context enrichment)
         if result.get("dsl"):
@@ -204,9 +204,9 @@ class QuantAgent:
         reply = (
             f"DSL: {dsl} | "
             f"IS Sharpe={is_s:.3f}  OOS Sharpe={oos_s:.3f}  "
-            f"过拟合={overfit:.2f}  "
-            f"{'⚠ 过拟合' if metrics.get('is_overfit') else '✓ 通过'}"
-        ) if is_s is not None else f"生成 DSL: {dsl}（回测数据不足）"
+            f"Overfit={overfit:.2f}  "
+            f"{'⚠ Overfit detected' if metrics.get('is_overfit') else '✓ Passed'}"
+        ) if is_s is not None else f"Generated DSL: {dsl} (insufficient backtest data)"
 
         if self._chat_store is not None:
             try:
@@ -328,16 +328,16 @@ class QuantAgent:
             )
 
             if intent == "workflow_b" and dsl_hint:
-                _emit_text(f"[Diagnose] 检测到 DSL 表达式，启动结构优化...")
-                _emit_text(f"[Workflow B] 输入: {dsl_hint[:70]}")
+                _emit_text(f"[Diagnose] DSL expression detected — launching structural optimization...")
+                _emit_text(f"[Workflow B] Input: {dsl_hint[:70]}")
                 wf = OptimizationWorkflow(
                     pop_size=20, n_generations=7, n_optuna_trials=10,
                     n_mutations=8, oos_ratio=oos_ratio, seed=seed,
                 )
                 result = wf.run(dsl_hint, dataset, on_progress=_emit_text)
             else:
-                _emit_text(f"[Diagnose] 解析策略假设: {message[:80]}")
-                _emit_text("[Workflow A] 启动 GP 进化生成流程...")
+                _emit_text(f"[Diagnose] Parsing strategy hypothesis: {message[:80]}")
+                _emit_text("[Workflow A] Starting GP evolution workflow...")
                 wf = GenerationWorkflow(
                     pop_size=20, n_generations=7, n_optuna_trials=10,
                     n_seed_dsls=12, oos_ratio=oos_ratio, seed=seed,
@@ -367,7 +367,7 @@ class QuantAgent:
 
             m = result.metrics
             _emit_done({
-                "reply":   result.explanation or f"生成完成: {result.best_dsl}",
+                "reply":   result.explanation or f"Generation complete: {result.best_dsl}",
                 "dsl":     result.best_dsl,
                 "metrics": {
                     "sharpe_ratio":      m.get("is_sharpe"),

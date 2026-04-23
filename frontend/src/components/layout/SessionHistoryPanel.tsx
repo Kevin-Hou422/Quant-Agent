@@ -125,11 +125,11 @@ function SessionItem({
 
 export default function SessionHistoryPanel() {
   const { sessionId, sessions } = useWorkspaceStore()
-  const { initSessions, newSession, switchSession, renameSession, deleteSession } =
+  const { loadSessions, newSession, switchSession, renameSession, deleteSession } =
     useQuantWorkspace()
 
-  // Run once on mount: restore / create active session from DB
-  useEffect(() => { initSessions() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+  // Refresh the sidebar list whenever the panel becomes visible
+  useEffect(() => { loadSessions() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <aside className="h-full flex flex-col bg-slate-900 border-r border-slate-700">

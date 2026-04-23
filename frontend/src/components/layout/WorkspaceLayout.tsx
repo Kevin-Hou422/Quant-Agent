@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import GlobalSidebar from './GlobalSidebar'
 import LeftLedgerPane from './LeftLedgerPane'
@@ -7,6 +8,7 @@ import ChatView from '../chat/ChatView'
 import CompilerView from '../compiler/CompilerView'
 import ConsoleOutput from '../compiler/ConsoleOutput'
 import { useWorkspaceStore } from '../../store/workspaceStore'
+import { useQuantWorkspace } from '../../hooks/useQuantWorkspace'
 
 /** Horizontal drag handle — Monaco ↔ Console (only resizable boundary) */
 function HHandle() {
@@ -28,6 +30,10 @@ function HHandle() {
 
 export default function WorkspaceLayout() {
   const { activeView, ledgerOpen } = useWorkspaceStore()
+  const { initSessions } = useQuantWorkspace()
+
+  // Run once on app mount: restore or create the active session
+  useEffect(() => { initSessions() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div

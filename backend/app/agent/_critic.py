@@ -29,11 +29,11 @@ class OverfitCritic:
 
         if is_overfit or overfit_score > _OVERFIT_THRESHOLD:
             return False, (
-                f"过拟合！IS vs OOS Sharpe 退化 {overfit_score * 100:.1f}%。"
-                "建议进行结构性变异（tool_mutate_ast）而非仅调整参数。"
+                f"Overfitting detected — IS→OOS Sharpe degraded {overfit_score * 100:.1f}%. "
+                "Recommend structural mutation (tool_mutate_ast) rather than parameter tuning."
             )
         if oos_sharpe is not None and oos_sharpe < _MIN_OOS_SHARPE:
             return False, (
-                f"OOS Sharpe={oos_sharpe:.3f} < {_MIN_OOS_SHARPE}，OOS 表现不足。"
+                f"OOS Sharpe={oos_sharpe:.3f} < {_MIN_OOS_SHARPE} — out-of-sample performance too low."
             )
-        return True, "通过反过拟合检验。"
+        return True, "Passed anti-overfitting check."

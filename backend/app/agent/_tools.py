@@ -217,7 +217,7 @@ class QuantTools:
             metrics = {
                 "is_sharpe": None, "oos_sharpe": None,
                 "overfitting_score": 0.0, "is_overfit": False,
-                "summary": f"回测失败: {exc}",
+                "summary": f"Backtest failed: {exc}",
             }
         return json.dumps(metrics, default=str)
 
