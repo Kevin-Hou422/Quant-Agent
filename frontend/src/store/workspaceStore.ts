@@ -21,6 +21,20 @@ function makeDefaultTab(): EditorTab {
   return { id: genId(), label: 'New Alpha', dsl: DEFAULT_DSL, isModified: false }
 }
 
+// ── localStorage helpers ──────────────────────────────────────────────────────
+
+const LS_SESSION_KEY = 'qagent_session_id'
+
+function readStoredSessionId(): string {
+  try { return localStorage.getItem(LS_SESSION_KEY) || genId() } catch { return genId() }
+}
+
+function writeStoredSessionId(id: string): void {
+  try { localStorage.setItem(LS_SESSION_KEY, id) } catch { /* ignore */ }
+}
+
+// ── Store interface ───────────────────────────────────────────────────────────
+
 interface WorkspaceState {
   activeView: ActiveView
   setActiveView: (v: ActiveView) => void
@@ -28,7 +42,7 @@ interface WorkspaceState {
   // ── Editor Tabs ─────────────────────────────────────────────────────────
   editorTabs:    EditorTab[]
   activeTabId:   string
-  editorDsl:     string   // always mirrors active tab's dsl
+  editorDsl:     string
 
   setEditorDsl:        (dsl: string) => void
   setActiveTab:        (id: string) => void
@@ -40,9 +54,11 @@ interface WorkspaceState {
   sessionId:   string
   setSessionId: (id: string) => void
 
-  sessions:    ChatSession[]
-  setSessions: (sessions: ChatSession[]) => void
-  addSession:  (s: ChatSession) => void
+  sessions:             ChatSession[]
+  setSessions:          (sessions: ChatSession[]) => void
+  addSession:           (s: ChatSession) => void
+  updateSessionTitle:   (id: string, title: string) => void
+  removeSession:        (id: string) => void
 
   // ── Chat messages ────────────────────────────────────────────────────────
   chatMessages: ChatMessage[]
@@ -71,16 +87,14 @@ interface WorkspaceState {
   simConfig:    SimulationConfig
   setSimConfig: (c: Partial<SimulationConfig>) => void
 
-  // Ledger panel (second column in COMPILER mode)
-  ledgerOpen:   boolean
-  toggleLedger: () => void
-  setLedgerOpen:(open: boolean) => void
+  ledgerOpen:    boolean
+  toggleLedger:  () => void
+  setLedgerOpen: (open: boolean) => void
 }
 
 const _defaultTab = makeDefaultTab()
 
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
-  // Start in COMPILER mode
   activeView: 'COMPILER',
   setActiveView: (v) => set({ activeView: v }),
 
@@ -90,8 +104,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   editorDsl:   _defaultTab.dsl,
 
   setEditorDsl: (dsl) => set((s) => ({
-    editorDsl:   dsl,
-    editorTabs:  s.editorTabs.map((t) =>
+    editorDsl:  dsl,
+    editorTabs: s.editorTabs.map((t) =>
       t.id === s.activeTabId ? { ...t, dsl, isModified: true } : t,
     ),
   })),
@@ -108,7 +122,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       return { editorTabs: [fresh], activeTabId: fresh.id, editorDsl: fresh.dsl }
     }
     if (s.activeTabId !== id) return { editorTabs: remaining }
-    // Active tab closed — activate adjacent tab
     const idx     = s.editorTabs.findIndex((t) => t.id === id)
     const nextTab = remaining[Math.min(idx, remaining.length - 1)]
     return { editorTabs: remaining, activeTabId: nextTab.id, editorDsl: nextTab.dsl }
@@ -120,42 +133,41 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   }),
 
   openAlphaInNewTab: (alpha) => set((s) => {
-    // Re-activate if already open
     const existing = s.editorTabs.find((t) => t.alphaId === alpha.id)
     if (existing) {
-      return {
-        activeTabId: existing.id,
-        editorDsl:   existing.dsl,
-        activeView:  'COMPILER',
-        ledgerOpen:  false,
-      }
+      return { activeTabId: existing.id, editorDsl: existing.dsl, activeView: 'COMPILER', ledgerOpen: false }
     }
     const t: EditorTab = {
       id:         genId(),
-      label:      alpha.hypothesis
-                    ? alpha.hypothesis.slice(0, 24)
-                    : `Alpha #${alpha.id}`,
+      label:      alpha.hypothesis ? alpha.hypothesis.slice(0, 24) : `Alpha #${alpha.id}`,
       dsl:        alpha.dsl,
       alphaId:    alpha.id,
       isModified: false,
     }
-    return {
-      editorTabs:  [...s.editorTabs, t],
-      activeTabId: t.id,
-      editorDsl:   t.dsl,
-      activeView:  'COMPILER',
-      ledgerOpen:  false,
-    }
+    return { editorTabs: [...s.editorTabs, t], activeTabId: t.id, editorDsl: t.dsl, activeView: 'COMPILER', ledgerOpen: false }
   }),
 
   // ── Session management ───────────────────────────────────────────────────
-  sessionId:    genId(),
-  setSessionId: (id) => set({ sessionId: id }),
+  // Restore sessionId from localStorage on startup so page-reload restores context
+  sessionId:    readStoredSessionId(),
+  setSessionId: (id) => {
+    writeStoredSessionId(id)
+    set({ sessionId: id })
+  },
 
   sessions:    [],
   setSessions: (sessions) => set({ sessions }),
-  addSession:  (s) => set((st) => ({
+
+  addSession: (s) => set((st) => ({
     sessions: [s, ...st.sessions.filter((x) => x.id !== s.id)],
+  })),
+
+  updateSessionTitle: (id, title) => set((st) => ({
+    sessions: st.sessions.map((s) => s.id === id ? { ...s, title } : s),
+  })),
+
+  removeSession: (id) => set((st) => ({
+    sessions: st.sessions.filter((s) => s.id !== id),
   })),
 
   // ── Chat messages ────────────────────────────────────────────────────────
@@ -207,7 +219,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   simConfig:    DEFAULT_CONFIG,
   setSimConfig: (c) => set((s) => ({ simConfig: { ...s.simConfig, ...c } })),
 
-  ledgerOpen:   false,
-  toggleLedger: () => set((s) => ({ ledgerOpen: !s.ledgerOpen })),
-  setLedgerOpen:(open) => set({ ledgerOpen: open }),
+  ledgerOpen:    false,
+  toggleLedger:  () => set((s) => ({ ledgerOpen: !s.ledgerOpen })),
+  setLedgerOpen: (open) => set({ ledgerOpen: open }),
 }))

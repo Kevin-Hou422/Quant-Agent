@@ -222,7 +222,19 @@ class QuantAgent:
 
     def _get_or_create_memory(self, session_id: str) -> ConversationMemory:
         if session_id not in self._session_memories:
-            self._session_memories[session_id] = ConversationMemory(max_turns=10)
+            mem = ConversationMemory(max_turns=10)
+            # Warm up from DB so resumed sessions have context
+            if self._chat_store is not None:
+                try:
+                    history = self._chat_store.get_history(session_id)
+                    for msg in history[-20:]:
+                        if msg.role == "user":
+                            mem.add_user(msg.content)
+                        elif msg.role == "assistant":
+                            mem.add_assistant(msg.content)
+                except Exception:
+                    pass
+            self._session_memories[session_id] = mem
         return self._session_memories[session_id]
 
     # ------------------------------------------------------------------

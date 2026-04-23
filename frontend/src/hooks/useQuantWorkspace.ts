@@ -2,6 +2,7 @@ import { useWorkspaceStore } from '../store/workspaceStore'
 import {
   apiSimulate, apiFetchAlphaHistory, apiSaveAlpha,
   apiCreateSession, apiListSessions, apiGetSession,
+  apiRenameSession, apiDeleteSession,
   streamWorkflowOptimize, streamChat,
 } from '../api/client'
 import type { ChatSession } from '../types'
@@ -41,7 +42,89 @@ function classifyError(err: any): string {
 export function useQuantWorkspace() {
   const store = useWorkspaceStore()
 
-  // ── Session management ────────────────────────────────────────────────
+  // ── Typing-effect helper ──────────────────────────────────────────────
+  const typeIntoMessage = async (id: string, text: string, msPerChar = 14) => {
+    for (const char of text) {
+      store.appendToStreamingMessage(id, char)
+      await new Promise<void>((r) => setTimeout(r, msPerChar))
+    }
+  }
+
+  // ── Session init (called once on app mount) ───────────────────────────
+  /**
+   * 1. Fetch all sessions from DB
+   * 2. If the stored sessionId is in the list → restore its messages
+   * 3. If not → use the most-recent session (or create a fresh one)
+   */
+  const initSessions = async () => {
+    try {
+      const res = await apiListSessions()
+      const sessions: ChatSession[] = res.data.sessions.map((s) => ({
+        id:        s.session_id,
+        title:     s.title,
+        createdAt: s.created_at,
+      }))
+      store.setSessions(sessions)
+
+      const stored = store.sessionId
+      const found  = sessions.find((s) => s.id === stored)
+
+      if (found) {
+        // Restore messages for the stored session
+        try {
+          const r = await apiGetSession(stored)
+          const msgs = r.data.messages.map((m) => ({
+            id:        String(m.id),
+            role:      m.role as 'user' | 'assistant',
+            content:   m.content,
+            timestamp: new Date(m.created_at).getTime(),
+            type:      'message' as const,
+          }))
+          store.setMessages(msgs)
+        } catch { /* start fresh */ }
+      } else if (sessions.length > 0) {
+        // Stored id not in DB → switch to most-recent session
+        const latest = sessions[0]
+        store.setSessionId(latest.id)
+        try {
+          const r = await apiGetSession(latest.id)
+          const msgs = r.data.messages.map((m) => ({
+            id:        String(m.id),
+            role:      m.role as 'user' | 'assistant',
+            content:   m.content,
+            timestamp: new Date(m.created_at).getTime(),
+            type:      'message' as const,
+          }))
+          store.setMessages(msgs)
+        } catch { /* start fresh */ }
+      } else {
+        // No sessions at all → create one
+        await _createFreshSession()
+      }
+    } catch {
+      // Network/server down — create an in-memory session so the UI works
+      await _createFreshSession()
+    }
+  }
+
+  const _createFreshSession = async () => {
+    try {
+      const res = await apiCreateSession('New Chat')
+      const s: ChatSession = {
+        id:        res.data.session_id,
+        title:     res.data.title,
+        createdAt: res.data.created_at,
+      }
+      store.setSessionId(s.id)
+      store.setMessages([])
+      store.addSession(s)
+    } catch {
+      // Offline fallback: keep the random id, messages stay empty
+      store.setMessages([])
+    }
+  }
+
+  // ── Load sessions list ────────────────────────────────────────────────
   const loadSessions = async () => {
     try {
       const res = await apiListSessions()
@@ -54,9 +137,10 @@ export function useQuantWorkspace() {
     } catch { /* non-critical */ }
   }
 
+  // ── Create new session ────────────────────────────────────────────────
   const newSession = async () => {
     try {
-      const res = await apiCreateSession('New Research')
+      const res = await apiCreateSession('New Chat')
       const s: ChatSession = {
         id:        res.data.session_id,
         title:     res.data.title,
@@ -69,10 +153,11 @@ export function useQuantWorkspace() {
       const id = Math.random().toString(36).slice(2)
       store.setSessionId(id)
       store.setMessages([])
-      store.addSession({ id, title: 'New Research', createdAt: new Date().toISOString() })
+      store.addSession({ id, title: 'New Chat', createdAt: new Date().toISOString() })
     }
   }
 
+  // ── Switch session ────────────────────────────────────────────────────
   const switchSession = async (sessionId: string) => {
     if (sessionId === store.sessionId) return
     store.setSessionId(sessionId)
@@ -90,24 +175,52 @@ export function useQuantWorkspace() {
     } catch { /* start fresh */ }
   }
 
-  // ── Typing-effect helper ──────────────────────────────────────────────
-  const typeIntoMessage = async (id: string, text: string, msPerChar = 14) => {
-    for (const char of text) {
-      store.appendToStreamingMessage(id, char)
-      await new Promise<void>((r) => setTimeout(r, msPerChar))
+  // ── Rename session ────────────────────────────────────────────────────
+  const renameSession = async (id: string, title: string) => {
+    if (!title.trim()) return
+    store.updateSessionTitle(id, title.trim())   // optimistic
+    try {
+      await apiRenameSession(id, title.trim())
+    } catch {
+      await loadSessions()  // rollback: reload from server
     }
   }
 
-  // ── Chat ──────────────────────────────────────────────────────────────
+  // ── Delete session ────────────────────────────────────────────────────
+  const deleteSession = async (id: string) => {
+    store.removeSession(id)                       // optimistic
+
+    // If deleting the active session → switch to next available or create new
+    if (store.sessionId === id) {
+      const remaining = store.sessions.filter((s) => s.id !== id)
+      if (remaining.length > 0) {
+        await switchSession(remaining[0].id)
+      } else {
+        await _createFreshSession()
+      }
+    }
+
+    try {
+      await apiDeleteSession(id)
+    } catch {
+      await loadSessions()  // rollback
+    }
+  }
+
+  // ── Chat (streaming) ──────────────────────────────────────────────────
   const sendChat = async (text: string) => {
     if (!text.trim()) return
+
+    // Detect first message BEFORE addMessage increments the count
+    const isFirstMessage = store.chatMessages.length === 0
+
     store.addMessage({ role: 'user', content: text })
     store.setStatus('optimizing')
 
     const streamId = Math.random().toString(36).slice(2)
     store.startStreamingMessage(streamId)
 
-    // Queue of text chunks — typed out sequentially (same pattern as runOptimize)
+    // Sequential text queue — same pattern as runOptimize
     const textQueue: string[] = []
     let   typing = false
 
@@ -132,8 +245,12 @@ export function useQuantWorkspace() {
       await streamChat(text, store.sessionId, (event) => {
         if (event.type === 'text') {
           enqueueText(event.text)
-          if (event.text.startsWith('[GP]') || event.text.startsWith('[Optuna]') ||
-              event.text.startsWith('[Workflow') || event.text.startsWith('[Diagnose]')) {
+          if (
+            event.text.startsWith('[GP]')       ||
+            event.text.startsWith('[Optuna]')   ||
+            event.text.startsWith('[Workflow')  ||
+            event.text.startsWith('[Diagnose]')
+          ) {
             store.appendLog(event.text.split('\n')[0])
           }
         } else if (event.type === 'done') {
@@ -152,7 +269,7 @@ export function useQuantWorkspace() {
       })
 
       if (finalResult) {
-        const { dsl, metrics } = finalResult
+        const { dsl, metrics } = finalResult as any
         store.finalizeStreamingMessage(streamId, { dsl, metrics, type: 'message' })
         if (dsl) store.setEditorDsl(dsl)
         store.setStatus('ready')
@@ -160,6 +277,18 @@ export function useQuantWorkspace() {
         store.finalizeStreamingMessage(streamId)
         store.setStatus('error')
       }
+
+      // Auto-name session on first message, then refresh the sessions list
+      const sessionId = store.sessionId
+      if (isFirstMessage) {
+        const title = text.length > 40 ? text.slice(0, 40) + '…' : text
+        store.updateSessionTitle(sessionId, title)     // optimistic update
+        try { await apiRenameSession(sessionId, title) } catch { /* non-fatal */ }
+      }
+
+      // Ensure the current session appears in the sidebar list
+      await loadSessions()
+
     } catch (err: any) {
       store.finalizeStreamingMessage(streamId, {
         content: `Error: ${err?.message ?? 'Unknown error'}`,
@@ -214,12 +343,11 @@ export function useQuantWorkspace() {
     }
   }
 
-  // ── AI Optimize (Workflow B: GP evolution + Optuna fine-tuning, SSE streaming) ──
+  // ── AI Optimize (Workflow B: GP evolution + Optuna fine-tuning, SSE) ─
   const runOptimize = async () => {
     const dsl = store.editorDsl.trim()
     if (!dsl) return
 
-    // Switch to CHAT so the user sees the streaming output
     store.setActiveView('CHAT')
     store.setStatus('optimizing')
     store.clearLogs()
@@ -228,7 +356,6 @@ export function useQuantWorkspace() {
     const streamId = Math.random().toString(36).slice(2)
     store.startStreamingMessage(streamId)
 
-    // Queue of text chunks — typed out sequentially
     const textQueue: string[] = []
     let   typing = false
 
@@ -253,7 +380,6 @@ export function useQuantWorkspace() {
       await streamWorkflowOptimize(dsl, (event) => {
         if (event.type === 'text') {
           enqueueText(event.text)
-          // Mirror technical GP lines to console
           if (event.text.startsWith('[GP]') || event.text.startsWith('[Optuna]')) {
             store.appendLog(event.text.split('\n')[0])
           }
@@ -265,7 +391,6 @@ export function useQuantWorkspace() {
         }
       })
 
-      // Wait for remaining typing to finish
       await new Promise<void>((resolve) => {
         const check = setInterval(() => {
           if (!typing && textQueue.length === 0) { clearInterval(check); resolve() }
@@ -276,7 +401,6 @@ export function useQuantWorkspace() {
         const wf = finalWf
         const m  = wf.metrics as Record<string, any>
 
-        // Finalize streaming message — attach DSL chip + metrics
         store.finalizeStreamingMessage(streamId, {
           dsl:     wf.best_dsl,
           metrics: {
@@ -287,7 +411,6 @@ export function useQuantWorkspace() {
           type: 'message',
         })
 
-        // Console: evolution summary
         for (const gen of (wf.evolution_log ?? [])) {
           store.appendLog(
             `[GP] Gen ${gen.generation}/${wf.generations_run} | ` +
@@ -300,7 +423,6 @@ export function useQuantWorkspace() {
         }
         store.appendLog(wf.is_overfit ? '[WARN] Overfitting detected!' : '[OK] GP result passed anti-overfitting check.')
 
-        // Update chart (SimResult)
         store.setSimulationResult({
           dsl:               wf.best_dsl,
           is_metrics:        {
@@ -321,7 +443,6 @@ export function useQuantWorkspace() {
           split_date:        wf.split_date ?? null,
         })
 
-        // Open best DSL in new compiler tab
         if (wf.best_dsl && wf.best_dsl !== dsl) {
           store.newEmptyTab()
           store.setEditorDsl(wf.best_dsl)
@@ -331,7 +452,6 @@ export function useQuantWorkspace() {
         store.setStatus('ready')
         await loadHistory()
       } else {
-        // SSE ended without a done event (stream cut)
         store.finalizeStreamingMessage(streamId)
         store.setStatus('error')
       }
@@ -352,7 +472,8 @@ export function useQuantWorkspace() {
 
   return {
     sendChat, runBacktest, runOptimize, loadHistory,
-    loadSessions, newSession, switchSession,
+    initSessions, loadSessions, newSession, switchSession,
+    renameSession, deleteSession,
     store,
   }
 }

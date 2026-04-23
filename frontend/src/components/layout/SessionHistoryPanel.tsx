@@ -1,55 +1,135 @@
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { useQuantWorkspace } from '../../hooks/useQuantWorkspace'
-import { MessageSquare, Plus } from 'lucide-react'
+import { MessageSquare, Plus, Pencil, Trash2, Check, X } from 'lucide-react'
 import type { ChatSession } from '../../types'
+
+// ── Single session row ────────────────────────────────────────────────────────
 
 function SessionItem({
   session,
   active,
-  onClick,
+  onSelect,
+  onRename,
+  onDelete,
 }: {
-  session: ChatSession
-  active:  boolean
-  onClick: () => void
+  session:  ChatSession
+  active:   boolean
+  onSelect: () => void
+  onRename: (title: string) => void
+  onDelete: () => void
 }) {
+  const [editing, setEditing]   = useState(false)
+  const [draft,   setDraft]     = useState(session.title)
+  const inputRef                = useRef<HTMLInputElement>(null)
+
   const date = session.createdAt
     ? new Date(session.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
     : ''
 
+  // Focus input when entering edit mode
+  useEffect(() => {
+    if (editing) {
+      setDraft(session.title)
+      setTimeout(() => inputRef.current?.select(), 0)
+    }
+  }, [editing, session.title])
+
+  const commitRename = () => {
+    const trimmed = draft.trim()
+    if (trimmed && trimmed !== session.title) onRename(trimmed)
+    setEditing(false)
+  }
+
+  const cancelRename = () => {
+    setDraft(session.title)
+    setEditing(false)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter')  { e.preventDefault(); commitRename() }
+    if (e.key === 'Escape') { e.preventDefault(); cancelRename() }
+  }
+
   return (
-    <button
-      onClick={onClick}
+    <div
       className={`
-        w-full text-left px-3 py-2.5 border-b border-slate-800/60 transition-colors
+        group relative flex items-start px-3 py-2.5 border-b border-slate-800/60
+        transition-colors cursor-pointer select-none
         ${active
           ? 'bg-slate-700/60 border-l-2 border-l-emerald-500'
           : 'hover:bg-slate-800/50 border-l-2 border-l-transparent'}
       `}
+      onClick={() => { if (!editing) onSelect() }}
     >
-      <div className="flex items-start gap-2">
-        <MessageSquare
-          size={11}
-          className={`mt-0.5 shrink-0 ${active ? 'text-emerald-400' : 'text-slate-600'}`}
-        />
-        <div className="min-w-0 flex-1">
-          <p className={`text-[11px] truncate leading-tight ${active ? 'text-slate-200' : 'text-slate-400'}`}>
-            {session.title}
-          </p>
-          {date && (
-            <p className="text-[10px] text-slate-600 mt-0.5">{date}</p>
-          )}
-        </div>
+      <MessageSquare
+        size={11}
+        className={`mt-0.5 mr-2 shrink-0 ${active ? 'text-emerald-400' : 'text-slate-600'}`}
+      />
+
+      <div className="min-w-0 flex-1 pr-1">
+        {editing ? (
+          <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+            <input
+              ref={inputRef}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={handleKeyDown}
+              className="flex-1 min-w-0 text-[11px] bg-slate-700 border border-emerald-500/60
+                         rounded px-1.5 py-0.5 text-slate-200 outline-none"
+            />
+            <button onClick={commitRename} title="Save" className="text-emerald-400 hover:text-emerald-300 shrink-0">
+              <Check size={11} />
+            </button>
+            <button onClick={cancelRename} title="Cancel" className="text-slate-500 hover:text-slate-300 shrink-0">
+              <X size={11} />
+            </button>
+          </div>
+        ) : (
+          <>
+            <p className={`text-[11px] truncate leading-tight ${active ? 'text-slate-200' : 'text-slate-400'}`}>
+              {session.title}
+            </p>
+            {date && <p className="text-[10px] text-slate-600 mt-0.5">{date}</p>}
+          </>
+        )}
       </div>
-    </button>
+
+      {/* Action buttons — shown on hover when not editing */}
+      {!editing && (
+        <div
+          className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => setEditing(true)}
+            title="Rename"
+            className="p-1 text-slate-600 hover:text-slate-300 rounded transition-colors"
+          >
+            <Pencil size={10} />
+          </button>
+          <button
+            onClick={onDelete}
+            title="Delete"
+            className="p-1 text-slate-600 hover:text-rose-400 rounded transition-colors"
+          >
+            <Trash2 size={10} />
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
 
+// ── Panel ─────────────────────────────────────────────────────────────────────
+
 export default function SessionHistoryPanel() {
   const { sessionId, sessions } = useWorkspaceStore()
-  const { newSession, switchSession, loadSessions } = useQuantWorkspace()
+  const { initSessions, newSession, switchSession, renameSession, deleteSession } =
+    useQuantWorkspace()
 
-  useEffect(() => { loadSessions() }, [])
+  // Run once on mount: restore / create active session from DB
+  useEffect(() => { initSessions() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <aside className="h-full flex flex-col bg-slate-900 border-r border-slate-700">
@@ -80,7 +160,9 @@ export default function SessionHistoryPanel() {
               key={s.id}
               session={s}
               active={s.id === sessionId}
-              onClick={() => switchSession(s.id)}
+              onSelect={() => switchSession(s.id)}
+              onRename={(title) => renameSession(s.id, title)}
+              onDelete={() => deleteSession(s.id)}
             />
           ))
         )}

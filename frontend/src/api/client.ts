@@ -1,6 +1,6 @@
 import axios from 'axios'
 import type {
-  SimulationConfig, SimResult, AlphaRecord, BacktestRunResponse, ChatSession,
+  SimulationConfig, SimResult, AlphaRecord, BacktestRunResponse,
   WorkflowResponse,
 } from '../types'
 
@@ -92,6 +92,15 @@ export const apiListSessions = () =>
   http.get<{ sessions: Array<{ session_id: string; title: string; created_at: string }>; count: number }>(
     '/chat/sessions',
   )
+
+export const apiRenameSession = (sessionId: string, title: string) =>
+  http.patch<{ session_id: string; title: string; created_at: string }>(
+    `/chat/sessions/${sessionId}`,
+    { title },
+  )
+
+export const apiDeleteSession = (sessionId: string) =>
+  http.delete(`/chat/sessions/${sessionId}`)
 
 export const apiGetSession = (sessionId: string) =>
   http.get<{

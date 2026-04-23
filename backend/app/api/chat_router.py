@@ -101,6 +101,10 @@ class ChatRequest(BaseModel):
     session_id: str = Field("default", description="会话 ID（用于跨轮记忆和消息持久化）")
 
 
+class UpdateSessionRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=256, description="新会话标题")
+
+
 class ChatResponse(BaseModel):
     session_id: str
     reply:      str
@@ -192,6 +196,43 @@ def get_session(
         created_at = _dt_str(sess.created_at),
         messages   = msg_items,
     )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/chat/sessions/{session_id} — 重命名会话
+# ---------------------------------------------------------------------------
+
+@chat_router.patch("/sessions/{session_id}", response_model=SessionSummary)
+def rename_session(
+    session_id: str,
+    req:        UpdateSessionRequest,
+    store:      ChatStore = Depends(get_chat_store),
+) -> SessionSummary:
+    """重命名指定会话标题。"""
+    ok = store.update_session_title(session_id, req.title)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' 不存在")
+    sess = store.get_session(session_id)
+    return SessionSummary(
+        session_id = sess.id,
+        title      = sess.title,
+        created_at = _dt_str(sess.created_at),
+    )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/chat/sessions/{session_id} — 删除会话
+# ---------------------------------------------------------------------------
+
+@chat_router.delete("/sessions/{session_id}", status_code=204)
+def delete_session(
+    session_id: str,
+    store:      ChatStore = Depends(get_chat_store),
+) -> None:
+    """删除指定会话及其所有消息。"""
+    ok = store.delete_session(session_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' 不存在")
 
 
 # ---------------------------------------------------------------------------

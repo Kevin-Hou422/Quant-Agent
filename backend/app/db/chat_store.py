@@ -190,3 +190,23 @@ class ChatStore:
                 .order_by(ChatMessage.created_at.asc())
             )
             return list(db.scalars(stmt))
+
+    def update_session_title(self, session_id: str, title: str) -> bool:
+        """更新会话标题，返回 True 表示成功，False 表示会话不存在。"""
+        with self._Session() as db:
+            sess = db.get(ChatSession, session_id)
+            if sess is None:
+                return False
+            sess.title = title[:256]
+            db.commit()
+            return True
+
+    def delete_session(self, session_id: str) -> bool:
+        """删除会话及其所有消息（CASCADE），返回 True 表示成功。"""
+        with self._Session() as db:
+            sess = db.get(ChatSession, session_id)
+            if sess is None:
+                return False
+            db.delete(sess)
+            db.commit()
+            return True
