@@ -122,24 +122,32 @@ class SignalProcessor:
 
     def _truncate(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        每行按分位数截断极值。
+        Winsorise each row by cross-sectional quantiles.
 
-        使用 np.nanpercentile(axis=1) 批量计算全部行的分位数，
-        再用广播 np.clip 一次性截断，无任何 T 轴循环。
+        Only rows with at least one finite value receive meaningful bounds;
+        all-NaN burn-in rows are left untouched (they stay NaN), which avoids
+        the NumPy "All-NaN slice encountered" RuntimeWarning.
         """
         arr = df.to_numpy(dtype=float)          # (T, N)
 
         lo_arr = np.full(arr.shape[0], -np.inf)
         hi_arr = np.full(arr.shape[0],  np.inf)
 
-        if self.cfg.truncation_min_q is not None:
-            # nanpercentile axis=1 → (T,)，忽略 NaN
-            lo_arr = np.nanpercentile(arr, self.cfg.truncation_min_q * 100, axis=1)
+        # Rows that contain at least one finite (non-NaN) value
+        has_valid = np.isfinite(arr).any(axis=1)  # (T,) bool
 
-        if self.cfg.truncation_max_q is not None:
-            hi_arr = np.nanpercentile(arr, self.cfg.truncation_max_q * 100, axis=1)
+        if has_valid.any():
+            valid_arr = arr[has_valid]             # (T_valid, N)
+            if self.cfg.truncation_min_q is not None:
+                lo_arr[has_valid] = np.nanpercentile(
+                    valid_arr, self.cfg.truncation_min_q * 100, axis=1,
+                )
+            if self.cfg.truncation_max_q is not None:
+                hi_arr[has_valid] = np.nanpercentile(
+                    valid_arr, self.cfg.truncation_max_q * 100, axis=1,
+                )
 
-        # 广播截断：(T,) → (T, 1) → broadcast to (T, N)
+        # Broadcast clip: (T,) → (T, 1) → (T, N)
         clipped = np.clip(arr, lo_arr[:, np.newaxis], hi_arr[:, np.newaxis])
         return pd.DataFrame(clipped, index=df.index, columns=df.columns)
 
