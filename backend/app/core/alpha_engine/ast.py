@@ -13,50 +13,67 @@ import copy
 # Supported operator registry
 # ---------------------------------------------------------------------------
 
-ARITHMETIC_OPS = {"add", "sub", "mul", "div"}
+ARITHMETIC_OPS = {"add", "sub", "mul", "div", "ne", "pow", "max2", "min2"}
 
-UNARY_OPS = {"log", "abs", "neg", "sqrt", "sign"}
+UNARY_OPS = {"log", "abs", "neg", "sqrt", "sign", "logical_not"}
+
+LOGICAL_OPS = {"logical_and", "logical_or"}
+
+CONDITIONAL_OPS = {"if_else", "where", "trade_when", "signed_power", "weighted_sum"}
 
 TIME_SERIES_OPS = {
-    "ts_mean",      # rolling mean over window
-    "ts_std",       # rolling std over window
-    "ts_delta",     # x - lag(x, window)
-    "ts_delay",     # lag(x, window)
-    "ts_max",       # rolling max over window
-    "ts_min",       # rolling min over window
-    "ts_decay_linear",  # linearly-weighted decay over window
-    "ts_rank",      # rolling rank of latest value within window
-    "ts_corr",      # rolling cross-asset correlation (2 inputs)
-    "ts_cov",       # rolling covariance (2 inputs)
+    # Standard
+    "ts_mean", "ts_std", "ts_var", "ts_sum",
+    "ts_max", "ts_min", "ts_rank",
+    "ts_decay_linear", "ts_delta", "ts_delay",
+    # Extended single-input
+    "ts_argmax", "ts_argmin", "ts_zscore",
+    "ts_skew", "ts_kurt", "ts_entropy",
+    # Two-input
+    "ts_corr", "ts_cov",
 }
 
 CROSS_SECTIONAL_OPS = {
-    "rank",         # cross-sectional rank (0..1)
-    "zscore",       # cross-sectional z-score
-    "demean",       # subtract cross-sectional mean
-    "group_rank",   # rank within a group
-    "group_zscore", # z-score within a group
-    "winsorize",    # clip to [-k*std, +k*std] cross-sectionally
+    "rank", "zscore", "scale", "ind_neutralize",
+    "winsorize", "normalize",
+}
+
+GROUP_OPS = {
+    "group_rank", "group_zscore", "group_mean", "group_neutralize",
 }
 
 LEAF_OPS = {"data"}  # raw data field reference
 
-ALL_OPS = ARITHMETIC_OPS | UNARY_OPS | TIME_SERIES_OPS | CROSS_SECTIONAL_OPS | LEAF_OPS
+ALL_OPS = (
+    ARITHMETIC_OPS | UNARY_OPS | LOGICAL_OPS | CONDITIONAL_OPS
+    | TIME_SERIES_OPS | CROSS_SECTIONAL_OPS | GROUP_OPS | LEAF_OPS
+)
 
 # Map op -> expected number of children (None = variadic)
 OP_ARITY: dict[str, int | None] = {
     # arithmetic
     "add": 2, "sub": 2, "mul": 2, "div": 2,
+    "ne": 2, "pow": 2, "max2": 2, "min2": 2,
     # unary
-    "log": 1, "abs": 1, "neg": 1, "sqrt": 1, "sign": 1,
+    "log": 1, "abs": 1, "neg": 1, "sqrt": 1, "sign": 1, "logical_not": 1,
+    # logical binary
+    "logical_and": 2, "logical_or": 2,
+    # conditional
+    "if_else": 3, "where": 3, "trade_when": 2,
+    "signed_power": 2, "weighted_sum": None,
     # time-series (single input + window param)
-    "ts_mean": 1, "ts_std": 1, "ts_delta": 1, "ts_delay": 1,
+    "ts_mean": 1, "ts_std": 1, "ts_var": 1, "ts_sum": 1,
+    "ts_delta": 1, "ts_delay": 1,
     "ts_max": 1, "ts_min": 1, "ts_decay_linear": 1, "ts_rank": 1,
+    "ts_argmax": 1, "ts_argmin": 1, "ts_zscore": 1,
+    "ts_skew": 1, "ts_kurt": 1, "ts_entropy": 1,
     # time-series (two inputs + window param)
     "ts_corr": 2, "ts_cov": 2,
     # cross-sectional
-    "rank": 1, "zscore": 1, "demean": 1,
-    "group_rank": 1, "group_zscore": 1, "winsorize": 1,
+    "rank": 1, "zscore": 1, "scale": 1, "ind_neutralize": 1,
+    "winsorize": 1, "normalize": 1,
+    # group
+    "group_rank": 1, "group_zscore": 1, "group_mean": 1, "group_neutralize": 1,
     # leaf
     "data": 0,
 }
@@ -65,12 +82,20 @@ OP_ARITY: dict[str, int | None] = {
 DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
     "ts_mean":         {"window": 10},
     "ts_std":          {"window": 10},
+    "ts_var":          {"window": 10},
+    "ts_sum":          {"window": 10},
     "ts_delta":        {"window": 1},
     "ts_delay":        {"window": 1},
     "ts_max":          {"window": 10},
     "ts_min":          {"window": 10},
     "ts_decay_linear": {"window": 10},
     "ts_rank":         {"window": 10},
+    "ts_argmax":       {"window": 10},
+    "ts_argmin":       {"window": 10},
+    "ts_zscore":       {"window": 20},
+    "ts_skew":         {"window": 20},
+    "ts_kurt":         {"window": 20},
+    "ts_entropy":      {"window": 20},
     "ts_corr":         {"window": 10},
     "ts_cov":          {"window": 10},
     "winsorize":       {"k": 3.0},

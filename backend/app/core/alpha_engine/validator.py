@@ -16,10 +16,7 @@ from __future__ import annotations
 import warnings
 from typing import List
 
-from .typed_nodes import (
-    Node, TimeSeriesNode, CrossSectionalNode, DataNode,
-    ScalarNode, ArithmeticNode,
-)
+from .typed_nodes import Node, TimeSeriesNode, DataNode
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +56,7 @@ class _BaseValidator:
         for child in node.children():
             self._walk(child)
 
-    def _check(self, node: Node) -> None:
+    def _check(self, node: Node) -> None:  # noqa: B027
         pass  # override in subclasses
 
 

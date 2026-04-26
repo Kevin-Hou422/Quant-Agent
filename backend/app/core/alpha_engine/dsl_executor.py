@@ -16,8 +16,8 @@ from typing import Dict, Optional
 import numpy as np
 import pandas as pd
 
-from .typed_nodes import Node, DataNode, Cache, Dataset
-from .validator import AlphaValidator, ValidationError
+from .typed_nodes import Node, Cache, Dataset
+from .validator import AlphaValidator
 from .parser import Parser, ParseError
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,12 @@ def _add_derived(
         aligned["returns"] = np.log(close / close.shift(1))
     if "vwap" not in aligned and all(f in aligned for f in ("high", "low", "close")):
         aligned["vwap"] = (aligned["high"] + aligned["low"] + aligned["close"]) / 3.0
+    if "groups" not in aligned and "close" in aligned:
+        # Auto-generate 10 equal-size groups for group_rank / group_zscore etc.
+        close = aligned["close"]
+        N      = close.shape[1]
+        grp    = np.tile(np.arange(N) % 10, (len(close), 1))
+        aligned["groups"] = pd.DataFrame(grp, index=close.index, columns=close.columns)
     return aligned
 
 
@@ -208,7 +214,7 @@ class Executor:
         Dry-run: return the list of cache keys that would be populated
         during a real execution (useful for debugging memoization).
         """
-        idx, cols, aligned = _align_dataset(dataset)
+        _, _, aligned = _align_dataset(dataset)
         aligned = _add_derived(aligned)
         arrays  = _to_arrays(aligned)
         cache: Cache = {}
