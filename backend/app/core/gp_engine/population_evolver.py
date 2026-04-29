@@ -19,17 +19,25 @@ FOR generation in 1..G:
     2. Compute fitness:
          fitness = sharpe_oos
                  - 0.2 * turnover
-                 - 0.3 * max(0, sharpe_is - sharpe_oos)
+                 - 0.3 * abs(max_drawdown)
+                 - 0.5 * max(0, sharpe_is - sharpe_oos)
 
     3. Selection:
          - keep top K (elitism, K = elite_ratio × pop_size)
          - diversity filter via AlphaPool (signal correlation < 0.9)
 
-    4. Generate new population:
-         - crossover (subtree_crossover)   — 40%
-         - point mutation (point_mutation)  — 30%
-         - hoist mutation (hoist_mutation)  — 15%
-         - param mutation (param_mutation)  — 15%
+    4. Generate new population (11 operators, adaptive weights):
+         - crossover         — structural combination via subtree swap
+         - point             — operator swap within same type class
+         - hoist             — tree simplification (remove a level)
+         - param             — TS window parameter ±20 %
+         - wrap_rank         — add rank/zscore layer
+         - add_ts_smoothing  — add TS smoothing layer
+         - add_condition     — add momentum/trend condition
+         - add_volume_filter — add volume gate
+         - combine_signals   — arithmetic combination of two signals
+         - replace_subtree   — swap subtree with generated one
+         - add_operator      — wrap with unary/arithmetic layer
          Adaptive weights via fitness.mutation_weights_from_metrics()
 
     5. Repeat
@@ -67,6 +75,13 @@ from app.core.gp_engine.mutations import (
     param_mutation,
     point_mutation,
     subtree_crossover,
+    wrap_rank,
+    add_ts_smoothing,
+    add_condition,
+    add_volume_filter,
+    combine_signals,
+    replace_subtree,
+    add_operator,
 )
 from app.core.gp_engine.fitness import compute_fitness, mutation_weights_from_metrics
 from app.core.gp_engine.alpha_pool import AlphaPool, PoolEntry
@@ -93,6 +108,7 @@ class EvalResult:
     sharpe_is:         float
     sharpe_oos:        float
     turnover:          float
+    max_drawdown:      float
     overfitting_score: float
     node:              Optional[Node] = field(default=None, repr=False)
 
@@ -103,6 +119,7 @@ class EvalResult:
             "sharpe_is":         round(self.sharpe_is,         4),
             "sharpe_oos":        round(self.sharpe_oos,        4),
             "turnover":          round(self.turnover,          4),
+            "max_drawdown":      round(self.max_drawdown,      4),
             "overfitting_score": round(self.overfitting_score, 4),
         }
 
@@ -330,15 +347,21 @@ class PopulationEvolver:
             except Exception as exc:
                 logger.warning("Failed to parse seed DSL '%s': %s", dsl[:60], exc)
 
-        # 2. Fill remainder from random pool + mutations of seed
+        # 2. Fill remainder from crossover of seeds + mutations + random
         attempts = 0
         while len(pop) < self._pop_size and attempts < self._pop_size * 20:
             attempts += 1
             try:
-                if pop and random.random() < 0.5:
+                roll = random.random()
+                if len(pop) >= 2 and roll < 0.30:
+                    # Crossover between two seeds for structured diversity
+                    p1, p2 = random.sample(pop[:min(len(pop), 8)], 2)
+                    c1, c2 = subtree_crossover(p1, p2)
+                    cand   = random.choice([c1, c2])
+                elif pop and roll < 0.65:
                     # Mutate an existing individual for more directed exploration
-                    parent  = random.choice(pop)
-                    cand    = random.choice([
+                    parent = random.choice(pop)
+                    cand   = random.choice([
                         point_mutation(parent),
                         hoist_mutation(parent),
                         param_mutation(parent),
@@ -389,9 +412,10 @@ class PopulationEvolver:
                 except (TypeError, ValueError):
                     return 0.0
 
-            sharpe_is  = _f(is_r.sharpe_ratio)
-            sharpe_oos = _f(oos_r.sharpe_ratio) if oos_r else 0.0
-            turnover   = _f(is_r.ann_turnover)
+            sharpe_is    = _f(is_r.sharpe_ratio)
+            sharpe_oos   = _f(oos_r.sharpe_ratio) if oos_r else 0.0
+            turnover     = _f(is_r.ann_turnover)
+            max_drawdown = _f(oos_r.max_drawdown) if oos_r else 0.0
 
             if abs(sharpe_is) > 1e-9 and oos_r:
                 deg = (sharpe_is - sharpe_oos) / abs(sharpe_is)
@@ -399,7 +423,7 @@ class PopulationEvolver:
             else:
                 overfit_score = 0.0
 
-            fitness = compute_fitness(sharpe_is, sharpe_oos, turnover)
+            fitness = compute_fitness(sharpe_is, sharpe_oos, turnover, max_drawdown)
 
             return EvalResult(
                 dsl               = dsl,
@@ -407,6 +431,7 @@ class PopulationEvolver:
                 sharpe_is         = sharpe_is,
                 sharpe_oos        = sharpe_oos,
                 turnover          = turnover,
+                max_drawdown      = max_drawdown,
                 overfitting_score = overfit_score,
                 node              = node,
             )
@@ -500,6 +525,48 @@ class PopulationEvolver:
                     if parent is None:
                         continue
                     candidates = [param_mutation(parent)]
+
+                elif op == "wrap_rank":
+                    parent = tournament()
+                    if parent is None:
+                        continue
+                    candidates = [wrap_rank(parent)]
+
+                elif op == "add_ts_smoothing":
+                    parent = tournament()
+                    if parent is None:
+                        continue
+                    candidates = [add_ts_smoothing(parent)]
+
+                elif op == "add_condition":
+                    parent = tournament()
+                    if parent is None:
+                        continue
+                    candidates = [add_condition(parent)]
+
+                elif op == "add_volume_filter":
+                    parent = tournament()
+                    if parent is None:
+                        continue
+                    candidates = [add_volume_filter(parent)]
+
+                elif op == "combine_signals":
+                    p1, p2 = tournament(), tournament()
+                    if p1 is None or p2 is None:
+                        continue
+                    candidates = [combine_signals(p1, p2)]
+
+                elif op == "replace_subtree":
+                    parent = tournament()
+                    if parent is None:
+                        continue
+                    candidates = [replace_subtree(parent)]
+
+                elif op == "add_operator":
+                    parent = tournament()
+                    if parent is None:
+                        continue
+                    candidates = [add_operator(parent)]
 
                 else:
                     # Exploration: random new individual
