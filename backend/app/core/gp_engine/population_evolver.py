@@ -145,32 +145,40 @@ class PopulationEvolver:
 
     Parameters
     ----------
-    is_data        : In-sample dataset (dict of pd.DataFrame)
-    oos_data       : Out-of-sample dataset (dict of pd.DataFrame)
-    pop_size       : Individuals per generation
-    n_generations  : Number of evolution generations
-    elite_ratio    : Fraction of pop kept as elite parents
-    corr_threshold : Signal correlation threshold for diversity filter
-    seed           : Random seed
+    is_data           : In-sample dataset (dict of pd.DataFrame)
+    oos_data          : Out-of-sample dataset (dict of pd.DataFrame)
+    multi_datasets    : Optional extra datasets for multi-universe fitness.
+                        When set, GP fitness = aggregated cross-dataset Sharpe.
+                        Format: dict[dataset_name → dict[field → pd.DataFrame]]
+    multi_aggregation : "mean" or "min" cross-dataset Sharpe aggregation
+    pop_size          : Individuals per generation
+    n_generations     : Number of evolution generations
+    elite_ratio       : Fraction of pop kept as elite parents
+    corr_threshold    : Signal correlation threshold for diversity filter
+    seed              : Random seed
     """
 
     def __init__(
         self,
-        is_data:        Dict[str, pd.DataFrame],
-        oos_data:       Dict[str, pd.DataFrame],
-        pop_size:       int   = 12,
-        n_generations:  int   = 4,
-        elite_ratio:    float = 0.25,
-        corr_threshold: float = 0.90,
-        seed:           int   = 42,
+        is_data:           Dict[str, pd.DataFrame],
+        oos_data:          Dict[str, pd.DataFrame],
+        multi_datasets:    Optional[Dict[str, Dict[str, pd.DataFrame]]] = None,
+        multi_aggregation: str   = "mean",
+        pop_size:          int   = 12,
+        n_generations:     int   = 4,
+        elite_ratio:       float = 0.25,
+        corr_threshold:    float = 0.90,
+        seed:              int   = 42,
     ) -> None:
-        self._is_data        = is_data
-        self._oos_data       = oos_data
-        self._pop_size       = pop_size
-        self._n_gen          = n_generations
-        self._elite_ratio    = elite_ratio
-        self._corr_threshold = corr_threshold
-        self._seed           = seed
+        self._is_data           = is_data
+        self._oos_data          = oos_data
+        self._multi_datasets    = multi_datasets
+        self._multi_aggregation = multi_aggregation
+        self._pop_size          = pop_size
+        self._n_gen             = n_generations
+        self._elite_ratio       = elite_ratio
+        self._corr_threshold    = corr_threshold
+        self._seed              = seed
         random.seed(seed)
         np.random.seed(seed)
 
@@ -394,9 +402,20 @@ class PopulationEvolver:
 
     def _evaluate_one(self, dsl: str, node: Optional[Node] = None) -> Optional[EvalResult]:
         """
-        Full IS+OOS backtest for one DSL using the default SimulationConfig.
-        Returns None on any failure.
+        Full IS+OOS backtest for one DSL.
+
+        When self._multi_datasets is set, fitness uses the aggregated
+        cross-dataset Sharpe (MultiDatasetBacktester).  Otherwise falls
+        back to standard single-dataset RealisticBacktester evaluation.
         """
+        if self._multi_datasets:
+            return self._evaluate_one_multi(dsl, node)
+        return self._evaluate_one_single(dsl, node)
+
+    def _evaluate_one_single(
+        self, dsl: str, node: Optional[Node] = None
+    ) -> Optional[EvalResult]:
+        """Single-dataset IS+OOS backtest (standard path)."""
         from app.core.backtest_engine.realistic_backtester import RealisticBacktester
 
         try:
@@ -438,6 +457,69 @@ class PopulationEvolver:
 
         except Exception as exc:
             logger.debug("Eval failed '%s': %s", dsl[:60], exc)
+            return None
+
+    def _evaluate_one_multi(
+        self, dsl: str, node: Optional[Node] = None
+    ) -> Optional[EvalResult]:
+        """
+        Multi-dataset evaluation: fitness = aggregated cross-dataset OOS Sharpe.
+
+        The primary IS dataset is still used to get per-individual IS Sharpe
+        (for overfitting penalty).  Each extra dataset in self._multi_datasets
+        is split internally by MultiDatasetBacktester (is_split=0.7).
+        """
+        from app.core.backtest_engine.multi_dataset_backtester import (
+            MultiDatasetBacktester, compute_multi_dataset_fitness,
+        )
+        from app.core.backtest_engine.realistic_backtester import RealisticBacktester
+
+        try:
+            # Get IS Sharpe from primary dataset for overfitting penalty
+            bt_is  = RealisticBacktester(config=self._default_cfg)
+            res_is = bt_is.run(dsl, self._is_data)
+            sharpe_is = float(res_is.is_report.sharpe_ratio or 0.0)
+            turnover  = float(res_is.is_report.ann_turnover  or 0.0)
+
+            # Multi-dataset generalization
+            backtester = MultiDatasetBacktester(
+                config      = self._default_cfg,
+                aggregation = self._multi_aggregation,
+                is_split    = 0.70,
+            )
+            multi_result = backtester.run(dsl, self._multi_datasets)
+
+            agg_sharpe   = multi_result.aggregated_sharpe
+            max_drawdown = min(
+                (r.max_drawdown for r in multi_result.per_dataset.values() if r.error is None),
+                default=0.0,
+            )
+
+            if abs(sharpe_is) > 1e-9:
+                overfit = float(np.clip((sharpe_is - agg_sharpe) / abs(sharpe_is), 0.0, 1.0))
+            else:
+                overfit = 0.0
+
+            fitness = compute_multi_dataset_fitness(
+                result       = multi_result,
+                turnover     = turnover,
+                max_drawdown = max_drawdown,
+                sharpe_is    = sharpe_is,
+            )
+
+            return EvalResult(
+                dsl               = dsl,
+                fitness           = fitness,
+                sharpe_is         = sharpe_is,
+                sharpe_oos        = agg_sharpe,
+                turnover          = turnover,
+                max_drawdown      = max_drawdown,
+                overfitting_score = overfit,
+                node              = node,
+            )
+
+        except Exception as exc:
+            logger.debug("Multi-eval failed '%s': %s", dsl[:60], exc)
             return None
 
     def _compute_signal_vec(self, dsl: str) -> Optional[np.ndarray]:

@@ -143,6 +143,30 @@ class RealisticBacktestResponse(BaseModel):
     config: Dict[str, Any]
 
 
+class MultiDatasetBacktestRequest(BaseModel):
+    dsl:         str            = Field("rank(ts_delta(log(close),5))")
+    datasets:    List[str]      = Field(["us_equity"], description="Dataset names to evaluate on")
+    aggregation: str            = Field("mean", description="'mean' or 'min' aggregation")
+    is_split:    float          = Field(0.70, ge=0.5, lt=1.0)
+    n_tickers:   int            = Field(20,   ge=5, le=200, description="Tickers per dataset (synthetic mode)")
+    n_days:      int            = Field(252,  ge=60, le=2000, description="Days of history (synthetic mode)")
+    seed:        int            = Field(42)
+    use_synthetic: bool         = Field(True, description="Use synthetic data (False = fetch real data via yfinance)")
+    start:       str            = Field("2018-01-01", description="Start date for real data")
+    end:         str            = Field("2024-01-01", description="End date for real data")
+
+
+class MultiDatasetBacktestResponse(BaseModel):
+    dsl:               str
+    aggregated_sharpe: float
+    aggregation_mode:  str
+    datasets_passed:   int
+    datasets_total:    int
+    pass_rate:         float
+    per_dataset:       Dict[str, Any]
+    errors:            List[str]
+
+
 class AlphaRecord(BaseModel):
     id: int
     dsl: str
@@ -432,6 +456,88 @@ def backtest_realistic(req: RealisticBacktestRequest) -> RealisticBacktestRespon
         is_report  = result.is_report.to_dict(),
         oos_report = result.oos_report.to_dict() if result.oos_report else None,
         config     = result.to_dict()["config"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/backtest/multi
+# ---------------------------------------------------------------------------
+
+@router.post("/backtest/multi", response_model=MultiDatasetBacktestResponse, tags=["Backtest"])
+def backtest_multi(req: MultiDatasetBacktestRequest) -> MultiDatasetBacktestResponse:
+    """
+    Run IS+OOS backtest across multiple market datasets and return an
+    aggregated generalization score.
+
+    - aggregation="mean"  : final_score = mean(sharpe_oos across datasets)
+    - aggregation="min"   : final_score = min(sharpe_oos)  [stricter]
+
+    When use_synthetic=True (default) each dataset is a synthetic OHLCV panel
+    with the requested n_tickers × n_days shape.  Set use_synthetic=False to
+    fetch real market data via yfinance for the named datasets.
+    """
+    from app.core.backtest_engine.multi_dataset_backtester import MultiDatasetBacktester
+    from app.core.data_engine.multi_dataset import load_dataset
+
+    if req.aggregation not in ("mean", "min"):
+        raise HTTPException(status_code=422, detail="aggregation must be 'mean' or 'min'")
+
+    valid_names = {"us_equity", "china_a", "crypto", "etf"}
+    for ds_name in req.datasets:
+        if ds_name not in valid_names:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown dataset '{ds_name}'. Valid: {sorted(valid_names)}",
+            )
+
+    # Build per-dataset raw data dicts
+    datasets_raw: Dict[str, Any] = {}
+
+    if req.use_synthetic:
+        # Synthetic mode: independent random panels per dataset (different seeds)
+        base_seed = req.seed
+        for i, ds_name in enumerate(req.datasets):
+            datasets_raw[ds_name] = _make_synthetic_dataset(
+                req.n_tickers, req.n_days, seed=base_seed + i
+            )
+    else:
+        # Real data mode: fetch via DatasetRegistry
+        for ds_name in req.datasets:
+            try:
+                ds = load_dataset(
+                    ds_name,
+                    start=req.start,
+                    end=req.end,
+                    use_cache=True,
+                )
+                datasets_raw[ds_name] = ds.data
+            except Exception as exc:
+                logger.error("Failed to load dataset '%s': %s", ds_name, exc)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to load dataset '{ds_name}': {exc}",
+                )
+
+    backtester = MultiDatasetBacktester(
+        aggregation = req.aggregation,
+        is_split    = req.is_split,
+    )
+
+    try:
+        result = backtester.run(req.dsl, datasets_raw)
+    except Exception as exc:
+        logger.exception("MultiDatasetBacktester.run failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return MultiDatasetBacktestResponse(
+        dsl               = req.dsl,
+        aggregated_sharpe = result.aggregated_sharpe,
+        aggregation_mode  = result.aggregation_mode,
+        datasets_passed   = result.datasets_passed,
+        datasets_total    = result.datasets_total,
+        pass_rate         = result.pass_rate,
+        per_dataset       = result.to_dict()["per_dataset"],
+        errors            = result.errors,
     )
 
 

@@ -99,3 +99,18 @@ __all__ = [
 # 新增：数据分区器（IS/OOS 严格隔离）
 # ============================================================
 from .data_partitioner import DataPartitioner, PartitionedDataset
+
+# ============================================================
+# 新增：多数据集抽象层 (PROMPT 3)
+# ============================================================
+from .multi_dataset import (
+    Dataset,
+    DatasetRegistry,
+    load_dataset as load_named_dataset,
+    get_registry,
+    STANDARD_FIELDS,
+    US_EQUITY_UNIVERSE,
+    CHINA_A_UNIVERSE,
+    CRYPTO_UNIVERSE,
+    ETF_UNIVERSE,
+)
