@@ -143,17 +143,41 @@ class RealisticBacktestResponse(BaseModel):
     config: Dict[str, Any]
 
 
+class FilterConfigSchema(BaseModel):
+    """Dynamic filter applied AFTER dataset selection."""
+    market_cap:      Optional[str] = Field(None, description="mega_cap|large_cap|mid_cap|small_cap")
+    liquidity:       Optional[str] = Field(None, description="ultra_high|high|medium|low")
+    volatility:      Optional[str] = Field(None, description="high_vol|medium_vol|low_vol")
+    regime:          Optional[str] = Field(None, description="bull|bear|sideways")
+    beta:            Optional[str] = Field(None, description="high_beta|low_beta")
+    correlation:     Optional[str] = Field(None, description="high_corr|low_corr")
+    momentum_regime: Optional[str] = Field(None, description="strong_uptrend|strong_downtrend")
+    earnings_window: Optional[str] = Field(None, description="pre_earnings|post_earnings (US/HK only)")
+
+
 class MultiDatasetBacktestRequest(BaseModel):
-    dsl:         str            = Field("rank(ts_delta(log(close),5))")
-    datasets:    List[str]      = Field(["us_equity"], description="Dataset names to evaluate on")
-    aggregation: str            = Field("mean", description="'mean' or 'min' aggregation")
-    is_split:    float          = Field(0.70, ge=0.5, lt=1.0)
-    n_tickers:   int            = Field(20,   ge=5, le=200, description="Tickers per dataset (synthetic mode)")
-    n_days:      int            = Field(252,  ge=60, le=2000, description="Days of history (synthetic mode)")
-    seed:        int            = Field(42)
-    use_synthetic: bool         = Field(True, description="Use synthetic data (False = fetch real data via yfinance)")
-    start:       str            = Field("2018-01-01", description="Start date for real data")
-    end:         str            = Field("2024-01-01", description="End date for real data")
+    dsl:           str                         = Field("rank(ts_delta(log(close),5))")
+    datasets:      List[str]                   = Field(
+        ["us_tech_large"],
+        description=(
+            "Dataset names: us_tech_large, us_financials, us_healthcare, us_energy, "
+            "china_tech, china_consumer, china_state_owned, hk_china_tech, "
+            "crypto_major, crypto_alt"
+        ),
+    )
+    filters:       FilterConfigSchema          = Field(default_factory=FilterConfigSchema)
+    aggregation:   str                         = Field("mean", description="'mean' or 'min'")
+    is_split:      float                       = Field(0.70, ge=0.5, lt=1.0)
+    start:         str                         = Field("2021-01-01")
+    end:           str                         = Field("2024-01-01")
+    use_synthetic: bool                        = Field(
+        False,
+        description="True = synthetic random data (for testing); False = fetch real market data",
+    )
+    # Synthetic-mode only
+    n_tickers:     int                         = Field(20, ge=5, le=200)
+    n_days:        int                         = Field(252, ge=60, le=2000)
+    seed:          int                         = Field(42)
 
 
 class MultiDatasetBacktestResponse(BaseModel):
@@ -164,6 +188,7 @@ class MultiDatasetBacktestResponse(BaseModel):
     datasets_total:    int
     pass_rate:         float
     per_dataset:       Dict[str, Any]
+    filter_results:    Dict[str, Any]
     errors:            List[str]
 
 
@@ -466,23 +491,44 @@ def backtest_realistic(req: RealisticBacktestRequest) -> RealisticBacktestRespon
 @router.post("/backtest/multi", response_model=MultiDatasetBacktestResponse, tags=["Backtest"])
 def backtest_multi(req: MultiDatasetBacktestRequest) -> MultiDatasetBacktestResponse:
     """
-    Run IS+OOS backtest across multiple market datasets and return an
-    aggregated generalization score.
+    Run IS+OOS backtest across multiple real market datasets with optional
+    per-dataset filtering.
 
-    - aggregation="mean"  : final_score = mean(sharpe_oos across datasets)
-    - aggregation="min"   : final_score = min(sharpe_oos)  [stricter]
+    Workflow:
+      1. Load each named dataset via its native provider (yfinance / akshare / ccxt)
+      2. Apply filters (liquidity, volatility, regime, beta, …) to each dataset
+      3. Run IS+OOS backtest on the filtered universe
+      4. Aggregate OOS Sharpe across datasets (mean or min)
 
-    When use_synthetic=True (default) each dataset is a synthetic OHLCV panel
-    with the requested n_tickers × n_days shape.  Set use_synthetic=False to
-    fetch real market data via yfinance for the named datasets.
+    Dataset options:
+      us_tech_large, us_financials, us_healthcare, us_energy
+      china_tech, china_consumer, china_state_owned
+      hk_china_tech
+      crypto_major, crypto_alt
+
+    Filter options (any combination):
+      market_cap: mega_cap | large_cap | mid_cap | small_cap
+      liquidity:  ultra_high | high | medium | low
+      volatility: high_vol | medium_vol | low_vol
+      regime:     bull | bear | sideways
+      beta:       high_beta | low_beta
+      correlation: high_corr | low_corr
+      momentum_regime: strong_uptrend | strong_downtrend
+      earnings_window: pre_earnings | post_earnings (US/HK only)
     """
     from app.core.backtest_engine.multi_dataset_backtester import MultiDatasetBacktester
-    from app.core.data_engine.multi_dataset import load_dataset
+    from app.core.data_engine.dataset_registry import (
+        load_registry_dataset, registry_names, registry_spec,
+    )
+    from app.core.data_engine.dataset_filters import (
+        DatasetFilterEngine, FilterConfig, apply_filters, validate_filter_config,
+    )
 
+    # ── Validate inputs ────────────────────────────────────────────────
     if req.aggregation not in ("mean", "min"):
         raise HTTPException(status_code=422, detail="aggregation must be 'mean' or 'min'")
 
-    valid_names = {"us_equity", "china_a", "crypto", "etf"}
+    valid_names = set(registry_names())
     for ds_name in req.datasets:
         if ds_name not in valid_names:
             raise HTTPException(
@@ -490,27 +536,40 @@ def backtest_multi(req: MultiDatasetBacktestRequest) -> MultiDatasetBacktestResp
                 detail=f"Unknown dataset '{ds_name}'. Valid: {sorted(valid_names)}",
             )
 
-    # Build per-dataset raw data dicts
-    datasets_raw: Dict[str, Any] = {}
+    # Validate filter values
+    filter_dict = {
+        k: v for k, v in req.filters.model_dump().items() if v is not None
+    }
+    if filter_dict:
+        errs = validate_filter_config(filter_dict)
+        if errs:
+            raise HTTPException(status_code=422, detail="; ".join(errs))
+
+    # Build FilterConfig
+    filter_cfg = FilterConfig(
+        market_cap      = req.filters.market_cap,
+        liquidity       = req.filters.liquidity,
+        volatility      = req.filters.volatility,
+        regime          = req.filters.regime,
+        beta            = req.filters.beta,
+        correlation     = req.filters.correlation,
+        momentum_regime = req.filters.momentum_regime,
+        earnings_window = req.filters.earnings_window,
+    )
+
+    # ── Load & filter datasets ─────────────────────────────────────────
+    datasets_raw:    Dict[str, Any] = {}
+    filter_results:  Dict[str, Any] = {}
 
     if req.use_synthetic:
-        # Synthetic mode: independent random panels per dataset (different seeds)
-        base_seed = req.seed
         for i, ds_name in enumerate(req.datasets):
             datasets_raw[ds_name] = _make_synthetic_dataset(
-                req.n_tickers, req.n_days, seed=base_seed + i
+                req.n_tickers, req.n_days, seed=req.seed + i
             )
     else:
-        # Real data mode: fetch via DatasetRegistry
         for ds_name in req.datasets:
             try:
-                ds = load_dataset(
-                    ds_name,
-                    start=req.start,
-                    end=req.end,
-                    use_cache=True,
-                )
-                datasets_raw[ds_name] = ds.data
+                ds = load_registry_dataset(ds_name, start=req.start, end=req.end)
             except Exception as exc:
                 logger.error("Failed to load dataset '%s': %s", ds_name, exc)
                 raise HTTPException(
@@ -518,6 +577,35 @@ def backtest_multi(req: MultiDatasetBacktestRequest) -> MultiDatasetBacktestResp
                     detail=f"Failed to load dataset '{ds_name}': {exc}",
                 )
 
+            # Apply filters to this dataset
+            region = registry_spec(ds_name).region
+            filtered_data, filt_result = apply_filters(
+                ds.data, filter_cfg, region=region
+            )
+            filter_results[ds_name] = filt_result.to_dict()
+
+            if filt_result.n_passed == 0:
+                logger.warning(
+                    "Dataset '%s': all tickers filtered out — skipping backtest", ds_name
+                )
+                filter_results[ds_name]["skipped"] = True
+                continue
+
+            logger.info(
+                "Dataset '%s': %d/%d tickers pass filters. Notes: %s",
+                ds_name, filt_result.n_passed, filt_result.n_total,
+                "; ".join(filt_result.notes),
+            )
+            datasets_raw[ds_name] = filtered_data
+
+    if not datasets_raw:
+        raise HTTPException(
+            status_code=422,
+            detail="All datasets were fully filtered out. "
+                   "Relax filter conditions or choose different datasets.",
+        )
+
+    # ── Run multi-dataset backtest ─────────────────────────────────────
     backtester = MultiDatasetBacktester(
         aggregation = req.aggregation,
         is_split    = req.is_split,
@@ -537,6 +625,7 @@ def backtest_multi(req: MultiDatasetBacktestRequest) -> MultiDatasetBacktestResp
         datasets_total    = result.datasets_total,
         pass_rate         = result.pass_rate,
         per_dataset       = result.to_dict()["per_dataset"],
+        filter_results    = filter_results,
         errors            = result.errors,
     )
 

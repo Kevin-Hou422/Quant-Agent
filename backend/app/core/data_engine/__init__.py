@@ -101,7 +101,7 @@ __all__ = [
 from .data_partitioner import DataPartitioner, PartitionedDataset
 
 # ============================================================
-# 新增：多数据集抽象层 (PROMPT 3)
+# 多数据集抽象层 (PROMPT 3)
 # ============================================================
 from .multi_dataset import (
     Dataset,
@@ -109,8 +109,32 @@ from .multi_dataset import (
     load_dataset as load_named_dataset,
     get_registry,
     STANDARD_FIELDS,
-    US_EQUITY_UNIVERSE,
-    CHINA_A_UNIVERSE,
-    CRYPTO_UNIVERSE,
-    ETF_UNIVERSE,
 )
+
+# ============================================================
+# 生产数据集注册表 (10 datasets, 3 providers)
+# ============================================================
+from .dataset_registry import (
+    load_registry_dataset,
+    registry_names,
+    registry_spec,
+    DatasetSpec,
+)
+
+# ============================================================
+# 动态 Filter 系统
+# ============================================================
+from .dataset_filters import (
+    FilterConfig,
+    FilterResult,
+    DatasetFilterEngine,
+    apply_filters,
+    validate_filter_config,
+    VALID_FILTER_VALUES,
+)
+
+# ============================================================
+# 数据提供商
+# ============================================================
+from .providers.akshare_provider import AkshareProvider
+from .providers.ccxt_provider import CcxtBinanceProvider
