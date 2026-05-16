@@ -164,6 +164,7 @@ class PopulationEvolver:
         oos_data:          Dict[str, pd.DataFrame],
         multi_datasets:    Optional[Dict[str, Dict[str, pd.DataFrame]]] = None,
         multi_aggregation: str   = "mean",
+        factor_family:     str   = "",
         pop_size:          int   = 12,
         n_generations:     int   = 4,
         elite_ratio:       float = 0.25,
@@ -174,6 +175,7 @@ class PopulationEvolver:
         self._oos_data          = oos_data
         self._multi_datasets    = multi_datasets
         self._multi_aggregation = multi_aggregation
+        self._factor_family     = factor_family   # guides mutation operator selection
         self._pop_size          = pop_size
         self._n_gen             = n_generations
         self._elite_ratio       = elite_ratio
@@ -279,14 +281,18 @@ class PopulationEvolver:
                 except Exception:
                     pass
 
-            # d. Phase 8: adaptive mutation weights from population diagnostics
+            # d. Phase 8: adaptive mutation weights — metrics + factor family
             diag    = self._pool.population_diagnostics()
             weights = mutation_weights_from_metrics(
                 sharpe_oos    = diag["mean_sharpe_oos"],
                 turnover      = diag["mean_turnover"],
                 overfit_score = diag["mean_overfit"],
+                factor_family = self._factor_family,
             )
-            logger.debug("Gen %d mutation weights: %s", gen + 1, weights)
+            logger.debug(
+                "Gen %d mutation weights (family=%s): %s",
+                gen + 1, self._factor_family or "unknown", weights,
+            )
 
             # e. Generate next generation (skip on last gen)
             if gen < self._n_gen - 1:

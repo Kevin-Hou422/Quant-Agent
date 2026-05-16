@@ -29,7 +29,7 @@ from typing import Dict, Tuple
 
 from app.agent._constants import _MAX_CORRECTION_ROUNDS
 from app.agent._critic import OverfitCritic
-from app.agent._tools import QuantTools
+from app.agent._tools import QuantTools, _detect_factor_family
 
 logger = logging.getLogger(__name__)
 
@@ -70,14 +70,18 @@ class FallbackOrchestrator:
             dsl_result = json.loads(self._tools.tool_generate_alpha_dsl(hypothesis))
             seed_dsls  = [dsl_result.get("dsl", "rank(ts_delta(log(close), 5))")]
 
+        # Detect factor family from first seed — biases GP mutation weights
+        factor_family = _detect_factor_family(seed_dsls[0]) if seed_dsls else ""
+
         logger.info(
-            "Workflow A: %d diverse seed DSLs for hypothesis='%.60s'",
-            len(seed_dsls), hypothesis,
+            "Workflow A: %d diverse seed DSLs for hypothesis='%.60s' | family='%s'",
+            len(seed_dsls), hypothesis, factor_family or "unknown",
         )
 
         # Step 2: GP structural search with full diverse population
         gp_result     = json.loads(self._tools.tool_run_gp_optimization(
             seed_dsls_json = json.dumps(seed_dsls),
+            factor_family  = factor_family,
         ))
         best_dsl      = gp_result.get("best_dsl", seed_dsls[0])
         final_metrics = gp_result.get("metrics") or {}
@@ -154,14 +158,18 @@ class FallbackOrchestrator:
                 seed_dsls.append(td)
                 seen_set.add(td)
 
+        # Detect factor family from user DSL — biases GP mutation weights
+        factor_family = _detect_factor_family(user_dsl)
+
         logger.info(
-            "Workflow B: %d seeds (%d targeted mutations) from DSL='%.60s'",
-            len(seed_dsls), len(targeted), user_dsl,
+            "Workflow B: %d seeds (%d targeted) from DSL='%.60s' | family='%s'",
+            len(seed_dsls), len(targeted), user_dsl, factor_family or "unknown",
         )
 
         # Step 3: GP structural search with expanded population
         gp_result     = json.loads(self._tools.tool_run_gp_optimization(
             seed_dsls_json = json.dumps(seed_dsls),
+            factor_family  = factor_family,
         ))
         best_dsl      = gp_result.get("best_dsl", user_dsl)
         final_metrics = gp_result.get("metrics") or {}

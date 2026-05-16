@@ -468,50 +468,66 @@ def _tree_depth(node) -> int:
 def _classify_family(node, fields: Set[str], all_ops: List[str]) -> str:
     ops = set(all_ops)
 
-    # Price-volume correlation → specific liquidity subfamily
-    if "ts_corr" in ops and "volume" in fields:
+    # Count how many distinct families are present (for composite detection)
+    family_signals: List[str] = []
+
+    has_momentum   = bool(ops & {"ts_delta", "ts_rank", "ts_argmax", "ts_argmin"})
+    has_vol_op     = bool(ops & {"ts_std", "ts_var"})
+    has_volume_fld = "volume" in fields
+    has_corr       = "ts_corr" in ops
+    has_quality_op = bool(ops & {"ts_entropy", "ts_skew", "ts_kurt"})
+
+    if has_momentum:
+        family_signals.append("momentum")
+    if has_vol_op:
+        family_signals.append("volatility")
+    if has_corr and has_volume_fld:
+        family_signals.append("price_volume_corr")
+    elif has_volume_fld and not has_momentum:
+        family_signals.append("liquidity")
+    if has_quality_op:
+        family_signals.append("quality")
+
+    # Multiple distinct signals → composite
+    if len(family_signals) >= 2:
+        return "composite"
+
+    # Single-family classification (ordered by specificity)
+
+    # Price-volume correlation (no other dominant signal)
+    if has_corr and has_volume_fld and not has_momentum:
         return "price_volume_corr"
 
-    # Pure volume / liquidity
-    if "volume" in fields and not ({"ts_delta", "ts_zscore"} & ops):
+    # Pure volume / liquidity (no momentum component)
+    if has_volume_fld and not has_momentum and not has_corr:
         return "liquidity"
 
-    # Volatility signal (ts_std / ts_var as primary component)
-    if ("ts_std" in ops or "ts_var" in ops) and "ts_delta" not in ops:
+    # Volatility (ts_std/ts_var dominant, no momentum)
+    if has_vol_op and not has_momentum:
         return "volatility"
 
-    # Entropy / skew / kurtosis → risk/quality proxy
-    if ops & {"ts_entropy", "ts_skew", "ts_kurt"}:
+    # Entropy / skew / kurtosis → quality/risk proxy
+    if has_quality_op and not has_momentum:
         return "quality"
 
-    # Check if momentum is inverted (mean reversion)
-    if "ts_delta" in ops and _is_inverted_momentum(node):
+    # Mean reversion: negated momentum
+    if has_momentum and _is_inverted_momentum(node):
         return "reversion"
 
-    # ts_zscore on price → mean reversion normalization
-    if "ts_zscore" in ops and "ts_delta" not in ops:
+    # ts_zscore on price without ts_delta → reversion via normalization
+    if "ts_zscore" in ops and not has_momentum:
         return "reversion"
 
-    # Clear momentum signals
-    if ops & {"ts_delta", "ts_rank", "ts_argmax", "ts_argmin"}:
-        # Long-window momentum → trend following
+    # Momentum with long window → trend following
+    if has_momentum:
         windows = _collect_windows(node)
         if windows and max(windows) >= 60:
             return "trend_following"
         return "momentum"
 
-    # Time-series smoothing only → trend following
+    # Pure TS smoothing (ts_mean only, no delta/std/corr) → trend following
     if "ts_mean" in ops and not (ops & {"ts_delta", "ts_std", "ts_corr"}):
         return "trend_following"
-
-    # Multiple components
-    families_found = []
-    if ops & {"ts_delta"}:              families_found.append("momentum")
-    if "volume" in fields:              families_found.append("liquidity")
-    if ops & {"ts_std", "ts_var"}:      families_found.append("volatility")
-
-    if len(families_found) >= 2:
-        return "composite"
 
     return "momentum"  # default
 

@@ -38,6 +38,18 @@ from app.agent._helpers import _safe_json_loads
 logger = logging.getLogger(__name__)
 
 
+def _detect_factor_family(dsl: str) -> str:
+    """
+    Parse ``dsl`` and return its factor family via FinancialInterpreter.
+    Returns empty string on any failure (safe fallback — GP runs with generic weights).
+    """
+    try:
+        from app.core.alpha_engine.financial_interpreter import FinancialInterpreter
+        return FinancialInterpreter().interpret(dsl).factor_family
+    except Exception:
+        return ""
+
+
 class QuantTools:
     """
     Stateless (per-dataset) tool implementations shared across all sessions.
@@ -133,6 +145,7 @@ class QuantTools:
         n_generations:    int = 4,
         pop_size:         int = 12,
         n_optuna_trials:  int = 8,
+        factor_family:    str = "",   # e.g. "momentum","reversion","volatility"
     ) -> str:
         """
         Run GP-driven alpha optimization.
@@ -140,10 +153,14 @@ class QuantTools:
         Structure space is searched by GP (AST mutation + crossover + selection).
         Optuna fine-tunes execution parameters of the GP-selected best structure ONLY.
 
-        seed_dsls_json: optional JSON-encoded list of DSL strings used as the initial
-                        population seeds (Workflow A: ≥10 diverse; Workflow B: expanded).
+        seed_dsls_json : optional JSON-encoded list of DSL strings (multi-seed init).
+        factor_family  : factor family of the seed DSL(s).  When empty, auto-detected
+                         from the first seed via FinancialInterpreter.  The family
+                         biases mutation operator selection toward financially relevant
+                         transformations for that factor type.
 
-        Returns JSON: {best_dsl, generations_run, population_size, metrics, pool_top5}
+        Returns JSON: {best_dsl, generations_run, population_size, metrics, pool_top5,
+                       factor_family}
         """
         from app.core.gp_engine.population_evolver import PopulationEvolver
 
@@ -157,10 +174,23 @@ class QuantTools:
             except Exception:
                 pass
 
+        # Auto-detect factor family from seed DSL if not provided
+        if not factor_family:
+            first_dsl = seed_dsl or (seed_dsls_list[0] if seed_dsls_list else "")
+            if first_dsl:
+                factor_family = _detect_factor_family(first_dsl)
+
+        if factor_family:
+            logger.info(
+                "GP optimization: factor_family='%s' — mutation weights biased accordingly",
+                factor_family,
+            )
+
         effective_pop = max(pop_size, len(seed_dsls_list or []) + 4)
         evolver = PopulationEvolver(
             is_data        = self._is_data,
             oos_data       = self._oos_data,
+            factor_family  = factor_family,
             pop_size       = effective_pop,
             n_generations  = n_generations,
             seed           = self._seed,
