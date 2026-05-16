@@ -379,7 +379,83 @@ class QuantTools:
         })
 
     # ------------------------------------------------------------------
-    # Tool 6 — Persist to AlphaStore
+    # Tool 6 — Financial interpretation + diagnosis
+    # ------------------------------------------------------------------
+
+    def tool_interpret_factor(
+        self,
+        dsl:          str,
+        metrics_json: str = "{}",
+    ) -> str:
+        """
+        Interpret a DSL expression in financial terms and diagnose its weaknesses.
+
+        Produces:
+          - Natural language description (what the factor actually measures)
+          - Factor family classification (momentum / reversion / volatility / etc.)
+          - Design issues (missing normalization, no smoothing, etc.)
+          - Improvement suggestions with concrete DSL patches
+          - Financial theory behind each suggestion
+
+        Returns JSON with keys:
+          description, factor_family, data_fields, is_normalized, complexity,
+          issues, suggestions, diagnosis, severity, regime_insight
+        """
+        from app.core.alpha_engine.financial_interpreter import FinancialInterpreter
+        from app.core.alpha_engine.financial_diagnostics import FinancialDiagnostics
+
+        interp  = FinancialInterpreter()
+        diag_en = FinancialDiagnostics()
+
+        try:
+            result = interp.interpret(dsl)
+        except Exception as exc:
+            return json.dumps({"error": f"Interpretation failed: {exc}", "dsl": dsl})
+
+        metrics = _safe_json_loads(metrics_json) if metrics_json.strip() else {}
+
+        diagnosis = None
+        if metrics:
+            try:
+                diagnosis = diag_en.diagnose(dsl, metrics, interpreter_result=result)
+            except Exception as exc:
+                logger.warning("Diagnosis failed: %s", exc)
+
+        output = {
+            "dsl":           dsl,
+            "description":   result.description,
+            "factor_family": result.factor_family,
+            "family_desc":   result.family_desc,
+            "data_fields":   result.data_fields,
+            "max_window":    result.max_window,
+            "is_normalized": result.is_normalized,
+            "has_volume":    result.has_volume,
+            "complexity":    result.complexity,
+            "design_issues": result.issues,
+            "design_suggestions": result.suggestions,
+        }
+
+        if diagnosis is not None:
+            output["diagnosis"] = {
+                "primary_issue":  diagnosis.primary_issue,
+                "explanation":    diagnosis.diagnosis,
+                "severity":       diagnosis.severity,
+                "regime_insight": diagnosis.regime_insight,
+                "top_suggestions": [
+                    {
+                        "action":      s.action,
+                        "dsl_patch":   s.dsl_patch,
+                        "reason":      s.reason,
+                        "finance_why": s.finance_why,
+                    }
+                    for s in diagnosis.suggestions[:4]
+                ],
+            }
+
+        return json.dumps(output, ensure_ascii=False)
+
+    # ------------------------------------------------------------------
+    # Tool 7 — Persist to AlphaStore
     # ------------------------------------------------------------------
 
     def tool_save_alpha(
