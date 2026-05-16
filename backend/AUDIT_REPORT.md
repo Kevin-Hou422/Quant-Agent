@@ -263,18 +263,52 @@ fitness = sharpe_oos
 
 ---
 
-### 弊端 2：种子 DSL 多样性不足，金融覆盖面窄
+### 弊端 2：种子 DSL 多样性不足，金融覆盖面窄 ✅ 已修复
 
-**问题描述：**
-`_SEED_DSLS` 中 19 个种子高度同构，全部基于单资产 OHLCV 时间序列，缺乏：
+**问题描述（原始）：**
+原 `_SEED_DSLS` 共 20 个种子，高度同构，全部基于单资产 OHLCV 时间序列，缺乏：
 - 量价关系（`ts_corr(close, volume, N)`）
-- 相对强弱（`(close / ts_mean(close, N)) - 1`）
 - 风险调整动量（`ts_delta(log(close), N) / ts_std(returns, N)`）
+- 均值回归种子（负号包裹的动量）
 - 状态条件因子（`trade_when(cond, signal)`）
+- 复合多信号组合
 
-**表现：** Workflow A 初始种群多样性低，GP 容易收敛到 `rank(ts_delta(close, N))` 的局部最优变体。
+**修复（已实施，文件：`gp_engine/gp_engine.py`，`gp_engine/population_evolver.py`）：**
 
-**修复方向：** 按因子族预置代表性种子，每族至少 3 个不同信号设计。
+引入 `_SEED_DSLS_BY_FAMILY` 字典，将 50 个种子按 9 个因子族组织，全部通过 parse + validate 校验：
+
+| 因子族 | 种子数 | 典型种子 |
+|--------|--------|---------|
+| momentum | 8 | `rank(ts_delta(log(close), N))` N=5/10/20/40 |
+| reversion | 6 | `rank(-ts_delta(close, N))` N=1/3/5 |
+| volatility | 5 | `rank(-ts_std(returns, N))` N=10/20/60 |
+| risk_adjusted | 5 | `rank(ts_delta(log(close), N) / ts_std(returns, N))` |
+| liquidity | 6 | `rank(-ts_mean(volume, N))`, `rank(ts_delta(log(volume), N))` |
+| price_volume_corr | 5 | `rank(-ts_corr(close, volume, N))` N=10/20/60 |
+| trend_following | 5 | `rank(ts_mean(close, N))` N=60/120 |
+| composite | 7 | `rank(ts_delta(log(close), 10) * ts_delta(log(volume), 5))` |
+| conditional | 3 | `rank(trade_when(close > ts_mean(close, 60), signal))` |
+| **TOTAL** | **50** | — |
+
+新增接口：
+- `get_seeds_for_family(family)` — 返回该族种子；`unknown` 回退到全集（50个）
+- `generate_random_alpha(factor_family=...)` — 60% 概率从族种子中采样
+
+`PopulationEvolver._init_population` 联动弊端 1 修复：
+1. 解析用户提供的种子 DSL
+2. 用 `get_seeds_for_family(self._factor_family)` 注入族库种子填充剩余槽位
+3. 随机填充阶段 60% 概率选择族种子
+
+**实测效果（200 次随机生成，factor_family="momentum"）：**
+
+| 生成结果因子族 | 数量 | 比例 |
+|--------------|------|------|
+| momentum | 144 | 72% |
+| composite | 12 | 6% |
+| reversion | 12 | 6% |
+| volatility | 10 | 5% |
+
+初始种群中 72% 的随机个体已具备正确金融结构，与弊端 1 的变异权重偏置形成两层联动。
 
 ---
 
@@ -377,7 +411,7 @@ QuantAgent (_agent.py)
 | 弊端 | 影响层 | 严重程度 | 状态 | 修复文件 |
 |------|--------|---------|------|---------|
 | 1. 金融诊断未接入 GP 决策 | 优化 | 高 | ✅ **已修复** | `fitness.py`, `population_evolver.py`, `_tools.py`, `_fallback.py` |
-| 2. 种子 DSL 多样性不足 | 生成 | 高 | ⬜ 待修复 | `gp_engine/gp_engine.py` |
+| 2. 种子 DSL 多样性不足 | 生成 | 高 | ✅ **已修复** | `gp_engine/gp_engine.py`, `population_evolver.py` |
 | 3. 变异算子语法驱动 | 优化 | 中 | ⬜ 待修复 | `mutations.py` |
 | 4. 合成数据适应度虚假 | 评估 | 高 | ⬜ 待修复 | `population_evolver.py` + `dataset_registry.py` 接入 |
 | 5. Optuna/GP 目标函数不一致 | 优化 | 中 | ⬜ 待修复 | `alpha_optimizer.py` |

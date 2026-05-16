@@ -33,35 +33,170 @@ _validator = AlphaValidator()
 _executor  = DSLExecutor()
 _parser_inst = _Parser()
 
-# 预定义简单合法的 DSL 模板用于初始种群
-_SEED_DSLS = [
-    "rank(ts_mean(close,5))",
-    "rank(ts_mean(close,10))",
-    "rank(ts_mean(close,20))",
-    "zscore(ts_delta(close,5))",
-    "zscore(ts_delta(close,10))",
-    "rank(ts_std(close,10))",
-    "rank(ts_std(close,20))",
-    "zscore(ts_mean(volume,10))",
-    "zscore(ts_mean(volume,20))",
-    "rank(ts_delta(close,1))",
-    "zscore(ts_delta(close,20))",
-    "rank(ts_rank(close,10))",
-    "rank(ts_rank(volume,20))",
-    "zscore(ts_std(close,5))",
-    "rank(ts_mean(vwap,10))",
-    "zscore(ts_delta(log(close),5))",
-    "rank(ts_delta(log(close),10))",
-    "zscore(ts_mean(returns,5))",
-    "rank(ts_std(returns,10))",
-    "zscore(ts_decay_linear(close,10))",
+# ---------------------------------------------------------------------------
+# Seed DSL library — organised by factor family.
+# Each family has ≥5 distinct seeds covering different window sizes,
+# data fields, and signal constructions.
+# ---------------------------------------------------------------------------
+
+_SEED_DSLS_BY_FAMILY: dict[str, list[str]] = {
+
+    # ── Momentum ─────────────────────────────────────────────────────────
+    # Log-return price momentum — canonical, multiple horizons
+    "momentum": [
+        "rank(ts_delta(log(close), 5))",
+        "rank(ts_delta(log(close), 10))",
+        "rank(ts_delta(log(close), 20))",
+        "rank(ts_delta(log(close), 40))",
+        "zscore(ts_delta(log(close), 5))",
+        "rank(ts_delta(vwap, 10))",
+        "rank(ts_rank(close, 20))",
+        "rank(ts_rank(returns, 10))",
+    ],
+
+    # ── Mean Reversion ────────────────────────────────────────────────────
+    # Short-term price reversal — 1-5 day horizons
+    "reversion": [
+        "rank(-ts_delta(close, 1))",
+        "rank(-ts_delta(close, 3))",
+        "rank(-ts_delta(close, 5))",
+        "rank(-ts_rank(close, 5))",
+        "rank(ts_zscore(returns, 10))",
+        "zscore(-ts_delta(close, 3))",
+    ],
+
+    # ── Volatility / Low-Vol ──────────────────────────────────────────────
+    # Low-volatility anomaly — Ang et al. (2006)
+    "volatility": [
+        "rank(-ts_std(returns, 20))",
+        "rank(-ts_std(returns, 60))",
+        "rank(-ts_var(returns, 20))",
+        "zscore(-ts_std(returns, 10))",
+        "rank(-ts_std(close, 20))",
+    ],
+
+    # ── Risk-Adjusted Momentum ────────────────────────────────────────────
+    # Momentum normalised by realised volatility (Sharpe-like)
+    "risk_adjusted": [
+        "rank(ts_delta(log(close), 20) / ts_std(returns, 20))",
+        "rank(ts_delta(log(close), 10) / ts_std(returns, 10))",
+        "rank(ts_mean(returns, 20) / ts_std(returns, 20))",
+        "rank(ts_delta(log(close), 5) / ts_std(returns, 5))",
+        "rank(ts_delta(log(vwap), 10) / ts_std(returns, 20))",
+    ],
+
+    # ── Liquidity / Volume ────────────────────────────────────────────────
+    # Illiquidity premium + volume-based signals
+    "liquidity": [
+        "rank(-ts_mean(volume, 20))",
+        "rank(-ts_mean(volume, 60))",
+        "rank(ts_delta(log(volume), 5))",
+        "rank(ts_delta(log(volume), 10))",
+        "zscore(ts_mean(volume, 10))",
+        "rank(ts_std(volume, 20))",
+    ],
+
+    # ── Price-Volume Correlation ──────────────────────────────────────────
+    # Informed trading leaves traces in price-volume co-movement
+    "price_volume_corr": [
+        "rank(-ts_corr(close, volume, 20))",
+        "rank(-ts_corr(close, volume, 10))",
+        "rank(ts_corr(returns, volume, 20))",
+        "rank(-ts_corr(vwap, volume, 20))",
+        "zscore(-ts_corr(close, volume, 10))",
+    ],
+
+    # ── Trend Following ───────────────────────────────────────────────────
+    # Medium/long-window moving average alignment
+    "trend_following": [
+        "rank(ts_mean(close, 60))",
+        "rank(ts_mean(close, 120))",
+        "rank(ts_mean(returns, 20))",
+        "rank(ts_decay_linear(close, 20))",
+        "rank(ts_decay_linear(returns, 10))",
+    ],
+
+    # ── Composite / Multi-Signal ──────────────────────────────────────────
+    # Combinations of two orthogonal signals
+    "composite": [
+        "rank(ts_delta(log(close), 10) * ts_delta(log(volume), 5))",
+        "rank(ts_rank(close, 20) + ts_rank(volume, 10))",
+        "rank(ts_delta(log(close), 10) - ts_std(returns, 20))",
+        "rank(ts_delta(log(close), 5) - ts_delta(log(close), 20))",
+        "rank(ts_mean(returns, 5) / ts_std(returns, 20))",
+        "rank(-ts_delta(log(close), 3) + ts_delta(log(close), 20))",
+        "rank(ts_delta(vwap, 5) + ts_delta(log(volume), 5))",
+    ],
+
+    # ── Regime-Conditional ────────────────────────────────────────────────
+    # Signal with explicit market-state gating
+    "conditional": [
+        "rank(trade_when(close > ts_mean(close, 60), ts_delta(log(close), 10)))",
+        "rank(trade_when(volume > ts_mean(volume, 20), -ts_delta(close, 3)))",
+        "rank(trade_when(close > ts_mean(close, 20), ts_rank(close, 10)))",
+    ],
+}
+
+# Flat list — backward-compatible, used by generate_random_alpha()
+_SEED_DSLS: list[str] = [
+    dsl
+    for seeds in _SEED_DSLS_BY_FAMILY.values()
+    for dsl in seeds
 ]
 
 
-def generate_random_alpha(depth: int = 4) -> Node:
-    """生成一个随机合法的 typed_nodes.Node（通过解析预定义 DSL 模板）。"""
-    dsl = random.choice(_SEED_DSLS)
-    return _parser_inst.parse(dsl)
+def get_seeds_for_family(family: str) -> list[str]:
+    """
+    Return seed DSLs that are appropriate for ``family``.
+
+    Falls back to all seeds if the family is unknown or empty.
+    Maps the 8-family taxonomy from FinancialInterpreter to the seed groups.
+    """
+    # Direct match
+    if family in _SEED_DSLS_BY_FAMILY:
+        return list(_SEED_DSLS_BY_FAMILY[family])
+
+    # Alias mapping
+    _ALIAS = {
+        "momentum":          "momentum",
+        "reversion":         "reversion",
+        "volatility":        "volatility",
+        "liquidity":         "liquidity",
+        "price_volume_corr": "price_volume_corr",
+        "trend_following":   "trend_following",
+        "composite":         "composite",
+        "quality":           "volatility",    # quality ≈ low-vol for OHLCV
+        "risk_adjusted":     "risk_adjusted",
+    }
+    mapped = _ALIAS.get(family, "")
+    if mapped and mapped in _SEED_DSLS_BY_FAMILY:
+        return list(_SEED_DSLS_BY_FAMILY[mapped])
+
+    return list(_SEED_DSLS)  # fallback: all seeds
+
+
+def generate_random_alpha(depth: int = 4, factor_family: str = "") -> Node:
+    """
+    Generate a random valid typed_nodes.Node by parsing a seed DSL.
+
+    When ``factor_family`` is provided, biases selection 60 % toward
+    seeds from that family (remaining 40 % from the full pool).
+    Retries up to 20 times to handle any rare parse failures.
+    """
+    family_seeds = get_seeds_for_family(factor_family) if factor_family else []
+
+    for _ in range(20):
+        try:
+            if family_seeds and random.random() < 0.60:
+                dsl = random.choice(family_seeds)
+            else:
+                dsl = random.choice(_SEED_DSLS)
+            return _parser_inst.parse(dsl)
+        except Exception:
+            continue
+
+    # Ultimate fallback — guaranteed to parse
+    return _parser_inst.parse("rank(ts_delta(log(close), 10))")
 
 
 # ---------------------------------------------------------------------------

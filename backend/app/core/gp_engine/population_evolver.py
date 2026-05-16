@@ -85,7 +85,7 @@ from app.core.gp_engine.mutations import (
 )
 from app.core.gp_engine.fitness import compute_fitness, mutation_weights_from_metrics
 from app.core.gp_engine.alpha_pool import AlphaPool, PoolEntry
-from app.core.gp_engine.gp_engine import _SEED_DSLS, generate_random_alpha
+from app.core.gp_engine.gp_engine import _SEED_DSLS, generate_random_alpha, get_seeds_for_family
 from app.core.alpha_engine.parser import Parser
 from app.core.alpha_engine.validator import AlphaValidator
 from app.core.alpha_engine.typed_nodes import Node
@@ -361,7 +361,22 @@ class PopulationEvolver:
             except Exception as exc:
                 logger.warning("Failed to parse seed DSL '%s': %s", dsl[:60], exc)
 
-        # 2. Fill remainder from crossover of seeds + mutations + random
+        # 2a. If factor_family is set, pre-seed the pool with library seeds for that family
+        if self._factor_family:
+            for dsl in get_seeds_for_family(self._factor_family):
+                if len(pop) >= self._pop_size:
+                    break
+                try:
+                    node = _parser.parse(dsl)
+                    _validator.validate(node)
+                    key = repr(node)
+                    if key not in seen:
+                        pop.append(node)
+                        seen.add(key)
+                except Exception:
+                    pass
+
+        # 2b. Fill remainder from crossover of seeds + mutations + random
         attempts = 0
         while len(pop) < self._pop_size and attempts < self._pop_size * 20:
             attempts += 1
@@ -381,7 +396,8 @@ class PopulationEvolver:
                         param_mutation(parent),
                     ])
                 else:
-                    cand = generate_random_alpha()
+                    # Random fill biased toward factor family
+                    cand = generate_random_alpha(factor_family=self._factor_family)
 
                 _validator.validate(cand)
                 key = repr(cand)
@@ -557,7 +573,7 @@ class PopulationEvolver:
         Remaining slots filled by crossover / mutation / exploration.
         """
         if not results:
-            return [generate_random_alpha() for _ in range(self._pop_size)]
+            return [generate_random_alpha(factor_family=self._factor_family) for _ in range(self._pop_size)]
 
         # Build map DSL → Node
         dsl_to_node = {r.dsl: r.node or _try_parse(r.dsl) for r in results}
@@ -657,8 +673,8 @@ class PopulationEvolver:
                     candidates = [add_operator(parent)]
 
                 else:
-                    # Exploration: random new individual
-                    candidates = [generate_random_alpha()]
+                    # Exploration: random new individual (biased toward factor family)
+                    candidates = [generate_random_alpha(factor_family=self._factor_family)]
 
                 for cand in candidates:
                     key = repr(cand)
@@ -674,10 +690,10 @@ class PopulationEvolver:
             except Exception:
                 pass
 
-        # Pad with random individuals if still short
+        # Pad with random individuals if still short (family-biased)
         while len(next_gen) < self._pop_size:
             try:
-                node = generate_random_alpha()
+                node = generate_random_alpha(factor_family=self._factor_family)
                 key  = repr(node)
                 if key not in seen:
                     _validator.validate(node)
