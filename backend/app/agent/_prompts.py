@@ -132,31 +132,58 @@ AFTER backtesting: If metrics are weak, diagnose FINANCIALLY:
   → High drawdown → add regime conditioning
 
 ──────────────────────────────────────────────────────────────────────────────
+CRITICAL PARAMETER LINKS (always enforce these):
+
+  tool_interpret_factor(seed_dsl)
+    → returns {"factor_family": "...", "design_issues": [...], ...}
+    → EXTRACT factor_family from this result
+
+  tool_run_gp_optimization(seed_dsl, factor_family=<extracted above>)
+    → passing factor_family biases GP mutation weights toward financially
+       appropriate operators (e.g. momentum → add_condition, add_ts_smoothing)
+    → NEVER call tool_run_gp_optimization without factor_family after interpret
+
+  tool_interpret_factor(best_dsl, metrics_json=<backtest JSON>)
+    → returns {"diagnosis": {"recommended_mutation": "...", ...}}
+    → EXTRACT recommended_mutation from diagnosis
+
+  tool_mutate_ast(dsl, reason, mutation_target=<recommended_mutation>)
+    → direct dispatch to the correct GP operator (not random)
+
+──────────────────────────────────────────────────────────────────────────────
 WORKFLOW A  (Generate from scratch — user gives a financial hypothesis):
 
   1. Classify the hypothesis into a factor family (momentum / reversion / vol / liq)
   2. Call tool_generate_alpha_dsl(hypothesis) → get a seed DSL
-  3. Call tool_interpret_factor(seed_dsl) → verify the DSL captures the intended
-     financial mechanism; check for design issues before optimizing
-  4. Call tool_run_gp_optimization(seed_dsl, n_generations=4, pop_size=12)
-       → GP evolves AST trees via structural mutations guided by factor theory
+  3. Call tool_interpret_factor(seed_dsl)
+       → verify the DSL captures the intended financial mechanism
+       → EXTRACT factor_family from result (e.g. "momentum")
+       → note any design_issues to fix before or after GP
+  4. Call tool_run_gp_optimization(seed_dsl, factor_family=<from step 3>,
+                                    n_generations=4, pop_size=12)
+       → GP evolves AST trees via structural mutations guided by factor_family
        → Optuna fine-tunes execution parameters of the winning structure
-  5. Validate financially: interpret the best_dsl, check if it still makes sense
-     as the intended factor. If the GP changed the factor family unexpectedly,
-     call tool_interpret_factor(best_dsl) and explain the financial meaning.
-  6. If overfitting (overfitting_score > 0.5): call tool_mutate_ast with the
-     specific financial reason (e.g. "signal too complex, needs simplification")
+  5. Call tool_interpret_factor(best_dsl, metrics_json=<GP metrics JSON>)
+       → validate the GP result makes financial sense
+       → if metrics weak: EXTRACT recommended_mutation from diagnosis
+  6. If overfitting (overfitting_score > 0.5):
+       call tool_mutate_ast(best_dsl, reason,
+                            mutation_target=<recommended_mutation from step 5>)
   7. Call tool_save_alpha.
 
 WORKFLOW B  (Optimize an existing DSL — user provides an expression):
 
   1. Call tool_interpret_factor(user_dsl) → diagnose financial weaknesses
+       → EXTRACT factor_family from result
+       → note design_issues and suggested mutations
   2. Based on diagnosis, choose optimization target:
      - Noisy signal → GP with smoothing-biased mutations
      - Wrong factor family → GP from scratch with better seed
-     - Good signal but high turnover → tool_mutate_ast with "add_smoothing" target
-  3. Call tool_run_gp_optimization(user_dsl, n_generations=4, pop_size=12)
-  4. Call tool_interpret_factor(best_dsl, metrics_json) for final diagnosis
+     - Good signal but high turnover → tool_mutate_ast with mutation_target="add_ts_smoothing"
+  3. Call tool_run_gp_optimization(user_dsl, factor_family=<from step 1>,
+                                    n_generations=4, pop_size=12)
+  4. Call tool_interpret_factor(best_dsl, metrics_json=<GP metrics JSON>)
+       → EXTRACT recommended_mutation from diagnosis if metrics still weak
   5. Explain financial improvement: what changed and why it's better
   6. Call tool_save_alpha.
 

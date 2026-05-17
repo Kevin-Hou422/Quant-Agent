@@ -4,13 +4,23 @@ _lc_agent.py — _build_langchain_agent.
 Wires QuantTools into a LangChain AgentExecutor and wraps it with
 RunnableWithMessageHistory for per-session DB-backed memory.
 
-GP-first tool ordering (Phase 2/4 compliance):
+Tool ordering (weaknesses 1-7 compliant):
   tool_generate_alpha_dsl  — seed DSL from hypothesis
-  tool_run_gp_optimization — PRIMARY optimizer (structural GP search)
-  tool_run_backtest        — final IS+OOS validation
-  tool_mutate_ast          — single AST mutation (real GP ops, no strings)
+  tool_interpret_factor    — DSL → factor_family + design diagnosis  [NEW Tool 7]
+  tool_run_gp_optimization — PRIMARY optimizer; accepts factor_family + dataset_name
+  tool_run_backtest        — IS+OOS validation
+  tool_mutate_ast          — single AST mutation; accepts mutation_target for direct dispatch
   tool_run_optuna          — SECONDARY (parameter fine-tuning only)
   tool_save_alpha          — persist to AlphaStore
+
+Key parameter links (weakness-7 fix):
+  tool_interpret_factor(seed_dsl) → {factor_family, ...}
+  tool_run_gp_optimization(seed_dsl, factor_family=<above>)
+    → GP mutation weights biased toward financially appropriate operators
+
+  tool_run_backtest → {overfitting_score, is_turnover, ...}
+  tool_mutate_ast(dsl, reason, mutation_target=<from CriticResult>)
+    → targeted AST correction instead of random mutation
 """
 from __future__ import annotations
 
@@ -56,10 +66,14 @@ def _build_langchain_agent(
 
     @lc_tool
     def tool_run_gp_optimization(
-        seed_dsl: str = "",
-        n_generations: int = 4,
-        pop_size: int = 12,
+        seed_dsl:        str = "",
+        n_generations:   int = 4,
+        pop_size:        int = 12,
         n_optuna_trials: int = 8,
+        factor_family:   str = "",
+        dataset_name:    str = "",
+        dataset_start:   str = "2021-01-01",
+        dataset_end:     str = "2024-01-01",
     ) -> str:
         """
         PRIMARY OPTIMIZER. Run GP-driven alpha evolution.
@@ -70,6 +84,12 @@ def _build_langchain_agent(
         4. Diversity filter: rejects alphas with signal correlation > 0.9.
         5. After evolution, Optuna fine-tunes ONLY the best structure's parameters.
 
+        factor_family: pass the value from tool_interpret_factor to bias GP mutations
+          toward financially appropriate operators for this factor type.
+          (e.g. "momentum", "reversion", "volatility", "liquidity", "composite")
+        dataset_name: optional real market dataset (e.g. "us_sectors", "cn_ashares").
+          When omitted, uses the session-default dataset.
+
         Returns: best_dsl, metrics, generations_run, pool_top5, evolution_log.
         Use this as the MAIN optimizer — NOT tool_run_optuna standalone.
         """
@@ -78,6 +98,10 @@ def _build_langchain_agent(
             n_generations   = n_generations,
             pop_size        = pop_size,
             n_optuna_trials = n_optuna_trials,
+            factor_family   = factor_family,
+            dataset_name    = dataset_name,
+            dataset_start   = dataset_start,
+            dataset_end     = dataset_end,
         )
 
     # ── Tool 3: IS+OOS validation backtest ────────────────────────────
@@ -92,14 +116,22 @@ def _build_langchain_agent(
     # ── Tool 4: Single AST structural mutation ────────────────────────
 
     @lc_tool
-    def tool_mutate_ast(current_dsl: str, overfit_reason: str = "") -> str:
+    def tool_mutate_ast(
+        current_dsl:     str,
+        overfit_reason:  str = "",
+        mutation_target: str = "",
+    ) -> str:
         """
         Apply ONE real AST-level structural mutation (NOT string templates).
         Uses GP engine operations: point_mutation, hoist_mutation, param_mutation.
         Adaptive weights based on overfit_reason (turnover / sharpe / overfitting).
         Call when GP result still shows overfitting after tool_run_gp_optimization.
+
+        mutation_target: directly dispatch to a specific GP operator. Accepted values:
+          replace_subtree, hoist, add_ts_smoothing, add_condition, wrap_rank, point
+          (pass the recommended_mutation from tool_interpret_factor diagnosis).
         """
-        return tools_obj.tool_mutate_ast(current_dsl, overfit_reason)
+        return tools_obj.tool_mutate_ast(current_dsl, overfit_reason, mutation_target)
 
     # ── Tool 5: Optuna parameter fine-tuning (SECONDARY) ──────────────
 
@@ -117,8 +149,30 @@ def _build_langchain_agent(
         """Save the validated alpha strategy to the AlphaStore SQLite ledger."""
         return tools_obj.tool_save_alpha(name, dsl, metrics_json)
 
+    # ── Tool 7: Financial interpretation + diagnosis ───────────────────
+
+    @lc_tool
+    def tool_interpret_factor(dsl: str, metrics_json: str = "{}") -> str:
+        """
+        Interpret a DSL alpha expression in financial terms and diagnose weaknesses.
+
+        ALWAYS call this BEFORE tool_run_gp_optimization.
+        The returned factor_family MUST be passed to tool_run_gp_optimization so that
+        GP mutation weights are biased toward financially appropriate operators.
+
+        Returns JSON with:
+          factor_family   : use as factor_family param in tool_run_gp_optimization
+          description     : what the factor measures in plain language
+          design_issues   : list of detected design flaws (missing normalization, etc.)
+          design_suggestions : DSL-level fix patches for each issue
+          diagnosis       : (if metrics_json provided) metric-driven financial diagnosis
+            recommended_mutation : pass as mutation_target to tool_mutate_ast
+        """
+        return tools_obj.tool_interpret_factor(dsl, metrics_json)
+
     lc_tools = [
         tool_generate_alpha_dsl,
+        tool_interpret_factor,
         tool_run_gp_optimization,
         tool_run_backtest,
         tool_mutate_ast,

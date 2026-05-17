@@ -584,7 +584,62 @@ Workflow A: critic FAIL attempt=1 mode=high_turnover severity=critical target=ad
 **问题描述：**
 LangChain 路径下 LLM 理解因子族并能做有方向的优化建议，但这些语义信息没有传递给 `PopulationEvolver` 的变异策略。两条路径的 GP 运行参数完全相同。
 
-**修复方向（部分已在弊端 1 修复中解决）：** LangChain 工具层在调用 `tool_run_gp_optimization` 时传入 `factor_family`，LLM 从对话中理解的因子类型直接影响 GP 变异方向。
+**已修复：** 三处联动变更实现 LLM 语义 → GP 变异的完整闭环。
+
+**修复 A — `_lc_agent.py`：工具层暴露关键参数**
+
+`tool_run_gp_optimization` 包装器新增 `factor_family` 和 `dataset_name` 参数，并透传给 `QuantTools.tool_run_gp_optimization`。
+
+```python
+@lc_tool
+def tool_run_gp_optimization(
+    seed_dsl:        str = "",
+    ...
+    factor_family:   str = "",   # ← NEW: extracted from tool_interpret_factor
+    dataset_name:    str = "",   # ← NEW: real market dataset override
+    ...
+) -> str:
+```
+
+`tool_mutate_ast` 包装器新增 `mutation_target` 参数，实现直接定向变异而非随机权重抽样：
+
+```python
+@lc_tool
+def tool_mutate_ast(
+    current_dsl:     str,
+    overfit_reason:  str = "",
+    mutation_target: str = "",   # ← NEW: from critic/diagnosis recommended_mutation
+) -> str:
+```
+
+**修复 B — `_lc_agent.py`：注册 Tool 7（`tool_interpret_factor`）**
+
+`tool_interpret_factor` 作为第 2 号工具加入 `lc_tools` 列表（排在 `tool_generate_alpha_dsl` 之后，`tool_run_gp_optimization` 之前），其文档字符串明确要求：
+- 调用前必须执行，返回 `factor_family` 字段
+- `factor_family` 必须传入 `tool_run_gp_optimization`
+- 诊断结果中的 `recommended_mutation` 必须传入 `tool_mutate_ast`
+
+**修复 C — `_prompts.py`：显式编码参数传递规则**
+
+在系统 Prompt 中新增 `CRITICAL PARAMETER LINKS` 节：
+
+```
+tool_interpret_factor(seed_dsl)
+  → EXTRACT factor_family
+
+tool_run_gp_optimization(seed_dsl, factor_family=<extracted>)
+  → NEVER call without factor_family after interpret
+
+tool_interpret_factor(best_dsl, metrics_json=<JSON>)
+  → EXTRACT recommended_mutation from diagnosis
+
+tool_mutate_ast(dsl, reason, mutation_target=<recommended_mutation>)
+  → direct dispatch to correct GP operator
+```
+
+Workflow A/B 步骤也相应更新，显式标注"EXTRACT factor_family"和"EXTRACT recommended_mutation"。
+
+**效果：** LLM 路径下每次 GP 调用都携带因子族信息，变异方向与 Fallback 路径完全对齐；`tool_mutate_ast` 的定向变异模式从 Fallback 路径扩展到 LLM 路径。
 
 ---
 
@@ -638,7 +693,7 @@ QuantAgent (_agent.py)
 | 4. 合成数据适应度虚假 | 评估 | 高 | ✅ **已修复** | `_data_utils.py`, `_tools.py`, `router.py` |
 | 5. Optuna/GP 目标函数不一致 | 优化 | 中 | ✅ **已修复** | `core/ml_engine/alpha_optimizer.py` |
 | 6. OverfitCritic 二元门控无梯度 | 后处理 | 中 | ✅ **已修复** | `_critic.py`, `_tools.py`, `_fallback.py` |
-| 7. LLM 路径知识不传入 GP | 协同 | 中 | 🔶 部分覆盖 | 弊端 1 修复已覆盖自动检测路径 |
+| 7. LLM 路径知识不传入 GP | 协同 | 中 | ✅ **已修复** | `_lc_agent.py`, `_prompts.py` |
 
 ### 弊端 1 修复详情（2026-05-16）
 
