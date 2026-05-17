@@ -312,14 +312,60 @@ fitness = sharpe_oos
 
 ---
 
-### 弊端 3：GP 结构变异语法驱动，与金融意图脱耦
+### 弊端 3：GP 结构变异语法驱动，与金融意图脱耦 ✅ 已修复
 
-**问题描述：**
+**问题描述（原始）：**
 `mutations.py` 的 11 种算子是纯语法层面的 AST 变换，不理解变换的金融意义：
 - `replace_subtree()` 可能用 `ts_entropy(volume, 20)` 替换 `ts_delta(close, 5)`，破坏动量逻辑
-- `combine_signals()` 随机合并两信号，组合可能金融上无意义
+- `combine_signals()` 随机合并两信号，组合可能金融上无意义（如动量 × 熵）
+- `add_operator()` 随机选择变换类型，可能对均值回归信号施加 `signed_power`（放大极端值），破坏均值回归的方向特性
 
-**修复方向：** 引入因子族感知的变异约束，限制替换时的算子类型兼容性。
+**修复（已实施，文件：`gp_engine/mutations.py`，`gp_engine/population_evolver.py`）：**
+
+新增两个常量表：
+- `_COMPLEMENTARY_FAMILIES` — 定义各族在组合时金融上有意义的互补族
+- `_FAMILY_OPERATOR_PREFS` — 定义各族的首选 `add_operator` 变体
+
+新增两个辅助函数：
+- `_generate_family_compatible_subtree(max_depth, factor_family)` — 生成与族兼容的 AST 子树
+- `_combine_op_for_families(f1, f2)` — 为两个族的组合选择最合理的算术算子
+
+三个变异函数增加 `factor_family` 可选参数：
+
+| 函数 | 族感知行为 |
+|------|-----------|
+| `replace_subtree(root, factor_family)` | 70% 概率使用族兼容子树替换（如 momentum 替换为另一个 ts_delta/ts_rank）；30% 保留随机探索 |
+| `combine_signals(root, other_root, factor_family)` | 第二信号从互补族生成；算子由 `_combine_op_for_families` 决定 |
+| `add_operator(root, factor_family)` | 75% 概率从该族首选算子列表中选取；25% 随机探索 |
+
+`population_evolver.py` 中对应三处调用均加入 `factor_family=self._factor_family`。
+
+**互补族定义（`combine_signals` 时的组合策略）：**
+
+| 因子族 | 互补族 | 算子 | 金融含义 |
+|--------|--------|------|---------|
+| momentum | volatility | div | 风险调整动量 = 动量 / 波动率 |
+| momentum | liquidity | mul | 量确认动量 = 动量 × rank(volume) |
+| reversion | liquidity | mul | 量确认均值回归 |
+| volatility | momentum | sub | 动量 - 波动率 = 多维组合信号 |
+
+**`add_operator` 首选算子（因子族）：**
+
+| 因子族 | 首选算子 | 金融原理 |
+|--------|---------|---------|
+| momentum | signed_power / rank_deviation / self_rank | 放大强信号；去趋势化 |
+| reversion | unary_sign / unary_abs | 只保留方向；不破坏均值回归特性 |
+| volatility | scaled / unary_abs | L1 归一化；保持非负性 |
+| trend_following | rank_deviation / self_rank | 相对趋势强度 |
+
+**实测效果（50 次变异，各函数）：**
+
+| 变异 + 因子族 | 族保持率 | 说明 |
+|-------------|---------|------|
+| replace_subtree(momentum) | 94% | 47/50 结果仍是 momentum |
+| combine_signals(reversion) | 100% | 量确认组合保持 reversion 语义 |
+| add_operator(momentum) top-3 | mul/sub/signed_power | 均为 momentum 首选 |
+| add_operator(reversion) top-2 | abs/sign | 均为 reversion 首选 |
 
 ---
 
@@ -412,7 +458,7 @@ QuantAgent (_agent.py)
 |------|--------|---------|------|---------|
 | 1. 金融诊断未接入 GP 决策 | 优化 | 高 | ✅ **已修复** | `fitness.py`, `population_evolver.py`, `_tools.py`, `_fallback.py` |
 | 2. 种子 DSL 多样性不足 | 生成 | 高 | ✅ **已修复** | `gp_engine/gp_engine.py`, `population_evolver.py` |
-| 3. 变异算子语法驱动 | 优化 | 中 | ⬜ 待修复 | `mutations.py` |
+| 3. 变异算子语法驱动 | 优化 | 中 | ✅ **已修复** | `mutations.py`, `population_evolver.py` |
 | 4. 合成数据适应度虚假 | 评估 | 高 | ⬜ 待修复 | `population_evolver.py` + `dataset_registry.py` 接入 |
 | 5. Optuna/GP 目标函数不一致 | 优化 | 中 | ⬜ 待修复 | `alpha_optimizer.py` |
 | 6. OverfitCritic 二元门控无梯度 | 后处理 | 中 | ⬜ 待修复 | `_critic.py`, `_fallback.py` |

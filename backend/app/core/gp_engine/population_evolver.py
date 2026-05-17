@@ -658,19 +658,19 @@ class PopulationEvolver:
                     p1, p2 = tournament(), tournament()
                     if p1 is None or p2 is None:
                         continue
-                    candidates = [combine_signals(p1, p2)]
+                    candidates = [combine_signals(p1, p2, factor_family=self._factor_family)]
 
                 elif op == "replace_subtree":
                     parent = tournament()
                     if parent is None:
                         continue
-                    candidates = [replace_subtree(parent)]
+                    candidates = [replace_subtree(parent, factor_family=self._factor_family)]
 
                 elif op == "add_operator":
                     parent = tournament()
                     if parent is None:
                         continue
-                    candidates = [add_operator(parent)]
+                    candidates = [add_operator(parent, factor_family=self._factor_family)]
 
                 else:
                     # Exploration: random new individual (biased toward factor family)

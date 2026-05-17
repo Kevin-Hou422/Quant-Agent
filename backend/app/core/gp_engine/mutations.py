@@ -65,6 +65,36 @@ _SMOOTH_OPS = ["ts_mean", "ts_decay_linear", "ts_zscore", "ts_rank", "ts_std"]
 # Wrapping CS ops for wrap_rank
 _WRAP_CS_OPS = ["rank", "zscore", "scale"]
 
+# ---------------------------------------------------------------------------
+# Factor-family–aware mutation constraints (Weakness-3 fix)
+# ---------------------------------------------------------------------------
+
+# For combine_signals: which second-signal family makes financial sense?
+_COMPLEMENTARY_FAMILIES: dict[str, list[str]] = {
+    "momentum":          ["volatility", "liquidity"],
+    "reversion":         ["liquidity"],
+    "volatility":        ["momentum", "trend_following"],
+    "liquidity":         ["momentum", "reversion"],
+    "price_volume_corr": ["momentum", "trend_following"],
+    "trend_following":   ["volatility", "momentum"],
+    "composite":         ["momentum", "volatility"],
+    "risk_adjusted":     ["momentum", "volatility"],
+    "quality":           ["momentum", "volatility"],
+}
+
+# For add_operator: which variants make financial sense per family?
+_FAMILY_OPERATOR_PREFS: dict[str, list[str]] = {
+    "momentum":          ["signed_power", "rank_deviation", "self_rank"],
+    "reversion":         ["unary_sign", "unary_abs"],
+    "volatility":        ["scaled", "unary_abs"],
+    "liquidity":         ["unary_sign", "scaled"],
+    "price_volume_corr": ["unary_sign", "rank_deviation"],
+    "trend_following":   ["rank_deviation", "self_rank"],
+    "composite":         ["rank_deviation", "scaled"],
+    "risk_adjusted":     ["signed_power", "self_rank"],
+    "quality":           ["scaled", "rank_deviation"],
+}
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -211,6 +241,91 @@ def _generate_typed_node(max_depth: int = 2) -> Node:
         return ArithmeticNode(op, [l, r])
 
     return _make_data_node()
+
+
+def _generate_family_compatible_subtree(
+    max_depth: int = 2,
+    factor_family: str = "",
+) -> Node:
+    """
+    Generate an AST subtree whose financial meaning is compatible with
+    ``factor_family``.  Falls back to the generic ``_generate_typed_node``
+    for unknown or empty families.
+
+    Used by replace_subtree and combine_signals so that generated parts
+    respect the factor's financial intent.
+    """
+    if factor_family == "momentum":
+        field  = random.choice(["close", "returns", "vwap"])
+        window = random.choice([3, 5, 10, 20])
+        op     = random.choice(["ts_delta", "ts_rank"])
+        child: Node = DataNode(field)
+        if field == "close" and random.random() < 0.6:
+            child = ArithmeticNode("log", [child])
+        return TimeSeriesNode(op, child, window)
+
+    if factor_family == "reversion":
+        window = random.choice([1, 3, 5])
+        if random.random() < 0.55:
+            inner = TimeSeriesNode("ts_delta", DataNode("close"), window)
+            return ArithmeticNode("neg", [inner])
+        return TimeSeriesNode("ts_zscore", DataNode("returns"), window * 2)
+
+    if factor_family == "volatility":
+        window = random.choice([10, 20, 60])
+        op     = random.choice(["ts_std", "ts_var"])
+        node   = TimeSeriesNode(op, DataNode("returns"), window)
+        # Low-vol convention: negate so higher rank = lower volatility
+        return ArithmeticNode("neg", [node]) if random.random() < 0.6 else node
+
+    if factor_family == "liquidity":
+        window = random.choice([5, 10, 20])
+        if random.random() < 0.5:
+            return TimeSeriesNode("ts_mean", DataNode("volume"), window)
+        return TimeSeriesNode(
+            "ts_delta",
+            ArithmeticNode("log", [DataNode("volume")]),
+            window,
+        )
+
+    if factor_family == "price_volume_corr":
+        window = random.choice([10, 20, 40])
+        return TimeSeriesNode(
+            "ts_corr", DataNode("close"), window, second_child=DataNode("volume")
+        )
+
+    if factor_family == "trend_following":
+        window = random.choice([20, 40, 60, 120])
+        field  = random.choice(["close", "returns", "vwap"])
+        op     = random.choice(["ts_mean", "ts_decay_linear"])
+        return TimeSeriesNode(op, DataNode(field), window)
+
+    if factor_family in ("risk_adjusted", "composite"):
+        # Momentum or volatility component equally likely
+        return _generate_family_compatible_subtree(
+            max_depth,
+            random.choice(["momentum", "volatility"]),
+        )
+
+    # Fallback: fully generic random subtree
+    return _generate_typed_node(max_depth)
+
+
+def _combine_op_for_families(f1: str, f2: str) -> str:
+    """
+    Choose the most financially meaningful arithmetic operator for combining
+    two factor families.
+
+      momentum + volatility  → div  (risk-adjusted momentum = ret / vol)
+      anything + liquidity   → mul  (volume confirmation via scaling)
+      otherwise              → add or sub  (diversifying combination)
+    """
+    pair = frozenset([f1, f2])
+    if pair == frozenset(["momentum", "volatility"]):
+        return "div"
+    if "liquidity" in pair:
+        return "mul"
+    return random.choice(["add", "sub"])
 
 
 def _make_momentum_condition() -> ArithmeticNode:
@@ -549,39 +664,60 @@ def add_volume_filter(root: Node) -> Node:
 def combine_signals(
     root: Node,
     other_root: Optional[Node] = None,
+    factor_family: str = "",
 ) -> Node:
     """
     Combine the current signal with a second signal via arithmetic.
 
-    child = root  OP  other_signal
-    where OP ∈ {+, -, *, /}
+        result = root  OP  other_signal
 
-    If other_root is None, a small random signal is generated.
-    Depth guard: skip if combined depth would exceed 8.
+    When ``factor_family`` is provided:
+    - The second signal is drawn from a **complementary** family so the
+      combination is financially meaningful (e.g. momentum + volatility →
+      risk-adjusted momentum via division; momentum + liquidity → volume-
+      confirmed momentum via multiplication).
+    - The arithmetic operator is chosen by ``_combine_op_for_families``
+      instead of uniformly at random.
+
+    Without a factor family the original random behaviour is preserved.
+    Depth guard: falls back if combined depth would exceed 8.
     """
     max_combined_depth = 8
-
     root_depth = _tree_depth(root)
+
     if root_depth >= max_combined_depth - 1:
-        # Tree is already very deep — fall back to a simpler combination
         other = _make_data_node()
+
     elif other_root is not None:
         other_depth = _tree_depth(other_root)
-        # If other tree also deep, use its shallow representative (hoist a leaf)
         if other_depth >= 4:
-            leaves = [n for n in _collect_nodes(other_root)
-                      if isinstance(n, DataNode)]
-            other = copy.deepcopy(random.choice(leaves)) if leaves else _make_data_node()
+            leaves = [n for n in _collect_nodes(other_root) if isinstance(n, DataNode)]
+            other  = copy.deepcopy(random.choice(leaves)) if leaves else _make_data_node()
         else:
             other = copy.deepcopy(other_root)
+
+    elif factor_family and factor_family in _COMPLEMENTARY_FAMILIES:
+        # Generate a second signal from a financially complementary family
+        complement = random.choice(_COMPLEMENTARY_FAMILIES[factor_family])
+        other = _generate_family_compatible_subtree(max_depth=2, factor_family=complement)
+
     else:
         other = _generate_typed_node(max_depth=2)
 
-    op = random.choice(["add", "sub", "mul"])
+    # Choose the arithmetic operator
+    if factor_family and other_root is None and factor_family in _COMPLEMENTARY_FAMILIES:
+        complement = _COMPLEMENTARY_FAMILIES[factor_family][0]
+        op = _combine_op_for_families(factor_family, complement)
+    else:
+        op = random.choice(["add", "sub", "mul"])
 
     try:
-        if op == "mul":
-            # Prefer rank-scaling for multiplication (bounds the result)
+        if op == "div":
+            # Avoid division by zero: wrap denominator with abs+scalar guard
+            safe_denom = ArithmeticNode("abs", [other]) if not isinstance(other, ScalarNode) else other
+            combined   = ArithmeticNode("div", [copy.deepcopy(root), safe_denom])
+        elif op == "mul":
+            # Rank-scale the multiplier so it stays bounded
             if not isinstance(other, (ScalarNode, DataNode)):
                 other = CrossSectionalNode("rank", other)
             combined = ArithmeticNode("mul", [copy.deepcopy(root), other])
@@ -600,25 +736,38 @@ def combine_signals(
 # 10. replace_subtree  — swap an internal subtree with a generated one
 # ---------------------------------------------------------------------------
 
-def replace_subtree(root: Node) -> Node:
+def replace_subtree(root: Node, factor_family: str = "") -> Node:
     """
     Replace a randomly chosen internal node with a freshly generated
     expression of similar complexity.
+
+    When ``factor_family`` is given, the replacement subtree is generated
+    by ``_generate_family_compatible_subtree`` so that it preserves the
+    factor's financial meaning (e.g. a momentum factor stays momentum-like
+    after the replacement rather than getting a random entropy node).
     """
     nodes      = _collect_nodes(root)
     internals  = [n for n in nodes
                   if not isinstance(n, (DataNode, ScalarNode, StringLiteralNode))
                   and _get_children(n)]
     if not internals:
-        # If no internals, replace whole root
-        new_tree = _generate_typed_node(max_depth=3)
+        new_tree = _generate_family_compatible_subtree(max_depth=3,
+                                                       factor_family=factor_family)
         if _try_validate(new_tree):
             return new_tree
         return copy.deepcopy(root)
 
-    target     = random.choice(internals)
-    target_d   = _tree_depth(target)
-    new_subtree = _generate_typed_node(max_depth=max(1, target_d))
+    target    = random.choice(internals)
+    target_d  = _tree_depth(target)
+
+    # 70 % chance: use a family-compatible subtree; 30 %: fully random (exploration)
+    if factor_family and random.random() < 0.70:
+        new_subtree = _generate_family_compatible_subtree(
+            max_depth=max(1, target_d),
+            factor_family=factor_family,
+        )
+    else:
+        new_subtree = _generate_typed_node(max_depth=max(1, target_d))
 
     try:
         new_root = _replace_node(root, target, new_subtree)
@@ -634,25 +783,39 @@ def replace_subtree(root: Node) -> Node:
 # 11. add_operator  — wrap root/subtree with a unary or arithmetic layer
 # ---------------------------------------------------------------------------
 
-def add_operator(root: Node) -> Node:
+def add_operator(root: Node, factor_family: str = "") -> Node:
     """
     Add an operator layer to the root or a random subtree.
 
-    Examples:
-        x → sign(x)
-        x → abs(x)
-        x → signed_power(x, 2)
-        x → x * rank(x)         (self-rank interaction)
-        x → rank(x) - ts_mean(rank(x), 10)  (rank deviation)
+    When ``factor_family`` is given, the operator variant is biased toward
+    those that make financial sense for that factor type:
+
+      momentum    → signed_power / rank_deviation / self_rank
+      reversion   → unary_sign / unary_abs
+      volatility  → scaled / unary_abs
+      liquidity   → unary_sign / scaled
+      trend       → rank_deviation / self_rank
+
+    Without a family, a variant is chosen uniformly at random.
     """
-    variant = random.choice([
-        "unary_sign",
-        "unary_abs",
-        "signed_power",
-        "self_rank",
-        "rank_deviation",
-        "scaled",
-    ])
+    if factor_family and factor_family in _FAMILY_OPERATOR_PREFS:
+        # 75 % chance: use the preferred list; 25 %: explore freely
+        if random.random() < 0.75:
+            variant = random.choice(_FAMILY_OPERATOR_PREFS[factor_family])
+        else:
+            variant = random.choice([
+                "unary_sign", "unary_abs", "signed_power",
+                "self_rank", "rank_deviation", "scaled",
+            ])
+    else:
+        variant = random.choice([
+            "unary_sign",
+            "unary_abs",
+            "signed_power",
+            "self_rank",
+            "rank_deviation",
+            "scaled",
+        ])
     root_copy = copy.deepcopy(root)
 
     try:
