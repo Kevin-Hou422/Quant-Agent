@@ -6,8 +6,22 @@ alpha_optimizer.py — Optuna 驱动的超参数优化引擎
   - OOS 数据由调用方在 optimize() 返回后才解锁传入 RealisticBacktester
   - _objective 函数内部不接受、不存储任何 OOS 引用
 
-适应度函数（业界标准）：
-  Fitness = Sharpe_IS + 0.5 × mean_IC_IS - 0.1 × AnnTurnover_IS
+适应度函数（与 GP fitness 统一，弊端 5 修复）：
+  采用 IS 内部 Walk-Forward Hold-Out：
+    IS_early (前 60%) = Optuna 优化集
+    IS_late  (后 40%) = Optuna 内部伪 OOS 评估集
+
+  Fitness = sharpe_late
+          - 0.2 × turnover_full
+          - 0.3 × |max_drawdown_full|
+          - 0.5 × max(0, sharpe_full - sharpe_late)
+
+  与 GP 适应度公式（fitness.compute_fitness）完全对齐：
+    sharpe_full  → 对应 GP 的 sharpe_is
+    sharpe_late  → 对应 GP 的 sharpe_oos（IS 内部伪 OOS）
+
+  当 IS_late 不足 60 个交易日时，降级到简化公式：
+    Fitness = sharpe_full - 0.2 × turnover - 0.3 × |max_drawdown|
 """
 
 from __future__ import annotations
@@ -96,22 +110,48 @@ class AlphaOptimizer:
     timeout    : 单次 trial 超时秒数（None = 不限制）
     """
 
+    #: Minimum number of trading days required in IS_late for walk-forward.
+    _MIN_LATE_DAYS = 60
+
     def __init__(
         self,
-        dsl:          str,
-        is_dataset:   Dict[str, pd.DataFrame],
-        search_space: SearchSpace = None,
-        n_trials:     int  = 30,
-        seed:         int  = 42,
-        timeout:      Optional[float] = None,
+        dsl:            str,
+        is_dataset:     Dict[str, pd.DataFrame],
+        search_space:   SearchSpace = None,
+        n_trials:       int   = 30,
+        seed:           int   = 42,
+        timeout:        Optional[float] = None,
+        is_late_ratio:  float = 0.40,
     ) -> None:
         self._dsl         = dsl
-        # 深拷贝确保外部修改不影响优化过程
+        # Deep-copy: external mutations don't affect optimisation
         self._is_dataset  = {k: v.copy() for k, v in is_dataset.items()}
         self._space       = search_space or SearchSpace()
         self._n_trials    = n_trials
         self._seed        = seed
         self._timeout     = timeout
+
+        # Walk-forward hold-out split within IS ─────────────────────────────
+        # IS_early: first (1 - is_late_ratio) fraction → Optuna "train"
+        # IS_late:  last  is_late_ratio fraction        → Optuna "pseudo-OOS"
+        total_days = len(next(iter(self._is_dataset.values())))
+        late_start = int(total_days * (1.0 - is_late_ratio))
+        late_days  = total_days - late_start
+
+        if late_days >= self._MIN_LATE_DAYS:
+            self._is_late = {
+                k: v.iloc[late_start:].copy()
+                for k, v in self._is_dataset.items()
+            }
+            self._use_walkforward = True
+        else:
+            self._is_late         = {}
+            self._use_walkforward = False
+            logger.warning(
+                "IS hold-out only %d days (< %d) — disabling walk-forward; "
+                "falling back to simplified IS-only objective.",
+                late_days, self._MIN_LATE_DAYS,
+            )
 
     # ------------------------------------------------------------------
     # 目标函数（仅 IS）
@@ -119,15 +159,26 @@ class AlphaOptimizer:
 
     def _objective(self, trial) -> float:
         """
-        Optuna 目标函数。
+        Optuna 目标函数 — 与 GP fitness 完全对齐（弊端 5 修复）。
 
         严格约束：
-          - 只使用 self._is_dataset（IS 分区）
+          - 仅使用 self._is_dataset 和 self._is_late（IS 分区）
           - 不接受、不访问任何 OOS 数据引用
-          - 回测失败时返回 -999.0，触发 Optuna 剪枝/跳过
+          - 回测失败时返回 -999.0
+
+        适应度计算流程（walk-forward 模式）：
+          Step 1. 全 IS 回测  → sharpe_full, turnover, max_drawdown
+          Step 2. IS_late 回测 → sharpe_late（伪 OOS）
+          Step 3. compute_fitness(sharpe_full, sharpe_late, turnover, max_dd)
+                  == sharpe_late - 0.2×turnover - 0.3×|max_dd| - 0.5×overfit_proxy
+
+        降级模式（IS_late 不足）：
+          compute_fitness(sharpe_full, sharpe_full, turnover, max_dd)
+          去除过拟合惩罚，等价于 sharpe_full - 0.2×turnover - 0.3×|max_dd|
         """
         from app.core.alpha_engine.signal_processor import SimulationConfig
         from app.core.backtest_engine.realistic_backtester import RealisticBacktester
+        from app.core.gp_engine.fitness import compute_fitness
 
         # 1. 采样超参数
         delay        = trial.suggest_int("delay",    *self._space.delay_range)
@@ -137,18 +188,15 @@ class AlphaOptimizer:
         port_mode    = trial.suggest_categorical("portfolio_mode",
                                                  list(self._space.portfolio_modes))
 
-        # 确保 trunc_min < trunc_max（非法区间直接惩罚）
         if trunc_min >= trunc_max:
             return -999.0
 
-        # 可选：行业中性化
         neutralize_groups = None
         if self._space.allow_neutralize and self._space.neutralize_groups is not None:
             use_neutral = trial.suggest_categorical("neutralize", [True, False])
             if use_neutral:
                 neutralize_groups = self._space.neutralize_groups
 
-        # 2. 构造 SimulationConfig
         cfg = SimulationConfig(
             delay             = delay,
             decay_window      = decay_window,
@@ -158,26 +206,41 @@ class AlphaOptimizer:
             portfolio_mode    = port_mode,
         )
 
-        # 3. IS-only 回测（绝不传入 oos_dataset）
+        # 2. 全 IS 回测（获取 turnover / drawdown / sharpe_full）
         try:
-            backtester = RealisticBacktester(config=cfg)
-            result = backtester.run(
-                dsl      = self._dsl,
-                dataset  = self._is_dataset,
-                # oos_dataset 故意省略 → None → 不触发 OOS 评估
-            )
+            bt_full  = RealisticBacktester(config=cfg)
+            res_full = bt_full.run(self._dsl, self._is_dataset)
         except Exception as exc:
-            logger.debug("Trial %d 失败: %s", trial.number, exc)
+            logger.debug("Trial %d full-IS backtest failed: %s", trial.number, exc)
             return -999.0
 
-        is_r = result.is_report
+        full_r    = res_full.is_report
+        sharpe_f  = float(full_r.sharpe_ratio) if not _isnan(full_r.sharpe_ratio) else -5.0
+        turnover  = float(full_r.ann_turnover)  if not _isnan(full_r.ann_turnover) else 5.0
+        max_dd    = float(full_r.max_drawdown)  if not _isnan(full_r.max_drawdown) else 0.0
 
-        # 4. 计算适应度（处理 NaN）
-        sharpe   = is_r.sharpe_ratio   if not _isnan(is_r.sharpe_ratio)   else -5.0
-        ic       = is_r.mean_ic        if not _isnan(is_r.mean_ic)        else 0.0
-        turnover = is_r.ann_turnover   if not _isnan(is_r.ann_turnover)   else 5.0
+        # 3. Walk-forward: IS_late 回测（伪 OOS，获取 sharpe_late）
+        if self._use_walkforward and self._is_late:
+            try:
+                bt_late  = RealisticBacktester(config=cfg)
+                res_late = bt_late.run(self._dsl, self._is_late)
+                late_r   = res_late.is_report
+                sharpe_l = float(late_r.sharpe_ratio) if not _isnan(late_r.sharpe_ratio) else -5.0
+            except Exception as exc:
+                logger.debug("Trial %d IS_late backtest failed: %s", trial.number, exc)
+                sharpe_l = sharpe_f  # degraded: no overfit penalty
+        else:
+            # Degraded mode: no walk-forward penalty
+            sharpe_l = sharpe_f
 
-        fitness = sharpe + 0.5 * ic - 0.1 * turnover
+        # 4. GP-aligned composite fitness
+        #    compute_fitness(sharpe_is=sharpe_f, sharpe_oos=sharpe_l, ...)
+        fitness = compute_fitness(
+            sharpe_is    = sharpe_f,
+            sharpe_oos   = sharpe_l,
+            turnover     = turnover,
+            max_drawdown = max_dd,
+        )
         return float(fitness)
 
     # ------------------------------------------------------------------

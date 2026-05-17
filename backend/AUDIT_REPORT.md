@@ -442,15 +442,64 @@ POST /api/workflow/generate
 
 ---
 
-### 弊端 5：Optuna 与 GP 目标函数不一致
+### 弊端 5：Optuna 与 GP 目标函数不一致 ✅ 已修复
 
-**问题描述：**
+**问题描述（原始）：**
 - GP 适应度：`sharpe_oos - 0.2×turnover - 0.3×|max_dd| - 0.5×overfit`
 - Optuna 目标：`sharpe_is + 0.5×ic - 0.1×turnover`（IS only，无过拟合惩罚）
 
-两个优化目标存在内在矛盾：Optuna 倾向选择 IS Sharpe 高的配置，GP 则惩罚 IS/OOS 差值。
+两个优化层使用不同公式，内在矛盾：Optuna 倾向高 IS Sharpe，GP 惩罚 IS/OOS 差值。Optuna 选出的参数可能在 GP fitness 评估时表现更差。
 
-**修复方向：** 统一两层优化的目标函数，或在 Optuna 目标中加入 IS 过拟合的隐式惩罚。
+**修复（已实施，文件：`core/ml_engine/alpha_optimizer.py`）：**
+
+**核心机制：IS 内部 Walk-Forward Hold-Out**
+
+在严格不泄露 OOS 数据的前提下，将 IS 数据内部再分为两段：
+
+```
+IS 数据（总量）
+├── IS_early（前 60%）= Optuna 优化集（执行全量回测）
+└── IS_late （后 40%）= Optuna 伪 OOS 集（验证参数泛化性）
+```
+
+每次 Optuna trial 运行两次回测（保持严格 OOS 隔离）：
+1. **全 IS 回测** → `sharpe_full`, `turnover`, `max_drawdown`
+2. **IS_late 回测** → `sharpe_late`（伪 OOS 评估）
+
+**统一适应度公式（与 `compute_fitness` 完全对齐）：**
+
+```python
+# 直接调用 gp_engine.fitness.compute_fitness()
+fitness = compute_fitness(
+    sharpe_is    = sharpe_full,   # 全 IS Sharpe
+    sharpe_oos   = sharpe_late,   # IS_late Sharpe（伪 OOS）
+    turnover     = turnover_full,
+    max_drawdown = max_dd_full,
+)
+# 展开后 ≡
+# sharpe_late - 0.2×turnover - 0.3×|max_dd| - 0.5×max(0, sharpe_full - sharpe_late)
+```
+
+**降级模式（IS_late < 60 个交易日时自动启用）：**
+```python
+# sharpe_late = sharpe_full → overfit_penalty = 0
+fitness = sharpe_full - 0.2×turnover - 0.3×|max_dd|
+```
+降级时记录 WARNING 日志，不影响优化正常运行。
+
+**新增参数：**
+- `AlphaOptimizer(is_late_ratio=0.40)` — 控制伪 OOS 占比（默认 40%）
+
+**修复前 vs 修复后对比：**
+
+| 维度 | 修复前 | 修复后 |
+|------|-------|-------|
+| 目标函数 | `sharpe_is + 0.5×ic - 0.1×turnover` | `compute_fitness(sharpe_full, sharpe_late, ...)` |
+| 过拟合惩罚 | 无 | `0.5×max(0, sharpe_full - sharpe_late)` |
+| 最大回撤 | 未考虑 | `0.3×\|max_dd\|` |
+| 与 GP 对齐 | 否 | 是（同一函数） |
+| OOS 隔离 | 完整 | 完整（IS_late 仍为 IS 数据） |
+| 计算成本 | 1 次回测/trial | 2 次回测/trial（+100%，可接受） |
 
 ---
 
@@ -522,7 +571,7 @@ QuantAgent (_agent.py)
 | 2. 种子 DSL 多样性不足 | 生成 | 高 | ✅ **已修复** | `gp_engine/gp_engine.py`, `population_evolver.py` |
 | 3. 变异算子语法驱动 | 优化 | 中 | ✅ **已修复** | `mutations.py`, `population_evolver.py` |
 | 4. 合成数据适应度虚假 | 评估 | 高 | ✅ **已修复** | `_data_utils.py`, `_tools.py`, `router.py` |
-| 5. Optuna/GP 目标函数不一致 | 优化 | 中 | ⬜ 待修复 | `alpha_optimizer.py` |
+| 5. Optuna/GP 目标函数不一致 | 优化 | 中 | ✅ **已修复** | `core/ml_engine/alpha_optimizer.py` |
 | 6. OverfitCritic 二元门控无梯度 | 后处理 | 中 | ⬜ 待修复 | `_critic.py`, `_fallback.py` |
 | 7. LLM 路径知识不传入 GP | 协同 | 中 | 🔶 部分覆盖 | 弊端 1 修复已覆盖自动检测路径 |
 
