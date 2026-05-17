@@ -369,14 +369,76 @@ fitness = sharpe_oos
 
 ---
 
-### 弊端 4：合成数据适应度函数与真实市场脱节
+### 弊端 4：合成数据适应度函数与真实市场脱节 ✅ 已修复
 
-**问题描述：**
-整个 GP 进化在 `n_tickers=100, n_days=252` 的随机数据上运行（`seed=42` 固定）。合成数据无真实截面相关性、无行业结构、无体制转换。
+**问题描述（原始）：**
+整个 GP 进化在 `n_tickers=100, n_days=252` 的随机数据（`seed=42` 固定）上运行。合成数据无真实截面相关性、无行业结构、无市场体制转换。
 
-**后果：** 合成数据上 Sharpe > 0.8 的因子在真实市场可能 Sharpe ≈ 0；过拟合检测对合成数据意义有限（两段均为随机游走）。
+**后果：** 合成数据上 Sharpe > 0.8 的因子在真实市场可能 Sharpe ≈ 0；IS/OOS 过拟合检测对随机游走意义有限。
 
-**修复方向：** 接入真实历史数据（已有 `dataset_registry.py` 支持 10 个数据集），GP 评估使用真实市场数据。
+**修复（已实施）：**
+
+**新增 `load_real_dataset(name, start, end, oos_ratio)`（`agent/_data_utils.py`）：**
+- 调用 `DatasetRegistry.load_registry_dataset()` 拉取真实行情
+- 自动 IS/OOS 分割，返回 `(is_data, oos_data)` — 与合成数据格式完全兼容
+- 失败时向上抛 `RuntimeError`，由调用层决定是否 fallback
+
+**`QuantTools.__init__` 增加三个参数（`agent/_tools.py`）：**
+
+| 参数 | 说明 |
+|------|------|
+| `dataset_name: str = ""` | 真实数据集名称（空 = 继续使用合成数据） |
+| `dataset_start: str = "2021-01-01"` | 数据起始日期 |
+| `dataset_end: str = "2024-01-01"` | 数据结束日期 |
+
+加载失败自动 fallback 到合成数据并记录 warning，不影响 agent 启动。
+
+**`tool_run_gp_optimization` 增加三个参数：**
+
+```python
+tool_run_gp_optimization(
+    ...,
+    dataset_name:  str = "",   # 单次 GP 运行的数据集覆盖
+    dataset_start: str = "2021-01-01",
+    dataset_end:   str = "2024-01-01",
+)
+```
+
+优先级：per-run dataset_name > session dataset > 合成数据。可在不更改 session 配置的前提下对单次 GP 运行使用不同市场。
+
+**`router.py` 新增 `_resolve_dataset()` 辅助函数 + 所有请求 schema 新增字段：**
+
+受影响的 schema（均新增 `dataset_name`/`dataset_start`/`dataset_end`）：
+- `GPEvolveRequest`
+- `WorkflowGenerateRequest`
+- `WorkflowOptimizeRequest`
+
+受影响的端点（实际数据加载改为 `_resolve_dataset()`）：
+- `POST /api/gp/evolve`
+- `POST /api/workflow/generate`
+- `POST /api/workflow/optimize`
+- `POST /api/workflow/generate/stream`
+- `POST /api/workflow/optimize/stream`
+
+**降级策略（三层）：**
+1. `dataset_name` 非空 → 拉取真实数据
+2. 拉取失败（网络/API 不可用）→ 记录 warning，使用合成数据
+3. `dataset_name` 为空 → 直接使用合成数据
+
+**API 使用示例：**
+```json
+POST /api/workflow/generate
+{
+  "hypothesis": "momentum with volume confirmation",
+  "n_generations": 5,
+  "pop_size": 20,
+  "dataset_name": "us_tech_large",
+  "dataset_start": "2021-01-01",
+  "dataset_end": "2024-01-01"
+}
+```
+
+可选数据集：`us_tech_large`, `us_financials`, `us_healthcare`, `us_energy`, `china_tech`, `china_consumer`, `china_state_owned`, `hk_china_tech`, `crypto_major`, `crypto_alt`
 
 ---
 
@@ -459,7 +521,7 @@ QuantAgent (_agent.py)
 | 1. 金融诊断未接入 GP 决策 | 优化 | 高 | ✅ **已修复** | `fitness.py`, `population_evolver.py`, `_tools.py`, `_fallback.py` |
 | 2. 种子 DSL 多样性不足 | 生成 | 高 | ✅ **已修复** | `gp_engine/gp_engine.py`, `population_evolver.py` |
 | 3. 变异算子语法驱动 | 优化 | 中 | ✅ **已修复** | `mutations.py`, `population_evolver.py` |
-| 4. 合成数据适应度虚假 | 评估 | 高 | ⬜ 待修复 | `population_evolver.py` + `dataset_registry.py` 接入 |
+| 4. 合成数据适应度虚假 | 评估 | 高 | ✅ **已修复** | `_data_utils.py`, `_tools.py`, `router.py` |
 | 5. Optuna/GP 目标函数不一致 | 优化 | 中 | ⬜ 待修复 | `alpha_optimizer.py` |
 | 6. OverfitCritic 二元门控无梯度 | 后处理 | 中 | ⬜ 待修复 | `_critic.py`, `_fallback.py` |
 | 7. LLM 路径知识不传入 GP | 协同 | 中 | 🔶 部分覆盖 | 弊端 1 修复已覆盖自动检测路径 |

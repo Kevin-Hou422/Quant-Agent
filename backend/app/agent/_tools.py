@@ -32,7 +32,7 @@ from app.agent._constants import (
     _VALID_FIELDS,
     _VALID_OPS,
 )
-from app.agent._data_utils import _make_synthetic_dataset, _partition, _run_backtest_core
+from app.agent._data_utils import _make_synthetic_dataset, _partition, _run_backtest_core, load_real_dataset
 from app.agent._helpers import _safe_json_loads
 
 logger = logging.getLogger(__name__)
@@ -60,12 +60,15 @@ class QuantTools:
 
     def __init__(
         self,
-        n_tickers: int   = _DEFAULT_N_TICKERS,
-        n_days:    int   = _DEFAULT_N_DAYS,
-        oos_ratio: float = _DEFAULT_OOS_RATIO,
-        n_trials:  int   = _DEFAULT_N_TRIALS,
-        seed:      int   = 42,
-        llm:       Any   = None,
+        n_tickers:     int   = _DEFAULT_N_TICKERS,
+        n_days:        int   = _DEFAULT_N_DAYS,
+        oos_ratio:     float = _DEFAULT_OOS_RATIO,
+        n_trials:      int   = _DEFAULT_N_TRIALS,
+        seed:          int   = 42,
+        llm:           Any   = None,
+        dataset_name:  str   = "",
+        dataset_start: str   = "2021-01-01",
+        dataset_end:   str   = "2024-01-01",
     ) -> None:
         self._n_tickers = n_tickers
         self._n_days    = n_days
@@ -74,9 +77,22 @@ class QuantTools:
         self._seed      = seed
         self._llm       = llm
 
-        ds = _make_synthetic_dataset(n_tickers, n_days, seed)
-        self._full_dataset = ds
-        self._is_data, self._oos_data = _partition(ds, oos_ratio)
+        if dataset_name:
+            try:
+                self._is_data, self._oos_data = load_real_dataset(
+                    dataset_name, dataset_start, dataset_end, oos_ratio
+                )
+                self._full_dataset = {**self._is_data, **self._oos_data}
+                logger.info("QuantTools: real dataset '%s' [%s→%s] loaded", dataset_name, dataset_start, dataset_end)
+            except Exception as exc:
+                logger.warning("Real dataset '%s' load failed: %s — falling back to synthetic", dataset_name, exc)
+                ds = _make_synthetic_dataset(n_tickers, n_days, seed)
+                self._full_dataset = ds
+                self._is_data, self._oos_data = _partition(ds, oos_ratio)
+        else:
+            ds = _make_synthetic_dataset(n_tickers, n_days, seed)
+            self._full_dataset = ds
+            self._is_data, self._oos_data = _partition(ds, oos_ratio)
 
     # ------------------------------------------------------------------
     # Tool 1 — hypothesis → seed DSL
@@ -146,6 +162,9 @@ class QuantTools:
         pop_size:         int = 12,
         n_optuna_trials:  int = 8,
         factor_family:    str = "",   # e.g. "momentum","reversion","volatility"
+        dataset_name:     str = "",   # real dataset override for this GP run
+        dataset_start:    str = "2021-01-01",
+        dataset_end:      str = "2024-01-01",
     ) -> str:
         """
         Run GP-driven alpha optimization.
@@ -186,10 +205,23 @@ class QuantTools:
                 factor_family,
             )
 
+        # Resolve dataset: per-run override > session default
+        if dataset_name:
+            try:
+                gp_is, gp_oos = load_real_dataset(
+                    dataset_name, dataset_start, dataset_end, self._oos_ratio
+                )
+                logger.info("GP: using real dataset '%s' [%s→%s]", dataset_name, dataset_start, dataset_end)
+            except Exception as exc:
+                logger.warning("GP real dataset '%s' failed: %s — using session data", dataset_name, exc)
+                gp_is, gp_oos = self._is_data, self._oos_data
+        else:
+            gp_is, gp_oos = self._is_data, self._oos_data
+
         effective_pop = max(pop_size, len(seed_dsls_list or []) + 4)
         evolver = PopulationEvolver(
-            is_data        = self._is_data,
-            oos_data       = self._oos_data,
+            is_data        = gp_is,
+            oos_data       = gp_oos,
             factor_family  = factor_family,
             pop_size       = effective_pop,
             n_generations  = n_generations,

@@ -3,6 +3,7 @@ _data_utils.py — data utilities shared by QuantTools.
 
   _make_synthetic_dataset  — deterministic synthetic OHLCV panel
   _partition               — IS / OOS split via DataPartitioner
+  load_real_dataset        — load real market data via DatasetRegistry
   _run_backtest_core       — RealisticBacktester wrapper → metrics dict
 """
 from __future__ import annotations
@@ -65,6 +66,39 @@ def _partition(
     )
     part = dp.partition(dataset)
     return part.train(), part.test()
+
+
+def load_real_dataset(
+    name:      str,
+    start:     str   = "2021-01-01",
+    end:       str   = "2024-01-01",
+    oos_ratio: float = 0.30,
+) -> Tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame]]:
+    """
+    Load a real market dataset from DatasetRegistry and split IS / OOS.
+
+    Parameters
+    ----------
+    name      : Registry dataset name (e.g. "us_tech_large", "crypto_major")
+    start/end : Date range for the data fetch
+    oos_ratio : Fraction of data reserved for out-of-sample evaluation
+
+    Returns
+    -------
+    (is_data, oos_data) — both in dict[field → DataFrame(T × N)] format.
+
+    Raises
+    ------
+    RuntimeError if the registry cannot load the dataset.
+    """
+    from app.core.data_engine.dataset_registry import load_registry_dataset
+    try:
+        ds = load_registry_dataset(name, start=start, end=end, use_cache=True)
+        return _partition(ds.data, oos_ratio)
+    except Exception as exc:
+        raise RuntimeError(
+            f"load_real_dataset: failed to load '{name}' [{start} → {end}]: {exc}"
+        ) from exc
 
 
 def _run_backtest_core(

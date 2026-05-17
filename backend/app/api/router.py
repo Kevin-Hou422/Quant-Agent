@@ -35,6 +35,41 @@ router = APIRouter(prefix="/api")
 # 合成数据集（演示/测试用，与 CLI 保持一致）
 # ---------------------------------------------------------------------------
 
+def _resolve_dataset(
+    dataset_name:  str,
+    dataset_start: str,
+    dataset_end:   str,
+    n_tickers:     int,
+    n_days:        int,
+    seed:          int,
+    oos_ratio:     float,
+):
+    """
+    Return (full_data, is_data, oos_data).
+
+    When ``dataset_name`` is non-empty, load from DatasetRegistry and
+    split IS/OOS.  Falls back to synthetic data on any failure or when
+    ``dataset_name`` is empty.
+    """
+    if dataset_name:
+        try:
+            from app.core.data_engine.dataset_registry import load_registry_dataset
+            ds       = load_registry_dataset(dataset_name, start=dataset_start, end=dataset_end)
+            full     = ds.data
+            is_, oos = _partition_dataset(full, oos_ratio)
+            logger.info("Loaded real dataset '%s' [%s→%s]", dataset_name, dataset_start, dataset_end)
+            return full, is_, oos
+        except Exception as exc:
+            logger.warning(
+                "Real dataset '%s' load failed: %s — falling back to synthetic",
+                dataset_name, exc,
+            )
+
+    full     = _make_synthetic_dataset(n_tickers, n_days, seed)
+    is_, oos = _partition_dataset(full, oos_ratio)
+    return full, is_, oos
+
+
 def _make_synthetic_dataset(
     n_tickers: int = 20,
     n_days: int = 120,
@@ -82,13 +117,24 @@ class AgentRunResponse(BaseModel):
     summary: str
 
 
+_DATASET_FIELD_DESC = (
+    "Real dataset name — leave empty for synthetic data. "
+    "Options: us_tech_large, us_financials, us_healthcare, us_energy, "
+    "china_tech, china_consumer, china_state_owned, hk_china_tech, "
+    "crypto_major, crypto_alt"
+)
+
+
 class GPEvolveRequest(BaseModel):
-    pop_size: int   = Field(20, ge=5, le=200)
-    n_gen: int      = Field(5, ge=1, le=50)
-    n_workers: int  = Field(1, ge=1, le=8)
-    n_tickers: int  = Field(20, ge=5, le=200)
-    n_days: int     = Field(120, ge=60, le=1000)
-    seed: int       = Field(42)
+    pop_size:      int = Field(20, ge=5, le=200)
+    n_gen:         int = Field(5, ge=1, le=50)
+    n_workers:     int = Field(1, ge=1, le=8)
+    n_tickers:     int = Field(20, ge=5, le=200)
+    n_days:        int = Field(120, ge=60, le=1000)
+    seed:          int = Field(42)
+    dataset_name:  str = Field("", description=_DATASET_FIELD_DESC)
+    dataset_start: str = Field("2021-01-01")
+    dataset_end:   str = Field("2024-01-01")
 
 
 class GPAlphaItem(BaseModel):
@@ -257,7 +303,10 @@ def gp_evolve(
     from app.core.gp_engine.gp_engine import AlphaEvolver
     from app.db.alpha_store import AlphaResult
 
-    dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
+    dataset, _, _ = _resolve_dataset(
+        req.dataset_name, req.dataset_start, req.dataset_end,
+        req.n_tickers, req.n_days, req.seed, oos_ratio=0.30,
+    )
     evolver = AlphaEvolver(
         pop_size  = req.pop_size,
         n_gen     = req.n_gen,
@@ -936,6 +985,9 @@ class WorkflowGenerateRequest(BaseModel):
     n_seed_dsls:   int   = Field(12,   ge=5,  le=30)
     oos_ratio:     float = Field(0.30, ge=0.0, lt=1.0)
     seed:          int   = Field(42)
+    dataset_name:  str   = Field("", description=_DATASET_FIELD_DESC)
+    dataset_start: str   = Field("2021-01-01")
+    dataset_end:   str   = Field("2024-01-01")
 
 
 class WorkflowOptimizeRequest(BaseModel):
@@ -948,6 +1000,9 @@ class WorkflowOptimizeRequest(BaseModel):
     n_mutations:   int   = Field(8,    ge=2,  le=20)
     oos_ratio:     float = Field(0.30, ge=0.0, lt=1.0)
     seed:          int   = Field(42)
+    dataset_name:  str   = Field("", description=_DATASET_FIELD_DESC)
+    dataset_start: str   = Field("2021-01-01")
+    dataset_end:   str   = Field("2024-01-01")
 
 
 class WorkflowResponse(BaseModel):
@@ -1064,7 +1119,10 @@ def workflow_generate(
     from app.core.workflows.alpha_workflows import GenerationWorkflow
     from app.db.alpha_store import AlphaResult
 
-    dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
+    dataset, is_data, oos_data = _resolve_dataset(
+        req.dataset_name, req.dataset_start, req.dataset_end,
+        req.n_tickers, req.n_days, req.seed, req.oos_ratio,
+    )
     wf = GenerationWorkflow(
         pop_size        = req.pop_size,
         n_generations   = req.n_generations,
@@ -1081,7 +1139,7 @@ def workflow_generate(
         raise HTTPException(status_code=500, detail=str(exc))
 
     # Build response dict + inject PnL series for frontend chart
-    is_data, oos_data = _partition_dataset(dataset, req.oos_ratio)
+    # (is_data / oos_data already resolved above)
     resp_dict = result.to_dict()
     _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
 
@@ -1138,7 +1196,10 @@ def workflow_optimize(
     except (ParseError, ValidationError, SyntaxError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"[Syntax Error] {exc}")
 
-    dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
+    dataset, is_data, oos_data = _resolve_dataset(
+        req.dataset_name, req.dataset_start, req.dataset_end,
+        req.n_tickers, req.n_days, req.seed, req.oos_ratio,
+    )
     wf = OptimizationWorkflow(
         pop_size        = req.pop_size,
         n_generations   = req.n_generations,
@@ -1154,8 +1215,7 @@ def workflow_optimize(
         logger.exception("workflow_optimize failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
-    # Build response dict + inject PnL series for frontend chart
-    is_data, oos_data = _partition_dataset(dataset, req.oos_ratio)
+    # Build response dict + inject PnL series (is_data / oos_data already resolved above)
     resp_dict = result.to_dict()
     _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
 
@@ -1262,7 +1322,10 @@ async def workflow_optimize_stream(
         from app.core.workflows.alpha_workflows import OptimizationWorkflow
         from app.db.alpha_store import AlphaResult
 
-        dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
+        dataset, is_data, oos_data = _resolve_dataset(
+            req.dataset_name, req.dataset_start, req.dataset_end,
+            req.n_tickers, req.n_days, req.seed, req.oos_ratio,
+        )
         wf = OptimizationWorkflow(
             pop_size        = req.pop_size,
             n_generations   = req.n_generations,
@@ -1272,8 +1335,6 @@ async def workflow_optimize_stream(
             seed            = req.seed,
         )
         result = wf.run(dsl=req.dsl, dataset=dataset, on_progress=emit_text)
-
-        is_data, oos_data = _partition_dataset(dataset, req.oos_ratio)
         resp_dict = result.to_dict()
         _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
 
@@ -1312,7 +1373,10 @@ async def workflow_generate_stream(
         from app.core.workflows.alpha_workflows import GenerationWorkflow
         from app.db.alpha_store import AlphaResult
 
-        dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
+        dataset, is_data, oos_data = _resolve_dataset(
+            req.dataset_name, req.dataset_start, req.dataset_end,
+            req.n_tickers, req.n_days, req.seed, req.oos_ratio,
+        )
         wf = GenerationWorkflow(
             pop_size        = req.pop_size,
             n_generations   = req.n_generations,
@@ -1322,8 +1386,6 @@ async def workflow_generate_stream(
             seed            = req.seed,
         )
         result = wf.run(hypothesis=req.hypothesis, dataset=dataset, on_progress=emit_text)
-
-        is_data, oos_data = _partition_dataset(dataset, req.oos_ratio)
         resp_dict = result.to_dict()
         _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
 
