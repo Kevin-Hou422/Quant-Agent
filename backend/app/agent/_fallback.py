@@ -88,26 +88,33 @@ class FallbackOrchestrator:
 
         _log_evolution(gp_result)
 
-        # Step 3: OverfitCritic check
-        passed, reason = self._critic.check(final_metrics)
+        # Step 3: OverfitCritic — structured diagnosis
+        critic_result = self._critic.check(final_metrics)
 
-        # Step 4: AST-level correction if still overfitting
+        # Step 4: Targeted AST-level correction loop
         for attempt in range(_MAX_CORRECTION_ROUNDS):
-            if passed:
+            if critic_result.passed:
                 break
             logger.info(
-                "Workflow A: GP winner still overfitting (attempt %d): %s",
-                attempt + 1, reason,
+                "Workflow A: critic FAIL attempt=%d mode=%s severity=%s target=%s | %s",
+                attempt + 1,
+                critic_result.failure_mode,
+                critic_result.severity,
+                critic_result.recommended_mutation,
+                critic_result.reason,
             )
-            mut_result    = json.loads(self._tools.tool_mutate_ast(best_dsl, reason))
+            mut_result = json.loads(self._tools.tool_mutate_ast(
+                best_dsl,
+                critic_result.reason,
+                mutation_target = critic_result.recommended_mutation,
+            ))
             best_dsl      = mut_result.get("mutated_dsl", best_dsl)
             mutation_type = mut_result.get("mutation_type", "unknown")
-            logger.info("AST mutation (%s) → new DSL: %s", mutation_type, best_dsl)
+            logger.info("Targeted AST mutation (%s) → %s", mutation_type, best_dsl)
 
-            # Re-validate mutated DSL
             bt_result = json.loads(self._tools.tool_run_backtest(best_dsl))
             final_metrics.update(bt_result)
-            passed, reason = self._critic.check(final_metrics)
+            critic_result = self._critic.check(final_metrics)
 
         # Step 5: Save
         self._tools.tool_save_alpha(
@@ -176,25 +183,33 @@ class FallbackOrchestrator:
 
         _log_evolution(gp_result)
 
-        # Step 2: OverfitCritic check
-        passed, reason = self._critic.check(final_metrics)
+        # Step 2: OverfitCritic — structured diagnosis
+        critic_result = self._critic.check(final_metrics)
 
-        # Step 3: AST-level correction
+        # Step 3: Targeted AST-level correction loop
         for attempt in range(_MAX_CORRECTION_ROUNDS):
-            if passed:
+            if critic_result.passed:
                 break
             logger.info(
-                "Workflow B: GP winner still overfitting (attempt %d): %s",
-                attempt + 1, reason,
+                "Workflow B: critic FAIL attempt=%d mode=%s severity=%s target=%s | %s",
+                attempt + 1,
+                critic_result.failure_mode,
+                critic_result.severity,
+                critic_result.recommended_mutation,
+                critic_result.reason,
             )
-            mut_result    = json.loads(self._tools.tool_mutate_ast(best_dsl, reason))
+            mut_result = json.loads(self._tools.tool_mutate_ast(
+                best_dsl,
+                critic_result.reason,
+                mutation_target = critic_result.recommended_mutation,
+            ))
             best_dsl      = mut_result.get("mutated_dsl", best_dsl)
             mutation_type = mut_result.get("mutation_type", "unknown")
-            logger.info("AST mutation (%s) → new DSL: %s", mutation_type, best_dsl)
+            logger.info("Targeted AST mutation (%s) → %s", mutation_type, best_dsl)
 
             bt_result = json.loads(self._tools.tool_run_backtest(best_dsl))
             final_metrics.update(bt_result)
-            passed, reason = self._critic.check(final_metrics)
+            critic_result = self._critic.check(final_metrics)
 
         # Step 4: Save
         self._tools.tool_save_alpha(

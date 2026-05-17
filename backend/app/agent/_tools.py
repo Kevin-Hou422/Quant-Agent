@@ -287,28 +287,54 @@ class QuantTools:
     # Tool 4 — Single AST-level structural mutation  (REAL GP operations)
     # ------------------------------------------------------------------
 
-    def tool_mutate_ast(self, current_dsl: str, overfit_reason: str = "") -> str:
+    def tool_mutate_ast(
+        self,
+        current_dsl:     str  = "",
+        overfit_reason:  str  = "",
+        mutation_target: str  = "",
+    ) -> str:
         """
         Apply ONE real AST-level structural mutation to the given DSL.
 
-        Uses typed_nodes operations from gp_engine/mutations.py:
-          - point_mutation  : swap operator (same type)
-          - hoist_mutation  : replace subtree with its child (simplify)
-          - param_mutation  : adjust time-series window (±20%)
-          - subtree combos  : guided by overfit_reason
+        Parameters
+        ----------
+        current_dsl     : DSL expression to mutate.
+        overfit_reason  : Human-readable failure description (for weight bias
+                          and LLM guidance when mutation_target is not given).
+        mutation_target : Direct mutation key from CriticResult.recommended_mutation.
+                          When set, bypasses all weight-based randomness and applies
+                          the specified operator immediately (with retries).
+                          Valid keys: hoist, wrap_rank, add_ts_smoothing, add_condition,
+                          add_volume_filter, replace_subtree, add_operator, point, param.
 
-        NO string templates. NO fake mutation.
-        Returns JSON: {"mutated_dsl": str, "mutation_type": str, "explanation": str}
+        Returns
+        -------
+        JSON: {"mutated_dsl": str, "mutation_type": str, "explanation": str}
         """
         from app.core.alpha_engine.parser import Parser
         from app.core.alpha_engine.validator import AlphaValidator
         from app.core.gp_engine.mutations import (
             point_mutation, hoist_mutation, param_mutation,
+            wrap_rank, add_ts_smoothing, add_condition, add_volume_filter,
+            replace_subtree, add_operator,
         )
         from app.core.gp_engine.fitness import mutation_weights_from_metrics
 
         parser    = Parser()
         validator = AlphaValidator()
+
+        # Full map of named mutations (including all structural operators)
+        _ALL_OPS = {
+            "hoist":             (hoist_mutation,    "hoist_mutation"),
+            "wrap_rank":         (wrap_rank,          "wrap_rank"),
+            "add_ts_smoothing":  (add_ts_smoothing,   "add_ts_smoothing"),
+            "add_condition":     (add_condition,      "add_condition"),
+            "add_volume_filter": (add_volume_filter,  "add_volume_filter"),
+            "replace_subtree":   (replace_subtree,    "replace_subtree"),
+            "add_operator":      (add_operator,       "add_operator"),
+            "point":             (point_mutation,     "point_mutation"),
+            "param":             (param_mutation,     "param_mutation"),
+        }
 
         # Parse current DSL to AST
         try:
@@ -321,12 +347,35 @@ class QuantTools:
                 "explanation":   f"Could not parse DSL: {exc}",
             })
 
-        # Adaptive weights — infer from overfit_reason text
+        # ── Path A: Direct targeted mutation (from CriticResult) ─────────
+        if mutation_target and mutation_target in _ALL_OPS:
+            fn, label = _ALL_OPS[mutation_target]
+            for attempt in range(10):
+                try:
+                    mutated = fn(node)
+                    validator.validate(mutated)
+                    logger.info(
+                        "tool_mutate_ast [targeted=%s attempt=%d]: %s → %s",
+                        mutation_target, attempt + 1,
+                        current_dsl[:50], repr(mutated)[:50],
+                    )
+                    return json.dumps({
+                        "mutated_dsl":   repr(mutated),
+                        "mutation_type": label,
+                        "explanation":   (
+                            f"Targeted {label} applied (failure={mutation_target}): "
+                            f"'{current_dsl[:40]}...'"
+                        ),
+                    })
+                except Exception:
+                    continue
+            # Targeted mutation failed — fall through to weight-based
+
+        # ── Path B: Weight-based selection (legacy / LLM-guided) ─────────
         overfit_score = 0.6 if "过拟合" in overfit_reason or "overfit" in overfit_reason.lower() else 0.1
         sharpe_low    = 0.1 if ("low" in overfit_reason.lower() or "低" in overfit_reason) else 0.5
         high_turn     = 2.5 if ("turnover" in overfit_reason.lower() or "换手" in overfit_reason) else 1.0
 
-        # Use LLM to guide mutation type if available
         mutation_type_hint = self._llm_guide_mutation(current_dsl, overfit_reason)
 
         weights = mutation_weights_from_metrics(
@@ -334,19 +383,18 @@ class QuantTools:
             turnover      = high_turn,
             overfit_score = overfit_score,
         )
-        # Override weights if LLM gave a hint
-        if mutation_type_hint:
-            if mutation_type_hint in weights:
-                weights = {k: 0.05 for k in weights}
-                weights[mutation_type_hint] = 0.85
+        if mutation_type_hint and mutation_type_hint in weights:
+            weights = {k: 0.05 for k in weights}
+            weights[mutation_type_hint] = 0.85
 
-        ops = {
-            "point": (point_mutation, "point_mutation"),
-            "hoist": (hoist_mutation, "hoist_mutation"),
-            "param": (param_mutation, "param_mutation"),
+        # Restrict to ops that don't need a second parent
+        classic_ops = {
+            k: v for k, v in _ALL_OPS.items()
+            if k in ("point", "hoist", "param",
+                     "wrap_rank", "add_ts_smoothing", "add_condition",
+                     "replace_subtree", "add_operator")
         }
-        # Remove crossover (needs two parents) — handled by GP loop
-        pop_weights = {k: v for k, v in weights.items() if k in ops}
+        pop_weights = {k: weights.get(k, 0.05) for k in classic_ops}
         total = sum(pop_weights.values()) or 1.0
         pop_weights = {k: v / total for k, v in pop_weights.items()}
 
@@ -355,8 +403,8 @@ class QuantTools:
         probs = [pop_weights[k] for k in keys]
 
         for _ in range(8):
-            chosen_key = random.choices(keys, weights=probs, k=1)[0]
-            fn, label  = ops[chosen_key]
+            chosen_key  = random.choices(keys, weights=probs, k=1)[0]
+            fn, label   = classic_ops[chosen_key]
             try:
                 mutated     = fn(node)
                 mutated_dsl = repr(mutated)

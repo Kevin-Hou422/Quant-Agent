@@ -503,14 +503,79 @@ fitness = sharpe_full - 0.2×turnover - 0.3×|max_dd|
 
 ---
 
-### 弊端 6：OverfitCritic 二元门控，纠错方向随机
+### 弊端 6：OverfitCritic 二元门控，纠错方向随机 ✅ 已修复
 
-**问题描述：**
-Critic 只做通过/不通过，未通过后触发的 `tool_mutate_ast` 是从三种变异中随机选择的，不针对具体失败原因。
+**问题描述（原始）：**
+Critic 只做通过/不通过，未通过后触发的 `tool_mutate_ast` 从三种变异中随机选择，不针对失败原因。
 
-**表现：** 因高换手率导致净损益差的因子被 Critic 拒绝后，随机触发 `param_mutation` 把窗口从 10 改到 8，对换手率问题无帮助。
+**表现：** 因高换手率导致净损益差的因子被 Critic 拒绝后，随机触发 `param_mutation`（窗口 10→8），对换手率问题完全无帮助。
 
-**修复方向：** Critic 返回带因子族标签的结构化诊断，将诊断结果作为 `tool_mutate_ast` 的有方向性指令。
+**修复（已实施，3 个文件）：**
+
+**`_critic.py` — 新增 `CriticResult` 数据类 + 6 个失败模式检测：**
+
+```python
+@dataclass
+class CriticResult:
+    passed:               bool
+    failure_mode:         str   # 规范失败标签
+    severity:             str   # "ok"/"minor"/"moderate"/"critical"
+    recommended_mutation: str   # 直接传入 tool_mutate_ast 的 mutation_target
+    reason:               str   # 人类可读说明
+    metrics_snapshot:     dict  # 关键指标快照
+```
+
+失败模式优先级（顺序检测，第一个匹配为准）：
+
+| 优先级 | 模式 | 触发条件 | 推荐变异 | 金融原理 |
+|--------|------|---------|---------|---------|
+| 1 | `no_signal` | OOS Sharpe < 0.05 | `replace_subtree` | 信号无效，需要完全替换核心结构 |
+| 2 | `severe_overfitting` | overfit > 0.60 且 IS > 0.5 | `hoist` | 树过复杂，提升子树简化 |
+| 3 | `high_turnover` | turnover > 3.0× | `add_ts_smoothing` | 加平滑层降低信号翻转频率 |
+| 4 | `high_drawdown` | \|max_dd\| > 30% | `add_condition` | 加状态条件门控切断熊市尾部风险 |
+| 5 | `mild_overfitting` | overfit > 0.50 or OOS < 0.20 | `wrap_rank` | 加截面归一化去除 IS 特有偏差 |
+| 6 | `weak_signal` | OOS Sharpe < 0.35 | `point` | 算子互换探索不同信号结构 |
+
+`CriticResult` 实现了 `__iter__`，保持向后兼容（`passed, reason = critic.check(m)` 仍然有效）。
+
+**`_tools.py` — `tool_mutate_ast` 新增 `mutation_target` 参数：**
+
+```python
+tool_mutate_ast(current_dsl, overfit_reason="", mutation_target="")
+```
+
+- `mutation_target` 非空时：**直接调用**该变异算子（10次重试），完全绕过随机权重
+- `mutation_target` 为空时：降级到原有的权重采样路径（LLM 引导 or 指标推断）
+
+有效的 `mutation_target` 值：`hoist`, `wrap_rank`, `add_ts_smoothing`, `add_condition`, `add_volume_filter`, `replace_subtree`, `add_operator`, `point`, `param`
+
+**`_fallback.py` — 两条工作流均使用结构化纠错：**
+
+```python
+critic_result = self._critic.check(final_metrics)
+mut_result = json.loads(self._tools.tool_mutate_ast(
+    best_dsl,
+    critic_result.reason,
+    mutation_target = critic_result.recommended_mutation,  # 直接指令
+))
+```
+
+日志从 `"还在过拟合"` 升级为：
+```
+Workflow A: critic FAIL attempt=1 mode=high_turnover severity=critical target=add_ts_smoothing
+```
+
+**实测结果（6 个失败场景 + 1 个通过场景）：**
+
+| 失败场景 | 检测 | 推荐变异 |
+|---------|------|---------|
+| OOS Sharpe=0.02 | no_signal ✓ | replace_subtree ✓ |
+| IS=1.8, overfit=0.80 | severe_overfitting ✓ | hoist ✓ |
+| turnover=4.5× | high_turnover ✓ | add_ts_smoothing ✓ |
+| max_dd=-40% | high_drawdown ✓ | add_condition ✓ |
+| overfit=0.55 | mild_overfitting ✓ | wrap_rank ✓ |
+| OOS Sharpe=0.28 | weak_signal ✓ | point ✓ |
+| OOS=0.65, overfit=0.15 | pass ✓ | (no mutation) ✓ |
 
 ---
 
@@ -572,7 +637,7 @@ QuantAgent (_agent.py)
 | 3. 变异算子语法驱动 | 优化 | 中 | ✅ **已修复** | `mutations.py`, `population_evolver.py` |
 | 4. 合成数据适应度虚假 | 评估 | 高 | ✅ **已修复** | `_data_utils.py`, `_tools.py`, `router.py` |
 | 5. Optuna/GP 目标函数不一致 | 优化 | 中 | ✅ **已修复** | `core/ml_engine/alpha_optimizer.py` |
-| 6. OverfitCritic 二元门控无梯度 | 后处理 | 中 | ⬜ 待修复 | `_critic.py`, `_fallback.py` |
+| 6. OverfitCritic 二元门控无梯度 | 后处理 | 中 | ✅ **已修复** | `_critic.py`, `_tools.py`, `_fallback.py` |
 | 7. LLM 路径知识不传入 GP | 协同 | 中 | 🔶 部分覆盖 | 弊端 1 修复已覆盖自动检测路径 |
 
 ### 弊端 1 修复详情（2026-05-16）
