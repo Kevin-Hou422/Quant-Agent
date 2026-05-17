@@ -734,6 +734,4 @@ _fallback.py / _tools.py
 
 ---
 
-*报告生成日期：2026-05-16*
-*系统版本：GP Engine v2 + Financial Interpreter + Multi-Dataset Backtester*
-*最后更新：弊端 1 修复（factor-family-aware mutation weights）*
+*报告生成日期：2026-05-17*
