@@ -60,10 +60,8 @@ Architecture note:
 """
 from __future__ import annotations
 
-import copy
 import logging
 import random
-import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -85,7 +83,7 @@ from app.core.gp_engine.mutations import (
 )
 from app.core.gp_engine.fitness import compute_fitness, mutation_weights_from_metrics
 from app.core.gp_engine.alpha_pool import AlphaPool, PoolEntry
-from app.core.gp_engine.gp_engine import _SEED_DSLS, generate_random_alpha, get_seeds_for_family
+from app.core.gp_engine.gp_engine import generate_random_alpha, get_seeds_for_family
 from app.core.alpha_engine.parser import Parser
 from app.core.alpha_engine.validator import AlphaValidator
 from app.core.alpha_engine.typed_nodes import Node
@@ -181,8 +179,9 @@ class PopulationEvolver:
         self._elite_ratio       = elite_ratio
         self._corr_threshold    = corr_threshold
         self._seed              = seed
-        random.seed(seed)
-        np.random.seed(seed)
+        # E4 修复: 实例级 RNG，替代全局 random.seed / np.random.seed
+        # 全局 seed 调用会被并发请求互相覆盖，导致不可复现结果。
+        self._rng = random.Random(seed)
 
         self._pool = AlphaPool(max_size=200, corr_threshold=corr_threshold)
 
@@ -296,9 +295,7 @@ class PopulationEvolver:
 
             # e. Generate next generation (skip on last gen)
             if gen < self._n_gen - 1:
-                population = self._generate_next_population(
-                    population, results, weights
-                )
+                population = self._generate_next_population(results, weights)
 
         # ── Step 3: Optuna fine-tunes best structure ───────────────────
         pool_best = self._pool.best()
@@ -381,16 +378,16 @@ class PopulationEvolver:
         while len(pop) < self._pop_size and attempts < self._pop_size * 20:
             attempts += 1
             try:
-                roll = random.random()
+                roll = self._rng.random()
                 if len(pop) >= 2 and roll < 0.30:
                     # Crossover between two seeds for structured diversity
-                    p1, p2 = random.sample(pop[:min(len(pop), 8)], 2)
+                    p1, p2 = self._rng.sample(pop[:min(len(pop), 8)], 2)
                     c1, c2 = subtree_crossover(p1, p2)
-                    cand   = random.choice([c1, c2])
+                    cand   = self._rng.choice([c1, c2])
                 elif pop and roll < 0.65:
                     # Mutate an existing individual for more directed exploration
-                    parent = random.choice(pop)
-                    cand   = random.choice([
+                    parent = self._rng.choice(pop)
+                    cand   = self._rng.choice([
                         point_mutation(parent),
                         hoist_mutation(parent),
                         param_mutation(parent),
@@ -562,7 +559,6 @@ class PopulationEvolver:
 
     def _generate_next_population(
         self,
-        population:  List[Node],
         results:     List[EvalResult],
         mut_weights: Dict[str, float],
     ) -> List[Node]:
@@ -590,8 +586,10 @@ class PopulationEvolver:
         # ── Tournament selector ──
         tourn_size = min(3, len(sorted_res))
 
+        rng = self._rng
+
         def tournament() -> Optional[Node]:
-            contestants = random.sample(sorted_res, tourn_size)
+            contestants = rng.sample(sorted_res, tourn_size)
             winner      = max(contestants, key=lambda x: x.fitness)
             return dsl_to_node.get(winner.dsl)
 
@@ -599,11 +597,9 @@ class PopulationEvolver:
         attempts = 0
         while len(next_gen) < self._pop_size and attempts < self._pop_size * 15:
             attempts += 1
-            roll = random.random()
-
             try:
                 # Choose operator based on adaptive weights
-                op = _weighted_choice(mut_weights)
+                op = _weighted_choice(mut_weights, rng)
 
                 if op == "crossover" and len(sorted_res) >= 2:
                     p1, p2 = tournament(), tournament()
@@ -818,11 +814,11 @@ class PopulationEvolver:
 # Module-level helpers
 # ---------------------------------------------------------------------------
 
-def _weighted_choice(weights: Dict[str, float]) -> str:
-    """Sample a key from a probability dict."""
+def _weighted_choice(weights: Dict[str, float], rng: random.Random) -> str:
+    """Sample a key from a probability dict using the caller's RNG instance."""
     keys  = list(weights.keys())
     probs = [weights[k] for k in keys]
-    return random.choices(keys, weights=probs, k=1)[0]
+    return rng.choices(keys, weights=probs, k=1)[0]
 
 
 def _try_parse(dsl: str) -> Optional[Node]:

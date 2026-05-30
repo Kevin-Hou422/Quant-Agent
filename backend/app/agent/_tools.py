@@ -32,7 +32,10 @@ from app.agent._constants import (
     _VALID_FIELDS,
     _VALID_OPS,
 )
-from app.agent._data_utils import _make_synthetic_dataset, _partition, _run_backtest_core, load_real_dataset
+from app.agent._data_utils import (
+    _make_synthetic_dataset, _partition, _partition_three_way,
+    _run_backtest_core, load_real_dataset,
+)
 from app.agent._helpers import _safe_json_loads
 
 logger = logging.getLogger(__name__)
@@ -69,6 +72,7 @@ class QuantTools:
         dataset_name:  str   = "",
         dataset_start: str   = "2021-01-01",
         dataset_end:   str   = "2024-01-01",
+        test_ratio:    float = 0.10,
     ) -> None:
         self._n_tickers = n_tickers
         self._n_days    = n_days
@@ -79,20 +83,36 @@ class QuantTools:
 
         if dataset_name:
             try:
-                self._is_data, self._oos_data = load_real_dataset(
-                    dataset_name, dataset_start, dataset_end, oos_ratio
-                )
-                self._full_dataset = {**self._is_data, **self._oos_data}
+                # 实数据集：先加载再做三段切割
+                from app.core.data_engine.dataset_registry import load_registry_dataset
+                ds = load_registry_dataset(dataset_name, start=dataset_start, end=dataset_end, use_cache=True).data
+                self._full_dataset = ds
                 logger.info("QuantTools: real dataset '%s' [%s→%s] loaded", dataset_name, dataset_start, dataset_end)
             except Exception as exc:
                 logger.warning("Real dataset '%s' load failed: %s — falling back to synthetic", dataset_name, exc)
                 ds = _make_synthetic_dataset(n_tickers, n_days, seed)
                 self._full_dataset = ds
-                self._is_data, self._oos_data = _partition(ds, oos_ratio)
         else:
             ds = _make_synthetic_dataset(n_tickers, n_days, seed)
             self._full_dataset = ds
+
+        # F6 修复：三段式切割 IS / Validate(GP OOS) / Test(真实样本外)
+        # GP 全程只接触 IS + Validate；Test 段仅在最终验证时用一次。
+        try:
+            self._is_data, self._oos_data, self._test_data = _partition_three_way(
+                ds, oos_ratio=oos_ratio, test_ratio=test_ratio,
+            )
+            logger.info(
+                "QuantTools: 三段切割 IS=%d / Validate=%d / Test=%d 天",
+                len(next(iter(self._is_data.values()))),
+                len(next(iter(self._oos_data.values()))),
+                len(next(iter(self._test_data.values()))),
+            )
+        except ValueError as exc:
+            # 数据量太少时降级为两段切割，test_data = None
+            logger.warning("三段切割失败（%s），降级为两段切割", exc)
             self._is_data, self._oos_data = _partition(ds, oos_ratio)
+            self._test_data = None
 
     # ------------------------------------------------------------------
     # Tool 1 — hypothesis → seed DSL
@@ -259,9 +279,22 @@ class QuantTools:
     # Tool 3 — IS+OOS validation backtest
     # ------------------------------------------------------------------
 
-    def tool_run_backtest(self, dsl: str, config_json: str = "{}") -> str:
-        """Run full IS+OOS validation backtest with the given config.
-        Returns JSON: {is_sharpe, oos_sharpe, overfitting_score, is_overfit, summary}"""
+    def tool_run_backtest(
+        self,
+        dsl:          str  = "",
+        config_json:  str  = "{}",
+        use_test_set: bool = False,
+    ) -> str:
+        """
+        Run full IS+OOS validation backtest.
+
+        use_test_set=True  → OOS = self._test_data（真实样本外，GP 全程未见）
+                             应在 GP 完成后最终验证时使用，只调用一次。
+        use_test_set=False → OOS = self._oos_data（Validate 段，GP 内部使用）
+
+        Returns JSON: {is_sharpe, oos_sharpe, overfitting_score, is_overfit,
+                       is_true_holdout, summary}
+        """
         from app.core.alpha_engine.signal_processor import SimulationConfig
 
         cfg_dict = _safe_json_loads(config_json) if config_json.strip() else {}
@@ -272,8 +305,20 @@ class QuantTools:
             truncation_max_q = cfg_dict.get("truncation_max_q", 0.95),
             portfolio_mode   = cfg_dict.get("portfolio_mode", "long_short"),
         )
+
+        # F6: 选择 OOS 段
+        if use_test_set and self._test_data is not None:
+            oos_data       = self._test_data
+            is_true_holdout = True
+            logger.info("tool_run_backtest: 使用 Test 段（真实样本外）进行最终验证")
+        else:
+            oos_data        = self._oos_data
+            is_true_holdout = False
+            if use_test_set:
+                logger.warning("tool_run_backtest: use_test_set=True 但 _test_data 为 None，回退到 Validate 段")
+
         try:
-            metrics = _run_backtest_core(dsl, cfg, self._is_data, self._oos_data)
+            metrics = _run_backtest_core(dsl, cfg, self._is_data, oos_data)
         except Exception as exc:
             logger.warning("回测失败: %s", exc)
             metrics = {
@@ -281,6 +326,7 @@ class QuantTools:
                 "overfitting_score": 0.0, "is_overfit": False,
                 "summary": f"Backtest failed: {exc}",
             }
+        metrics["is_true_holdout"] = is_true_holdout
         return json.dumps(metrics, default=str)
 
     # ------------------------------------------------------------------

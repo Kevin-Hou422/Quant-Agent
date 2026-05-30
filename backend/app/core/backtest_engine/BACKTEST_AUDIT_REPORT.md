@@ -443,34 +443,36 @@ logger.warning("MultiDataset eval failed for dataset '%s': %s", name, exc)
 
 ## 七、不足汇总表
 
-| 编号 | 分类 | 问题 | 严重程度 | 修复难度 |
-|------|------|------|---------|---------|
-| F1 | 金融 | 无风险利率默认为零，Sharpe 高估 | 高 | 低 |
-| F2 | 金融 | 前视偏差风险：数据排序未验证 | 高 | 低 |
-| F3 | 金融 | 幸存者偏差：无退市/破产处理 | 高 | 高 |
-| F4 | 金融 | IC 默认使用权重代理收益（方法错误） | 高 | 低 |
-| F5 | 金融 | 短卖借券成本未建模 | 中 | 中 |
-| F6 | 金融 | 多重比较导致 OOS 失去意义 | 高 | 高 |
-| F7 | 金融 | 无统计显著性检验（t 统计量 / 置信区间） | 中 | 低 |
-| F8 | 金融 | 无基准 alpha/beta 分解 | 中 | 中 |
-| F9 | 金融 | 换手率年化计算被初始建仓日稀释 | 低 | 低 |
-| F10 | 金融 | 无日历/特殊事件处理（除权、停牌、涨跌停） | 中 | 高 |
-| F11 | 金融 | 无组合集中度约束 | 中 | 低 |
-| E1 | 软件工程 | BacktestEngine 日循环未向量化（性能瓶颈） | 中 | 中 |
-| E2 | 软件工程 | 无输入数据验证层 | 高 | 低 |
-| E3 | 软件工程 | 交易日数 252 硬编码，跨市场不适用 | 中 | 低 |
-| E4 | 软件工程 | QuantTools 非线程安全 | 高 | 中 |
-| E5 | 软件工程 | 缺少核心路径单元测试 | 高 | 高 |
-| E6 | 软件工程 | 负净值无熔断机制 | 中 | 低 |
-| E7 | 软件工程 | 前向填充无最大天数限制 | 中 | 低 |
-| E8 | 软件工程 | 错误日志上下文不足，调试困难 | 低 | 低 |
-| E9 | 软件工程 | Visualizer 混入计算引擎，污染依赖树 | 低 | 低 |
-| O1 | 其他 | Alpha 衰减曲线缺失（仅 t+1 IC） | 中 | 低 |
-| O2 | 其他 | 无压力测试子区间分析 | 中 | 中 |
-| O3 | 其他 | 无策略容量估算 | 低 | 中 |
-| O4 | 其他 | 多空腿贡献未分离 | 中 | 低 |
-| O5 | 其他 | 跨市场 Sharpe 聚合未加权/标准化 | 中 | 低 |
-| O6 | 其他 | 收益分布非正态性未检测（无偏度/峰度/Omega） | 低 | 低 |
+| 编号 | 分类 | 问题 | 严重程度 | 修复难度 | 状态 |
+|------|------|------|---------|---------|------|
+| F1 | 金融 | 无风险利率默认为零，Sharpe 高估 | 高 | 低 | ✅ |
+| F2 | 金融 | 前视偏差风险：数据排序未验证 | 高 | 低 | ✅ |
+| F3 | 金融 | 幸存者偏差：无退市/破产处理 | 高 | 高 | ⬜ |
+| F4 | 金融 | IC 默认使用权重代理收益（方法错误） | 高 | 低 | ✅ |
+| F5 | 金融 | 短卖借券成本未建模 | 中 | 中 | ✅ |
+| F6 | 金融 | 多重比较导致 OOS 失去意义 | 高 | 高 | ✅ |
+| F7 | 金融 | 无统计显著性检验（t 统计量 / 置信区间） | 中 | 低 | ✅ |
+| F8 | 金融 | 无基准 alpha/beta 分解 | 中 | 中 | ⬜ |
+| F9 | 金融 | 换手率年化计算被初始建仓日稀释 | 低 | 低 | ⬜ |
+| F10 | 金融 | 无日历/特殊事件处理（除权、停牌、涨跌停） | 中 | 高 | ⬜ |
+| F11 | 金融 | 无组合集中度约束 | 中 | 低 | ⬜ |
+| E1 | 软件工程 | BacktestEngine 日循环未向量化（性能瓶颈） | 中 | 中 | ⬜ |
+| E2 | 软件工程 | 无输入数据验证层 | 高 | 低 | ✅ |
+| E3 | 软件工程 | 交易日数 252 硬编码，跨市场不适用 | 中 | 低 | ✅ |
+| E4 | 软件工程 | QuantTools 非线程安全 / GP 全局随机状态 | 高 | 中 | ✅ |
+| E5 | 软件工程 | 缺少核心路径单元测试 | 高 | 高 | ⬜ |
+| E6 | 软件工程 | 负净值无熔断机制 | 中 | 低 | ✅ |
+| E7 | 软件工程 | 前向填充无最大天数限制 | 中 | 低 | ✅ |
+| E8 | 软件工程 | 错误日志上下文不足，调试困难 | 低 | 低 | ⬜ |
+| E9 | 软件工程 | Visualizer 混入计算引擎，污染依赖树 | 低 | 低 | ⬜ |
+| O1 | 其他 | Alpha 衰减曲线缺失（仅 t+1 IC） | 中 | 低 | ✅ |
+| O2 | 其他 | 无压力测试子区间分析 | 中 | 中 | ⬜ |
+| O3 | 其他 | 无策略容量估算 | 低 | 中 | ⬜ |
+| O4 | 其他 | 多空腿贡献未分离 | 中 | 低 | ✅ |
+| O5 | 其他 | 跨市场 Sharpe 聚合未加权/标准化 | 中 | 低 | ⬜ |
+| O6 | 其他 | 收益分布非正态性未检测（无偏度/峰度/Omega） | 低 | 低 | ⬜ |
+
+**已修复 13 项 / 共 25 项**（F1 F2 F4 F5 F6 F7 E2 E3 E4 E6 E7 O1 O4）
 
 ---
 
@@ -495,7 +497,88 @@ logger.warning("MultiDataset eval failed for dataset '%s': %s", name, exc)
 ### 第三优先级（架构改进）
 
 11. **E1 — PnL 计算向量化**：重写 `BacktestEngine` 日循环为矩阵运算
-12. **E4 — QuantTools 线程安全**：检查 API 层实例化模式，确保 per-request 实例隔离
-13. **F6 — Paper Trading Set**：引入第三段完全隔离数据用于最终验证
-14. **F3 — 幸存者偏差修复**：接入历史退市数据，构建 point-in-time universe
-15. **E5 — 单元测试**：为 `BacktestEngine`、`PerformanceAnalyzer`、`TransactionCostEngine` 各加 ≥5 个测试用例
+12. **E4 — QuantTools 线程安全**：✅ 已修复 — `PopulationEvolver` 改用实例级 `random.Random(seed)`，移除全局 `random.seed()` / `np.random.seed()` 调用，并发请求不再共享随机状态
+13. **F6 — Paper Trading Set**：✅ 已修复 — 三段式切割 IS/Validate/Test；GP 只接触 IS+Validate；`tool_run_backtest(use_test_set=True)` 用 Test 做最终验证；`_fallback.py` 两个 Workflow 保存前均调用真实样本外验证
+14. **E7 — ffill 无限制**（新增）：✅ 已修复 — `BacktestEngine` 中 `prices.ffill(limit=5)` 和 `volume.ffill(limit=5)`，防止停牌/退市股票被无限前向填充
+15. **F3 — 幸存者偏差修复**：接入历史退市数据，构建 point-in-time universe（暂缓）
+16. **E5 — 单元测试**：为 `BacktestEngine`、`PerformanceAnalyzer`、`TransactionCostEngine` 各加 ≥5 个测试用例（暂缓）
+
+---
+
+## 九、本轮评估与修复记录（必须修复项）
+
+### 评估结论（2026-05-31）
+
+经过第一、二优先级共 10 项修复后，对剩余 15 项未修复问题进行影响评估，识别出 **3 项必须立即修复**的问题：
+
+| 编号 | 问题 | 判定理由 |
+|------|------|---------|
+| E4 | QuantTools 非线程安全 / PopulationEvolver 全局随机状态 | 并发请求互相覆盖 `random.seed()`，导致 GP 结果不可复现，难以调试 |
+| F6 | 多重比较导致 OOS 失去意义 | GP 对同一 OOS 段评估 500+ 次，最终 "OOS Sharpe" 实为二次拟合，策略真实泛化能力未知 |
+| E7 | ffill 无最大天数限制 | 停牌/退市股票价格被无限前向填充，产生虚假平滑收益，污染所有回测结果 |
+
+### 修复详情
+
+#### E4 — 并发随机状态隔离（`population_evolver.py`）
+
+**根因**：`PopulationEvolver.__init__` 调用 `random.seed(seed)` 和 `np.random.seed(seed)` 设置进程级全局随机状态。两个并发 GP 请求会互相覆盖对方的种子，导致：
+- 结果不可复现（同 seed 两次运行输出不同）
+- 随机变异序列被干扰，进化方向随机漂移
+
+**修复**：
+- 移除 `random.seed()` / `np.random.seed()` 全局调用
+- 新增 `self._rng = random.Random(seed)`（实例级 RNG）
+- 将所有 `random.random()` / `random.sample()` / `random.choice()` / `random.choices()` 替换为 `self._rng.xxx()`
+- `_weighted_choice()` 模块函数新增 `rng` 参数，调用时传入 `self._rng`
+- 同步清理未使用 import（`copy`、`time`、`_SEED_DSLS`）和死代码变量
+
+#### F6 — 三段式数据切割（`_data_utils.py` / `_tools.py` / `_fallback.py` / `_lc_agent.py`）
+
+**根因**：GP 在 4 代 × 12 个个体的演化中，加上多 seed 初始化，对同一 OOS 集做了数百次适应度评估，使该集合实质上成为"训练数据"。
+
+**修复**：引入三段式时间切割：
+
+```
+总数据（100%）
+├── IS（70%）         — GP 结构搜索 + Optuna 参数调优的训练集
+├── Validate（20%）   — GP 个体适应度评估的内部 "OOS"（仍被间接拟合）
+└── Test（10%）       — 真实样本外，GP 全程不可见，只在最终验证时用一次
+```
+
+- `_data_utils.py`：新增 `_partition_three_way(dataset, oos_ratio=0.30, test_ratio=0.10)`
+- `QuantTools.__init__`：新增 `test_ratio=0.10` 参数，创建 `self._test_data`；数据量不足时自动降级为两段切割
+- `tool_run_backtest`：新增 `use_test_set: bool = False` 参数；`True` 时使用 `self._test_data` 作为 OOS
+- `_fallback.py`：两个 Workflow 在 `tool_save_alpha` 前调用 `tool_run_backtest(best_dsl, use_test_set=True)`，记录 `is_true_holdout=True` 的真实样本外指标
+- `_lc_agent.py`：`tool_run_backtest` wrapper 暴露 `use_test_set` 参数，供 LLM 在最终验证时调用
+
+#### E7 — ffill 最大天数限制（`backtest_engine.py`）
+
+**根因**：`BacktestEngine.run()` 对价格和成交量 DataFrame 调用无参数 `ffill()`，对停牌数月的 A 股或已退市股票产生无限前向填充，使回测引擎看到"永远不变的价格"，掩盖真实的流动性风险。
+
+**修复**：
+```python
+# 修复前
+prices = prices.reindex(...).ffill().fillna(0.0)
+volume = volume.reindex(...).ffill().fillna(0.0)
+
+# 修复后
+prices = prices.reindex(...).ffill(limit=5).fillna(0.0)
+volume = volume.reindex(...).ffill(limit=5).fillna(0.0)
+```
+
+超过 5 个交易日仍无数据的位置填充为 0，在权重构建时视为不可交易资产（零权重）。与数据引擎层（`dataset_loader.py`、`preprocessor.py`）的 `ffill(limit=5)` 保持一致。
+
+### 修复后剩余未修复项评估
+
+| 编号 | 问题 | 严重程度 | 建议 |
+|------|------|---------|------|
+| F11 | 无组合集中度约束 | 中 | 建议修复，5 行代码 |
+| F9 | 换手率首日稀释 | 低 | 可修复，2 行代码 |
+| F8 | 无基准 alpha/beta 分解 | 中 | 建议修复，需引入基准序列 |
+| O5 | 跨市场 Sharpe 聚合未标准化 | 中 | 建议修复 |
+| E1 | BacktestEngine 日循环未向量化 | 中 | 性能优化，不影响正确性 |
+| F3 | 幸存者偏差 | 高 | 需外部数据，暂缓 |
+| F10 | 日历/特殊事件处理 | 中 | 需大量工程，暂缓 |
+| E5 | 单元测试 | 高 | 长期维护需求，暂缓 |
+| O2 | 压力测试分析 | 中 | 研究功能，低优先级 |
+| O6 | 收益分布非正态性检测 | 低 | 锦上添花，低优先级 |

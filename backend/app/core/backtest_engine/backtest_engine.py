@@ -106,14 +106,14 @@ class BacktestEngine:
         tickers = list(weights.columns)
         T, N   = len(dates), len(tickers)
 
-        prices  = prices.reindex(index=dates, columns=tickers).ffill().fillna(0.0)
-        volume  = volume.reindex(index=dates, columns=tickers).ffill().fillna(0.0)
+        # E7 修复: ffill 限制最多 5 天，防止停牌/退市股票价格被无限前向填充
+        prices  = prices.reindex(index=dates, columns=tickers).ffill(limit=5).fillna(0.0)
+        volume  = volume.reindex(index=dates, columns=tickers).ffill(limit=5).fillna(0.0)
         weights = weights.reindex(index=dates, columns=tickers).fillna(0.0)
         signal  = signal.reindex(index=dates, columns=tickers)
 
         prices_arr  = prices.to_numpy(dtype=float)
-        volume_arr  = volume.to_numpy(dtype=float)
-        weights_arr = weights.to_numpy(dtype=float)
+        # volume/weights used as DataFrames by liq helpers; no separate numpy arrays needed
 
         # --- 预计算 ADV & 日波动率 ---
         adv_usd_df = self._liq.compute_adv(volume, prices)         # (T×N)
@@ -163,7 +163,7 @@ class BacktestEngine:
             turnover_t = float(np.abs(delta_w).sum()) / 2.0
 
             # 计算交易成本
-            cost_w, cost_usd, records = self._tc.compute(
+            cost_w, _, records = self._tc.compute(
                 date          = dates[t],
                 delta_w       = delta_w,
                 prices        = price_t,

@@ -116,7 +116,19 @@ class FallbackOrchestrator:
             final_metrics.update(bt_result)
             critic_result = self._critic.check(final_metrics)
 
-        # Step 5: Save
+        # Step 5: F6 — 用真实样本外（Test 段）做最终验证，覆盖 Validate 段指标
+        try:
+            holdout = json.loads(self._tools.tool_run_backtest(best_dsl, use_test_set=True))
+            final_metrics.update(holdout)
+            logger.info(
+                "Workflow A 真实样本外验证: oos_sharpe=%.4f is_true_holdout=%s",
+                holdout.get("oos_sharpe") or 0.0,
+                holdout.get("is_true_holdout"),
+            )
+        except Exception as exc:
+            logger.warning("Workflow A 真实样本外验证失败: %s", exc)
+
+        # Step 6: Save
         self._tools.tool_save_alpha(
             name         = f"gp_auto_{int(time.time())}",
             dsl          = best_dsl,
@@ -211,7 +223,19 @@ class FallbackOrchestrator:
             final_metrics.update(bt_result)
             critic_result = self._critic.check(final_metrics)
 
-        # Step 4: Save
+        # Step 4: F6 — 用真实样本外（Test 段）做最终验证
+        try:
+            holdout = json.loads(self._tools.tool_run_backtest(best_dsl, use_test_set=True))
+            final_metrics.update(holdout)
+            logger.info(
+                "Workflow B 真实样本外验证: oos_sharpe=%.4f is_true_holdout=%s",
+                holdout.get("oos_sharpe") or 0.0,
+                holdout.get("is_true_holdout"),
+            )
+        except Exception as exc:
+            logger.warning("Workflow B 真实样本外验证失败: %s", exc)
+
+        # Step 5: Save
         self._tools.tool_save_alpha(
             name         = f"gp_optimized_{int(time.time())}",
             dsl          = best_dsl,

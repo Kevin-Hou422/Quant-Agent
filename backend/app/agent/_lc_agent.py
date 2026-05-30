@@ -107,11 +107,19 @@ def _build_langchain_agent(
     # ── Tool 3: IS+OOS validation backtest ────────────────────────────
 
     @lc_tool
-    def tool_run_backtest(dsl: str, config_json: str = "{}") -> str:
-        """Run full IS+OOS validation backtest with a given config.
-        Returns IS/OOS Sharpe, overfitting_score, is_overfit flag.
-        Use after GP to validate the final selected alpha."""
-        return tools_obj.tool_run_backtest(dsl, config_json)
+    def tool_run_backtest(
+        dsl:          str  = "",
+        config_json:  str  = "{}",
+        use_test_set: bool = False,
+    ) -> str:
+        """Run full IS+OOS validation backtest.
+        Returns IS/OOS Sharpe, overfitting_score, is_overfit, is_true_holdout.
+
+        use_test_set=True  : OOS = true held-out Test set (GP never saw this data).
+                             Use ONCE for the final selected alpha after GP completes.
+        use_test_set=False : OOS = Validate set (used during GP fitness evaluation).
+        """
+        return tools_obj.tool_run_backtest(dsl, config_json, use_test_set)
 
     # ── Tool 4: Single AST structural mutation ────────────────────────
 

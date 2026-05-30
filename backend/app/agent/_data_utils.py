@@ -68,6 +68,51 @@ def _partition(
     return part.train(), part.test()
 
 
+def _partition_three_way(
+    dataset:    Dict[str, pd.DataFrame],
+    oos_ratio:  float = 0.30,
+    test_ratio: float = 0.10,
+) -> Tuple[Dict, Dict, Dict]:
+    """
+    F6 修复：三段式时间切割 IS / Validate / Test。
+
+    Temporal ordering (no shuffling, no data leakage):
+        IS:       [0,   n_is)           — GP 结构搜索 + Optuna 参数调优
+        Validate: [n_is, n_is+n_val)    — GP 个体适应度评估（内部 "OOS"）
+        Test:     [n_is+n_val, n)       — 真实样本外，GP 全程不可见
+
+    Parameters
+    ----------
+    oos_ratio  : 非 IS 总比例（Validate + Test），默认 0.30
+    test_ratio : Test 占全数据比例，默认 0.10；Validate = oos_ratio - test_ratio
+
+    Returns
+    -------
+    (is_data, val_data, test_data)
+
+    Raises
+    ------
+    ValueError : 数据量不足以支持三段切割（n_is < 20）
+    """
+    ref  = next(iter(dataset.values()))
+    n    = len(ref)
+
+    n_test = max(1, int(n * test_ratio))
+    n_val  = max(1, int(n * oos_ratio) - n_test)
+    n_is   = n - n_val - n_test
+
+    if n_is < 20:
+        raise ValueError(
+            f"数据量不足以支持三段切割: n={n}, n_is={n_is}, n_val={n_val}, "
+            f"n_test={n_test}。至少需要 n_is >= 20 个交易日。"
+        )
+
+    def _slice(start: int, end: int) -> Dict[str, pd.DataFrame]:
+        return {field: df.iloc[start:end] for field, df in dataset.items()}
+
+    return _slice(0, n_is), _slice(n_is, n_is + n_val), _slice(n_is + n_val, n)
+
+
 def load_real_dataset(
     name:      str,
     start:     str   = "2021-01-01",
