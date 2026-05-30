@@ -40,6 +40,80 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# F2 + E2 — 输入数据验证
+# ---------------------------------------------------------------------------
+
+def _validate_dataset(data: Dict[str, pd.DataFrame], label: str = "dataset") -> None:
+    """
+    验证数据集结构、时间顺序和字段一致性。
+
+    在 RealisticBacktester.run() 入口调用，防止：
+    - 前视偏差（乱序索引）
+    - 重复日期导致的计算错误
+    - 缺少必要字段（close）
+    - 跨字段形状不一致
+
+    Raises
+    ------
+    ValueError : 任何检验失败时抛出，携带可定位问题的上下文信息。
+    """
+    if not data:
+        raise ValueError(f"[{label}] 数据集为空 dict")
+
+    if "close" not in data:
+        present = list(data.keys())
+        raise ValueError(
+            f"[{label}] 缺少必要字段 'close'（当前字段: {present}）"
+        )
+
+    ref = data["close"]
+
+    if not isinstance(ref, pd.DataFrame):
+        raise ValueError(
+            f"[{label}].close: 期望 pd.DataFrame，实际类型 {type(ref).__name__}"
+        )
+
+    if not isinstance(ref.index, pd.DatetimeIndex):
+        raise ValueError(
+            f"[{label}].close: 索引必须为 DatetimeIndex（当前: {type(ref.index).__name__}）"
+        )
+
+    if not ref.index.is_monotonic_increasing:
+        bad = ref.index[ref.index != ref.index.sort_values()][:3].tolist()
+        raise ValueError(
+            f"[{label}].close: 时间索引未升序排列，存在前视偏差风险。"
+            f" 乱序位置示例: {bad}。请在传入前调用 df.sort_index()。"
+        )
+
+    dups = ref.index[ref.index.duplicated()].unique()
+    if len(dups) > 0:
+        raise ValueError(
+            f"[{label}].close: 发现重复日期 {dups[:5].tolist()}，"
+            f" 请先去重（df.loc[~df.index.duplicated()]）。"
+        )
+
+    if ref.empty:
+        raise ValueError(f"[{label}].close: DataFrame 为空（0 行）")
+
+    # 跨字段形状一致性
+    for field_name, df in data.items():
+        if field_name == "close":
+            continue
+        if not isinstance(df, pd.DataFrame):
+            raise ValueError(
+                f"[{label}].{field_name}: 期望 pd.DataFrame，实际类型 {type(df).__name__}"
+            )
+        if df.shape != ref.shape:
+            raise ValueError(
+                f"[{label}].{field_name}: 形状 {df.shape} 与 close {ref.shape} 不一致"
+            )
+        if not df.index.equals(ref.index):
+            raise ValueError(
+                f"[{label}].{field_name}: 时间索引与 close 不一致"
+            )
+
+
+# ---------------------------------------------------------------------------
 # RealisticBacktestResult — IS + OOS 双段回测结果
 # ---------------------------------------------------------------------------
 
@@ -194,13 +268,18 @@ class RealisticBacktester:
         -------
         RealisticBacktestResult
         """
-        # 1. 解析 + 验证 DSL（仅一次，IS 和 OOS 共用同一棵 AST）
+        # 1. 验证输入数据集结构（F2+E2 修复：前视偏差防护 + 结构校验）
+        _validate_dataset(dataset, label="IS")
+        if oos_dataset is not None:
+            _validate_dataset(oos_dataset, label="OOS")
+
+        # 2. 解析 + 验证 DSL（仅一次，IS 和 OOS 共用同一棵 AST）
         node = self._parser.parse(dsl)
         self._validator.validate(node)
         logger.info("RealisticBacktester | DSL='%s' | mode=%s | delay=%d",
                     dsl[:80], self.config.portfolio_mode, self.config.delay)
 
-        # 2. IS 回测
+        # 3. IS 回测
         raw_signal, proc_signal, is_result = self._run_one_segment(
             node, dataset, label="IS"
         )
@@ -209,7 +288,7 @@ class RealisticBacktester:
             is_result, prices=dataset.get("close")
         )
 
-        # 3. OOS 回测（使用相同 DSL 和 config）
+        # 4. OOS 回测（使用相同 DSL 和 config）
         oos_result: Optional[BacktestResult] = None
         oos_report: Optional[RiskReport]     = None
 
@@ -249,7 +328,6 @@ class RealisticBacktester:
         (raw_signal, processed_signal, BacktestResult)
         """
         # Step 2: 执行 DSL → 原始信号
-        from app.core.alpha_engine.typed_nodes import Node as _Node
         raw_signal = self._executor.run(node, dataset)   # pd.DataFrame (T×N)
 
         # Step 3: SignalProcessor 4 步管道（截断→衰减→中性化→延迟）

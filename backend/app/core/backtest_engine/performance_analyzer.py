@@ -9,7 +9,6 @@ PerformanceAnalyzer — 全量绩效指标计算
 
 from __future__ import annotations
 
-import warnings
 from typing import Tuple
 
 import numpy as np
@@ -31,13 +30,22 @@ class PerformanceAnalyzer:
 
     Parameters
     ----------
-    result : BacktestResult
-    rf     : 无风险日收益率（默认 0）
+    result    : BacktestResult
+    rf        : 无风险日收益率（默认 0）。优先级低于 rf_annual。
+    rf_annual : 无风险年化利率（如 0.05 = 5%）。设置后自动转换为日频率。
+                推荐使用此参数而非 rf，以避免混淆日/年频率。
     """
 
-    def __init__(self, result: BacktestResult, rf: float = 0.0) -> None:
+    def __init__(
+        self,
+        result:    BacktestResult,
+        rf:        float = 0.0,
+        rf_annual: float = 0.0,
+    ) -> None:
         self.r  = result
-        self.rf = rf
+        # rf_annual 优先：年化率转日频
+        self.rf = rf_annual / TRADING_DAYS if rf_annual != 0.0 else rf
+        self.rf_annual = rf_annual if rf_annual != 0.0 else rf * TRADING_DAYS
         self._ret = result.net_returns.fillna(0.0)
 
     # ================================================================
@@ -54,7 +62,22 @@ class PerformanceAnalyzer:
 
     def sharpe_ratio(self) -> float:
         vol = self.annualized_volatility()
-        return float((self.annualized_return() - self.rf * TRADING_DAYS) / vol) if vol > 0 else np.nan
+        return float((self.annualized_return() - self.rf_annual) / vol) if vol > 0 else np.nan
+
+    def sharpe_tstat(self) -> float:
+        """
+        Sharpe 比率的 t 统计量（Lo 2002 公式）。
+
+        t = SR × √T / √(1 + 0.5 × SR²)
+
+        T = 实际净收益观测天数。
+        t > 1.96 → 在 5% 显著性水平下统计显著。
+        """
+        sr = self.sharpe_ratio()
+        if np.isnan(sr):
+            return np.nan
+        T = float(max(len(self._ret.dropna()), 1))
+        return float(sr * np.sqrt(T) / np.sqrt(1.0 + 0.5 * sr ** 2))
 
     def calmar_ratio(self) -> float:
         dd_val, *_ = self.max_drawdown()
@@ -123,51 +146,38 @@ class PerformanceAnalyzer:
     # Alpha 质量
     # ================================================================
 
-    def rolling_rank_ic(self, window: int = 20) -> pd.Series:
+    def rolling_rank_ic(self) -> pd.Series:
         """
-        逐日计算 Rank IC：
-            rank_ic[t] = spearmanr(signal[t], fwd_return[t+1])
-        返回 IC 序列（长度 = T-1，最后一天无前瞻收益）。
-        """
-        sig    = self.r.signal
-        prices = self.r.positions   # 用 positions 提取持仓日收益（近似）
-        # 用净收益（long-only 视角）近似逐资产收益
-        # 更准确：需要逐资产价格 → 此处用信号×组合收益的替代
-        # 标准实现：fwd_ret[t] = (price[t+1] - price[t]) / price[t]
-        # 由于 BacktestResult 未直接暴露价格，用净收益的截面分布近似
-        # —— 正确做法需要用户传入价格；此处提供基于持仓的 IC 近似
+        近似版 Rank IC（无需价格数据）。
 
-        n = len(sig)
+        用下期持仓权重代理逐资产收益，会系统性低估真实 IC。
+        仅在无价格矩阵时作为降级选项，优先使用 rolling_rank_ic_from_prices()。
+        """
+        sig     = self.r.signal
+        pos_arr = self.r.positions.to_numpy(dtype=float)
+        sig_arr = sig.to_numpy(dtype=float)
+        n       = len(sig)
         ic_vals = np.full(n, np.nan)
 
-        sig_arr = sig.to_numpy(dtype=float)
-
-        # 用 positions 差分近似逐资产贡献收益（粗糙但无依赖）
-        pos_arr = self.r.positions.to_numpy(dtype=float)
-
         for t in range(n - 1):
-            s = sig_arr[t]
-            # 下期各资产收益的截面排名近似 = 用权重差分作为信号
-            # 若有价格数据可替换为精确计算
+            s    = sig_arr[t]
             fwd_w = pos_arr[t + 1]
-            mask = ~(np.isnan(s) | np.isnan(fwd_w))
+            mask  = ~(np.isnan(s) | np.isnan(fwd_w))
             if mask.sum() < 5:
                 continue
             rho, _ = scipy_stats.spearmanr(s[mask], fwd_w[mask])
             ic_vals[t] = rho
 
-        ic_series = pd.Series(ic_vals, index=sig.index, name="rank_ic")
-        return ic_series.dropna()
+        return pd.Series(ic_vals, index=sig.index, name="rank_ic_approx").dropna()
 
     def rolling_rank_ic_from_prices(
         self,
         signal: pd.DataFrame,
         prices: pd.DataFrame,
-        window: int = 20,
     ) -> pd.Series:
         """
         精确版 Rank IC：逐日 spearmanr(signal_t, fwd_price_ret_{t+1})。
-        需要外部传入价格矩阵。
+        需要外部传入价格矩阵。推荐在有价格数据时始终使用此方法。
         """
         fwd_ret = prices.pct_change().shift(-1)   # 前瞻一期收益
         n = len(signal)
@@ -239,7 +249,7 @@ class PerformanceAnalyzer:
             pos  = self.r.positions.to_numpy(dtype=float)
             fwd  = np.diff(pos, axis=0, prepend=pos[:1])
 
-        T, N  = sig.shape
+        T, _  = sig.shape
         bucket_returns = {d: [] for d in range(1, n_deciles + 1)}
 
         for t in range(T - 1):
@@ -267,19 +277,35 @@ class PerformanceAnalyzer:
 
     def summarize(
         self,
-        prices: pd.DataFrame | None = None,
-        ic_series: pd.Series | None = None,
+        prices:    pd.DataFrame | None = None,
+        ic_series: pd.Series   | None = None,
     ) -> dict:
-        """一次性计算所有指标，返回 dict。"""
+        """
+        一次性计算所有指标，返回 dict。
+
+        若传入 prices，使用精确 Rank IC（spearman(signal, fwd_price_ret)）；
+        否则降级为近似 IC（持仓权重代理）。
+        ic_method 字段记录实际使用的计算方式。
+        """
         dd_val, dd_start, dd_end, dd_dur = self.max_drawdown()
         var95, cvar95 = self.var_cvar(0.05)
         to_dict       = self.turnover_analysis()
-        ic = ic_series if ic_series is not None else self.rolling_rank_ic()
+
+        if ic_series is not None:
+            ic        = ic_series
+            ic_method = "provided"
+        elif prices is not None:
+            ic        = self.rolling_rank_ic_from_prices(self.r.signal, prices)
+            ic_method = "exact_price"
+        else:
+            ic        = self.rolling_rank_ic()
+            ic_method = "approx_position"
 
         return {
             "annualized_return":   self.annualized_return(),
             "annualized_vol":      self.annualized_volatility(),
             "sharpe_ratio":        self.sharpe_ratio(),
+            "sharpe_tstat":        self.sharpe_tstat(),
             "calmar_ratio":        self.calmar_ratio(),
             "max_drawdown":        dd_val,
             "max_dd_start":        dd_start,
@@ -292,4 +318,5 @@ class PerformanceAnalyzer:
             "ic_ir":               self.ic_ir(ic),
             "ann_turnover":        to_dict["ann_turnover"],
             "cost_drag_bps":       to_dict["cost_drag_bps"],
+            "ic_method":           ic_method,
         }

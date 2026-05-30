@@ -37,14 +37,15 @@ logger = logging.getLogger(__name__)
 class BacktestResult:
     """完整回测结果容器。"""
 
-    equity_curve:   pd.Series       # 每日净值（初始=1.0）
-    gross_returns:  pd.Series       # 毛收益率序列
-    net_returns:    pd.Series       # 净收益率序列（扣除所有成本）
-    positions:      pd.DataFrame    # (T×N) 每日实际持仓权重
-    trade_log:      pd.DataFrame    # 完整交易日志
-    turnover:       pd.Series       # 每日单边换手率
-    signal:         pd.DataFrame    # 原始信号矩阵（IC 计算用）
-    daily_cost_bps: pd.Series       # 每日成本（bps）
+    equity_curve:   pd.Series            # 每日净值（初始=1.0）
+    gross_returns:  pd.Series            # 毛收益率序列
+    net_returns:    pd.Series            # 净收益率序列（扣除所有成本）
+    positions:      pd.DataFrame         # (T×N) 每日实际持仓权重
+    trade_log:      pd.DataFrame         # 完整交易日志
+    turnover:       pd.Series            # 每日单边换手率
+    signal:         pd.DataFrame         # 原始信号矩阵（IC 计算用）
+    daily_cost_bps: pd.Series            # 每日成本（bps）
+    ruin_date:      Optional[pd.Timestamp] = None  # 净值穿零熔断日期（正常为 None）
 
 
 # ---------------------------------------------------------------------------
@@ -130,12 +131,13 @@ class BacktestEngine:
         equity          = self.initial_capital
         prev_w          = np.zeros(N)
         all_records:    List[TradeRecord] = []
-        equity_series   = np.empty(T)
-        gross_ret_arr   = np.empty(T)
-        net_ret_arr     = np.empty(T)
-        turnover_arr    = np.empty(T)
-        cost_bps_arr    = np.empty(T)
-        realized_pos    = np.empty((T, N))
+        equity_series   = np.zeros(T)      # 预填 0 — 熔断后剩余天数保持 0
+        gross_ret_arr   = np.zeros(T)
+        net_ret_arr     = np.zeros(T)
+        turnover_arr    = np.zeros(T)
+        cost_bps_arr    = np.zeros(T)
+        realized_pos    = np.zeros((T, N))
+        ruin_date: Optional[pd.Timestamp] = None
 
         for t in range(T):
             target_w   = adj_weights[t]
@@ -183,6 +185,17 @@ class BacktestEngine:
             realized_pos[t]  = target_w
             prev_w           = target_w.copy()
 
+            # ── E6 熔断：净值归零后停止模拟 ─────────────────────────────
+            if equity <= 0:
+                ruin_date = dates[t]
+                logger.warning(
+                    "净值归零熔断 | date=%s | day=%d/%d | 剩余 %d 天填充为 0",
+                    dates[t].date() if hasattr(dates[t], "date") else dates[t],
+                    t + 1, T, T - t - 1,
+                )
+                break
+            # ─────────────────────────────────────────────────────────────
+
             if t % 50 == 0:
                 logger.debug(
                     "Backtest t=%d/%d date=%s equity=%.4f",
@@ -190,8 +203,10 @@ class BacktestEngine:
                 )
 
         logger.info(
-            "回测完成: %d 天 × %d 资产 | 最终净值=%.4f | 总交易=%d",
-            T, N, equity_series[-1], len(all_records),
+            "回测完成: %d 天 × %d 资产 | 最终净值=%.4f | 总交易=%d%s",
+            T, N, equity_series[equity_series != 0][-1] if (equity_series != 0).any() else 0.0,
+            len(all_records),
+            f" | 熔断={ruin_date.date()}" if ruin_date is not None else "",
         )
 
         trade_log = TransactionCostEngine.records_to_df(all_records)
@@ -205,4 +220,5 @@ class BacktestEngine:
             turnover       = pd.Series(turnover_arr,   index=dates, name="turnover"),
             signal         = signal,
             daily_cost_bps = pd.Series(cost_bps_arr,  index=dates, name="cost_bps"),
+            ruin_date      = ruin_date,
         )

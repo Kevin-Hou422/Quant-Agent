@@ -9,7 +9,7 @@ RiskReport — 回测绩效汇总数据类
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -48,6 +48,10 @@ class RiskReport:
     ann_turnover:       float = np.nan
     cost_drag_bps:      float = np.nan
 
+    # ---- 统计检验 ----
+    sharpe_tstat:       float = np.nan   # Lo (2002) t 统计量；> 1.96 为 5% 显著
+    ic_method:          str   = ""       # "exact_price" | "approx_position" | "provided"
+
     # ---- 分档（可选）----
     decile_returns:     Optional[pd.Series] = field(default=None, repr=False)
 
@@ -74,27 +78,33 @@ class RiskReport:
         result: BacktestResult,
         prices: Optional[pd.DataFrame] = None,
         rf: float = 0.0,
+        rf_annual: float = 0.0,
         rolling_sharpe_window: int = 60,
         rolling_ic_window: int = 20,
     ) -> "RiskReport":
         """
         Parameters
         ----------
-        result : BacktestResult
-        prices : 资产价格矩阵（传入后 IC 和 Decile 分析精确计算）
-        rf     : 无风险日收益率
+        result    : BacktestResult
+        prices    : 资产价格矩阵（传入后 IC 和 Decile 分析精确计算）
+        rf        : 无风险日收益率（优先使用 rf_annual）
+        rf_annual : 年化无风险利率（如 0.05 = 5%），推荐使用此参数
+        rolling_ic_window : 仅用于 rolling_ic 序列的平滑窗口（不影响 mean_ic/ic_ir）
         """
-        pa = PerformanceAnalyzer(result, rf=rf)
+        pa = PerformanceAnalyzer(result, rf=rf, rf_annual=rf_annual)
+        # summarize() 内部已根据 prices 选择正确 IC 方法并返回 ic_method
         metrics = pa.summarize(prices=prices)
 
-        # 精确 IC（若有价格）
+        # rolling_ic：对逐日 IC 应用滚动均值（用于可视化），不影响 mean_ic/ic_ir
+        ic_method = metrics.get("ic_method", "approx_position")
         if prices is not None:
-            ic_series = pa.rolling_rank_ic_from_prices(result.signal, prices, rolling_ic_window)
+            raw_ic = pa.rolling_rank_ic_from_prices(result.signal, prices)
         else:
-            ic_series = pa.rolling_rank_ic(rolling_ic_window)
-
-        metrics["mean_ic"] = float(ic_series.mean()) if len(ic_series) else np.nan
-        metrics["ic_ir"]   = pa.ic_ir(ic_series)
+            raw_ic = pa.rolling_rank_ic()
+        rolling_ic = (
+            raw_ic.rolling(rolling_ic_window, min_periods=max(2, rolling_ic_window // 2)).mean()
+            if len(raw_ic) >= 2 else raw_ic
+        )
 
         # 分档分析
         decile_ret = pa.decile_analysis(prices=prices)
@@ -107,6 +117,7 @@ class RiskReport:
             annualized_return  = metrics["annualized_return"],
             annualized_vol     = metrics["annualized_vol"],
             sharpe_ratio       = metrics["sharpe_ratio"],
+            sharpe_tstat       = metrics["sharpe_tstat"],
             calmar_ratio       = metrics["calmar_ratio"],
             max_drawdown       = metrics["max_drawdown"],
             max_dd_start       = metrics["max_dd_start"],
@@ -119,12 +130,13 @@ class RiskReport:
             ic_ir              = metrics["ic_ir"],
             ann_turnover       = metrics["ann_turnover"],
             cost_drag_bps      = metrics["cost_drag_bps"],
+            ic_method          = ic_method,
             decile_returns     = decile_ret,
             equity_curve       = result.equity_curve,
             gross_returns      = result.gross_returns,
             net_returns        = result.net_returns,
             rolling_sharpe     = rs,
-            rolling_ic         = ic_series,
+            rolling_ic         = rolling_ic,
             drawdown_series    = dd,
             n_days             = len(result.equity_curve),
             n_assets           = result.positions.shape[1],
@@ -142,6 +154,16 @@ class RiskReport:
                 return f"{v * 100:{fmt}}%"
             return f"{v:{fmt}}"
 
+        sig_flag = (
+            " ✓显著" if (not np.isnan(self.sharpe_tstat) and self.sharpe_tstat > 1.96)
+            else " ✗不显著" if not np.isnan(self.sharpe_tstat)
+            else ""
+        )
+        ruin_line = (
+            [f"  熔断日期        : {self.max_dd_end} (净值归零)"]
+            if not np.isnan(self.max_drawdown) and self.max_drawdown <= -0.999
+            else []
+        )
         lines = [
             "=" * 52,
             "  回测绩效摘要 (Backtest Performance Summary)",
@@ -151,7 +173,7 @@ class RiskReport:
             "  【收益指标】",
             f"  年化收益率      : {_fmt(self.annualized_return, pct=True)}",
             f"  年化波动率      : {_fmt(self.annualized_vol,     pct=True)}",
-            f"  夏普比率        : {_fmt(self.sharpe_ratio)}",
+            f"  夏普比率        : {_fmt(self.sharpe_ratio)}  (t={_fmt(self.sharpe_tstat, '.2f')}{sig_flag})",
             f"  卡玛比率        : {_fmt(self.calmar_ratio)}",
             "-" * 52,
             "  【风险指标】",
@@ -160,9 +182,10 @@ class RiskReport:
             f"  Sortino 比率    : {_fmt(self.sortino_ratio)}",
             f"  VaR (95%)       : {_fmt(self.var_95, pct=True)}",
             f"  CVaR (95%)      : {_fmt(self.cvar_95, pct=True)}",
+            *ruin_line,
             "-" * 52,
             "  【Alpha 质量】",
-            f"  平均 Rank IC    : {_fmt(self.mean_ic)}",
+            f"  平均 Rank IC    : {_fmt(self.mean_ic)}  [{self.ic_method or 'unknown'}]",
             f"  IC IR           : {_fmt(self.ic_ir)}",
             f"  年化换手率      : {_fmt(self.ann_turnover, pct=True)}",
             f"  年化成本拖累    : {_fmt(self.cost_drag_bps, '.2f')} bps",
@@ -181,7 +204,7 @@ class RiskReport:
             "net_returns", "rolling_sharpe", "rolling_ic", "drawdown_series",
         }
         d = {}
-        for f_name, f_val in self.__dataclass_fields__.items():
+        for f_name in self.__dataclass_fields__:
             if f_name in excluded:
                 continue
             val = getattr(self, f_name)
