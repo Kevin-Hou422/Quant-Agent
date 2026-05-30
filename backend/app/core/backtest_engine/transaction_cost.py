@@ -26,21 +26,25 @@ class CostParams:
     """
     回测成本参数配置。
 
-    fixed_bps       : 单边固定手续费（bps，基点）
-    min_ticket_fee  : 最小票面费（USD）
-    spread_bps      : 买卖价差（bps）
-    impact_coef     : 市场冲击系数（平方根法则）
-    adv_window      : ADV 计算窗口（交易日）
-    adv_cap_pct     : 单标的持仓上限 = adv_cap_pct × 20日ADV（USD）
-    slippage_model  : 'sqrt'（平方根法则）或 'linear'（简化线性）
+    fixed_bps              : 单边固定手续费（bps，基点）
+    min_ticket_fee         : 最小票面费（USD）
+    spread_bps             : 买卖价差（bps）
+    impact_coef            : 市场冲击系数（平方根法则）
+    adv_window             : ADV 计算窗口（交易日）
+    adv_cap_pct            : 单标的持仓上限 = adv_cap_pct × 20日ADV（USD）
+    slippage_model         : 'sqrt'（平方根法则）或 'linear'（简化线性）
+    short_borrow_annual_bps: 做空借券年化成本（bps）。每日从空头持仓净值扣除。
+                             典型值：易借券 30–100bps，难借券可达 1000bps+。
+                             默认 50bps ≈ 大盘股平均借券成本。
     """
-    fixed_bps:      float = 5.0
-    min_ticket_fee: float = 1.0
-    spread_bps:     float = 2.0
-    impact_coef:    float = 0.1
-    adv_window:     int   = 20
-    adv_cap_pct:    float = 0.10
-    slippage_model: Literal["sqrt", "linear"] = "sqrt"
+    fixed_bps:               float = 5.0
+    min_ticket_fee:          float = 1.0
+    spread_bps:              float = 2.0
+    impact_coef:             float = 0.1
+    adv_window:              int   = 20
+    adv_cap_pct:             float = 0.10
+    slippage_model:          Literal["sqrt", "linear"] = "sqrt"
+    short_borrow_annual_bps: float = 50.0
 
 
 # ---------------------------------------------------------------------------

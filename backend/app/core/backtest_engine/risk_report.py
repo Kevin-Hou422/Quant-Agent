@@ -52,6 +52,12 @@ class RiskReport:
     sharpe_tstat:       float = np.nan   # Lo (2002) t 统计量；> 1.96 为 5% 显著
     ic_method:          str   = ""       # "exact_price" | "approx_position" | "provided"
 
+    # ---- O4: 多空腿分离 ----
+    long_ann_return:    float = np.nan   # 多头腿年化收益
+    long_sharpe:        float = np.nan   # 多头腿 Sharpe
+    short_ann_return:   float = np.nan   # 空头腿年化收益
+    short_sharpe:       float = np.nan   # 空头腿 Sharpe
+
     # ---- 分档（可选）----
     decile_returns:     Optional[pd.Series] = field(default=None, repr=False)
 
@@ -131,6 +137,10 @@ class RiskReport:
             ann_turnover       = metrics["ann_turnover"],
             cost_drag_bps      = metrics["cost_drag_bps"],
             ic_method          = ic_method,
+            long_ann_return    = metrics.get("long_ann_return",  np.nan),
+            long_sharpe        = metrics.get("long_sharpe",      np.nan),
+            short_ann_return   = metrics.get("short_ann_return", np.nan),
+            short_sharpe       = metrics.get("short_sharpe",     np.nan),
             decile_returns     = decile_ret,
             equity_curve       = result.equity_curve,
             gross_returns      = result.gross_returns,
@@ -189,6 +199,12 @@ class RiskReport:
             f"  IC IR           : {_fmt(self.ic_ir)}",
             f"  年化换手率      : {_fmt(self.ann_turnover, pct=True)}",
             f"  年化成本拖累    : {_fmt(self.cost_drag_bps, '.2f')} bps",
+            "-" * 52,
+            "  【多空腿分解】",
+            f"  多头年化收益    : {_fmt(self.long_ann_return,  pct=True)}  "
+            f"Sharpe={_fmt(self.long_sharpe)}",
+            f"  空头年化收益    : {_fmt(self.short_ann_return, pct=True)}  "
+            f"Sharpe={_fmt(self.short_sharpe)}",
             "=" * 52,
         ]
         return "\n".join(lines)

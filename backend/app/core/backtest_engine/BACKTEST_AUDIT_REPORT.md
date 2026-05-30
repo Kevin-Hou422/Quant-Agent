@@ -486,11 +486,11 @@ logger.warning("MultiDataset eval failed for dataset '%s': %s", name, exc)
 
 ### 第二优先级（中严重程度 or 中修复难度）
 
-6. **F7 — Sharpe t 统计量**：将 `sharpe_tstat = sharpe * sqrt(T) / sqrt(1 + 0.5 * sharpe²)` 加入 `RiskReport`
-7. **F5 — 短卖借券成本**：在 `CostParams` 加 `short_borrow_annual_bps: float = 50`，做空持仓每日扣除
-8. **E3 — 动态交易日计算**：从实际数据索引计算 `trading_days_per_year`
-9. **O1 — IC 衰减曲线**：`PerformanceAnalyzer.ic_decay_curve(horizons=[1,5,10,20,60])` 新增方法
-10. **O4 — 多空腿分离**：`BacktestEngine` 中分别记录 `long_gross_ret` 和 `short_gross_ret`
+6. **F7 — Sharpe t 统计量**：✅ 已随第一优先级修复完成（`PerformanceAnalyzer.sharpe_tstat()`，`RiskReport.sharpe_tstat`）
+7. **F5 — 短卖借券成本**：✅ 已修复 — `CostParams.short_borrow_annual_bps=50`，`BacktestEngine` 逐日从空头持仓扣除日化借券成本，计入 `daily_cost_bps`
+8. **E3 — 动态交易日计算**：✅ 已修复 — `PerformanceAnalyzer._tdays` 属性从 `equity_curve.index` 动态计算年化系数；全部年化公式（收益、波动率、Sharpe、Sortino、换手率）改用此值
+9. **O1 — IC 衰减曲线**：✅ 已修复 — `PerformanceAnalyzer.ic_decay_curve(signal, prices, horizons=[1,5,10,20,60])` 新方法，返回多跨度 mean IC Series
+10. **O4 — 多空腿分离**：✅ 已修复 — `BacktestEngine` 逐日记录 `long_returns`/`short_returns`；`BacktestResult` 新增两字段；`PerformanceAnalyzer.leg_analysis()` 计算多空腿各自 Sharpe；`RiskReport` 新增 `long_sharpe`/`short_sharpe`/`long_ann_return`/`short_ann_return` 并在 `summary()` 输出
 
 ### 第三优先级（架构改进）
 

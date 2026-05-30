@@ -12,7 +12,6 @@ BacktestEngine — 逐日回测主引擎
 from __future__ import annotations
 
 import logging
-import warnings
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -45,7 +44,9 @@ class BacktestResult:
     turnover:       pd.Series            # 每日单边换手率
     signal:         pd.DataFrame         # 原始信号矩阵（IC 计算用）
     daily_cost_bps: pd.Series            # 每日成本（bps）
-    ruin_date:      Optional[pd.Timestamp] = None  # 净值穿零熔断日期（正常为 None）
+    long_returns:   pd.Series  = field(default=None)  # 多头腿每日毛收益（O4）
+    short_returns:  pd.Series  = field(default=None)  # 空头腿每日毛收益（O4）
+    ruin_date:      Optional[pd.Timestamp] = None     # 净值穿零熔断日期（正常为 None）
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +128,16 @@ class BacktestEngine:
             weights, adv_usd_df, self.initial_capital
         ).to_numpy(dtype=float)
 
+        # --- E3: 从实际日期范围动态计算年化系数 ---
+        if T >= 2:
+            calendar_years = max((dates[-1] - dates[0]).days / 365.25, 1.0 / 365.25)
+            tdays_per_year = float(T) / calendar_years
+        else:
+            tdays_per_year = 252.0
+
+        # --- F5: 日化借券成本（年化 bps → 日化率）---
+        daily_borrow_rate = self.params.short_borrow_annual_bps * 1e-4 / tdays_per_year
+
         # --- 逐日迭代 ---
         equity          = self.initial_capital
         prev_w          = np.zeros(N)
@@ -134,6 +145,8 @@ class BacktestEngine:
         equity_series   = np.zeros(T)      # 预填 0 — 熔断后剩余天数保持 0
         gross_ret_arr   = np.zeros(T)
         net_ret_arr     = np.zeros(T)
+        long_ret_arr    = np.zeros(T)      # O4: 多头腿毛收益
+        short_ret_arr   = np.zeros(T)      # O4: 空头腿毛收益
         turnover_arr    = np.zeros(T)
         cost_bps_arr    = np.zeros(T)
         realized_pos    = np.zeros((T, N))
@@ -149,30 +162,38 @@ class BacktestEngine:
             delta_w    = target_w - prev_w
             turnover_t = float(np.abs(delta_w).sum()) / 2.0
 
-            # 计算成本
+            # 计算交易成本
             cost_w, cost_usd, records = self._tc.compute(
-                date         = dates[t],
-                delta_w      = delta_w,
-                prices       = price_t,
-                adv_usd      = adv_t,
-                daily_vol    = vol_t,
+                date          = dates[t],
+                delta_w       = delta_w,
+                prices        = price_t,
+                adv_usd       = adv_t,
+                daily_vol     = vol_t,
                 portfolio_val = equity,
-                tickers      = tickers,
+                tickers       = tickers,
             )
             all_records.extend(records)
 
-            # 毛收益（价格涨跌）
+            # 毛收益（价格涨跌）+ 多空腿分离
             if t == 0:
-                gross_ret = 0.0
+                gross_ret = long_ret = short_ret = 0.0
             else:
-                prev_price = prices_arr[t - 1]
-                safe_prev  = np.where(prev_price == 0, np.nan, prev_price)
-                price_chg  = (price_t - prev_price) / safe_prev   # (N,)
-                gross_ret  = float(np.nansum(prev_w * price_chg))
+                prev_price  = prices_arr[t - 1]
+                safe_prev   = np.where(prev_price == 0, np.nan, prev_price)
+                price_chg   = (price_t - prev_price) / safe_prev         # (N,)
+                long_w_prev  = np.maximum(prev_w, 0.0)                   # O4
+                short_w_prev = np.minimum(prev_w, 0.0)                   # O4
+                long_ret    = float(np.nansum(long_w_prev  * price_chg))
+                short_ret   = float(np.nansum(short_w_prev * price_chg))
+                gross_ret   = long_ret + short_ret
 
-            # 净收益
+            # F5: 做空借券成本（空头净敞口每日扣除）
+            short_exposure = float(np.sum(np.maximum(-prev_w, 0.0)))
+            borrow_cost    = short_exposure * daily_borrow_rate
+
+            # 净收益 = 毛收益 - 交易成本 - 借券成本
             cost_ret = float(cost_w.sum())
-            net_ret  = gross_ret - cost_ret
+            net_ret  = gross_ret - cost_ret - borrow_cost
 
             # 更新净值
             equity   = equity * (1 + net_ret)
@@ -180,8 +201,10 @@ class BacktestEngine:
 
             gross_ret_arr[t] = gross_ret
             net_ret_arr[t]   = net_ret
+            long_ret_arr[t]  = long_ret
+            short_ret_arr[t] = short_ret
             turnover_arr[t]  = turnover_t
-            cost_bps_arr[t]  = cost_ret * 10_000
+            cost_bps_arr[t]  = (cost_ret + borrow_cost) * 10_000
             realized_pos[t]  = target_w
             prev_w           = target_w.copy()
 
@@ -203,8 +226,9 @@ class BacktestEngine:
                 )
 
         logger.info(
-            "回测完成: %d 天 × %d 资产 | 最终净值=%.4f | 总交易=%d%s",
-            T, N, equity_series[equity_series != 0][-1] if (equity_series != 0).any() else 0.0,
+            "回测完成: %d 天 × %d 资产 | tdays/yr=%.1f | 最终净值=%.4f | 总交易=%d%s",
+            T, N, tdays_per_year,
+            equity_series[equity_series != 0][-1] if (equity_series != 0).any() else 0.0,
             len(all_records),
             f" | 熔断={ruin_date.date()}" if ruin_date is not None else "",
         )
@@ -220,5 +244,7 @@ class BacktestEngine:
             turnover       = pd.Series(turnover_arr,   index=dates, name="turnover"),
             signal         = signal,
             daily_cost_bps = pd.Series(cost_bps_arr,  index=dates, name="cost_bps"),
+            long_returns   = pd.Series(long_ret_arr,  index=dates, name="long_ret"),
+            short_returns  = pd.Series(short_ret_arr, index=dates, name="short_ret"),
             ruin_date      = ruin_date,
         )
