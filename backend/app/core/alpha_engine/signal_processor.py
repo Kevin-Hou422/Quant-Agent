@@ -48,6 +48,7 @@ class SimulationConfig:
     portfolio_mode:    Literal["long_short", "decile"] = "long_short"
     top_pct:           float                  = 0.10
     market_neutral:    bool                   = True
+    max_single_weight: float                  = 0.0
 
     def __post_init__(self) -> None:
         if self.delay < 0:

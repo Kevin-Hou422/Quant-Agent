@@ -46,6 +46,7 @@ class DatasetBacktestResult:
     ann_return:      float
     mean_ic:         float
     overfitting_score: float
+    n_oos_days:      int   = 0     # O5: 样本量权重用
     error:           Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -58,6 +59,7 @@ class DatasetBacktestResult:
             "ann_return":        round(self.ann_return,        4),
             "mean_ic":           round(self.mean_ic,           4),
             "overfitting_score": round(self.overfitting_score, 4),
+            "n_oos_days":        self.n_oos_days,
             "error":             self.error,
         }
 
@@ -144,8 +146,8 @@ class MultiDatasetBacktester:
         self._aggregation = aggregation
         self._is_split    = is_split
 
-        if aggregation not in ("mean", "min"):
-            raise ValueError(f"aggregation must be 'mean' or 'min', got '{aggregation}'")
+        if aggregation not in ("mean", "min", "weighted"):
+            raise ValueError(f"aggregation must be 'mean', 'min', or 'weighted', got '{aggregation}'")
 
     # ------------------------------------------------------------------
     # Public API
@@ -183,16 +185,22 @@ class MultiDatasetBacktester:
                 errors.append(f"[{name}] {result.error}")
 
         # Aggregate sharpe across successful datasets
-        oos_sharpes = [
-            r.sharpe_oos for r in per_dataset.values()
+        # O5 修复: "weighted" 模式按 sqrt(n_oos_days) 加权，不同市场样本量差异不再平权
+        valid_results = [
+            r for r in per_dataset.values()
             if r.error is None and not np.isnan(r.sharpe_oos)
         ]
+        oos_sharpes = [r.sharpe_oos for r in valid_results]
 
         if not oos_sharpes:
             agg_sharpe = 0.0
         elif self._aggregation == "min":
             agg_sharpe = float(min(oos_sharpes))
-        else:
+        elif self._aggregation == "weighted":
+            # 按 sqrt(OOS 天数) 加权：样本量越大越可信
+            weights = np.array([max(r.n_oos_days, 1) ** 0.5 for r in valid_results])
+            agg_sharpe = float(np.average(oos_sharpes, weights=weights))
+        else:  # "mean"
             agg_sharpe = float(np.mean(oos_sharpes))
 
         datasets_passed = sum(1 for r in per_dataset.values() if r.sharpe_oos > 0)
@@ -234,6 +242,8 @@ class MultiDatasetBacktester:
 
             config = self._default_config()
             is_data, oos_data = _split_dataset(raw_data, self._is_split)
+            # O5: 记录 OOS 天数用于加权聚合
+            n_oos_days = len(next(iter(oos_data.values()))) if oos_data else 0
 
             bt     = RealisticBacktester(config=config, cost_params=self._cost_params)
             result = bt.run(dsl, is_data, oos_dataset=oos_data)
@@ -268,6 +278,7 @@ class MultiDatasetBacktester:
                 ann_return        = ann_ret,
                 mean_ic           = mean_ic,
                 overfitting_score = overfit,
+                n_oos_days        = n_oos_days,
             )
 
         except Exception as exc:

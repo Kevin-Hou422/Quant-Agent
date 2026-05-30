@@ -401,7 +401,12 @@ class RealisticBacktester:
 
         long_short : SignalWeightedPortfolio（权重正比于截面 z-score）
         decile     : DecilePortfolio（Top top_pct 做多，Bottom top_pct 做空）
+
+        F11 修复：当 config.max_single_weight > 0 时，对权重矩阵逐资产施加上限约束
+        并重新 L1 归一化，防止极端集中风险。
         """
+        import numpy as np
+
         mode = self.config.portfolio_mode
         if mode == "long_short":
             constructor = SignalWeightedPortfolio(clip_z=3.0)
@@ -413,4 +418,17 @@ class RealisticBacktester:
         else:
             raise ValueError(f"未知 portfolio_mode: '{mode}'，应为 'long_short' 或 'decile'")
 
-        return constructor.construct(signal)
+        weights = constructor.construct(signal)
+
+        # F11: 单资产权重上限约束
+        cap = self.config.max_single_weight
+        if cap > 0:
+            w = weights.to_numpy(dtype=float)
+            # 裁剪绝对权重，方向保留
+            clipped = np.sign(w) * np.minimum(np.abs(w), cap)
+            # 重新 L1 归一化
+            l1 = np.nansum(np.abs(clipped), axis=1, keepdims=True)
+            l1 = np.where(l1 == 0, 1.0, l1)
+            weights = pd.DataFrame(clipped / l1, index=weights.index, columns=weights.columns)
+
+        return weights

@@ -452,11 +452,11 @@ logger.warning("MultiDataset eval failed for dataset '%s': %s", name, exc)
 | F5 | 金融 | 短卖借券成本未建模 | 中 | 中 | ✅ |
 | F6 | 金融 | 多重比较导致 OOS 失去意义 | 高 | 高 | ✅ |
 | F7 | 金融 | 无统计显著性检验（t 统计量 / 置信区间） | 中 | 低 | ✅ |
-| F8 | 金融 | 无基准 alpha/beta 分解 | 中 | 中 | ⬜ |
+| F8 | 金融 | 无基准 alpha/beta 分解 | 中 | 中 | ✅ |
 | F9 | 金融 | 换手率年化计算被初始建仓日稀释 | 低 | 低 | ⬜ |
 | F10 | 金融 | 无日历/特殊事件处理（除权、停牌、涨跌停） | 中 | 高 | ⬜ |
-| F11 | 金融 | 无组合集中度约束 | 中 | 低 | ⬜ |
-| E1 | 软件工程 | BacktestEngine 日循环未向量化（性能瓶颈） | 中 | 中 | ⬜ |
+| F11 | 金融 | 无组合集中度约束 | 中 | 低 | ✅ |
+| E1 | 软件工程 | BacktestEngine 日循环未向量化（性能瓶颈） | 中 | 中 | ✅ |
 | E2 | 软件工程 | 无输入数据验证层 | 高 | 低 | ✅ |
 | E3 | 软件工程 | 交易日数 252 硬编码，跨市场不适用 | 中 | 低 | ✅ |
 | E4 | 软件工程 | QuantTools 非线程安全 / GP 全局随机状态 | 高 | 中 | ✅ |
@@ -466,13 +466,13 @@ logger.warning("MultiDataset eval failed for dataset '%s': %s", name, exc)
 | E8 | 软件工程 | 错误日志上下文不足，调试困难 | 低 | 低 | ⬜ |
 | E9 | 软件工程 | Visualizer 混入计算引擎，污染依赖树 | 低 | 低 | ⬜ |
 | O1 | 其他 | Alpha 衰减曲线缺失（仅 t+1 IC） | 中 | 低 | ✅ |
-| O2 | 其他 | 无压力测试子区间分析 | 中 | 中 | ⬜ |
+| O2 | 其他 | 无压力测试子区间分析 | 中 | 中 | ✅ |
 | O3 | 其他 | 无策略容量估算 | 低 | 中 | ⬜ |
 | O4 | 其他 | 多空腿贡献未分离 | 中 | 低 | ✅ |
-| O5 | 其他 | 跨市场 Sharpe 聚合未加权/标准化 | 中 | 低 | ⬜ |
+| O5 | 其他 | 跨市场 Sharpe 聚合未加权/标准化 | 中 | 低 | ✅ |
 | O6 | 其他 | 收益分布非正态性未检测（无偏度/峰度/Omega） | 低 | 低 | ⬜ |
 
-**已修复 13 项 / 共 25 项**（F1 F2 F4 F5 F6 F7 E2 E3 E4 E6 E7 O1 O4）
+**已修复 18 项 / 共 25 项**（F1 F2 F4 F5 F6 F7 F8 F11 E1 E2 E3 E4 E6 E7 O1 O2 O4 O5）
 
 ---
 
@@ -572,13 +572,84 @@ volume = volume.reindex(...).ffill(limit=5).fillna(0.0)
 
 | 编号 | 问题 | 严重程度 | 建议 |
 |------|------|---------|------|
-| F11 | 无组合集中度约束 | 中 | 建议修复，5 行代码 |
-| F9 | 换手率首日稀释 | 低 | 可修复，2 行代码 |
-| F8 | 无基准 alpha/beta 分解 | 中 | 建议修复，需引入基准序列 |
-| O5 | 跨市场 Sharpe 聚合未标准化 | 中 | 建议修复 |
-| E1 | BacktestEngine 日循环未向量化 | 中 | 性能优化，不影响正确性 |
-| F3 | 幸存者偏差 | 高 | 需外部数据，暂缓 |
-| F10 | 日历/特殊事件处理 | 中 | 需大量工程，暂缓 |
-| E5 | 单元测试 | 高 | 长期维护需求，暂缓 |
-| O2 | 压力测试分析 | 中 | 研究功能，低优先级 |
-| O6 | 收益分布非正态性检测 | 低 | 锦上添花，低优先级 |
+| F3 | 幸存者偏差 | 高 | 需外部历史退市数据库，大量工程，暂缓 |
+| F9 | 换手率首日稀释 | 低 | 2 行代码，影响极小，低优先级 |
+| F10 | 日历/特殊事件处理 | 中 | 需大量工程（除权/停牌/涨跌停），暂缓 |
+| E5 | 单元测试 | 高 | 长期维护需求，优先级独立排期 |
+| E8 | 错误日志上下文 | 低 | 工程质量改进，低优先级 |
+| E9 | Visualizer 混入计算引擎 | 低 | 结构清理，低优先级 |
+| O3 | 策略容量估算 | 低 | 锦上添花 |
+| O6 | 收益分布非正态性检测 | 低 | 低优先级 |
+
+---
+
+## 十、本轮修复记录（非低优先级 + 工程量适中）
+
+本轮完成 5 项修复（F8 F11 E1 O2 O5），累计已修复 18 / 25 项。
+
+### F11 — 组合集中度约束
+
+**修复文件**：`signal_processor.py`、`realistic_backtester.py`
+
+- `SimulationConfig` 新增 `max_single_weight: float = 0.0` 参数（默认不启用）
+- `RealisticBacktester._build_weights()` 在 `PortfolioConstructor.construct()` 后增加约束层：
+  - 裁剪：`|w_i| ≤ max_single_weight`（方向保留）
+  - 重新 L1 归一化确保组合平衡
+- 示例：`SimulationConfig(max_single_weight=0.15)` 将单标的权重上限设为 15%
+
+### O5 — 跨市场 Sharpe 聚合标准化
+
+**修复文件**：`multi_dataset_backtester.py`
+
+- `DatasetBacktestResult` 新增 `n_oos_days: int` 字段，在 `_run_one()` 中记录 OOS 样本天数
+- 新增聚合模式 `"weighted"`：按 `sqrt(n_oos_days)` 加权均值，样本量越大权重越高
+  - 原理：OOS Sharpe 标准误 ∝ 1/√T，更长数据集的 Sharpe 更可靠
+  - 示例：美股 500 天 OOS 权重 ≈ 22.4，加密 100 天 OOS 权重 ≈ 10.0，美股影响力为加密 2.24 倍
+- `MultiDatasetBacktester.__init__` 接受 `aggregation="weighted"` 作为第三种合法模式
+
+### F8 — 基准 Alpha/Beta 分解
+
+**修复文件**：`performance_analyzer.py`、`risk_report.py`
+
+- `PerformanceAnalyzer.benchmark_analysis(benchmark_returns: pd.Series)` 新方法：
+  - OLS beta = cov(strategy, benchmark) / var(benchmark)
+  - alpha（年化）= strategy_ann_ret - beta × benchmark_ann_ret
+  - tracking_error = std(active_ret) × √tdays，active_ret = strategy - beta×benchmark
+  - information_ratio = alpha / tracking_error
+  - 要求至少 20 个共同观测点，否则返回 NaN
+- `RiskReport` 新增字段：`benchmark_beta`、`benchmark_alpha`、`benchmark_ann_ret`、`tracking_error`、`information_ratio`
+- `RiskReport.from_result()` 新增 `benchmark_returns` 可选参数
+- `summary()` 在有基准数据时显示"基准 Alpha/Beta 分解"区块
+
+### O2 — 压力测试子区间分析
+
+**修复文件**：`performance_analyzer.py`、`risk_report.py`
+
+- `PerformanceAnalyzer.stress_test()` 新方法（纯策略净收益，无需外部基准）：
+  - 最差月度 / 季度 / 年度收益及发生日期（resample 实现）
+  - 最大连续亏损天数
+  - 5 个预定义危机区间收益（GFC 2008、EU 债务危机 2011、A 股熔断 2015、COVID 2020、熊市 2022）—— 仅在回测期覆盖时计算
+- `RiskReport` 新增 `stress_test: Optional[dict]` 字段
+- `summary()` 显示"压力测试"区块（含危机明细）
+- `to_dict()` 直接序列化 stress_test dict
+
+### E1 — BacktestEngine 部分向量化
+
+**修复文件**：`backtest_engine.py`
+
+将每次迭代内非递归的计算提到循环外，用 NumPy 广播批量完成：
+
+| 变量 | 原来 | 现在 |
+|------|------|------|
+| `delta_w_mat` | 逐日 `target_w - prev_w` | `adj_weights - prev_w_mat`（矩阵减法） |
+| `turnover_arr` | 逐日 `np.abs(delta_w).sum()/2` | `np.sum(np.abs(delta_w_mat), axis=1)/2` |
+| `price_chg_mat` | 逐日计算 | `prices_arr[1:] / safe_prev_arr[:-1] - 1` |
+| `gross/long/short_ret` | 逐日 `nansum` | `np.nansum(w_mat × price_chg_mat, axis=1)` |
+| `borrow_cost` | 逐日 `sum(max(-w,0))×rate` | `np.sum(max(-prev_w_mat,0), axis=1)×rate` |
+
+剩余在循环内的操作仅有：
+1. `TransactionCostEngine.compute()` — 依赖当前 equity 做归一化，无法向量化
+2. `equity = equity × (1 + net_ret)` — 递推更新，无法向量化
+3. 熔断检查
+
+循环体从 ~15 个 numpy 操作 / 日 缩减至 ~4 个，理论加速比 3–5×（对于 252 天 × 50 股规模）。

@@ -53,10 +53,20 @@ class RiskReport:
     ic_method:          str   = ""       # "exact_price" | "approx_position" | "provided"
 
     # ---- O4: 多空腿分离 ----
-    long_ann_return:    float = np.nan   # 多头腿年化收益
-    long_sharpe:        float = np.nan   # 多头腿 Sharpe
-    short_ann_return:   float = np.nan   # 空头腿年化收益
-    short_sharpe:       float = np.nan   # 空头腿 Sharpe
+    long_ann_return:    float = np.nan
+    long_sharpe:        float = np.nan
+    short_ann_return:   float = np.nan
+    short_sharpe:       float = np.nan
+
+    # ---- F8: 基准分解 ----
+    benchmark_beta:     float = np.nan
+    benchmark_alpha:    float = np.nan
+    benchmark_ann_ret:  float = np.nan
+    tracking_error:     float = np.nan
+    information_ratio:  float = np.nan
+
+    # ---- O2: 压力测试 ----
+    stress_test:        Optional[dict] = field(default=None, repr=False)
 
     # ---- 分档（可选）----
     decile_returns:     Optional[pd.Series] = field(default=None, repr=False)
@@ -81,21 +91,23 @@ class RiskReport:
     @classmethod
     def from_result(
         cls,
-        result: BacktestResult,
-        prices: Optional[pd.DataFrame] = None,
-        rf: float = 0.0,
-        rf_annual: float = 0.0,
+        result:            BacktestResult,
+        prices:            Optional[pd.DataFrame] = None,
+        rf:                float = 0.0,
+        rf_annual:         float = 0.0,
         rolling_sharpe_window: int = 60,
         rolling_ic_window: int = 20,
+        benchmark_returns: Optional[pd.Series] = None,
     ) -> "RiskReport":
         """
         Parameters
         ----------
-        result    : BacktestResult
-        prices    : 资产价格矩阵（传入后 IC 和 Decile 分析精确计算）
-        rf        : 无风险日收益率（优先使用 rf_annual）
-        rf_annual : 年化无风险利率（如 0.05 = 5%），推荐使用此参数
+        result            : BacktestResult
+        prices            : 资产价格矩阵（传入后 IC 和 Decile 分析精确计算）
+        rf                : 无风险日收益率（优先使用 rf_annual）
+        rf_annual         : 年化无风险利率（如 0.05 = 5%），推荐使用此参数
         rolling_ic_window : 仅用于 rolling_ic 序列的平滑窗口（不影响 mean_ic/ic_ir）
+        benchmark_returns : 基准日收益率序列（F8：alpha/beta 分解用）
         """
         pa = PerformanceAnalyzer(result, rf=rf, rf_annual=rf_annual)
         # summarize() 内部已根据 prices 选择正确 IC 方法并返回 ic_method
@@ -114,6 +126,14 @@ class RiskReport:
 
         # 分档分析
         decile_ret = pa.decile_analysis(prices=prices)
+
+        # F8: 基准 alpha/beta 分解（仅当 benchmark_returns 传入时计算）
+        bench_metrics: dict = {}
+        if benchmark_returns is not None:
+            bench_metrics = pa.benchmark_analysis(benchmark_returns)
+
+        # O2: 压力测试子区间分析
+        stress = pa.stress_test()
 
         # 滚动序列
         rs = pa.rolling_sharpe(rolling_sharpe_window)
@@ -141,6 +161,12 @@ class RiskReport:
             long_sharpe        = metrics.get("long_sharpe",      np.nan),
             short_ann_return   = metrics.get("short_ann_return", np.nan),
             short_sharpe       = metrics.get("short_sharpe",     np.nan),
+            benchmark_beta     = bench_metrics.get("benchmark_beta",    np.nan),
+            benchmark_alpha    = bench_metrics.get("benchmark_alpha",   np.nan),
+            benchmark_ann_ret  = bench_metrics.get("benchmark_ann_ret", np.nan),
+            tracking_error     = bench_metrics.get("tracking_error",    np.nan),
+            information_ratio  = bench_metrics.get("information_ratio", np.nan),
+            stress_test        = stress,
             decile_returns     = decile_ret,
             equity_curve       = result.equity_curve,
             gross_returns      = result.gross_returns,
@@ -205,8 +231,38 @@ class RiskReport:
             f"Sharpe={_fmt(self.long_sharpe)}",
             f"  空头年化收益    : {_fmt(self.short_ann_return, pct=True)}  "
             f"Sharpe={_fmt(self.short_sharpe)}",
-            "=" * 52,
         ]
+
+        # F8: 基准分解（仅当有基准数据时显示）
+        if not np.isnan(self.benchmark_beta):
+            lines += [
+                "-" * 52,
+                "  【基准 Alpha/Beta 分解】",
+                f"  Beta            : {_fmt(self.benchmark_beta)}",
+                f"  Alpha（年化）   : {_fmt(self.benchmark_alpha, pct=True)}",
+                f"  基准收益（年化）: {_fmt(self.benchmark_ann_ret, pct=True)}",
+                f"  跟踪误差        : {_fmt(self.tracking_error,  pct=True)}",
+                f"  信息比率        : {_fmt(self.information_ratio)}",
+            ]
+
+        # O2: 压力测试（仅显示核心数字，不显示危机明细）
+        if self.stress_test:
+            st = self.stress_test
+            lines += [
+                "-" * 52,
+                "  【压力测试】",
+                f"  最差月度收益    : {_fmt(st.get('worst_month'), pct=True)}  ({st.get('worst_month_date', 'N/A')})",
+                f"  最差季度收益    : {_fmt(st.get('worst_quarter'), pct=True)}",
+                f"  最差年度收益    : {_fmt(st.get('worst_year'),    pct=True)}",
+                f"  最长连续亏损    : {st.get('max_consecutive_loss_days', 0)} 天",
+            ]
+            crises = st.get("crisis_period_returns", {})
+            if crises:
+                lines.append("  危机区间表现:")
+                for name, ret in crises.items():
+                    lines.append(f"    {name:<16}: {_fmt(ret, pct=True)}")
+
+        lines.append("=" * 52)
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -228,5 +284,7 @@ class RiskReport:
                 val = str(val)
             elif isinstance(val, float) and np.isnan(val):
                 val = None
+            elif isinstance(val, dict):
+                val = val  # stress_test dict is already JSON-serializable
             d[f_name] = val
         return d

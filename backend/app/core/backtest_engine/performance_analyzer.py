@@ -369,6 +369,140 @@ class PerformanceAnalyzer:
             "short_sharpe":     short_sharpe,
         }
 
+    def benchmark_analysis(self, benchmark_returns: pd.Series) -> dict:
+        """
+        F8 修复：基准 alpha/beta 分解。
+
+        计算策略净收益与基准收益之间的 OLS beta，分离出真实 alpha
+        和相对风险调整收益（Information Ratio）。
+
+        Parameters
+        ----------
+        benchmark_returns : 与策略同频的基准日收益率（如 SPY 日收益）
+
+        Returns
+        -------
+        dict with keys:
+          benchmark_beta    : 策略对基准的暴露（1.0 = 同步基准）
+          benchmark_alpha   : 年化 alpha（超额收益，扣除 beta×基准收益后）
+          benchmark_ann_ret : 基准年化收益
+          tracking_error    : 主动收益（ret - beta×bench）年化标准差
+          information_ratio : alpha / tracking_error
+        """
+        ret   = self._ret
+        bench = benchmark_returns.reindex(ret.index).fillna(0.0)
+
+        common = ret.index.intersection(bench.index)
+        if len(common) < 20:
+            nan4 = dict.fromkeys(
+                ["benchmark_beta", "benchmark_alpha", "benchmark_ann_ret",
+                 "tracking_error", "information_ratio"], np.nan
+            )
+            return nan4
+
+        r = ret.loc[common].to_numpy(dtype=float)
+        b = bench.loc[common].to_numpy(dtype=float)
+
+        cov_mat   = np.cov(r, b)
+        var_bench = cov_mat[1, 1]
+        beta      = float(cov_mat[0, 1] / var_bench) if var_bench > 1e-12 else 0.0
+
+        tdays          = self._tdays
+        benchmark_ann  = float((1 + b.mean()) ** tdays - 1)
+        alpha_daily    = r.mean() - beta * b.mean()
+        alpha_annual   = float((1 + alpha_daily) ** tdays - 1)
+
+        active_ret = r - beta * b
+        te         = float(active_ret.std(ddof=1) * np.sqrt(tdays))
+        ir         = float(alpha_annual / te) if te > 1e-9 else np.nan
+
+        return {
+            "benchmark_beta":    round(beta,         4),
+            "benchmark_alpha":   round(alpha_annual, 4),
+            "benchmark_ann_ret": round(benchmark_ann, 4),
+            "tracking_error":    round(te,           4),
+            "information_ratio": round(ir,           4) if not np.isnan(ir) else np.nan,
+        }
+
+    def stress_test(self) -> dict:
+        """
+        O2 修复：压力测试子区间分析。
+
+        无需外部基准数据，仅用策略净收益序列计算：
+          - 最差月度收益 / 季度收益 / 年度收益及其发生时间
+          - 最大连续亏损天数
+          - 已知危机区间内的策略累计收益（若回测期覆盖该区间）
+
+        Returns
+        -------
+        dict with keys:
+          worst_month, worst_month_date, worst_quarter, worst_quarter_date,
+          worst_year, worst_year_period, max_consecutive_loss_days,
+          crisis_period_returns
+        """
+        ret = self._ret
+
+        def _safe_resample(freq: str) -> pd.Series:
+            try:
+                return ret.resample(freq).apply(lambda x: float((1 + x).prod() - 1))
+            except Exception:
+                return pd.Series(dtype=float)
+
+        # 月度 / 季度 / 年度最差
+        monthly   = _safe_resample("ME")
+        quarterly = _safe_resample("QE")
+        yearly    = _safe_resample("YE")
+
+        def _worst(s: pd.Series):
+            if s.empty or s.isna().all():
+                return np.nan, None
+            idx = s.idxmin()
+            return float(s.min()), str(idx) if not pd.isnull(idx) else None
+
+        w_month,  w_month_date   = _worst(monthly)
+        w_quarter, w_quarter_date = _worst(quarterly)
+        w_year,   w_year_date    = _worst(yearly)
+
+        # 最大连续亏损天数
+        losses     = (ret.fillna(0.0) < 0).to_numpy()
+        max_consec = 0
+        cur        = 0
+        for v in losses:
+            if v:
+                cur += 1
+                if cur > max_consec:
+                    max_consec = cur
+            else:
+                cur = 0
+
+        # 已知危机区间（数据覆盖时才计算）
+        _CRISIS = {
+            "GFC_2008":    ("2008-09-01", "2009-03-31"),
+            "EU_Debt_2011": ("2011-07-01", "2011-12-31"),
+            "China_2015":  ("2015-06-01", "2015-09-30"),
+            "COVID_2020":  ("2020-02-01", "2020-04-30"),
+            "Bear_2022":   ("2022-01-01", "2022-10-31"),
+        }
+        crisis_returns = {}
+        for name, (start, end) in _CRISIS.items():
+            try:
+                period = ret.loc[start:end]
+                if len(period) >= 5:
+                    crisis_returns[name] = round(float((1 + period).prod() - 1), 4)
+            except Exception:
+                pass
+
+        return {
+            "worst_month":                round(w_month,   4) if not np.isnan(w_month)   else np.nan,
+            "worst_month_date":           w_month_date,
+            "worst_quarter":              round(w_quarter, 4) if not np.isnan(w_quarter) else np.nan,
+            "worst_quarter_date":         w_quarter_date,
+            "worst_year":                 round(w_year,    4) if not np.isnan(w_year)    else np.nan,
+            "worst_year_date":            w_year_date,
+            "max_consecutive_loss_days":  int(max_consec),
+            "crisis_period_returns":      crisis_returns,
+        }
+
     # ================================================================
     # 综合指标汇总
     # ================================================================
