@@ -31,7 +31,15 @@ class Settings(BaseSettings):
     debug: bool = False
     cors_origins: list[str] = ["*"]
 
+    # ── 数据集默认参数 ────────────────────────────────────────────────────
+    # 默认使用真实市场数据集（dataset_registry.py 中的注册名称）
+    # 可通过 CLI --dataset 或环境变量 DEFAULT_DATASET 覆盖
+    default_dataset: str = "us_tech_large"
+    default_start:   str = "2020-01-01"
+    default_end:     str = "2024-01-01"
+
     # ── 回测默认参数 ──────────────────────────────────────────────────────
+    # n_tickers / n_days 仅在合成数据回退模式下使用（已弃用）
     default_n_tickers: int = 20
     default_n_days: int = 120
     initial_capital: float = 1_000_000.0

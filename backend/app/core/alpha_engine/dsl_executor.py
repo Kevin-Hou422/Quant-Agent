@@ -18,7 +18,7 @@ import pandas as pd
 
 from .typed_nodes import Node, Cache, Dataset
 from .validator import AlphaValidator
-from .parser import Parser, ParseError
+from .parser import Parser
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +70,15 @@ def _add_derived(
         aligned["returns"] = np.log(close / close.shift(1))
     if "vwap" not in aligned and all(f in aligned for f in ("high", "low", "close")):
         aligned["vwap"] = (aligned["high"] + aligned["low"] + aligned["close"]) / 3.0
-    if "groups" not in aligned and "close" in aligned:
-        # Auto-generate 10 equal-size groups for group_rank / group_zscore etc.
-        close = aligned["close"]
-        N      = close.shape[1]
-        grp    = np.tile(np.arange(N) % 10, (len(close), 1))
-        aligned["groups"] = pd.DataFrame(grp, index=close.index, columns=close.columns)
+    # Use real sector data as the groups field when available.
+    # Previously a fake sequential modulo assignment (np.arange(N) % 10) was used
+    # here — that produced meaningless industry neutralization results.
+    # Now group_rank / group_zscore / ind_neutralize require the caller to supply
+    # a 'sector' field (integer GICS L1 codes) via the dataset; if absent, the
+    # 'groups' field is simply not set and those operators fall back to full-
+    # cross-section behavior (equivalent to cs_rank / cs_zscore).
+    if "groups" not in aligned and "sector" in aligned:
+        aligned["groups"] = aligned["sector"]
     return aligned
 
 

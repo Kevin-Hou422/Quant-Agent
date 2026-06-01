@@ -102,10 +102,14 @@ def _make_synthetic_dataset(
 # ---------------------------------------------------------------------------
 
 class AgentRunRequest(BaseModel):
-    hypothesis: str = Field("momentum", description="市场假设（自然语言）")
-    n_tickers: int  = Field(20, ge=5, le=200)
-    n_days: int     = Field(120, ge=60, le=1000)
-    seed: int       = Field(42)
+    hypothesis:    str = Field("momentum", description="市场假设（自然语言）")
+    dataset_name:  str = Field("us_tech_large", description=_DATASET_FIELD_DESC)
+    dataset_start: str = Field("2021-01-01")
+    dataset_end:   str = Field("2024-01-01")
+    # Legacy synthetic-data fields (kept for backward compat; ignored when dataset_name set)
+    n_tickers: int = Field(20, ge=5, le=200)
+    n_days:    int = Field(120, ge=60, le=1000)
+    seed:      int = Field(42)
 
 
 class AgentRunResponse(BaseModel):
@@ -153,10 +157,14 @@ class GPEvolveResponse(BaseModel):
 
 
 class BacktestRequest(BaseModel):
-    dsl: str = Field("rank(ts_delta(log(close),5))", description="Alpha DSL 表达式")
+    dsl:           str = Field("rank(ts_delta(log(close),5))", description="Alpha DSL 表达式")
+    dataset_name:  str = Field("us_tech_large", description=_DATASET_FIELD_DESC)
+    dataset_start: str = Field("2021-01-01")
+    dataset_end:   str = Field("2024-01-01")
+    # Legacy synthetic-data fields (kept for backward compat)
     n_tickers: int = Field(20, ge=5, le=200)
-    n_days: int    = Field(120, ge=60, le=1000)
-    seed: int      = Field(42)
+    n_days:    int = Field(120, ge=60, le=1000)
+    seed:      int = Field(42)
 
 
 class BacktestResponse(BaseModel):
@@ -269,8 +277,11 @@ def agent_run(
     """
     from app.agent.alpha_agent import AlphaAgent
 
-    dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
-    agent   = AlphaAgent(store=store)
+    dataset, _, _ = _resolve_dataset(
+        req.dataset_name, req.dataset_start, req.dataset_end,
+        req.n_tickers, req.n_days, req.seed, oos_ratio=0.0,
+    )
+    agent = AlphaAgent(store=store)
 
     try:
         log = agent.run(hypothesis=req.hypothesis, dataset=dataset)
@@ -298,44 +309,61 @@ def gp_evolve(
     store: AlphaStore = Depends(get_store),
 ) -> GPEvolveResponse:
     """
-    启动 GP 遗传规划进化，返回 Hall of Fame，并将结果持久化到 AlphaStore。
+    启动 GP 遗传规划进化（PopulationEvolver + 真实 IS/OOS 分区），
+    返回 Pool Top-5 并持久化到 AlphaStore。
     """
-    from app.core.gp_engine.gp_engine import AlphaEvolver
+    from app.core.gp_engine.population_evolver import PopulationEvolver
     from app.db.alpha_store import AlphaResult
 
-    dataset, _, _ = _resolve_dataset(
+    _, is_data, oos_data = _resolve_dataset(
         req.dataset_name, req.dataset_start, req.dataset_end,
         req.n_tickers, req.n_days, req.seed, oos_ratio=0.30,
     )
-    evolver = AlphaEvolver(
-        pop_size  = req.pop_size,
-        n_gen     = req.n_gen,
-        n_workers = req.n_workers,
+
+    evolver = PopulationEvolver(
+        is_data       = is_data,
+        oos_data      = oos_data,
+        pop_size      = req.pop_size,
+        n_generations = req.n_gen,
     )
 
     try:
-        hof = evolver.evolve(dataset)
+        gp_result = evolver.run(n_optuna_trials=5)
     except Exception as exc:
-        logger.exception("AlphaEvolver.evolve failed")
+        logger.exception("PopulationEvolver.run failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
+    pool_top5 = gp_result.pool_top5   # list[dict]
+
     saved_ids: List[int] = []
-    for r in hof:
+    for entry in pool_top5:
         try:
             ar = AlphaResult(
-                dsl          = r.dsl,
-                sharpe       = r.sharpe,
-                ic_ir        = r.ic_ir,
-                ann_turnover = r.ann_turnover,
-                status       = "active",
+                dsl          = entry["dsl"],
+                sharpe       = entry.get("sharpe_oos", 0.0),
+                ic_ir        = entry.get("fitness",    0.0),
+                ann_turnover = entry.get("turnover",   0.0),
+                status       = "candidate",
             )
             saved_ids.append(store.save(ar))
         except Exception:
             pass
 
+    hof_items = [
+        GPAlphaItem(
+            dsl         = e["dsl"],
+            fitness     = e.get("fitness",    0.0),
+            sharpe      = e.get("sharpe_oos", 0.0),
+            ic_ir       = e.get("fitness",    0.0),
+            ann_return  = e.get("sharpe_oos", 0.0),
+            ann_turnover= e.get("turnover",   0.0),
+        )
+        for e in pool_top5
+    ]
+
     return GPEvolveResponse(
-        n_hof     = len(hof),
-        hof       = [GPAlphaItem(**r.__dict__) for r in hof],
+        n_hof     = len(hof_items),
+        hof       = hof_items,
         saved_ids = saved_ids,
     )
 
@@ -358,7 +386,10 @@ def backtest_run(req: BacktestRequest) -> BacktestResponse:
     )
     from app.core.backtest_engine.risk_report import RiskReport
 
-    dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
+    dataset, _, _ = _resolve_dataset(
+        req.dataset_name, req.dataset_start, req.dataset_end,
+        req.n_tickers, req.n_days, req.seed, oos_ratio=0.0,
+    )
 
     # 1. 解析 + 验证
     try:

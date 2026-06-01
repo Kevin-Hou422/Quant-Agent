@@ -37,7 +37,7 @@ from app.core.gp_engine.mutations import (
 )
 from app.core.ml_engine.proxy_model import ProxyModel, extract_features, _FEATURE_SIZE
 from app.core.ml_engine.alpha_store import AlphaStore, AlphaResult
-from app.core.gp_engine.gp_engine import AlphaEvolver
+from app.core.gp_engine.population_evolver import PopulationEvolver
 
 _validator = AlphaValidator()
 
@@ -208,20 +208,29 @@ def test_alpha_store_save_query(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Test 6: gp_evolve_smoke
+# Test 6: gp_evolve_smoke  (PopulationEvolver)
 # ---------------------------------------------------------------------------
 
 def test_gp_evolve_smoke():
-    """5代×10个体，evolve() 返回非空 Hall of Fame 列表。"""
-    dataset = _make_dataset(n_days=60, n_tickers=10)
-    evolver = AlphaEvolver(
-        pop_size  = 10,
-        n_gen     = 3,
-        n_workers = 1,  # 单进程避免 Windows multiprocessing 问题
-        tree_depth = 3,
+    """3代×10个体，PopulationEvolver.run() 返回非空 pool_top5。"""
+    dataset = _make_dataset(n_days=80, n_tickers=10)
+
+    # IS/OOS 物理分区（不能直接把 dataset 同时传 is_data 和 oos_data）
+    dates    = next(iter(dataset.values())).index
+    split    = int(len(dates) * 0.7)
+    is_data  = {k: v.iloc[:split]  for k, v in dataset.items()}
+    oos_data = {k: v.iloc[split:]  for k, v in dataset.items()}
+
+    evolver = PopulationEvolver(
+        is_data       = is_data,
+        oos_data      = oos_data,
+        pop_size      = 10,
+        n_generations = 2,
     )
-    hof = evolver.evolve(dataset)
-    assert len(hof) > 0, "Hall of Fame 不应为空"
-    for r in hof:
-        assert isinstance(r.dsl, str) and len(r.dsl) > 0
-        assert isinstance(r.fitness, float)
+    result = evolver.run(n_optuna_trials=0)   # skip Optuna to keep test fast
+
+    assert len(result.pool_top5) > 0, "pool_top5 不应为空"
+    assert isinstance(result.best_dsl, str) and len(result.best_dsl) > 0
+    for entry in result.pool_top5:
+        assert "dsl"     in entry
+        assert "fitness" in entry

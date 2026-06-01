@@ -272,23 +272,27 @@ _SPECS: Dict[str, DatasetSpec] = {
 # ---------------------------------------------------------------------------
 
 def load_registry_dataset(
-    name:      str,
-    start:     Optional[str] = None,
-    end:       Optional[str] = None,
-    use_cache: bool = True,
+    name:         str,
+    start:        Optional[str] = None,
+    end:          Optional[str] = None,
+    use_cache:    bool = True,
+    with_sector:  bool = True,
 ) -> Dataset:
     """
     Load a named dataset from the production registry.
 
     Parameters
     ----------
-    name      : Dataset name, one of REGISTRY_NAMES
-    start/end : Override date range (ISO "YYYY-MM-DD"). Defaults to spec start.
-    use_cache : Return cached Dataset if already loaded for same (name,start,end)
+    name        : Dataset name, one of REGISTRY_NAMES
+    start/end   : Override date range (ISO "YYYY-MM-DD"). Defaults to spec start.
+    use_cache   : Return cached Dataset if already loaded for same (name,start,end)
+    with_sector : Attach a 'sector' field (integer GICS L1 codes) to ds.data.
+                  Used by dsl_executor as the 'groups' field for group_rank /
+                  group_zscore / ind_neutralize operators.
 
     Returns
     -------
-    Dataset with exactly 7 standard fields (open,high,low,close,volume,vwap,returns)
+    Dataset with 7 standard OHLCV fields + optional 'sector' field.
     """
     if name not in _SPECS:
         raise KeyError(
@@ -310,8 +314,27 @@ def load_registry_dataset(
         start_dt, end_dt, len(spec.universe),
     )
 
-    raw = _fetch_raw(spec, start_dt, end_dt)
+    raw  = _fetch_raw(spec, start_dt, end_dt)
     data = _align_and_standardize(raw, spec.universe)
+
+    # Attach real sector codes so DSL group operators use true industry data
+    if with_sector:
+        from .sector_mapper import build_sector_matrix, coverage_report
+        dates     = next(iter(data.values())).index
+        sector_df = build_sector_matrix(spec.universe, dates)
+        data["sector"] = sector_df
+
+        cov = coverage_report(spec.universe)
+        if cov["unmapped"]:
+            logger.warning(
+                "Dataset '%s': %d/%d tickers have no GICS mapping → sector=-1: %s",
+                name, cov["unmapped"], cov["total"], cov["unmapped_tickers"][:10],
+            )
+        else:
+            logger.info(
+                "Dataset '%s': sector coverage 100%% (%d tickers, dist=%s)",
+                name, cov["total"], cov["sector_distribution"],
+            )
 
     ds = Dataset(
         name      = name,
