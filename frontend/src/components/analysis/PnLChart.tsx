@@ -54,10 +54,20 @@ function PnLChartInner() {
     const splitIdx = isCum.length         // first OOS index in the combined x-axis
     const total    = splitIdx + oosCum.length
 
-    // MM-DD x-axis labels
-    const today = new Date()
+    // Build x-axis dates anchored on the real split_date when available,
+    // otherwise fall back to today-relative labels.
+    const splitAnchor = simulationResult.split_date
+      ? new Date(simulationResult.split_date)
+      : null
     const xData = Array.from({ length: total }, (_, i) => {
-      const d = new Date(today)
+      if (splitAnchor) {
+        // IS dates run backwards from split; OOS dates run forwards from split
+        const offset = i - (splitIdx - 1)
+        const d = new Date(splitAnchor)
+        d.setDate(d.getDate() + offset)
+        return d.toISOString().slice(0, 10)
+      }
+      const d = new Date()
       d.setDate(d.getDate() - (total - 1 - i))
       return d.toISOString().slice(5, 10)
     })

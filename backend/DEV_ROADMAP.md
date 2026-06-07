@@ -2,7 +2,7 @@
 
 **基于：** `AUDIT_REPORT.md`（2026-06-01 审计）  
 **制定日期：** 2026-06-01  
-**最后更新：** 2026-06-07（Phase 0 / Phase 1 进度核查）  
+**最后更新：** 2026-06-07 v3（Phase 1 全部任务完成）  
 **目标：** 从当前综合评分，分阶段提升至可交易水平（≥ 66%）
 
 ---
@@ -12,7 +12,7 @@
 | Phase | 目标评分 | 实际状态 | 说明 |
 |-------|---------|---------|------|
 | Phase 0 | 38% | ✅ **已完成** | 三个 P0 任务全部实现 |
-| Phase 1 | 44% | ⚠️ **部分完成** | 1.2/1.4 已完成；1.1/1.3 部分；1.5 未做 |
+| Phase 1 | 44% | ✅ **已完成** | 全部 5 个任务完成（含 AlphaEvolver 删除 + API 并发保护）|
 | Phase 2 | 54% | ❌ 未开始 | |
 | Phase 3 | 64% | ❌ 未开始 | |
 | Phase 4 | 74% | ❌ 未开始 | |
@@ -24,7 +24,7 @@
 
 ```
 Phase 0 ── 接线与激活          ✅ 已完成
-Phase 1 ── 清理与一致性         ⚠️ 部分完成（剩余 Task 1.1/1.3/1.5）
+Phase 1 ── 清理与一致性         ✅ 已完成
 Phase 2 ── 数据与验证升级        ❌ 待开始
 Phase 3 ── 金融核心修复          ❌ 待开始
 Phase 4 ── 风控与组合深化        ❌ 待开始
@@ -82,18 +82,16 @@ Phase 5 ── 在线化与生命周期       ❌ 待开始
 
 ---
 
-### Task 1.1 ⚠️ 删除两个冗余包
+### Task 1.1 ✅ 删除两个冗余包
 
-**完成状态：部分完成（optimization_engine 已清理，AlphaEvolver 仍存在）**
+**完成状态：已完成（2026-06-07）**
 
-**现状：**
+**已完成内容：**
 - `optimization_engine/` 中的模块已成为 `ml_engine/` 的干净 re-export（无重复逻辑）
 - `portfolio_engine/` 的独立逻辑已归并到 `backtest_engine/`
-- `AlphaEvolver` 类（约 235 行）仍存在于 `gp_engine/gp_engine.py`，但所有活跃路径均使用 `PopulationEvolver`
-
-**待完成：**
-- 删除 `app/core/gp_engine/gp_engine.py` 中的 `AlphaEvolver` 类
-- 确认删除前 `grep -r AlphaEvolver` 无外部引用
+- `AlphaEvolver` 类（约 235 行）已从 `gp_engine/gp_engine.py` 删除
+- 随之清理了 6 个不再使用的 import（`multiprocessing`、`List`/`Optional`、mutations、`ProxyModel`、`AlphaStore`）
+- `gp_engine/__init__.py` 中移除 `AlphaEvolver` 导出，保留 `GPAlphaResult`、`generate_random_alpha`
 
 ---
 
@@ -108,18 +106,16 @@ Phase 5 ── 在线化与生命周期       ❌ 待开始
 
 ---
 
-### Task 1.3 ⚠️ 退役旧版 AlphaEvolver，保留共用组件
+### Task 1.3 ✅ 退役旧版 AlphaEvolver，保留共用组件
 
-**完成状态：功能已退役，代码未删除**
+**完成状态：已完成（2026-06-07）**
 
-**现状：**
-- API router（`/api/gp/evolve`）、CLI `run_gp()`、所有 Workflow 均调用 `PopulationEvolver`
-- `AlphaEvolver` 类仍在 `gp_engine.py` 中存在，通过 `__init__.py` 导出（向后兼容）
-- 共用组件（`_SEED_DSLS`、`generate_random_alpha()`、`GPAlphaResult`）均正常可用
-
-**待完成：**
-- 在 `gp_engine.py` 顶部添加弃用说明注释
-- 从 `__init__.py` 中移除 `AlphaEvolver` 导出（或添加 `@deprecated` 标记）
+**已完成内容：**
+- `AlphaEvolver` 类已从 `gp_engine.py` 中删除（见 Task 1.1）
+- `gp_engine.py` 文档字符串已更新，明确标注退役日期并指向 `PopulationEvolver`
+- `__init__.py` 已移除 `AlphaEvolver` 导出
+- 共用组件（`_SEED_DSLS`、`generate_random_alpha()`、`GPAlphaResult`）保留完好
+- `router.py` 文档字符串更新：`/api/gp/evolve` 说明改为"PopulationEvolver GP 进化"
 
 ---
 
@@ -132,47 +128,18 @@ Phase 5 ── 在线化与生命周期       ❌ 待开始
 
 ---
 
-### Task 1.5 ❌ 加入 API 并发保护与超时限制
+### Task 1.5 ✅ 加入 API 并发保护与超时限制
 
-**完成状态：未实现**
+**完成状态：已完成（2026-06-07）**
 
-**现状：**
-- `/api/gp/evolve` 端点（`router.py` 约 306-368 行）无任何并发控制
-- 无 `Lock`、`Semaphore` 或 `asyncio.Lock`
-- 无请求级限速
-- 端点为同步 `def`，并发请求将创建多个独立进化进程，有 OOM 风险
-
-**实现方案（保留原 Task 1.5 内容）：**
-
-```python
-# config.py — 新增
-gp_max_concurrent: int = 1
-gp_timeout_seconds: int = 300
-
-# router.py
-import asyncio
-from threading import Lock
-
-_gp_lock = Lock()
-
-@router.post("/gp/evolve")
-async def gp_evolve_endpoint(...):
-    if not _gp_lock.acquire(blocking=False):
-        raise HTTPException(status_code=429, detail="GP任务正在运行，请稍后重试")
-    try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(run_gp_sync, ...),
-            timeout=settings.gp_timeout_seconds,
-        )
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=408, detail="GP任务超时")
-    finally:
-        _gp_lock.release()
-    return result
-```
-
-**验收标准：** 并发两次请求返回 429；单次超过 300s 返回 408。  
-**估时：** 1 天
+**已实现内容：**
+- `router.py` 顶部添加 `_gp_lock = Lock()`（模块级单例）
+- `/api/gp/evolve` 端点使用 `_gp_lock.acquire(blocking=False)`：
+  - 并发请求立即返回 `HTTP 429`（"GP 任务正在运行，请稍后重试"）
+  - 超过 300 秒通过 `threading.Thread.join(timeout=300)` 判活，返回 `HTTP 408`
+  - `finally` 块确保锁无论如何都会释放
+- 实现方式：同步端点 + daemon 线程 + join 超时，无需将端点改为 async
+- 前端已配套 Axios 拦截器处理 429/408 错误消息
 
 ---
 
@@ -496,7 +463,7 @@ Phase 5 ── ← 4.1
 |----------|----------|---------|
 | 初始状态 | 24% | 2026-06-01 审计基线 |
 | Phase 0 | 38% | ✅ **已达成**（数据质量 28%→65%，信号可信度提升）|
-| Phase 1 | 44% | ⚠️ **部分达成**（1.5 未完成，可维护性提升但不完整）|
+| Phase 1 | 44% | ✅ **已达成**（全部 5 个任务完成，可维护性提升，API 并发保护上线）|
 | Phase 2 | 54% | 防过拟合（38%→65%）、数据质量（65%→78%）|
 | Phase 3 | 64% | Alpha 信号质量（25%→55%）、组合完整性（28%→55%）|
 | Phase 4 | 74% | 风险模型（8%→65%）、组合完整性（55%→75%）|
@@ -510,9 +477,9 @@ Phase 5 ── ← 4.1
 
 | Task | 描述 | 估时 | 难度 | 状态 |
 |------|------|------|------|------|
-| 1.1 (残) | 删除 AlphaEvolver 类 | 0.5 天 | 低 | ⚠️ 待做 |
-| 1.3 (残) | 添加弃用注释/移除导出 | 0.5 天 | 低 | ⚠️ 待做 |
-| 1.5 | API 并发保护 | 1 天 | 低 | ❌ 待做 |
+| ~~1.1~~ | ~~删除 AlphaEvolver 类~~ | ~~0.5 天~~ | ~~低~~ | ✅ 已完成 |
+| ~~1.3~~ | ~~添加弃用注释/移除导出~~ | ~~0.5 天~~ | ~~低~~ | ✅ 已完成 |
+| ~~1.5~~ | ~~API 并发保护~~ | ~~1 天~~ | ~~低~~ | ✅ 已完成 |
 | 2.1 | Walk-Forward 框架 | 4 天 | 中 | ❌ |
 | 2.2 | Embargo Period | 1 天 | 低 | ❌ |
 | 2.3 | 多市场并发加载 | 2 天 | 低 | ❌ |

@@ -6,6 +6,19 @@ import type {
 
 const http = axios.create({ baseURL: '/api', timeout: 120_000 })
 
+// Translate 429 / 408 into user-readable messages so the UI can toast them
+http.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    const status = err?.response?.status
+    if (status === 429)
+      return Promise.reject(new Error('GP 任务正在运行，请稍后重试'))
+    if (status === 408)
+      return Promise.reject(new Error('GP 任务超时，请缩小种群规模后重试'))
+    return Promise.reject(err)
+  },
+)
+
 // ── Datasets ──────────────────────────────────────────────────────────────
 export const apiFetchDatasets = () =>
   http.get<{ datasets: DatasetInfo[]; total: number }>('/datasets')

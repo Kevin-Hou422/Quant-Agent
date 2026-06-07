@@ -2,8 +2,8 @@
 
 **审计日期：** 2026-06-07  
 **覆盖范围：** `frontend/src/` 全部 TypeScript/TSX 源文件（18 个文件）  
-**参考文件：** `backend/AUDIT_REPORT.md`（2026-06-01）| `backend/DEV_ROADMAP.md`（v2.0，2026-06-07）  
-**最后更新：** 2026-06-07（Dataset 功能实现后更新）
+**参考文件：** `backend/AUDIT_REPORT.md`（2026-06-01）| `backend/DEV_ROADMAP.md`（v3.0，2026-06-07）  
+**最后更新：** 2026-06-07 v3（Phase 1 全部前端任务完成）
 
 ---
 
@@ -189,12 +189,12 @@ frontend/
 
 | 功能 | 状态 | 问题 |
 |------|------|------|
-| 回测进度反馈 | ⚠️ | 假动画，与实际执行无关 |
-| PnL 图表时间轴 | ⚠️ | 使用今天日期倒推，非真实回测区间 |
-| GP 优化后指标展示 | ⚠️ | OOS 仅 Sharpe，其余字段为 `—` |
+| 回测进度反馈 | ⚠️ | 假动画，与实际执行无关（后端无 SSE 回测流）|
+| PnL 图表时间轴 | ✅ 已修复 | 现使用 `split_date` 对齐真实日期轴，退化到今日倒推 |
+| GP 优化后指标展示 | ✅ 已修复 | OOS 指标 6 项全部映射（含 return/drawdown/ic_ir/turnover）|
 | IC Decay 展示 | ⚠️ | 后端当前返回空 `{}` 导致区块不渲染 |
 | Alpha 台账状态点 | ⚠️ | `status` 固定显示为 active 颜色 |
-| 请求取消 | ⚠️ | AbortController 未传入流式请求 |
+| 请求取消 | ✅ 已修复 | Chat 流和 Optimize 流均绑定 AbortController |
 
 ### 4.3 完全缺失（对应后端路线图未来阶段）
 
@@ -223,29 +223,25 @@ useEffect(() => { initSessions() }, [])  // eslint-disable-line react-hooks/exha
 
 建议将 `initSessions` 包装为 `useCallback` 使其引用稳定，或改用 `useRef` 守卫。
 
-### 5.2 打字机队列 busy-wait 轮询（原有）
+### 5.2 打字机队列 busy-wait 轮询（原有，遗留）
 
 `useQuantWorkspace.ts` 中等待打字完成的 `setInterval` 轮询（50ms）可改为 Promise 回调通知。
 
-### 5.3 Console 无自动滚动（原有）
+### 5.3 ~~Console 无自动滚动~~ ✅ 已修复（2026-06-07）
 
-```typescript
-// ConsoleOutput.tsx — 缺少 useRef + scrollIntoView
-```
+`ConsoleOutput.tsx` 新增 `useRef<HTMLDivElement>` + `useEffect(() => bottomRef.current?.scrollIntoView(...), [consoleLogs])`，新日志追加时自动滚到底部。
 
-当新日志追加时用户须手动滚底，应添加自动滚动逻辑。
+### 5.4 ~~PnL 图表 X 轴假日期~~ ✅ 已修复（2026-06-07）
 
-### 5.4 PnL 图表 X 轴假日期（原有）
+`PnLChart.tsx` 现使用 `simulationResult.split_date` 为锚点构建真实日期轴；无 `split_date` 时退化为今日倒推。
 
-应使用 `simulationResult.split_date` 构建真实日期轴。
+### 5.5 ~~GP 优化后 OOS 指标缺失字段~~ ✅ 已修复（2026-06-07）
 
-### 5.5 GP 优化后 OOS 指标缺失字段（原有）
+`runOptimize()` 中 `oos_metrics` 现映射 6 个字段：`sharpe_ratio`、`annualized_return`、`ann_turnover`、`max_drawdown`、`ic_ir`、`mean_ic`，兼容后端键名变体（`oos_ic_ir` / `oos_ic`）。
 
-`runOptimize()` 后 `oos_metrics` 仅映射 `sharpe_ratio`，应补全后端返回的其他字段。
+### 5.6 ~~API 无并发请求守卫~~ ✅ 已修复（2026-06-07）
 
-### 5.6 API 无并发请求守卫（原有）
-
-快速双击触发 `runBacktest` / `runOptimize` 存在竞态窗口，建议在 hook 层加 `in-flight ref`。
+`useQuantWorkspace.ts` 添加模块级 `_chatAbort` / `_optimizeAbort` AbortController，新操作启动时取消上一个流。`streamChat` 和 `streamWorkflowOptimize` 均已传入 `signal`。
 
 ---
 
@@ -254,7 +250,7 @@ useEffect(() => { initSessions() }, [])  // eslint-disable-line react-hooks/exha
 | Phase | 后端当前状态 | 前端当前状态 | 剩余前端工作 |
 |-------|------------|------------|------------|
 | **Phase 0** | ✅ 全部完成 | ✅ 已同步 | 数据集选择UI已实现，API调用已修复 |
-| **Phase 1** | ⚠️ 部分完成 | ⚠️ 对应处理 | 429/408 响应处理待做（Task 1.5 完成后联调）|
+| **Phase 1** | ✅ 全部完成 | ✅ 全部完成 | 429/408 拦截器、Console 滚动、PnL 日期轴、OOS 指标、AbortController 均已实现 |
 | **Phase 2** | ❌ 未开始 | ❌ 缺 WF 展示 | Walk-Forward 多折图表组件 |
 | **Phase 3** | ❌ 未开始 | ❌ 缺多Alpha | 多Alpha对比视图 + Beta/行业暴露展示 |
 | **Phase 4** | ❌ 未开始 | ❌ 缺Regime | Regime 状态徽章 + DSR 指标行 |
@@ -376,11 +372,11 @@ Alpha 详情页展示 30/60 天滚动 IC 折线图 + 衰减阈值参考线。
 | ~~FE-0.1~~ | ~~数据集选择器~~ | ~~1 天~~ | ~~🔴~~ | ✅ 已完成 |
 | ~~FE-0.2~~ | ~~修改 API 调用移除合成数据参数~~ | ~~0.5 天~~ | ~~🔴~~ | ✅ 已完成 |
 | ~~FE-0.3~~ | ~~激活 streamWorkflowGenerate~~ | ~~0.5 天~~ | ~~🔴~~ | ✅ 已完成 |
-| FE-1.1 | 处理 429/408 响应 + toast | 0.5 天 | 🟡 | 待后端 Task 1.5 |
-| FE-1.2 | Console 自动滚动 | 0.5 天 | 🟡 | ❌ |
-| FE-1.3 | PnL 图表 X 轴使用真实日期 | 1 天 | 🟡 | ❌ |
-| FE-1.4 | GP 优化 OOS 指标映射完整性 | 0.5 天 | 🟡 | ❌ |
-| FE-1.5 | 请求 AbortController | 1 天 | 🟢 | ❌ |
+| ~~FE-1.1~~ | ~~处理 429/408 响应 + toast~~ | ~~0.5 天~~ | ~~🟡~~ | ✅ 已完成 |
+| ~~FE-1.2~~ | ~~Console 自动滚动~~ | ~~0.5 天~~ | ~~🟡~~ | ✅ 已完成 |
+| ~~FE-1.3~~ | ~~PnL 图表 X 轴使用真实日期~~ | ~~1 天~~ | ~~🟡~~ | ✅ 已完成 |
+| ~~FE-1.4~~ | ~~GP 优化 OOS 指标映射完整性~~ | ~~0.5 天~~ | ~~🟡~~ | ✅ 已完成 |
+| ~~FE-1.5~~ | ~~请求 AbortController~~ | ~~1 天~~ | ~~🟢~~ | ✅ 已完成 |
 | FE-2.1 | Walk-Forward 结果图表 | 2 天 | 🟡 | 待后端 Phase 2 |
 | FE-2.2 | 数据集健康评分 Banner | 1 天 | 🟢 | 待后端 Phase 2 |
 | FE-3.1 | 多 Alpha 对比视图 | 3 天 | 🟡 | 待后端 Phase 3 |
@@ -405,9 +401,9 @@ Alpha 详情页展示 30/60 天滚动 IC 折线图 + 衰减阈值参考线。
 | 用户体验 | 8 | Dataset 视图提供直观的数据集探索和选择体验（↑ 原 7）|
 | 可扩展性 | 6 | 单页应用无路由；Phase 5 多页面需求需引入 react-router |
 | 类型安全 | 7 | 全量 TypeScript；部分 `as any` 类型断言需整理 |
-| 与后端对齐 | 8 | 数据集参数断路已修复；SSE 调用已传 dataset 参数（↑ 原 4）|
-| **综合** | **7.6** | Phase 0 前端工作完成，对齐分数从 6.8 提升至 7.6 |
+| 与后端对齐 | 9 | Phase 0+1 前后端完全同步；OOS 指标、PnL 日期、AbortController 均已修复（↑ 原 8）|
+| **综合** | **8.1** | Phase 0+1 全部完成，综合评分从 7.6 升至 8.1 |
 
 ---
 
-*报告版本 v2.0 | 2026-06-07 | Dataset UI 实现后更新 | 覆盖文件数：18 个 .tsx/.ts 文件*
+*报告版本 v3.0 | 2026-06-07 | Phase 1 全部前端任务完成 | 覆盖文件数：18 个 .tsx/.ts 文件*

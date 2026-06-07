@@ -37,6 +37,11 @@ function classifyError(err: any): string {
   return `[ERROR] ${detail}`
 }
 
+// Module-level abort controllers — one per streaming operation type.
+// Replaced on each new invocation, so previous streams are cancelled.
+let _chatAbort:     AbortController | null = null
+let _optimizeAbort: AbortController | null = null
+
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useQuantWorkspace() {
@@ -211,6 +216,11 @@ export function useQuantWorkspace() {
   const sendChat = async (text: string) => {
     if (!text.trim()) return
 
+    // Cancel any previous chat stream before starting a new one
+    _chatAbort?.abort()
+    _chatAbort = new AbortController()
+    const signal = _chatAbort.signal
+
     // Detect first message BEFORE addMessage increments the count
     const isFirstMessage = store.chatMessages.length === 0
 
@@ -259,7 +269,7 @@ export function useQuantWorkspace() {
           enqueueText(`[ERROR] ${event.message}`)
           store.appendLog(`[ERROR] ${event.message}`)
         }
-      })
+      }, signal)
 
       // Wait for remaining typing to finish
       await new Promise<void>((resolve) => {
@@ -348,6 +358,11 @@ export function useQuantWorkspace() {
     const dsl = store.editorDsl.trim()
     if (!dsl) return
 
+    // Cancel any in-flight optimize stream before starting
+    _optimizeAbort?.abort()
+    _optimizeAbort = new AbortController()
+    const optimizeSignal = _optimizeAbort.signal
+
     store.setActiveView('CHAT')
     store.setStatus('optimizing')
     store.clearLogs()
@@ -395,6 +410,7 @@ export function useQuantWorkspace() {
         store.simConfig.dataset,
         store.simConfig.start_date,
         store.simConfig.end_date,
+        optimizeSignal,
       )
 
       await new Promise<void>((resolve) => {
@@ -435,10 +451,18 @@ export function useQuantWorkspace() {
             sharpe_ratio:      m?.is_sharpe      ?? null,
             annualized_return: m?.is_return      ?? null,
             ann_turnover:      m?.is_turnover    ?? null,
-            ic_ir:             m?.is_ic          ?? null,
-            mean_ic:           m?.is_ic          ?? null,
+            max_drawdown:      m?.is_max_dd      ?? null,
+            ic_ir:             m?.is_ic_ir       ?? m?.is_ic ?? null,
+            mean_ic:           m?.is_mean_ic     ?? m?.is_ic ?? null,
           },
-          oos_metrics:       m?.oos_sharpe != null ? { sharpe_ratio: m.oos_sharpe } : null,
+          oos_metrics: m?.oos_sharpe != null ? {
+            sharpe_ratio:      m.oos_sharpe      ?? null,
+            annualized_return: m.oos_return      ?? null,
+            ann_turnover:      m.oos_turnover    ?? null,
+            max_drawdown:      m.oos_max_dd      ?? null,
+            ic_ir:             m.oos_ic_ir       ?? m.oos_ic ?? null,
+            mean_ic:           m.oos_mean_ic     ?? m.oos_ic ?? null,
+          } : null,
           overfitting_score: wf.overfitting_score ?? 0,
           is_overfit:        wf.is_overfit        ?? false,
           ic_decay:          {},

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { useQuantWorkspace } from '../../hooks/useQuantWorkspace'
 import { Copy, RefreshCw, FileText } from 'lucide-react'
@@ -51,6 +52,11 @@ function LogLine({ line, actions }: { line: string; actions?: LogAction[] }) {
 export default function ConsoleOutput() {
   const { consoleLogs, clearLogs, status, setActiveView } = useWorkspaceStore()
   const { runOptimize } = useQuantWorkspace()
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [consoleLogs])
 
   const statusColor: Record<string, string> = {
     idle:        'text-slate-500',
@@ -107,6 +113,7 @@ export default function ConsoleOutput() {
             <LogLine key={i} line={l} actions={getActions(l)} />
           ))
         )}
+        <div ref={bottomRef} />
       </div>
     </div>
   )

@@ -42,8 +42,10 @@ An end-to-end autonomous quantitative alpha research platform modelled after Wor
 │  ┌──────────────┐  ┌────────────────────┐  ┌──────────────────────────┐   │
 │  │ GlobalSidebar│  │  SessionHistory /  │  │  ChatView (CHAT mode)    │   │
 │  │  (icon tbar) │  │  LeftLedgerPane    │  │  CompilerView + Console  │   │
-│  │              │  │  (alpha ledger /   │  │  (COMPILER mode)         │   │
-│  │              │  │   chat sessions)   │  │  RightPane (PnL chart)   │   │
+│  │  Chat        │  │  (alpha ledger /   │  │  (COMPILER mode)         │   │
+│  │  Compiler    │  │   chat sessions)   │  │  DatasetView             │   │
+│  │  Ledger      │  │                    │  │  (DATASET mode)          │   │
+│  │  Data ← new  │  │                    │  │  RightPane (PnL chart)   │   │
 │  └──────────────┘  └────────────────────┘  └──────────────────────────┘   │
 └──────────────────────────────┬──────────────────────────────────────────────┘
              HTTP / SSE (Vite proxy  →  :8000)
@@ -53,8 +55,8 @@ An end-to-end autonomous quantitative alpha research platform modelled after Wor
 │  /api/chat          /api/workflow/generate[/stream]                        │
 │  /api/chat/sessions /api/workflow/optimize[/stream]                        │
 │  /alpha/simulate    /alpha/optimize   /alpha/save                          │
-│  /backtest/run      /backtest/realistic                                    │
-│  /report/query      /gp/evolve        /agent/run                          │
+│  /backtest/run      /backtest/realistic  /backtest/multi                   │
+│  /report/query      /gp/evolve(lock)  /agent/run  /datasets                │
 └──┬────────────────┬──────────────────┬────────────────┬─────────────────────┘
    │                │                  │                │
    ▼                ▼                  ▼                ▼
@@ -133,22 +135,27 @@ Quant Agent/
 │       │   │   └── visualizer.py             # ECharts serialization
 │       │   │
 │       │   ├── data_engine/
+│       │   │   ├── dataset_registry.py       # 10 real-market datasets (us_tech_large, china_tech …)
+│       │   │   ├── sector_mapper.py          # GICS L1 industry classification (US + A-share + HK)
+│       │   │   ├── multi_dataset.py          # Panel alignment + standardisation
 │       │   │   ├── data_partitioner.py       # Immutable IS/OOS physical split
 │       │   │   ├── data_manager.py           # OHLCV panel construction + cache
-│       │   │   ├── yahoo_provider.py         # yfinance integration
+│       │   │   ├── yahoo_provider.py         # yfinance integration (US, HK)
+│       │   │   ├── akshare_provider.py       # A-share data via akshare
+│       │   │   ├── ccxt_provider.py          # Crypto data via Binance/CCXT
 │       │   │   ├── alpha_vantage_provider.py # Alternative data source
 │       │   │   ├── local_parquet_provider.py # Parquet cache
 │       │   │   ├── preprocessor.py           # Cleaning + alignment
 │       │   │   ├── schema.py                 # Data validation schemas
-│       │   │   ├── feature_store.py          # Feature matrix storage
+│       │   │   ├── feature_store.py          # Feature matrix storage (Parquet, ~5s warm)
 │       │   │   ├── panel_factory.py          # Multi-asset panel builder
 │       │   │   ├── dataset_loader.py         # Unified loader interface
 │       │   │   ├── health_report.py          # Data quality checks
 │       │   │   └── base.py                   # Abstract provider base class
 │       │   │
 │       │   ├── gp_engine/
-│       │   │   ├── gp_engine.py              # AlphaEvolver (DEAP-based)
-│       │   │   ├── population_evolver.py     # PopulationEvolver (true GP core)
+│       │   │   ├── gp_engine.py              # Seed library + random alpha generator (AlphaEvolver removed 2026-06-07)
+│       │   │   ├── population_evolver.py     # PopulationEvolver (active GP engine)
 │       │   │   ├── mutations.py              # AST-level: point/hoist/param/crossover
 │       │   │   ├── fitness.py                # compute_fitness() + mutation_weights()
 │       │   │   └── alpha_pool.py             # AlphaPool diversity filter (corr<0.9)
@@ -233,12 +240,15 @@ Quant Agent/
             │
             ├── compiler/
             │   ├── CompilerView.tsx      # Monaco editor + tab bar + toolbar
-            │   ├── ConfigModal.tsx       # SimulationConfig sliders
-            │   └── ConsoleOutput.tsx     # Bottom log console (tagged coloring)
+            │   ├── ConfigModal.tsx       # SimulationConfig sliders + active dataset row
+            │   └── ConsoleOutput.tsx     # Bottom log console (tagged coloring, auto-scroll)
+            │
+            ├── dataset/
+            │   └── DatasetView.tsx       # Dataset registry browser + selector (10 datasets)
             │
             └── analysis/
-                ├── PnLChart.tsx          # ECharts IS/OOS with markArea + split line
-                ├── MetricsGrid.tsx       # IS vs OOS metrics comparison table
+                ├── PnLChart.tsx          # ECharts IS/OOS, X-axis anchored on real split_date
+                ├── MetricsGrid.tsx       # IS vs OOS 6-metric comparison table (full OOS mapping)
                 └── OverfitBadge.tsx      # Overfitting indicator (pulsing)
 ```
 
@@ -250,8 +260,8 @@ Quant Agent/
 
 | Requirement | Version |
 |---|---|
-| Python | 3.10+ |
-| Node.js | 18+ |
+| Python | 3.12+ |
+| Node.js | 20+ |
 | bash | Git Bash / WSL on Windows |
 
 ### One-command launch
@@ -327,10 +337,7 @@ yfinance pyarrow fastparquet
 lark
 
 # ML / Optimization
-optuna xgboost lightgbm
-
-# GP
-deap
+optuna xgboost
 
 # Database
 sqlalchemy
@@ -591,6 +598,8 @@ print(result.oos_report.sharpe_ratio)  # OOS Sharpe
 **Module:** `backend/app/core/gp_engine/`
 
 The GP engine performs **true structural evolution** — all mutations operate on typed AST nodes, never on strings. This guarantees every candidate is syntactically valid by construction.
+
+> **Note (2026-06-07):** The legacy `AlphaEvolver` class (DEAP-based) has been removed. The active engine is `PopulationEvolver`. The `gp_engine.py` file is retained as the seed library and random-alpha generator.
 
 #### `PopulationEvolver` (main GP class)
 
@@ -1024,17 +1033,20 @@ All endpoints are served under the FastAPI app at `http://127.0.0.1:8000`. Inter
 **`SimulateRequest`:**
 ```json
 {
-  "dsl":       "rank(ts_delta(log(close), 5))",
+  "dsl":          "rank(ts_delta(log(close), 5))",
   "config": {
     "delay": 1, "decay_window": 0,
     "truncation_min_q": 0.05, "truncation_max_q": 0.95,
     "portfolio_mode": "long_short", "top_pct": 0.10
   },
-  "n_tickers": 20,
-  "n_days":    252,
-  "oos_ratio": 0.30
+  "dataset_name":  "us_tech_large",
+  "dataset_start": "2020-01-01",
+  "dataset_end":   "2024-01-01",
+  "oos_ratio":     0.30
 }
 ```
+
+> Legacy `n_tickers` / `n_days` fields are accepted for backward compatibility but ignored when `dataset_name` is non-empty.
 
 **`EvalResponse`:**
 ```json
@@ -1065,7 +1077,8 @@ All endpoints are served under the FastAPI app at `http://127.0.0.1:8000`. Inter
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/agent/run` | AlphaAgent run (hypothesis-driven, returns initial DSLs) |
-| `POST` | `/gp/evolve` | Raw DEAP GP evolution (Hall of Fame) |
+| `POST` | `/gp/evolve` | PopulationEvolver GP evolution — concurrency-limited (429 if busy, 408 on timeout) |
+| `GET` | `/datasets` | List all 10 registered datasets with metadata (no data loading) |
 | `GET` | `/health` | Health check |
 
 ---
@@ -1079,13 +1092,18 @@ All endpoints are served under the FastAPI app at `http://127.0.0.1:8000`. Inter
 ```typescript
 interface WorkspaceState {
   // View mode
-  activeView:  'CHAT' | 'COMPILER'
+  activeView:  'CHAT' | 'COMPILER' | 'DATASET'   // DATASET added 2026-06-07
+  prevView:    'CHAT' | 'COMPILER' | 'DATASET'    // restores view after leaving Dataset panel
   setActiveView: (v: ActiveView) => void
 
   // Monaco editor tabs
   editorTabs:    EditorTab[]       // {id, label, dsl, alphaId?, isModified}
   activeTabId:   string
   editorDsl:     string            // mirrors active tab's dsl
+
+  // Dataset registry (cached from GET /api/datasets)
+  datasets:    DatasetInfo[]       // {name, region, industry, provider, universe, n_assets, start}
+  setDatasets: (d: DatasetInfo[]) => void
 
   // Session management
   sessionId:   string
@@ -1108,11 +1126,11 @@ interface WorkspaceState {
   // Status bar
   status:      'idle' | 'optimizing' | 'backtesting' | 'ready' | 'error'
 
-  // Console log lines
+  // Console log lines (last 200 entries, auto-scroll in ConsoleOutput)
   consoleLogs: string[]
 
-  // Simulation parameters
-  simConfig:   SimulationConfig
+  // Simulation parameters (includes dataset + date range since 2026-06-07)
+  simConfig:   SimulationConfig    // {delay, decay_window, truncation, portfolio_mode, dataset, start_date, end_date}
 
   // Ledger panel
   ledgerOpen:  boolean
@@ -1145,9 +1163,9 @@ const { sendChat, runBacktest, runOptimize, loadHistory,
 - Main panel: `ChatView` (CHAT) or `CompilerView` + `ConsoleOutput` + `RightPane` (COMPILER)
 
 **`GlobalSidebar`** — icon toolbar (64px)
-- View toggle: Chat / Compiler
-- Run / Optimize buttons
-- Session management controls
+- View toggle: Chat / Compiler / Ledger / **Data** (dataset registry)
+- Run / Optimize buttons (Compiler mode)
+- Active dataset indicator at bottom (dataset name + year range, clickable)
 
 **`LeftLedgerPane`** (COMPILER mode)
 - Sorted alpha history table (by Sharpe)
@@ -1159,9 +1177,14 @@ const { sendChat, runBacktest, runOptimize, loadHistory,
 - Create new session, switch between sessions
 
 **`RightPane`** (COMPILER mode)
-- `PnLChart` — ECharts cumulative PnL with IS/OOS regions
-- `MetricsGrid` — IS vs OOS metrics comparison table
+- `PnLChart` — ECharts cumulative PnL with IS/OOS regions; X-axis anchored on real `split_date`
+- `MetricsGrid` — IS vs OOS 6-metric comparison table (Sharpe, Return, Drawdown, IC, IC-IR, Turnover); full OOS metric mapping
 - `OverfitBadge` — overfitting indicator
+
+**`DatasetView`** (DATASET mode) — full-width dataset registry browser:
+- Left column: 10 datasets grouped by region (US / China A / HK / Crypto), with ACTIVE badge
+- Right column: per-dataset detail — provider, asset count, data start, date-range picker, **Use this dataset** button, full ticker universe
+- Activating a dataset updates `simConfig.dataset`, `start_date`, `end_date` — all subsequent backtests and GP optimisations use the selected dataset
 
 #### Chat
 
@@ -1356,7 +1379,12 @@ DATABASE_URL=sqlite:///./alphas.db
 # Debug
 DEBUG=false
 
-# Default dataset parameters
+# Default dataset (used by CLI and API when no dataset_name specified)
+DEFAULT_DATASET=us_tech_large
+DEFAULT_START=2020-01-01
+DEFAULT_END=2024-01-01
+
+# Legacy synthetic-data fallback (testing only)
 DEFAULT_N_TICKERS=20
 DEFAULT_N_DAYS=120
 ```
@@ -1365,12 +1393,15 @@ DEFAULT_N_DAYS=120
 
 ```python
 SimulationConfig(
-    delay            = 1,     # 1-day execution lag
-    decay_window     = 0,     # no decay smoothing
-    truncation_min_q = 0.05,  # winsorise below 5th percentile
-    truncation_max_q = 0.95,  # winsorise above 95th percentile
+    delay            = 1,              # 1-day execution lag
+    decay_window     = 0,              # no decay smoothing
+    truncation_min_q = 0.05,           # winsorise below 5th percentile
+    truncation_max_q = 0.95,           # winsorise above 95th percentile
     portfolio_mode   = "long_short",
-    top_pct          = 0.10,  # top 10% for decile mode
+    top_pct          = 0.10,           # top 10% for decile mode
+    dataset          = "us_tech_large", # active dataset key
+    start_date       = "2020-01-01",   # backtest window start
+    end_date         = "2024-01-01",   # backtest window end
 )
 ```
 
@@ -1398,11 +1429,14 @@ source .venv/bin/activate
 # Run LangChain agent (1 hypothesis iteration)
 python -m app.main --mode agent --hypothesis "short-term mean reversion"
 
-# Run GP evolution (DEAP-based)
-python -m app.main --mode gp --n-gen 10 --pop-size 30
+# Run GP evolution with a real dataset
+python -m app.main --mode gp --dataset us_tech_large --start 2020-01-01 --end 2024-01-01
 
-# Run single backtest
-python -m app.main --mode backtest --dsl "rank(ts_delta(log(close),5))"
+# Run single backtest on real data
+python -m app.main --mode backtest --dsl "rank(ts_delta(log(close),5))" --dataset us_financials
+
+# Use synthetic data (testing only)
+python -m app.main --mode backtest --dsl "rank(ts_delta(log(close),5))" --use-synthetic
 
 # Query alpha ledger
 python -m app.main --mode report --limit 20 --min-sharpe 0.5
@@ -1443,6 +1477,21 @@ pytest tests/test_alpha_discovery.py -v      # End-to-end alpha discovery
 | `test_phase2.py` | /alpha/simulate, /alpha/optimize endpoints |
 | `test_phase3.py` | /workflow/generate, /workflow/optimize endpoints |
 | `test_alpha_discovery.py` | Full end-to-end alpha discovery loop |
+
+---
+
+## Development Status
+
+| Phase | Goal | Status |
+|-------|------|--------|
+| **Phase 0** | Real data pipeline, true industry groups, GP fitness | ✅ Complete |
+| **Phase 1** | Code cleanup, unified imports, API concurrency guard | ✅ Complete |
+| Phase 2 | Walk-Forward validation (5+ folds), Embargo period | Planned |
+| Phase 3 | Multi-Alpha joint portfolio, Beta neutralisation | Planned |
+| Phase 4 | Regime detection, MVO portfolio, Deflated Sharpe | Planned |
+| Phase 5 | Alpha lifecycle monitoring, IC decay alerts, scheduler | Planned |
+
+See [`backend/DEV_ROADMAP.md`](backend/DEV_ROADMAP.md) and [`frontend/FRONTEND_AUDIT_REPORT.md`](frontend/FRONTEND_AUDIT_REPORT.md) for detailed plans and task tracking.
 
 ---
 

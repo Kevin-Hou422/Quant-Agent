@@ -3,9 +3,10 @@ router.py — Quant Agent FastAPI 路由层
 
 端点：
   POST /api/agent/run       → AlphaAgent 假设驱动 DSL 生成 + 评估
-  POST /api/gp/evolve       → AlphaEvolver GP 进化
+  POST /api/gp/evolve       → PopulationEvolver GP 进化（并发限 1，超时 300s）
   POST /api/backtest/run    → 单条 DSL 完整回测 + RiskReport
   GET  /api/report/query    → AlphaStore 历史 Alpha 查询
+  GET  /api/datasets        → 注册数据集元信息列表
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import json
 import logging
 import queue as _queue
 import threading
+from threading import Lock
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -29,6 +31,9 @@ from app.db.alpha_store import AlphaStore
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
+
+# One GP evolution at a time — prevents OOM from concurrent long-running jobs
+_gp_lock = Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -311,27 +316,53 @@ def gp_evolve(
     """
     启动 GP 遗传规划进化（PopulationEvolver + 真实 IS/OOS 分区），
     返回 Pool Top-5 并持久化到 AlphaStore。
+    并发限制：同时只允许一个 GP 任务运行（超额请求返回 429）。
+    超时：300 秒（通过线程 join 控制）。
     """
-    from app.core.gp_engine.population_evolver import PopulationEvolver
-    from app.db.alpha_store import AlphaResult
-
-    _, is_data, oos_data = _resolve_dataset(
-        req.dataset_name, req.dataset_start, req.dataset_end,
-        req.n_tickers, req.n_days, req.seed, oos_ratio=0.30,
-    )
-
-    evolver = PopulationEvolver(
-        is_data       = is_data,
-        oos_data      = oos_data,
-        pop_size      = req.pop_size,
-        n_generations = req.n_gen,
-    )
+    if not _gp_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429,
+            detail="GP 任务正在运行，请稍后重试",
+        )
 
     try:
-        gp_result = evolver.run(n_optuna_trials=5)
-    except Exception as exc:
-        logger.exception("PopulationEvolver.run failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        from app.core.gp_engine.population_evolver import PopulationEvolver
+        from app.db.alpha_store import AlphaResult
+
+        _, is_data, oos_data = _resolve_dataset(
+            req.dataset_name, req.dataset_start, req.dataset_end,
+            req.n_tickers, req.n_days, req.seed, oos_ratio=0.30,
+        )
+
+        evolver = PopulationEvolver(
+            is_data       = is_data,
+            oos_data      = oos_data,
+            pop_size      = req.pop_size,
+            n_generations = req.n_gen,
+        )
+
+        result_holder: list = []
+        error_holder:  list = []
+
+        def _run() -> None:
+            try:
+                result_holder.append(evolver.run(n_optuna_trials=5))
+            except Exception as exc:
+                error_holder.append(exc)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=300)
+
+        if t.is_alive():
+            raise HTTPException(status_code=408, detail="GP 任务超时（300s），请缩小种群规模后重试")
+        if error_holder:
+            logger.exception("PopulationEvolver.run failed: %s", error_holder[0])
+            raise HTTPException(status_code=500, detail=str(error_holder[0]))
+
+        gp_result = result_holder[0]
+    finally:
+        _gp_lock.release()
 
     pool_top5 = gp_result.pool_top5   # list[dict]
 
