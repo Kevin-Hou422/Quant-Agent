@@ -35,6 +35,14 @@ router = APIRouter(prefix="/api")
 # One GP evolution at a time — prevents OOM from concurrent long-running jobs
 _gp_lock = Lock()
 
+# Shared field description — must be defined before any Pydantic model that references it
+_DATASET_FIELD_DESC = (
+    "Real dataset name — leave empty for synthetic data. "
+    "Options: us_tech_large, us_financials, us_healthcare, us_energy, "
+    "china_tech, china_consumer, china_state_owned, hk_china_tech, "
+    "crypto_major, crypto_alt"
+)
+
 
 # ---------------------------------------------------------------------------
 # 合成数据集（演示/测试用，与 CLI 保持一致）
@@ -124,14 +132,6 @@ class AgentRunResponse(BaseModel):
     final_metrics: Dict[str, Any]
     n_changes: int
     summary: str
-
-
-_DATASET_FIELD_DESC = (
-    "Real dataset name — leave empty for synthetic data. "
-    "Options: us_tech_large, us_financials, us_healthcare, us_energy, "
-    "china_tech, china_consumer, china_state_owned, hk_china_tech, "
-    "crypto_major, crypto_alt"
-)
 
 
 class GPEvolveRequest(BaseModel):
@@ -455,6 +455,92 @@ def backtest_run(req: BacktestRequest) -> BacktestResponse:
     report_dict = report.to_dict()
 
     return BacktestResponse(dsl=req.dsl, report=report_dict)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/backtest/walk_forward  — Walk-Forward 多折验证（Task 2.1）
+# ---------------------------------------------------------------------------
+
+class WalkForwardRequest(BaseModel):
+    dsl:           str = Field("rank(ts_delta(log(close),5))")
+    dataset_name:  str = Field("us_tech_large", description=_DATASET_FIELD_DESC)
+    dataset_start: str = Field("2020-01-01")
+    dataset_end:   str = Field("2024-01-01")
+    n_splits:      int   = Field(5, ge=2, le=10, description="Walk-Forward 折数")
+    embargo_days:  int   = Field(20, ge=0, le=60, description="IS/OOS 间隔天数")
+    portfolio_mode: str  = Field("long_short")
+    delay:         int   = Field(1, ge=0, le=10)
+
+
+class WalkForwardFoldReportSchema(BaseModel):
+    fold_idx:     int
+    is_start:     str
+    is_end:       str
+    oos_start:    str
+    oos_end:      str
+    is_days:      int
+    oos_days:     int
+    is_sharpe:    float
+    oos_sharpe:   float
+    oos_maxdd:    float
+    oos_turnover: float
+    oos_ic_ir:    float
+    overfitting:  float
+
+
+class WalkForwardResponse(BaseModel):
+    dsl:              str
+    n_folds:          int
+    mean_oos_sharpe:  float
+    std_oos_sharpe:   float
+    min_oos_sharpe:   float
+    pct_positive:     float
+    mean_overfitting: float
+    fold_reports:     List[WalkForwardFoldReportSchema]
+
+
+@router.post("/backtest/walk_forward", response_model=WalkForwardResponse, tags=["Backtest"])
+def walk_forward_backtest(req: WalkForwardRequest) -> WalkForwardResponse:
+    """
+    Walk-Forward 多折验证：对 DSL 在滚动扩展窗口上运行 n_splits 次 IS+OOS 回测，
+    返回各折汇总统计，量化 Alpha 的稳健性和过拟合程度。
+    """
+    from app.core.alpha_engine.signal_processor import SimulationConfig
+    from app.core.backtest_engine.realistic_backtester import WalkForwardBacktester
+
+    # Load full dataset — WalkForwardPartitioner handles splits internally
+    full_data, _, _ = _resolve_dataset(
+        req.dataset_name, req.dataset_start, req.dataset_end,
+        20, 120, 42, oos_ratio=0.0,
+    )
+
+    cfg = SimulationConfig(
+        delay          = req.delay,
+        portfolio_mode = req.portfolio_mode,
+    )
+
+    bt = WalkForwardBacktester(
+        config       = cfg,
+        n_splits     = req.n_splits,
+        embargo_days = req.embargo_days,
+    )
+
+    try:
+        result = bt.run(req.dsl, full_data)
+    except Exception as exc:
+        logger.exception("WalkForwardBacktester failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return WalkForwardResponse(
+        dsl              = result.dsl,
+        n_folds          = result.n_folds,
+        mean_oos_sharpe  = result.mean_oos_sharpe,
+        std_oos_sharpe   = result.std_oos_sharpe,
+        min_oos_sharpe   = result.min_oos_sharpe,
+        pct_positive     = result.pct_positive,
+        mean_overfitting = result.mean_overfitting,
+        fold_reports     = [WalkForwardFoldReportSchema(**r.to_dict()) for r in result.fold_reports],
+    )
 
 
 # ---------------------------------------------------------------------------

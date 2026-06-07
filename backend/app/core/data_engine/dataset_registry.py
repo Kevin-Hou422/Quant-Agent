@@ -13,6 +13,7 @@ contains a curated universe with more tickers than the minimum spec.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
@@ -277,6 +278,7 @@ def load_registry_dataset(
     end:          Optional[str] = None,
     use_cache:    bool = True,
     with_sector:  bool = True,
+    health_check: bool = True,
 ) -> Dataset:
     """
     Load a named dataset from the production registry.
@@ -343,6 +345,10 @@ def load_registry_dataset(
         data      = data,
     )
 
+    # Run data quality check (Task 2.4) — warn-only, never blocks loading
+    if health_check:
+        check_dataset_health(ds, min_score=0.7, warn_only=True)
+
     if use_cache:
         _CACHE[cache_key] = ds
 
@@ -400,3 +406,142 @@ def _fetch_akshare(symbols: List[str], start: str, end: str) -> Dict:
 def _fetch_ccxt(symbols: List[str], start: str, end: str) -> Dict:
     from .ccxt_provider import CcxtBinanceProvider
     return CcxtBinanceProvider().fetch(symbols, start=start, end=end)
+
+
+# ---------------------------------------------------------------------------
+# 并发批量加载（Task 2.3）
+# ---------------------------------------------------------------------------
+
+def load_multi_datasets(
+    names:       List[str],
+    start:       str = "2021-01-01",
+    end:         Optional[str] = None,
+    max_workers: int = 4,
+    use_cache:   bool = True,
+    with_sector: bool = True,
+) -> Dict[str, Dataset]:
+    """
+    并发加载多个注册数据集。
+
+    命中 Parquet 缓存的数据集跳过网络请求，整体耗时约等于最慢数据集。
+
+    Parameters
+    ----------
+    names       : 数据集名称列表，如 ["us_tech_large", "china_tech"]
+    start/end   : 日期范围（ISO "YYYY-MM-DD"）
+    max_workers : 最大并发线程数（默认 4，受 yfinance/akshare API 限流影响，不建议超过 6）
+    use_cache   : 是否启用内存缓存
+    with_sector : 是否附加行业分类字段
+
+    Returns
+    -------
+    dict[name → Dataset]
+
+    Raises
+    ------
+    KeyError  : 包含未知数据集名称时
+    Exception : 某数据集加载失败时，抛出并附带名称信息
+    """
+    # 快速校验所有名称，避免部分加载后才发现错误
+    unknown = [n for n in names if n not in _SPECS]
+    if unknown:
+        raise KeyError(
+            f"未知数据集: {unknown}。可用: {sorted(_SPECS.keys())}"
+        )
+
+    end_dt = end or _default_end()
+
+    def _load_one(name: str) -> tuple[str, Dataset]:
+        ds = load_registry_dataset(name, start=start, end=end_dt,
+                                   use_cache=use_cache, with_sector=with_sector)
+        return name, ds
+
+    results: Dict[str, Dataset] = {}
+    errors:  Dict[str, str]     = {}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(_load_one, n): n for n in names}
+        for future in concurrent.futures.as_completed(future_map):
+            name = future_map[future]
+            try:
+                _, ds = future.result()
+                results[name] = ds
+                logger.info("并发加载完成: '%s' (%d 资产, %d 天)", name, ds.n_assets, ds.n_dates)
+            except Exception as exc:
+                errors[name] = str(exc)
+                logger.error("并发加载失败: '%s' — %s", name, exc)
+
+    if errors:
+        raise RuntimeError(
+            f"以下数据集加载失败: {errors}。"
+            "请检查网络连接或数据提供者状态。"
+        )
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# 数据健康检查工具（Task 2.4）
+# ---------------------------------------------------------------------------
+
+def check_dataset_health(
+    ds:         Dataset,
+    min_score:  float = 0.7,
+    warn_only:  bool  = True,
+) -> Optional[object]:
+    """
+    对已加载的 Dataset 运行数据质量健康检查。
+
+    将 wide-format 的 close DataFrame 转为 long-format 传给 DataHealthChecker。
+
+    Parameters
+    ----------
+    ds         : 已加载的 Dataset
+    min_score  : 健康分阈值（默认 0.7）；低于此值时发出 WARNING
+    warn_only  : True = 仅记录日志；False = 低于阈值时抛出 ValueError
+
+    Returns
+    -------
+    HealthReport 或 None（检查器不可用时）
+    """
+    try:
+        from .health_report import DataHealthChecker
+
+        close = ds.data.get("close")
+        if close is None or close.empty:
+            logger.warning("Dataset '%s': 无 close 数据，跳过健康检查", ds.name)
+            return None
+
+        # 转为 long-format：timestamp | ticker | close
+        long_df = (
+            close.stack()
+                 .reset_index()
+                 .rename(columns={"level_0": "timestamp", "level_1": "ticker", 0: "close"})
+        )
+
+        checker = DataHealthChecker()
+        report  = checker.check(long_df, date_col="timestamp", ticker_col="ticker")
+
+        if report.overall_score < min_score:
+            msg = (
+                f"Dataset '{ds.name}' 健康得分 {report.overall_score:.3f} < {min_score}。"
+                f" gaps={len(report.gaps)}, spikes={len(report.spikes)}"
+            )
+            if warn_only:
+                logger.warning(msg)
+            else:
+                raise ValueError(msg)
+        else:
+            logger.info(
+                "Dataset '%s' 健康检查通过 (score=%.3f, tickers=%d, dates=%d)",
+                ds.name, report.overall_score, report.n_tickers, report.n_dates,
+            )
+
+        return report
+
+    except ImportError:
+        logger.debug("DataHealthChecker 不可用，跳过健康检查")
+        return None
+    except Exception as exc:
+        logger.warning("Dataset '%s' 健康检查异常: %s", ds.name, exc)
+        return None

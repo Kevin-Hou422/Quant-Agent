@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -432,3 +432,223 @@ class RealisticBacktester:
             weights = pd.DataFrame(clipped / l1, index=weights.index, columns=weights.columns)
 
         return weights
+
+
+# ---------------------------------------------------------------------------
+# WalkForwardResult — 多折汇总（Task 2.1）
+# ---------------------------------------------------------------------------
+
+@dataclass
+class WalkForwardFoldReport:
+    """单折 IS/OOS 回测结果摘要。"""
+    fold_idx:     int
+    is_start:     str
+    is_end:       str
+    oos_start:    str
+    oos_end:      str
+    is_days:      int
+    oos_days:     int
+    is_sharpe:    float
+    oos_sharpe:   float
+    oos_maxdd:    float
+    oos_turnover: float
+    oos_ic_ir:    float
+    overfitting:  float   # max(0, IS_sharpe - OOS_sharpe) / |IS_sharpe|
+
+    def to_dict(self) -> dict:
+        return {k: round(v, 4) if isinstance(v, float) else v
+                for k, v in self.__dict__.items()}
+
+
+@dataclass
+class WalkForwardResult:
+    """
+    Walk-Forward 多折汇总结果。
+
+    核心统计量：
+      mean_oos_sharpe  — 各折 OOS Sharpe 均值（核心质量指标）
+      std_oos_sharpe   — 各折 OOS Sharpe 标准差（稳健性指标）
+      min_oos_sharpe   — 最差折 OOS Sharpe
+      pct_positive     — OOS Sharpe > 0 的折数占比
+      mean_overfitting — 平均过拟合程度
+    """
+    n_folds:          int
+    fold_reports:     List[WalkForwardFoldReport]
+    dsl:              str
+    mean_oos_sharpe:  float
+    std_oos_sharpe:   float
+    min_oos_sharpe:   float
+    pct_positive:     float
+    mean_overfitting: float
+    config:           Optional[Dict] = field(default=None)
+
+    def summary(self) -> str:
+        lines = [
+            "=" * 60,
+            f"  Walk-Forward 回测汇总 ({self.n_folds} 折)",
+            "=" * 60,
+            f"  DSL: {self.dsl[:70]}",
+            "-" * 60,
+            f"  OOS Sharpe  均值: {self.mean_oos_sharpe:+.4f}",
+            f"  OOS Sharpe  标准差: {self.std_oos_sharpe:.4f}",
+            f"  OOS Sharpe  最差: {self.min_oos_sharpe:+.4f}",
+            f"  正收益折数比率: {self.pct_positive*100:.1f}%",
+            f"  平均过拟合分: {self.mean_overfitting:.4f}",
+            "-" * 60,
+            "  各折明细:",
+        ]
+        for r in self.fold_reports:
+            lines.append(
+                f"  Fold {r.fold_idx+1}  IS={r.is_start[:10]}→{r.is_end[:10]}"
+                f"({r.is_days}d)  OOS={r.oos_start[:10]}→{r.oos_end[:10]}"
+                f"({r.oos_days}d)  OOS_Sharpe={r.oos_sharpe:+.4f}"
+                f"  overfit={r.overfitting:.2f}"
+            )
+        lines.append("=" * 60)
+        return "\n".join(lines)
+
+    def to_dict(self) -> dict:
+        return {
+            "n_folds":          self.n_folds,
+            "dsl":              self.dsl,
+            "mean_oos_sharpe":  round(self.mean_oos_sharpe,  4),
+            "std_oos_sharpe":   round(self.std_oos_sharpe,   4),
+            "min_oos_sharpe":   round(self.min_oos_sharpe,   4),
+            "pct_positive":     round(self.pct_positive,     4),
+            "mean_overfitting": round(self.mean_overfitting, 4),
+            "fold_reports":     [r.to_dict() for r in self.fold_reports],
+            "config":           self.config,
+        }
+
+
+# ---------------------------------------------------------------------------
+# WalkForwardBacktester — 多折滚动验证（Task 2.1）
+# ---------------------------------------------------------------------------
+
+class WalkForwardBacktester:
+    """
+    在多个滚动 IS/OOS 折上运行 RealisticBacktester 并汇总结果。
+
+    用途：
+      - 验证 Alpha DSL 在不同市场环境下的稳健性
+      - 量化过拟合程度（IS vs OOS Sharpe 的系统性退化）
+      - 为 GP 进化提供更可信的 OOS 评估（而非单次固定切分）
+
+    Parameters
+    ----------
+    config      : SimulationConfig（信号管道参数）
+    n_splits    : Walk-Forward 折数（推荐 5）
+    embargo_days: IS/OOS 间隔天数（推荐 20）
+    min_train_days: IS 最少天数
+    cost_params : 交易成本参数
+    """
+
+    def __init__(
+        self,
+        config:         SimulationConfig,
+        n_splits:       int   = 5,
+        embargo_days:   int   = 20,
+        min_train_days: int   = 120,
+        cost_params:    Optional[CostParams] = None,
+    ) -> None:
+        self.config         = config
+        self.n_splits       = n_splits
+        self.embargo_days   = embargo_days
+        self.min_train_days = min_train_days
+        self.cost_params    = cost_params or CostParams()
+
+    def run(
+        self,
+        dsl:     str,
+        dataset: Dict[str, pd.DataFrame],
+    ) -> WalkForwardResult:
+        """
+        对 DSL 执行 n_splits 折 Walk-Forward 回测。
+
+        Parameters
+        ----------
+        dsl     : Alpha DSL 表达式字符串
+        dataset : 完整数据集（字段 → T×N DataFrame）
+
+        Returns
+        -------
+        WalkForwardResult（含折明细 + 汇总统计）
+        """
+        from app.core.data_engine.data_partitioner import WalkForwardPartitioner
+
+        wf = WalkForwardPartitioner(
+            n_splits       = self.n_splits,
+            min_train_days = self.min_train_days,
+            embargo_days   = self.embargo_days,
+        )
+
+        folds    = wf.get_folds(dataset)
+        splits   = wf.split(dataset)
+
+        if not splits:
+            raise ValueError(
+                f"数据集日期范围不足，无法生成 Walk-Forward 分折。"
+                f" 请提供至少 {self.min_train_days + self.n_splits * 30} 个交易日的数据。"
+            )
+
+        bt       = RealisticBacktester(config=self.config, cost_params=self.cost_params)
+        fold_rpts: List[WalkForwardFoldReport] = []
+
+        for fold_meta, (is_data, oos_data) in zip(folds, splits):
+            try:
+                result  = bt.run(dsl, is_data, oos_dataset=oos_data)
+                is_r    = result.is_report
+                oos_r   = result.oos_report
+
+                def _f(v) -> float:
+                    try:
+                        fv = float(v)
+                        return fv if not np.isnan(fv) else 0.0
+                    except Exception:
+                        return 0.0
+
+                is_s  = _f(is_r.sharpe_ratio)
+                oos_s = _f(oos_r.sharpe_ratio) if oos_r else 0.0
+                overfit = (
+                    float(np.clip((is_s - oos_s) / abs(is_s), 0.0, 1.0))
+                    if abs(is_s) > 1e-9 else 0.0
+                )
+
+                fold_rpts.append(WalkForwardFoldReport(
+                    fold_idx     = fold_meta.fold_idx,
+                    is_start     = str(fold_meta.is_start.date()),
+                    is_end       = str(fold_meta.is_end.date()),
+                    oos_start    = str(fold_meta.oos_start.date()),
+                    oos_end      = str(fold_meta.oos_end.date()),
+                    is_days      = fold_meta.is_days,
+                    oos_days     = fold_meta.oos_days,
+                    is_sharpe    = is_s,
+                    oos_sharpe   = oos_s,
+                    oos_maxdd    = _f(oos_r.max_drawdown if oos_r else 0.0),
+                    oos_turnover = _f(is_r.ann_turnover),
+                    oos_ic_ir    = _f(oos_r.ic_ir if oos_r else 0.0),
+                    overfitting  = overfit,
+                ))
+                logger.info(
+                    "WF Fold %d/%d | IS Sharpe=%.3f | OOS Sharpe=%.3f | overfit=%.2f",
+                    fold_meta.fold_idx + 1, len(folds), is_s, oos_s, overfit,
+                )
+            except Exception as exc:
+                logger.warning("WF Fold %d 失败: %s", fold_meta.fold_idx + 1, exc)
+
+        if not fold_rpts:
+            raise RuntimeError(f"所有 Walk-Forward 折均失败，DSL='{dsl}'")
+
+        oos_sharpes = [r.oos_sharpe   for r in fold_rpts]
+        overfits    = [r.overfitting  for r in fold_rpts]
+
+        return WalkForwardResult(
+            n_folds          = len(fold_rpts),
+            fold_reports     = fold_rpts,
+            dsl              = dsl,
+            mean_oos_sharpe  = float(np.mean(oos_sharpes)),
+            std_oos_sharpe   = float(np.std(oos_sharpes)),
+            min_oos_sharpe   = float(np.min(oos_sharpes)),
+            pct_positive     = float(np.mean([s > 0 for s in oos_sharpes])),
+            mean_overfitting = float(np.mean(overfits)),
+        )

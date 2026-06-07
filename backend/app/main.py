@@ -214,13 +214,15 @@ def run_gp(args: argparse.Namespace) -> None:
     dataset = _load_dataset(args)
     store   = AlphaStore()
 
-    # IS / OOS 物理分区
-    dates = next(iter(dataset.values())).index
-    oos_ratio = getattr(args, "oos_ratio", 0.30)
+    # IS / OOS 物理分区（含 Embargo，Task 2.2）
+    dates        = next(iter(dataset.values())).index
+    oos_ratio    = getattr(args, "oos_ratio",   0.30)
+    embargo_days = getattr(args, "embargo_days", 20)
     partitioner = DataPartitioner(
-        start     = str(dates[0].date()),
-        end       = str(dates[-1].date()),
-        oos_ratio = oos_ratio,
+        start        = str(dates[0].date()),
+        end          = str(dates[-1].date()),
+        oos_ratio    = oos_ratio,
+        embargo_days = embargo_days,
     )
     partitioned = partitioner.partition(dataset)
     is_data     = partitioned.train()
@@ -352,9 +354,15 @@ def run_report(args: argparse.Namespace) -> None:
 
 
 def run_realistic(args: argparse.Namespace) -> None:
-    """realistic 模式：带信号处理管道的 IS+OOS 双段回测。"""
+    """
+    realistic 模式：带信号处理管道的 IS+OOS 双段回测。
+
+    --walk-forward 时改为 Walk-Forward 多折验证。
+    """
     from app.core.alpha_engine.signal_processor import SimulationConfig
-    from app.core.backtest_engine.realistic_backtester import RealisticBacktester
+    from app.core.backtest_engine.realistic_backtester import (
+        RealisticBacktester, WalkForwardBacktester,
+    )
     from app.core.data_engine.data_partitioner import DataPartitioner
 
     dataset = _load_dataset(args)
@@ -368,24 +376,41 @@ def run_realistic(args: argparse.Namespace) -> None:
         top_pct          = args.top_pct,
     )
 
-    oos_dataset = None
-    if args.oos_ratio > 0:
-        dates = next(iter(dataset.values())).index
-        partitioner = DataPartitioner(
-            start     = str(dates[0].date()),
-            end       = str(dates[-1].date()),
-            oos_ratio = args.oos_ratio,
-        )
-        partitioned = partitioner.partition(dataset)
-        is_data     = partitioned.train()
-        oos_dataset = partitioned.test()
-        print(partitioner.summary())
-    else:
-        is_data = dataset
+    walk_forward  = getattr(args, "walk_forward",  False)
+    wf_splits     = getattr(args, "wf_splits",     5)
+    embargo_days  = getattr(args, "embargo_days",  20)
 
-    backtester = RealisticBacktester(config=cfg)
-    result = backtester.run(args.dsl, is_data, oos_dataset=oos_dataset)
-    print(result.summary())
+    if walk_forward:
+        # ── Walk-Forward 多折验证（Task 2.1）──────────────────────────────
+        bt = WalkForwardBacktester(
+            config         = cfg,
+            n_splits       = wf_splits,
+            embargo_days   = embargo_days,
+            min_train_days = 120,
+        )
+        result = bt.run(args.dsl, dataset)
+        print(result.summary())
+    else:
+        # ── 单次 IS+OOS 回测（加 Embargo，Task 2.2）───────────────────────
+        oos_dataset = None
+        if args.oos_ratio > 0:
+            dates = next(iter(dataset.values())).index
+            partitioner = DataPartitioner(
+                start        = str(dates[0].date()),
+                end          = str(dates[-1].date()),
+                oos_ratio    = args.oos_ratio,
+                embargo_days = embargo_days,
+            )
+            partitioned = partitioner.partition(dataset)
+            is_data     = partitioned.train()
+            oos_dataset = partitioned.test()
+            print(partitioner.summary())
+        else:
+            is_data = dataset
+
+        backtester = RealisticBacktester(config=cfg)
+        result = backtester.run(args.dsl, is_data, oos_dataset=oos_dataset)
+        print(result.summary())
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +493,23 @@ def _cli_main() -> None:
         default=None,
         dest="alpha_id",
         help="查询指定 id 的 Alpha（report 模式）",
+    )
+
+    # ── Walk-Forward / Embargo 参数（Phase 2，所有模式共用）─────────────────
+    parser.add_argument(
+        "--embargo-days",
+        type=int, default=20, dest="embargo_days",
+        help="IS/OOS 切分点间的 embargo 天数（防标签泄漏，默认 20 个交易日）",
+    )
+    parser.add_argument(
+        "--walk-forward",
+        action="store_true", default=False, dest="walk_forward",
+        help="realistic 模式：启用滚动 Walk-Forward 多折验证",
+    )
+    parser.add_argument(
+        "--wf-splits",
+        type=int, default=5, dest="wf_splits",
+        help="Walk-Forward 折数（--walk-forward 时生效，默认 5）",
     )
 
     # ── Realistic 模式专属参数 ─────────────────────────────────────────────

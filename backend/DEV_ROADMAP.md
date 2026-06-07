@@ -2,7 +2,7 @@
 
 **基于：** `AUDIT_REPORT.md`（2026-06-01 审计）  
 **制定日期：** 2026-06-01  
-**最后更新：** 2026-06-07 v3（Phase 1 全部任务完成）  
+**最后更新：** 2026-06-07 v4（Phase 2 全部任务完成）  
 **目标：** 从当前综合评分，分阶段提升至可交易水平（≥ 66%）
 
 ---
@@ -13,7 +13,7 @@
 |-------|---------|---------|------|
 | Phase 0 | 38% | ✅ **已完成** | 三个 P0 任务全部实现 |
 | Phase 1 | 44% | ✅ **已完成** | 全部 5 个任务完成（含 AlphaEvolver 删除 + API 并发保护）|
-| Phase 2 | 54% | ❌ 未开始 | |
+| Phase 2 | 54% | ✅ **已完成** | 全部 4 个任务完成（WF框架 + Embargo + 并发加载 + 健康检查）|
 | Phase 3 | 64% | ❌ 未开始 | |
 | Phase 4 | 74% | ❌ 未开始 | |
 | Phase 5 | 82% | ❌ 未开始 | |
@@ -25,7 +25,7 @@
 ```
 Phase 0 ── 接线与激活          ✅ 已完成
 Phase 1 ── 清理与一致性         ✅ 已完成
-Phase 2 ── 数据与验证升级        ❌ 待开始
+Phase 2 ── 数据与验证升级        ✅ 已完成
 Phase 3 ── 金融核心修复          ❌ 待开始
 Phase 4 ── 风控与组合深化        ❌ 待开始
 Phase 5 ── 在线化与生命周期       ❌ 待开始
@@ -143,101 +143,59 @@ Phase 5 ── 在线化与生命周期       ❌ 待开始
 
 ---
 
-## Phase 2：数据与验证升级（3-4 周）
-
-> 将验证体系从"单次固定切分"升级为"多轮滚动验证"，解决选择性偏差和标签泄漏问题。
+## Phase 2：数据与验证升级 ✅ 已完成（2026-06-07）
 
 ---
 
-### Task 2.1 🔴 实现 Walk-Forward 多轮验证框架
+### Task 2.1 ✅ Walk-Forward 多轮验证框架
 
-**问题：** 当前 IS/OOS 是单次固定切分（70/30），结论严重依赖切点位置。
+**完成状态：已完成**
 
-**涉及文件：**
-- `app/core/data_engine/data_partitioner.py` — 新增 `WalkForwardPartitioner` 类
-- `app/core/backtest_engine/realistic_backtester.py` — 支持多轮回测并聚合
-
-**新增类设计：**
-```python
-class WalkForwardPartitioner:
-    """
-    滚动 Walk-Forward 分区器。
-    
-    参数
-    ----
-    n_splits    : 轮次数（推荐 5-10）
-    train_ratio : 每轮 IS 占比（如 0.7）
-    embargo_days: IS/OOS 切点间隔天数（推荐 20，防标签泄漏）
-    
-    示例（5轮，2年历史）
-    --------------------
-    轮1: IS=[2020-01, 2021-06]  embargo  OOS=[2021-08, 2021-12]
-    轮2: IS=[2020-01, 2021-12]  embargo  OOS=[2022-02, 2022-06]
-    轮3: IS=[2020-01, 2022-06]  embargo  OOS=[2022-08, 2022-12]
-    轮4: IS=[2020-01, 2022-12]  embargo  OOS=[2023-02, 2023-06]
-    轮5: IS=[2020-01, 2023-06]  embargo  OOS=[2023-08, 2023-12]
-    """
-    def __init__(self, n_splits=5, train_ratio=0.7, embargo_days=20): ...
-    
-    def split(self, dataset: dict) -> list[tuple[dict, dict]]:
-        """返回 [(is_data, oos_data), ...] 共 n_splits 轮"""
-        ...
-```
-
-**估时：** 4 天
+**已实现内容：**
+- `data_partitioner.py` 新增 `WalkForwardPartitioner`：扩展窗口策略，`n_splits`/`embargo_days`/`min_train_days` 可配
+- `WalkForwardFold` dataclass 描述单折元信息（is_start/end、oos_start/end、embargo_days）
+- `realistic_backtester.py` 新增 `WalkForwardBacktester`：在所有折上运行 `RealisticBacktester` 并聚合
+- `WalkForwardResult` dataclass：含各折明细 + `mean/std/min_oos_sharpe`、`pct_positive`、`mean_overfitting`
+- `router.py` 新增 `POST /api/backtest/walk_forward` 端点（`WalkForwardRequest`/`WalkForwardResponse`）
+- CLI `--walk-forward` / `--wf-splits` 参数，`run_realistic()` 分支执行 `WalkForwardBacktester`
 
 ---
 
-### Task 2.2 🔴 加入 Embargo Period
+### Task 2.2 ✅ Embargo Period
 
-**问题：** IS/OOS 切割点无间隔窗口，存在标签泄漏风险。
+**完成状态：已完成**
 
-**涉及文件：**
-- `app/core/data_engine/data_partitioner.py` — `DataPartitioner` 新增 `embargo_days` 参数
-
-```python
-class DataPartitioner:
-    def __init__(self, start, end, oos_ratio=0.3, embargo_days=20): ...
-    
-    def partition(self, dataset):
-        split_idx = int(len(dates) * (1 - self.oos_ratio))
-        oos_start_idx = split_idx + self.embargo_days
-        # IS 末和 OOS 初之间的 embargo_days 数据不参与训练也不参与验证
-```
-
-**估时：** 1 天
+**已实现内容：**
+- `DataPartitioner.__init__()` 新增 `embargo_days: int = 20` 参数
+- `partition()` 中 IS 末日到 OOS 首日之间跳过 `embargo_days` 个工作日（不参与训练也不参与验证）
+- `PartitionedDataset.__slots__` 新增 `embargo_days` 只读字段
+- `summary()` 输出中显示 Embargo 天数
+- `main.py run_gp()` 和 `run_realistic()` 均传入 `embargo_days`（默认 20）
+- CLI `--embargo-days` 参数新增（默认 20）
 
 ---
 
-### Task 2.3 🟡 多市场并发加载与缓存优化
+### Task 2.3 ✅ 多市场并发加载
 
-**问题：** `load_registry_dataset()` 单线程串行，加载 10 个数据集耗时数分钟。
+**完成状态：已完成**
 
-**涉及文件：**
-- `app/core/data_engine/dataset_registry.py` — 新增 `load_multi_datasets()` 并发函数
-
-```python
-import concurrent.futures
-
-def load_multi_datasets(names: list[str], start: str, end: str, max_workers=4) -> dict[str, Dataset]:
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futures = {name: ex.submit(load_registry_dataset, name, start, end) for name in names}
-    return {name: fut.result() for name, fut in futures.items()}
-```
-
-**估时：** 2 天
+**已实现内容：**
+- `dataset_registry.py` 新增 `load_multi_datasets(names, start, end, max_workers=4)`
+- 使用 `concurrent.futures.ThreadPoolExecutor` 并发请求
+- 加载前校验所有名称合法，失败时抛出 `RuntimeError` 携带详情
+- 命中缓存的数据集跳过网络请求，整体耗时约等于最慢那个数据集
 
 ---
 
-### Task 2.4 🟢 数据健康检查集成到主工作流
+### Task 2.4 ✅ 数据健康检查集成
 
-**问题：** `DataHealthChecker` 已实现但未集成到 GP 主流程。
+**完成状态：已完成**
 
-**涉及文件：**
-- `app/core/data_engine/dataset_registry.py` — `load_registry_dataset()` 后运行健康检查
-- `app/core/gp_engine/population_evolver.py` — `__init__` 中验证输入数据集健康
-
-**估时：** 1 天
+**已实现内容：**
+- `dataset_registry.py` 新增 `check_dataset_health(ds, min_score, warn_only)` 独立函数
+- wide-format → long-format 转换后传给 `DataHealthChecker`
+- `load_registry_dataset()` 新增 `health_check: bool = True` 参数；加载后自动调用，warn_only 模式不阻断加载
+- 健康得分 < 0.7 时 WARNING 日志，包含 gaps/spikes 数量
 
 ---
 
