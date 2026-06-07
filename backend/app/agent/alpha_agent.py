@@ -11,11 +11,11 @@ import os
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
 import pandas as pd
 
 from app.core.alpha_engine.parser import Parser, ParseError
 from app.core.alpha_engine.validator import AlphaValidator, ValidationError
+from app.core.gp_engine.evaluation_utils import quick_ic_eval
 from app.db.alpha_store import AlphaResult, AlphaStore
 from app.core.ml_engine.proxy_model import ProxyModel
 from app.tasks.reasoning_log import ReasoningLog
@@ -85,44 +85,8 @@ def _quick_eval(
     dsl: str,
     dataset: Dict[str, pd.DataFrame],
 ) -> Dict[str, float]:
-    from app.core.alpha_engine.dsl_executor import Executor as DSLExecutor
-    executor = DSLExecutor()
-    try:
-        signal_df = executor.run_expr(dsl, dataset)
-    except Exception:
-        return {"ic_ir": 0.0, "ann_turnover": 99.0, "sharpe": -1.0}
-
-    close = dataset.get("close")
-    if close is None:
-        return {"ic_ir": 0.0, "ann_turnover": 99.0, "sharpe": -1.0}
-
-    sig = signal_df.to_numpy(dtype=float)
-    cls = close.to_numpy(dtype=float)
-    fwd = np.full_like(cls, np.nan)
-    fwd[:-1] = (cls[1:] - cls[:-1]) / np.where(cls[:-1] == 0, np.nan, cls[:-1])
-
-    T = min(sig.shape[0], fwd.shape[0])
-    ics = []
-    for t in range(T - 1):
-        s, r = sig[t], fwd[t]
-        mask = ~(np.isnan(s) | np.isnan(r))
-        if mask.sum() < 5:
-            continue
-        from scipy.stats import spearmanr
-        rho, _ = spearmanr(s[mask], r[mask])
-        if not np.isnan(rho):
-            ics.append(rho)
-
-    if not ics:
-        return {"ic_ir": 0.0, "ann_turnover": 99.0, "sharpe": -1.0}
-
-    ic_arr = np.array(ics)
-    ic_ir  = float(np.mean(ic_arr) / (np.std(ic_arr) + 1e-9))
-
-    ranks = pd.DataFrame(sig).rank(axis=1, pct=True).to_numpy()
-    turn  = float(np.nanmean(np.abs(np.diff(ranks, axis=0)))) * 252
-
-    return {"ic_ir": ic_ir, "ann_turnover": turn, "sharpe": ic_ir}
+    """Thin wrapper — delegates to the shared evaluation_utils.quick_ic_eval()."""
+    return quick_ic_eval(dsl, dataset)
 
 
 class AlphaAgent:

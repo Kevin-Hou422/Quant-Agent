@@ -161,7 +161,7 @@ class SignalProcessor:
         应用线性加权移动平均平滑信号。
         直接复用 fast_ops.ts_decay_linear（einsum + stride_tricks，全向量化）。
         """
-        from app.core.alpha_engine.fast_ops import ts_decay_linear
+        from .fast_ops import ts_decay_linear
 
         arr = df.to_numpy(dtype=float)          # (T, N)
         smoothed = ts_decay_linear(arr, self.cfg.decay_window)
@@ -176,7 +176,7 @@ class SignalProcessor:
         按行业分组去均值（每组减去组内截面均值）。
         复用 fast_ops.ind_neutralize（G 外循环，T 内 NumPy，无 T 轴 Python 循环）。
         """
-        from app.core.alpha_engine.fast_ops import ind_neutralize
+        from .fast_ops import ind_neutralize
 
         arr     = df.to_numpy(dtype=float)      # (T, N)
         groups  = np.asarray(self.cfg.neutralize_groups, dtype=int)

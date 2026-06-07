@@ -127,7 +127,7 @@ class FinancialInterpreter:
         -------
         InterpretResult
         """
-        from app.core.alpha_engine.parser import Parser
+        from .parser import Parser
         node = Parser().parse(dsl)
         return self.interpret_node(node, dsl)
 
@@ -179,7 +179,7 @@ class FinancialInterpreter:
 
 def _describe(node) -> str:
     """Recursively generate a human-readable description of the AST."""
-    from app.core.alpha_engine.typed_nodes import (
+    from .typed_nodes import (
         DataNode, ScalarNode, StringLiteralNode,
         TimeSeriesNode, CrossSectionalNode, GroupNode, ArithmeticNode,
     )
@@ -219,7 +219,7 @@ def _describe(node) -> str:
 
 
 def _describe_ts(node) -> str:
-    from app.core.alpha_engine.typed_nodes import TimeSeriesNode
+    from .typed_nodes import TimeSeriesNode
     child = _describe(node.child)
     w     = node.window
     op    = node.op
@@ -312,7 +312,7 @@ def _describe_cs(node) -> str:
 
 
 def _describe_arith(node) -> str:
-    from app.core.alpha_engine.typed_nodes import ArithmeticNode
+    from .typed_nodes import ArithmeticNode
     ch = node.children()
     op = node.op
 
@@ -377,7 +377,7 @@ def _describe_arith(node) -> str:
 # ---------------------------------------------------------------------------
 
 def _collect_fields(node) -> Set[str]:
-    from app.core.alpha_engine.typed_nodes import DataNode
+    from .typed_nodes import DataNode
     fields = set()
     if isinstance(node, DataNode):
         fields.add(node.field)
@@ -387,7 +387,7 @@ def _collect_fields(node) -> Set[str]:
 
 
 def _collect_ts_ops(node) -> List[str]:
-    from app.core.alpha_engine.typed_nodes import TimeSeriesNode
+    from .typed_nodes import TimeSeriesNode
     ops = []
     if isinstance(node, TimeSeriesNode):
         ops.append(node.op)
@@ -397,7 +397,7 @@ def _collect_ts_ops(node) -> List[str]:
 
 
 def _collect_cs_ops(node) -> List[str]:
-    from app.core.alpha_engine.typed_nodes import CrossSectionalNode, GroupNode
+    from .typed_nodes import CrossSectionalNode, GroupNode
     ops = []
     if isinstance(node, (CrossSectionalNode, GroupNode)):
         ops.append(node.op)
@@ -416,7 +416,7 @@ def _collect_all_ops(node) -> List[str]:
 
 
 def _collect_windows(node) -> List[int]:
-    from app.core.alpha_engine.typed_nodes import TimeSeriesNode
+    from .typed_nodes import TimeSeriesNode
     windows = []
     if isinstance(node, TimeSeriesNode):
         windows.append(node.window)
@@ -426,11 +426,11 @@ def _collect_windows(node) -> List[int]:
 
 
 def _has_cs_at_root(node) -> bool:
-    from app.core.alpha_engine.typed_nodes import CrossSectionalNode
+    from .typed_nodes import CrossSectionalNode
     if isinstance(node, CrossSectionalNode) and node.op in ("rank", "zscore", "scale", "normalize"):
         return True
     # Check if root is arithmetic and direct child is CS
-    from app.core.alpha_engine.typed_nodes import ArithmeticNode
+    from .typed_nodes import ArithmeticNode
     if isinstance(node, ArithmeticNode):
         return any(
             isinstance(c, CrossSectionalNode) and c.op in ("rank", "zscore")
@@ -534,7 +534,7 @@ def _classify_family(node, fields: Set[str], all_ops: List[str]) -> str:
 
 def _is_inverted_momentum(node) -> bool:
     """Return True if the dominant momentum signal is negated."""
-    from app.core.alpha_engine.typed_nodes import ArithmeticNode, TimeSeriesNode
+    from .typed_nodes import ArithmeticNode, TimeSeriesNode
     if isinstance(node, ArithmeticNode) and node.op == "neg":
         ch = node.children()
         return len(ch) > 0 and _has_op(ch[0], {"ts_delta", "ts_rank"})

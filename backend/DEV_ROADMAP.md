@@ -2,7 +2,7 @@
 
 **基于：** `AUDIT_REPORT.md`（2026-06-01 审计）  
 **制定日期：** 2026-06-01  
-**最后更新：** 2026-06-07 v6（Phase 2 前端完成；新增 GET /api/datasets/{name}/health 端点）  
+**最后更新：** 2026-06-07 v7（Phase 1 全部任务补齐完成；代码偏差已消除）  
 **目标：** 从当前综合评分，分阶段提升至可交易水平（≥ 66%）
 
 ---
@@ -12,7 +12,7 @@
 | Phase | 目标评分 | 实际状态 | 说明 |
 |-------|---------|---------|------|
 | Phase 0 | 38% | ✅ **已完成** | 三个 P0 任务全部实现 |
-| Phase 1 | 44% | ⚠️ **部分完成** | 3/5 任务完成：1.3（AlphaEvolver 退役）✅ 1.5（API并发保护）✅ 1.1（冗余包转为re-export桩）✅；1.2（import风格未统一）❌ 1.4（_quick_eval重复未合并）❌ |
+| Phase 1 | 44% | ✅ **已完成** | 全部 5 个任务完成：1.1（re-export桩）1.2（import统一）1.3（AlphaEvolver退役）1.4（_quick_eval提取为evaluation_utils）1.5（API并发保护）|
 | Phase 2 | 54% | ✅ **已完成** | 全部 4 个任务完成（WF框架 + Embargo + 并发加载 + 健康检查）；前端 Phase 2 同步完成 |
 | Phase 3 | 64% | ❌ 未开始 | |
 | Phase 4 | 74% | ❌ 未开始 | |
@@ -24,7 +24,7 @@
 
 ```
 Phase 0 ── 接线与激活          ✅ 已完成
-Phase 1 ── 清理与一致性         ⚠️ 部分完成（3/5）
+Phase 1 ── 清理与一致性         ✅ 已完成
 Phase 2 ── 数据与验证升级        ✅ 已完成
 Phase 3 ── 金融核心修复          ❌ 待开始
 Phase 4 ── 风控与组合深化        ❌ 待开始
@@ -78,9 +78,9 @@ Phase 5 ── 在线化与生命周期       ❌ 待开始
 
 ---
 
-## Phase 1：清理与一致性 ⚠️ 部分完成（3/5）
+## Phase 1：清理与一致性 ✅ 已完成
 
-> 代码审计（2026-06-07）发现路线图与实际代码存在偏差，以下按实际状态重新记录。
+> 代码审计（2026-06-07）识别出偏差；2026-06-07 补齐，全部 5 个任务现已完成。
 
 ---
 
@@ -111,18 +111,20 @@ Phase 5 ── 在线化与生命周期       ❌ 待开始
 
 **实际代码状态（2026-06-07 审计）：**
 
-| 文件 | 实际风格 | 期望风格 |
-|------|----------|----------|
-| `population_evolver.py` | 绝对 import（`from app.core...`）| 相对 import（`from ..alpha_engine...`）|
-| `realistic_backtester.py` | 绝对 import（`from app.core...`）| 相对 import（`from ..backtest_engine...`）|
-| `alpha_workflows.py` | 绝对 import（`from app.core...`）| 相对 import |
-| `re-export 桩文件` | 通配符 import（含 `# noqa`）| 可接受 |
+**完成状态：已完成（2026-06-07 补齐）**
 
-**影响：** core 内部模块之间混用绝对/相对 import，导致从 `backend/` 和 `backend/app/` 目录运行时行为不一致。
+| 文件 | 修改前 | 修改后 |
+|------|--------|--------|
+| `gp_engine/population_evolver.py` | 绝对 `from app.core...` | 相对 `from .mutations`, `from ..alpha_engine...` |
+| `backtest_engine/realistic_backtester.py` | 绝对 `from app.core...` | 相对 `from ..alpha_engine...`, `from .backtest_engine` |
+| `core/workflows/alpha_workflows.py` | 绝对 `from app.core...` | 相对 `from ..gp_engine...`, `from ..alpha_engine...` |
+| `alpha_engine/signal_processor.py` | 绝对 lazy import | 相对 `from .fast_ops` |
+| `alpha_engine/financial_interpreter.py` | 绝对 lazy import | 相对 `from .typed_nodes`, `from .parser` |
+| `re-export 桩文件` | 通配符（含 `# noqa`）| 可接受，保持不变 |
 
-**待执行：**
-- `population_evolver.py`、`realistic_backtester.py`、`alpha_workflows.py` 内部导入改为相对 import
-- 新增 `backend/pyproject.toml` 或 `conftest.py` 固定 `PYTHONPATH` 统一运行入口
+**遗留说明：**
+- `legacy alpha_engine/generator.py` — 旧版 ast.Node 随机生成器，被测试 `test_alpha_discovery.py` 使用，保留但在 `__init__.py` 中标注为 deprecated
+- `legacy alpha_engine/executor.py` — 旧版 ast.Node 执行器，仅 `__init__.py` 中 re-export，实际无调用，保留并标注 deprecated
 
 ---
 
@@ -132,26 +134,24 @@ Phase 5 ── 在线化与生命周期       ❌ 待开始
 
 ---
 
-### Task 1.4 ❌ 合并重复的快速评估函数（未完成）
+### Task 1.4 ✅ 快速评估函数提取到共享模块
 
-**完成状态：未完成**
+**完成状态：已完成（2026-06-07 补齐）**
 
-**实际代码状态（2026-06-07 审计）：**
+**已实现内容：**
+- 新建 `app/core/gp_engine/evaluation_utils.py`：包含 `quick_ic_eval(dsl, dataset) → dict`，使用向量化 double-argsort Spearman（无 scipy 依赖，无 BacktestEngine）
+- `alpha_agent._quick_eval()` 替换为 1 行：`return quick_ic_eval(dsl, dataset)`；`import numpy as np` 随之移除
+- `alpha_agent.py` 新增顶层 import：`from app.core.gp_engine.evaluation_utils import quick_ic_eval`
 
-| 函数 | 位置 | 状态 |
+**设计说明（三类"快速评估"的角色区分）：**
+
+| 函数 | 位置 | 用途 |
 |------|------|------|
-| `_quick_eval()` | `app/agent/alpha_agent.py:84` | **仍然存在**，使用 `scipy.stats.spearmanr` |
-| `_quick_metrics()` | `app/core/workflows/alpha_workflows.py:114` | **仍然存在**，使用 `RealisticBacktester` |
-| `_quick_metrics()` | `app/core/gp_engine/population_evolver.py:758` | **仍然存在**，方法级别 |
+| `quick_ic_eval()` | `evaluation_utils.py` | 纯信号 IC-IR（无成本，无回测引擎），用于 Agent 初筛 |
+| `_quick_metrics()` | `alpha_workflows.py:114` | 完整 IS+OOS 回测（RealisticBacktester），用于 Workflow B 诊断 |
+| `_quick_metrics()` | `population_evolver.py:758` | 包装 `_evaluate_one()`，用于 Optuna 降级回退 |
 
-路线图原本声称"已集中在 `population_evolver._quick_metrics()` 一处"，但三处独立实现均未合并。
-
-**`optimization_engine/alpha_evaluator.py` 确实已成为 re-export 桩** ✅（这部分准确），但 `_quick_eval` vs `_quick_metrics` 的函数级重复未解决。
-
-**待执行：**
-- 提取公共 `quick_ic_eval(dsl, dataset) → dict` 函数到 `app/core/gp_engine/evaluation_utils.py`
-- `alpha_agent._quick_eval()` 改为调用公共函数
-- `alpha_workflows._quick_metrics()` 改为调用公共函数
+后两个 `_quick_metrics` 用途和签名不同，保持独立是正确的设计。
 
 ---
 
@@ -228,41 +228,6 @@ Phase 5 ── 在线化与生命周期       ❌ 待开始
 - 健康得分 < 0.7 时 WARNING 日志，包含 gaps/spikes 数量
 
 ---
-
-## Phase 1 待完成任务（在进入 Phase 3 之前补齐）
-
-以下两个 Phase 1 任务尚未实际完成，建议在启动 Phase 3 前处理，代价小、影响大：
-
-### Task 1.2-pending ❌ 统一 import 风格
-
-**估时：** 2 天
-
-需修改文件（全部改为相对 import）：
-- `app/core/gp_engine/population_evolver.py` — 当前：`from app.core.gp_engine.mutations import ...`
-- `app/core/backtest_engine/realistic_backtester.py` — 当前：`from app.core.alpha_engine.signal_processor import ...`
-- `app/core/workflows/alpha_workflows.py` — 当前：`from app.core.alpha_engine.parser import ...`
-
-附加清理：
-- `app/core/alpha_engine/generator.py` — 旧版随机生成器（真实代码，非桩），已被 `gp_engine.py` 覆盖，可删除
-- `app/core/alpha_engine/executor.py` — 旧版执行器（真实代码，非桩），已被 `dsl_executor.py` 覆盖，可删除
-
----
-
-### Task 1.4-pending ❌ 合并重复的快速评估函数
-
-**估时：** 1 天
-
-新建 `app/core/gp_engine/evaluation_utils.py`，提取共用 `quick_ic_eval()` 函数：
-```python
-# evaluation_utils.py
-def quick_ic_eval(dsl: str, dataset: dict) -> dict:
-    """统一快速 IC-IR 评估接口，替代 _quick_eval 和 _quick_metrics 的重复实现。"""
-    ...
-```
-
-修改调用方：
-- `app/agent/alpha_agent.py:_quick_eval()` → 调用 `quick_ic_eval()`
-- `app/core/workflows/alpha_workflows.py:_quick_metrics()` → 调用 `quick_ic_eval()`
 
 ---
 

@@ -32,13 +32,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from app.core.alpha_engine.parser import Parser, ParseError
-from app.core.alpha_engine.validator import AlphaValidator, ValidationError
-from app.core.gp_engine.population_evolver import PopulationEvolver, GPEvolutionResult
-from app.core.gp_engine.mutations import (
+from ..alpha_engine.parser import Parser, ParseError
+from ..alpha_engine.validator import AlphaValidator, ValidationError
+from ..gp_engine.population_evolver import PopulationEvolver, GPEvolutionResult
+from ..gp_engine.mutations import (
     hoist_mutation, param_mutation, point_mutation,
 )
-from app.core.gp_engine.gp_engine import _SEED_DSLS, generate_random_alpha
+from ..gp_engine.gp_engine import _SEED_DSLS, generate_random_alpha
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ def _partition(
     oos_ratio: float,
 ) -> Tuple[Dict, Dict]:
     """Split dataset into IS / OOS using DataPartitioner.  Returns (is_data, oos_data)."""
-    from app.core.data_engine.data_partitioner import DataPartitioner
+    from ..data_engine.data_partitioner import DataPartitioner
 
     if oos_ratio <= 0:
         return dataset, {}
@@ -120,9 +120,9 @@ def _quick_metrics(
     Fast IS+OOS backtest with default config.
     Used to diagnose initial alpha quality for targeted mutation decisions.
     """
-    from app.core.backtest_engine.realistic_backtester import RealisticBacktester
-    from app.core.alpha_engine.signal_processor import SimulationConfig
-    from app.core.gp_engine.fitness import compute_fitness
+    from ..backtest_engine.realistic_backtester import RealisticBacktester
+    from ..alpha_engine.signal_processor import SimulationConfig
+    from ..gp_engine.fitness import compute_fitness
 
     default_cfg = SimulationConfig(
         delay            = 1,

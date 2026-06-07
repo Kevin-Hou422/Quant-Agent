@@ -23,18 +23,18 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from app.core.alpha_engine.signal_processor import SimulationConfig, SignalProcessor
-from app.core.alpha_engine.dsl_executor import Executor
-from app.core.alpha_engine.parser import Parser
-from app.core.alpha_engine.validator import AlphaValidator
-from app.core.backtest_engine.backtest_engine import BacktestEngine, BacktestResult
-from app.core.backtest_engine.portfolio_constructor import (
+from ..alpha_engine.signal_processor import SimulationConfig, SignalProcessor
+from ..alpha_engine.dsl_executor import Executor
+from ..alpha_engine.parser import Parser
+from ..alpha_engine.validator import AlphaValidator
+from .backtest_engine import BacktestEngine, BacktestResult
+from .portfolio_constructor import (
     DecilePortfolio,
     SignalWeightedPortfolio,
     NeutralizationLayer,
 )
-from app.core.backtest_engine.risk_report import RiskReport
-from app.core.backtest_engine.transaction_cost import CostParams
+from .risk_report import RiskReport
+from .transaction_cost import CostParams
 
 logger = logging.getLogger(__name__)
 
@@ -574,7 +574,7 @@ class WalkForwardBacktester:
         -------
         WalkForwardResult（含折明细 + 汇总统计）
         """
-        from app.core.data_engine.data_partitioner import WalkForwardPartitioner
+        from ..data_engine.data_partitioner import WalkForwardPartitioner
 
         wf = WalkForwardPartitioner(
             n_splits       = self.n_splits,

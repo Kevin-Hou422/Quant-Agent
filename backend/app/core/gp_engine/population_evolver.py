@@ -68,7 +68,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from app.core.gp_engine.mutations import (
+from .mutations import (
     hoist_mutation,
     param_mutation,
     point_mutation,
@@ -81,12 +81,12 @@ from app.core.gp_engine.mutations import (
     replace_subtree,
     add_operator,
 )
-from app.core.gp_engine.fitness import compute_fitness, mutation_weights_from_metrics
-from app.core.gp_engine.alpha_pool import AlphaPool, PoolEntry
-from app.core.gp_engine.gp_engine import generate_random_alpha, get_seeds_for_family
-from app.core.alpha_engine.parser import Parser
-from app.core.alpha_engine.validator import AlphaValidator
-from app.core.alpha_engine.typed_nodes import Node
+from .fitness import compute_fitness, mutation_weights_from_metrics
+from .alpha_pool import AlphaPool, PoolEntry
+from .gp_engine import generate_random_alpha, get_seeds_for_family
+from ..alpha_engine.parser import Parser
+from ..alpha_engine.validator import AlphaValidator
+from ..alpha_engine.typed_nodes import Node
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +186,7 @@ class PopulationEvolver:
         self._pool = AlphaPool(max_size=200, corr_threshold=corr_threshold)
 
         # Default SimulationConfig for GP evaluation (no parameter tuning per-individual)
-        from app.core.alpha_engine.signal_processor import SimulationConfig
+        from ..alpha_engine.signal_processor import SimulationConfig
         self._default_cfg = SimulationConfig(
             delay            = 1,
             decay_window     = 0,
@@ -435,7 +435,7 @@ class PopulationEvolver:
         self, dsl: str, node: Optional[Node] = None
     ) -> Optional[EvalResult]:
         """Single-dataset IS+OOS backtest (standard path)."""
-        from app.core.backtest_engine.realistic_backtester import RealisticBacktester
+        from ..backtest_engine.realistic_backtester import RealisticBacktester
 
         try:
             bt     = RealisticBacktester(config=self._default_cfg)
@@ -488,10 +488,10 @@ class PopulationEvolver:
         (for overfitting penalty).  Each extra dataset in self._multi_datasets
         is split internally by MultiDatasetBacktester (is_split=0.7).
         """
-        from app.core.backtest_engine.multi_dataset_backtester import (
+        from ..backtest_engine.multi_dataset_backtester import (
             MultiDatasetBacktester, compute_multi_dataset_fitness,
         )
-        from app.core.backtest_engine.realistic_backtester import RealisticBacktester
+        from ..backtest_engine.realistic_backtester import RealisticBacktester
 
         try:
             # Get IS Sharpe from primary dataset for overfitting penalty
@@ -546,7 +546,7 @@ class PopulationEvolver:
         Compute 1-D signal fingerprint for AlphaPool correlation filtering.
         Returns the cross-sectional mean of the rank signal across IS dates.
         """
-        from app.core.alpha_engine.dsl_executor import Executor
+        from ..alpha_engine.dsl_executor import Executor
         try:
             sig = Executor().run_expr(dsl, self._is_data)   # pd.DataFrame (T, N)
             return np.nanmean(sig.to_numpy(dtype=float), axis=1)
@@ -718,7 +718,7 @@ class PopulationEvolver:
             return {}, self._quick_metrics(dsl)
 
         try:
-            from app.core.ml_engine.alpha_optimizer import AlphaOptimizer, SearchSpace
+            from ..ml_engine.alpha_optimizer import AlphaOptimizer, SearchSpace
 
             optimizer = AlphaOptimizer(
                 dsl          = dsl,
@@ -741,7 +741,7 @@ class PopulationEvolver:
             }
 
             # Final IS+OOS backtest with tuned config
-            from app.core.backtest_engine.realistic_backtester import RealisticBacktester
+            from ..backtest_engine.realistic_backtester import RealisticBacktester
             bt     = RealisticBacktester(config=best_cfg)
             result = bt.run(dsl, self._is_data, oos_dataset=self._oos_data)
             metrics = self._extract_metrics(result)
