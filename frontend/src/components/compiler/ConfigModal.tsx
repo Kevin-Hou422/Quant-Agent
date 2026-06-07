@@ -1,5 +1,5 @@
 import { useWorkspaceStore } from '../../store/workspaceStore'
-import { X } from 'lucide-react'
+import { X, Database, ExternalLink } from 'lucide-react'
 
 interface Props { onClose: () => void }
 
@@ -30,7 +30,12 @@ const Slider = ({
 }
 
 export default function ConfigModal({ onClose }: Props) {
-  const { simConfig, setSimConfig } = useWorkspaceStore()
+  const { simConfig, setSimConfig, setActiveView } = useWorkspaceStore()
+
+  const handleOpenDataset = () => {
+    onClose()
+    setActiveView('DATASET')
+  }
 
   return (
     <div className="absolute inset-0 bg-black/70 flex items-center justify-center z-50">
@@ -38,6 +43,23 @@ export default function ConfigModal({ onClose }: Props) {
         <div className="flex items-center justify-between mb-5">
           <h3 className="text-sm font-semibold text-slate-200">Simulation Config</h3>
           <button onClick={onClose} className="text-slate-500 hover:text-slate-300"><X size={16} /></button>
+        </div>
+
+        {/* Dataset row */}
+        <div className="flex items-center gap-3 mb-4 p-3 rounded-lg bg-slate-800/60 border border-slate-700">
+          <Database size={14} className="text-emerald-400 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-0.5">Active Dataset</div>
+            <div className="text-xs font-mono font-semibold text-emerald-400 truncate">{simConfig.dataset}</div>
+            <div className="text-[10px] text-slate-500">{simConfig.start_date} → {simConfig.end_date}</div>
+          </div>
+          <button
+            onClick={handleOpenDataset}
+            className="flex items-center gap-1 text-[10px] text-slate-400 hover:text-slate-200 transition-colors shrink-0"
+          >
+            <ExternalLink size={10} />
+            Change
+          </button>
         </div>
 
         <div className="space-y-4">

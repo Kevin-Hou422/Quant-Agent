@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type {
   ActiveView, Status, ChatMessage, AlphaRecord,
-  SimResult, SimulationConfig, ChatSession, EditorTab,
+  SimResult, SimulationConfig, ChatSession, EditorTab, DatasetInfo,
 } from '../types'
 
 const genId = () => Math.random().toString(36).slice(2)
@@ -15,6 +15,9 @@ const DEFAULT_CONFIG: SimulationConfig = {
   truncation_max_q: 0.95,
   portfolio_mode: 'long_short',
   top_pct: 0.10,
+  dataset:    'us_tech_large',
+  start_date: '2020-01-01',
+  end_date:   '2024-01-01',
 }
 
 function makeDefaultTab(): EditorTab {
@@ -36,8 +39,13 @@ function writeStoredSessionId(id: string): void {
 // ── Store interface ───────────────────────────────────────────────────────────
 
 interface WorkspaceState {
-  activeView: ActiveView
+  activeView:    ActiveView
+  prevView:      ActiveView     // view to return to when closing Dataset panel
   setActiveView: (v: ActiveView) => void
+
+  // ── Dataset registry ────────────────────────────────────────────────────
+  datasets:    DatasetInfo[]
+  setDatasets: (d: DatasetInfo[]) => void
 
   // ── Editor Tabs ─────────────────────────────────────────────────────────
   editorTabs:    EditorTab[]
@@ -96,7 +104,15 @@ const _defaultTab = makeDefaultTab()
 
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   activeView: 'COMPILER',
-  setActiveView: (v) => set({ activeView: v }),
+  prevView:   'COMPILER',
+  setActiveView: (v) => set((s) => ({
+    activeView: v,
+    prevView:   s.activeView !== 'DATASET' ? s.activeView : s.prevView,
+  })),
+
+  // ── Dataset registry ────────────────────────────────────────────────────
+  datasets:    [],
+  setDatasets: (d) => set({ datasets: d }),
 
   // ── Editor Tabs ──────────────────────────────────────────────────────────
   editorTabs:  [_defaultTab],

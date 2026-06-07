@@ -1,7 +1,17 @@
 // ─── Shared domain types ──────────────────────────────────────────────────
 
-export type ActiveView = 'CHAT' | 'COMPILER'
+export type ActiveView = 'CHAT' | 'COMPILER' | 'DATASET'
 export type Status = 'idle' | 'optimizing' | 'backtesting' | 'ready' | 'error'
+
+export interface DatasetInfo {
+  name:     string
+  region:   string
+  industry: string
+  provider: string
+  universe: string[]
+  n_assets: number
+  start:    string
+}
 
 export interface ChatSession {
   id:        string
@@ -47,6 +57,9 @@ export interface SimulationConfig {
   truncation_max_q: number
   portfolio_mode: 'long_short' | 'decile'
   top_pct: number
+  dataset:    string
+  start_date: string
+  end_date:   string
 }
 
 export interface SimMetrics {

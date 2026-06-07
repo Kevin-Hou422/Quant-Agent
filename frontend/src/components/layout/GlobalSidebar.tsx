@@ -1,4 +1,4 @@
-import { MessageSquare, Code2, BookOpen, Play, Zap } from 'lucide-react'
+import { MessageSquare, Code2, BookOpen, Play, Zap, Database } from 'lucide-react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { useQuantWorkspace } from '../../hooks/useQuantWorkspace'
 
@@ -35,13 +35,14 @@ export default function GlobalSidebar() {
   const {
     activeView, setActiveView,
     ledgerOpen, toggleLedger, setLedgerOpen,
-    status,
+    status, simConfig,
   } = useWorkspaceStore()
   const { runBacktest, runOptimize } = useQuantWorkspace()
 
-  const isRunning = status === 'backtesting' || status === 'optimizing'
+  const isRunning  = status === 'backtesting' || status === 'optimizing'
   const inChat     = activeView === 'CHAT'
   const inCompiler = activeView === 'COMPILER'
+  const inDataset  = activeView === 'DATASET'
 
   // Chat button: toggle between CHAT ↔ COMPILER
   const handleChat = () => {
@@ -49,7 +50,7 @@ export default function GlobalSidebar() {
       setActiveView('COMPILER')
     } else {
       setActiveView('CHAT')
-      setLedgerOpen(false)   // hide ledger when switching to chat
+      setLedgerOpen(false)
     }
   }
 
@@ -66,6 +67,15 @@ export default function GlobalSidebar() {
       setLedgerOpen(true)
     } else {
       toggleLedger()
+    }
+  }
+
+  // Dataset button: toggle DATASET view
+  const handleDataset = () => {
+    if (inDataset) {
+      setActiveView('COMPILER')
+    } else {
+      setActiveView('DATASET')
     }
   }
 
@@ -96,7 +106,28 @@ export default function GlobalSidebar() {
           active={inCompiler && ledgerOpen}
           onClick={handleLedger}
         />
+        <NavBtn
+          icon={Database}
+          label="Data"
+          active={inDataset}
+          onClick={handleDataset}
+        />
       </nav>
+
+      {/* Active dataset indicator */}
+      <div
+        className="px-2 py-2 border-t border-slate-800 cursor-pointer hover:bg-slate-800/60 transition-colors"
+        onClick={handleDataset}
+        title={`Dataset: ${simConfig.dataset}`}
+      >
+        <div className="text-[9px] text-slate-600 uppercase tracking-wider mb-1">Dataset</div>
+        <div className="text-[10px] font-mono text-emerald-500 truncate leading-tight">
+          {simConfig.dataset}
+        </div>
+        <div className="text-[9px] text-slate-600 truncate">
+          {simConfig.start_date.slice(0, 4)}–{simConfig.end_date.slice(0, 4)}
+        </div>
+      </div>
 
       {/* Action buttons — only shown in COMPILER mode */}
       {inCompiler && (

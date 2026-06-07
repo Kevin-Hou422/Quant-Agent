@@ -466,6 +466,49 @@ def alpha_save(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/datasets  — registry metadata (no data loading)
+# ---------------------------------------------------------------------------
+
+class DatasetInfoResponse(BaseModel):
+    name:      str
+    region:    str
+    industry:  str
+    provider:  str
+    universe:  List[str]
+    n_assets:  int
+    start:     str
+
+
+class DatasetsListResponse(BaseModel):
+    datasets: List[DatasetInfoResponse]
+    total:    int
+
+
+@router.get("/datasets", response_model=DatasetsListResponse, tags=["Data"])
+def list_datasets():
+    """Return metadata for all registered datasets (no data loading)."""
+    from app.core.data_engine.dataset_registry import _SPECS
+    items = [
+        DatasetInfoResponse(
+            name     = spec.name,
+            region   = spec.region,
+            industry = spec.industry,
+            provider = spec.provider,
+            universe = spec.universe,
+            n_assets = len(spec.universe),
+            start    = spec.start,
+        )
+        for spec in _SPECS.values()
+    ]
+    # stable order: US first, then China, HK, Crypto
+    order = ["us_tech_large", "us_financials", "us_healthcare", "us_energy",
+             "china_tech", "china_consumer", "china_state_owned",
+             "hk_china_tech", "crypto_major", "crypto_alt"]
+    items.sort(key=lambda x: order.index(x.name) if x.name in order else 99)
+    return DatasetsListResponse(datasets=items, total=len(items))
+
+
+# ---------------------------------------------------------------------------
 # GET /api/report/query
 # ---------------------------------------------------------------------------
 

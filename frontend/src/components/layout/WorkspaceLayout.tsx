@@ -7,6 +7,7 @@ import RightPane from './RightPane'
 import ChatView from '../chat/ChatView'
 import CompilerView from '../compiler/CompilerView'
 import ConsoleOutput from '../compiler/ConsoleOutput'
+import DatasetView from '../dataset/DatasetView'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { useQuantWorkspace } from '../../hooks/useQuantWorkspace'
 
@@ -35,73 +36,74 @@ export default function WorkspaceLayout() {
   // Run once on app mount: restore or create the active session
   useEffect(() => { initSessions() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
+  const inDataset  = activeView === 'DATASET'
+  const inChat     = activeView === 'CHAT'
+  const inCompiler = activeView === 'COMPILER'
+
   return (
     <div
       className="h-screen w-screen flex bg-slate-950 overflow-hidden"
       style={{ fontFamily: "'Inter','system-ui',sans-serif" }}
     >
-      {/*
-       * ── Col 1: Icon toolbar ──────────────────────────────────────────
-       * Fixed 64px. Never participates in a PanelGroup.
-       * Previously was inside a Panel — an absolute-positioned LeftLedgerPane
-       * with -translate-x-full was visually covering this column when closed.
-       * Now the ledger is a separate column (Col 2) with no absolute overlay.
-       */}
+      {/* ── Col 1: Icon toolbar (always visible) ─────────────────────── */}
       <div style={{ width: 64, minWidth: 64, flexShrink: 0 }} className="h-full">
         <GlobalSidebar />
       </div>
 
-      {/*
-       * ── Col 2 (conditional): depends on activeView ───────────────────
-       *  CHAT mode     → Session history list  (192px)
-       *  COMPILER mode → Alpha Ledger panel    (240px), only when ledgerOpen
-       */}
-      {activeView === 'CHAT' && (
-        <div style={{ width: 192, minWidth: 192, flexShrink: 0 }} className="h-full">
-          <SessionHistoryPanel />
-        </div>
-      )}
-      {activeView === 'COMPILER' && ledgerOpen && (
-        <div style={{ width: 240, minWidth: 240, flexShrink: 0 }} className="h-full">
-          <LeftLedgerPane />
+      {/* ── Dataset view: full-width main area, no side panels ────────── */}
+      {inDataset && (
+        <div className="flex-1 min-w-0 h-full overflow-hidden">
+          <DatasetView />
         </div>
       )}
 
-      {/*
-       * ── Col 3: Main content ──────────────────────────────────────────
-       * flex-1 — takes all remaining space.
-       * CHAT     → ChatView (messages + input)
-       * COMPILER → Monaco editor (top) + Console (bottom), vertically resizable
-       */}
-      <div className="flex-1 min-w-0 h-full overflow-hidden">
-        {activeView === 'CHAT' ? (
-          <ChatView />
-        ) : (
-          <PanelGroup direction="vertical" className="h-full">
-            <Panel defaultSize={65} minSize={30}>
-              <div className="h-full overflow-hidden">
-                <CompilerView />
-              </div>
-            </Panel>
-            <HHandle />
-            <Panel defaultSize={35} minSize={12} maxSize={65}>
-              <div className="h-full overflow-hidden">
-                <ConsoleOutput />
-              </div>
-            </Panel>
-          </PanelGroup>
-        )}
-      </div>
+      {/* ── Chat / Compiler layout ────────────────────────────────────── */}
+      {!inDataset && (
+        <>
+          {/*
+           * Col 2 (conditional):
+           *  CHAT mode     → Session history list  (192px)
+           *  COMPILER mode → Alpha Ledger panel    (240px), only when ledgerOpen
+           */}
+          {inChat && (
+            <div style={{ width: 192, minWidth: 192, flexShrink: 0 }} className="h-full">
+              <SessionHistoryPanel />
+            </div>
+          )}
+          {inCompiler && ledgerOpen && (
+            <div style={{ width: 240, minWidth: 240, flexShrink: 0 }} className="h-full">
+              <LeftLedgerPane />
+            </div>
+          )}
 
-      {/*
-       * ── Col 4: Analysis panel ────────────────────────────────────────
-       * Fixed 360px. Only shown in COMPILER mode.
-       * Hidden in CHAT mode — analysis is only relevant to compiler results.
-       */}
-      {activeView === 'COMPILER' && (
-        <div style={{ width: 360, minWidth: 360, flexShrink: 0 }} className="h-full border-l border-slate-800 overflow-hidden">
-          <RightPane />
-        </div>
+          {/* Col 3: Main content */}
+          <div className="flex-1 min-w-0 h-full overflow-hidden">
+            {inChat ? (
+              <ChatView />
+            ) : (
+              <PanelGroup direction="vertical" className="h-full">
+                <Panel defaultSize={65} minSize={30}>
+                  <div className="h-full overflow-hidden">
+                    <CompilerView />
+                  </div>
+                </Panel>
+                <HHandle />
+                <Panel defaultSize={35} minSize={12} maxSize={65}>
+                  <div className="h-full overflow-hidden">
+                    <ConsoleOutput />
+                  </div>
+                </Panel>
+              </PanelGroup>
+            )}
+          </div>
+
+          {/* Col 4: Analysis panel (COMPILER only) */}
+          {inCompiler && (
+            <div style={{ width: 360, minWidth: 360, flexShrink: 0 }} className="h-full border-l border-slate-800 overflow-hidden">
+              <RightPane />
+            </div>
+          )}
+        </>
       )}
     </div>
   )

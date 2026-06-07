@@ -3,7 +3,7 @@ import {
   apiSimulate, apiFetchAlphaHistory, apiSaveAlpha,
   apiCreateSession, apiListSessions, apiGetSession,
   apiRenameSession, apiDeleteSession,
-  streamWorkflowOptimize, streamChat,
+  streamWorkflowOptimize, streamWorkflowGenerate, streamChat,
 } from '../api/client'
 import type { ChatSession } from '../types'
 
@@ -377,19 +377,25 @@ export function useQuantWorkspace() {
     try {
       let finalWf: any = null
 
-      await streamWorkflowOptimize(dsl, (event) => {
-        if (event.type === 'text') {
-          enqueueText(event.text)
-          if (event.text.startsWith('[GP]') || event.text.startsWith('[Optuna]')) {
-            store.appendLog(event.text.split('\n')[0])
+      await streamWorkflowOptimize(
+        dsl,
+        (event) => {
+          if (event.type === 'text') {
+            enqueueText(event.text)
+            if (event.text.startsWith('[GP]') || event.text.startsWith('[Optuna]')) {
+              store.appendLog(event.text.split('\n')[0])
+            }
+          } else if (event.type === 'done') {
+            finalWf = event.result
+          } else if (event.type === 'error') {
+            enqueueText(`[ERROR] ${event.message}`)
+            store.appendLog(`[ERROR] ${event.message}`)
           }
-        } else if (event.type === 'done') {
-          finalWf = event.result
-        } else if (event.type === 'error') {
-          enqueueText(`[ERROR] ${event.message}`)
-          store.appendLog(`[ERROR] ${event.message}`)
-        }
-      })
+        },
+        store.simConfig.dataset,
+        store.simConfig.start_date,
+        store.simConfig.end_date,
+      )
 
       await new Promise<void>((resolve) => {
         const check = setInterval(() => {

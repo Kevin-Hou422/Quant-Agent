@@ -1,10 +1,14 @@
 import axios from 'axios'
 import type {
   SimulationConfig, SimResult, AlphaRecord, BacktestRunResponse,
-  WorkflowResponse,
+  WorkflowResponse, DatasetInfo,
 } from '../types'
 
 const http = axios.create({ baseURL: '/api', timeout: 120_000 })
+
+// ── Datasets ──────────────────────────────────────────────────────────────
+export const apiFetchDatasets = () =>
+  http.get<{ datasets: DatasetInfo[]; total: number }>('/datasets')
 
 // ── Chat ──────────────────────────────────────────────────────────────────
 export const apiChat = (message: string, sessionId: string) =>
@@ -14,15 +18,14 @@ export const apiChat = (message: string, sessionId: string) =>
   )
 
 // ── Alpha Simulate (Phase 2 endpoint) ────────────────────────────────────
-export const apiSimulate = (
-  dsl: string,
-  config: SimulationConfig,
-  nTickers = 20,
-  nDays = 252,
-  oos_ratio = 0.3,
-) =>
+export const apiSimulate = (dsl: string, config: SimulationConfig, oos_ratio = 0.3) =>
   http.post<SimResult>('/alpha/simulate', {
-    dsl, config, n_tickers: nTickers, n_days: nDays, oos_ratio,
+    dsl,
+    config,
+    dataset_name:  config.dataset    || 'us_tech_large',
+    dataset_start: config.start_date || '2020-01-01',
+    dataset_end:   config.end_date   || '2024-01-01',
+    oos_ratio,
   })
 
 // ── Alpha Optimize (Phase 2 Optuna endpoint) ──────────────────────────────
@@ -37,11 +40,17 @@ export const apiOptimize = (dsl: string, nTrials = 20) =>
   })
 
 // ── Workflow A: hypothesis → GP-evolved alpha ─────────────────────────────
-export const apiWorkflowGenerate = (hypothesis: string, nDays = 252) =>
+export const apiWorkflowGenerate = (
+  hypothesis: string,
+  dataset = 'us_tech_large',
+  startDate = '2020-01-01',
+  endDate   = '2024-01-01',
+) =>
   http.post<WorkflowResponse>('/workflow/generate', {
     hypothesis,
-    n_tickers:     20,
-    n_days:        nDays,
+    dataset_name:  dataset,
+    dataset_start: startDate,
+    dataset_end:   endDate,
     n_generations: 7,
     pop_size:      20,
     n_optuna:      10,
@@ -50,11 +59,17 @@ export const apiWorkflowGenerate = (hypothesis: string, nDays = 252) =>
   })
 
 // ── Workflow B: DSL → GP-evolved + Optuna-tuned alpha ─────────────────────
-export const apiWorkflowOptimize = (dsl: string, nDays = 252) =>
+export const apiWorkflowOptimize = (
+  dsl: string,
+  dataset = 'us_tech_large',
+  startDate = '2020-01-01',
+  endDate   = '2024-01-01',
+) =>
   http.post<WorkflowResponse>('/workflow/optimize', {
     dsl,
-    n_tickers:     20,
-    n_days:        nDays,
+    dataset_name:  dataset,
+    dataset_start: startDate,
+    dataset_end:   endDate,
     n_generations: 7,
     pop_size:      20,
     n_optuna:      10,
@@ -63,8 +78,11 @@ export const apiWorkflowOptimize = (dsl: string, nDays = 252) =>
   })
 
 // ── Basic backtest (Phase 1 endpoint) ─────────────────────────────────────
-export const apiBacktest = (dsl: string) =>
-  http.post<BacktestRunResponse>('/backtest/run', { dsl, n_tickers: 20, n_days: 252 })
+export const apiBacktest = (dsl: string, dataset = 'us_tech_large') =>
+  http.post<BacktestRunResponse>('/backtest/run', {
+    dsl,
+    dataset_name: dataset,
+  })
 
 // ── Alpha Ledger (history) ────────────────────────────────────────────────
 export const apiFetchAlphaHistory = (limit = 30) =>
@@ -150,17 +168,22 @@ export function streamChat(
 }
 
 export function streamWorkflowOptimize(
-  dsl:     string,
-  onEvent: (e: SSEEvent) => void,
-  signal?: AbortSignal,
+  dsl:       string,
+  onEvent:   (e: SSEEvent) => void,
+  dataset?:  string,
+  startDate?: string,
+  endDate?:   string,
+  signal?:   AbortSignal,
 ): Promise<void> {
   return fetch('/api/workflow/optimize/stream', {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({
       dsl,
-      n_tickers: 20, n_days: 252, n_generations: 7,
-      pop_size: 20, n_optuna: 10, n_mutations: 8, oos_ratio: 0.3,
+      dataset_name:  dataset    || 'us_tech_large',
+      dataset_start: startDate  || '2020-01-01',
+      dataset_end:   endDate    || '2024-01-01',
+      n_generations: 7, pop_size: 20, n_optuna: 10, n_mutations: 8, oos_ratio: 0.3,
     }),
     signal,
   }).then(async (res) => {
@@ -186,6 +209,9 @@ export function streamWorkflowOptimize(
 export function streamWorkflowGenerate(
   hypothesis: string,
   onEvent:    (e: SSEEvent) => void,
+  dataset?:   string,
+  startDate?: string,
+  endDate?:   string,
   signal?:    AbortSignal,
 ): Promise<void> {
   return fetch('/api/workflow/generate/stream', {
@@ -193,8 +219,10 @@ export function streamWorkflowGenerate(
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({
       hypothesis,
-      n_tickers: 20, n_days: 252, n_generations: 7,
-      pop_size: 20, n_optuna: 10, n_seed_dsls: 12, oos_ratio: 0.3,
+      dataset_name:  dataset    || 'us_tech_large',
+      dataset_start: startDate  || '2020-01-01',
+      dataset_end:   endDate    || '2024-01-01',
+      n_generations: 7, pop_size: 20, n_optuna: 10, n_seed_dsls: 12, oos_ratio: 0.3,
     }),
     signal,
   }).then(async (res) => {
