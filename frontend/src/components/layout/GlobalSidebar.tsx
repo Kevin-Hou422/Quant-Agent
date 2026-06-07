@@ -39,7 +39,7 @@ export default function GlobalSidebar() {
   } = useWorkspaceStore()
   const { runBacktest, runOptimize } = useQuantWorkspace()
 
-  const isRunning  = status === 'backtesting' || status === 'optimizing'
+  const isRunning  = status === 'backtesting' || status === 'optimizing' || status === 'walkforward'
   const inChat     = activeView === 'CHAT'
   const inCompiler = activeView === 'COMPILER'
   const inDataset  = activeView === 'DATASET'

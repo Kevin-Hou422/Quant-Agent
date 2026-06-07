@@ -2,7 +2,7 @@ import { useState } from 'react'
 import MonacoEditor from '@monaco-editor/react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { useQuantWorkspace } from '../../hooks/useQuantWorkspace'
-import { Play, Zap, Settings, X, Plus } from 'lucide-react'
+import { Play, Zap, Settings, X, Plus, GitBranch } from 'lucide-react'
 import ConfigModal from './ConfigModal'
 
 // ── DSL operator catalogue with documentation ────────────────────────────────
@@ -201,11 +201,11 @@ function TabBar() {
 
 export default function CompilerView() {
   const { editorDsl, setEditorDsl, status } = useWorkspaceStore()
-  const { runBacktest, runOptimize } = useQuantWorkspace()
+  const { runBacktest, runOptimize, runWalkForward } = useQuantWorkspace()
   const [showConfig, setShowConfig] = useState(false)
   const [monacoReady, setMonacoReady] = useState(false)
 
-  const isRunning = status === 'backtesting' || status === 'optimizing'
+  const isRunning = status === 'backtesting' || status === 'optimizing' || status === 'walkforward'
 
   return (
     <div className="flex flex-col h-full bg-slate-950">
@@ -235,6 +235,15 @@ export default function CompilerView() {
           className="flex items-center gap-1.5 text-xs bg-violet-700 hover:bg-violet-600 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors"
         >
           <Zap size={12} /> AI Optimize
+        </button>
+
+        <button
+          onClick={runWalkForward}
+          disabled={isRunning}
+          title="Walk-Forward validation (5 folds)"
+          className="flex items-center gap-1.5 text-xs bg-sky-700 hover:bg-sky-600 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors"
+        >
+          <GitBranch size={12} /> Walk-Forward
         </button>
 
         <button

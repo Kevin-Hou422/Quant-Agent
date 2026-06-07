@@ -4,6 +4,7 @@ import {
   apiCreateSession, apiListSessions, apiGetSession,
   apiRenameSession, apiDeleteSession,
   streamWorkflowOptimize, streamWorkflowGenerate, streamChat,
+  apiWalkForwardBacktest,
 } from '../api/client'
 import type { ChatSession } from '../types'
 
@@ -492,6 +493,43 @@ export function useQuantWorkspace() {
     }
   }
 
+  // ── Walk-Forward validation ───────────────────────────────────────────
+  const runWalkForward = async (nSplits = 5, embargoDays = 20) => {
+    const dsl = store.editorDsl.trim()
+    if (!dsl) return
+
+    store.setStatus('walkforward')
+    store.clearLogs()
+    store.appendLog(`[WF] Starting ${nSplits}-fold Walk-Forward validation`)
+    store.appendLog(`[WF] Dataset: ${store.simConfig.dataset} | ${store.simConfig.start_date} → ${store.simConfig.end_date}`)
+    store.appendLog(`[WF] Embargo: ${embargoDays} days | DSL: ${dsl}`)
+
+    try {
+      const res = await apiWalkForwardBacktest(dsl, store.simConfig, nSplits, embargoDays)
+      const wf  = res.data
+
+      store.setWalkForwardResult(wf)
+      store.setAnalysisTab('walkforward')
+
+      store.appendLog(`[WF] Completed ${wf.n_folds} folds`)
+      store.appendLog(`[WF] Mean OOS Sharpe: ${wf.mean_oos_sharpe.toFixed(4)} ± ${wf.std_oos_sharpe.toFixed(4)}`)
+      store.appendLog(`[WF] Min OOS Sharpe:  ${wf.min_oos_sharpe.toFixed(4)}`)
+      store.appendLog(`[WF] Positive folds:  ${(wf.pct_positive * 100).toFixed(0)}%`)
+      store.appendLog(`[WF] Mean overfitting: ${(wf.mean_overfitting * 100).toFixed(0)}%`)
+      wf.fold_reports.forEach((f) => {
+        store.appendLog(
+          `[WF] Fold ${f.fold_idx + 1}: IS=${f.is_sharpe.toFixed(3)} OOS=${f.oos_sharpe.toFixed(3)} ` +
+          `| ${f.oos_start.slice(0, 10)}→${f.oos_end.slice(0, 10)}`
+        )
+      })
+
+      store.setStatus('ready')
+    } catch (err: any) {
+      store.appendLog(classifyError(err))
+      store.setStatus('error')
+    }
+  }
+
   // ── Alpha history ─────────────────────────────────────────────────────
   const loadHistory = async () => {
     try {
@@ -501,7 +539,7 @@ export function useQuantWorkspace() {
   }
 
   return {
-    sendChat, runBacktest, runOptimize, loadHistory,
+    sendChat, runBacktest, runOptimize, runWalkForward, loadHistory,
     initSessions, loadSessions, newSession, switchSession,
     renameSession, deleteSession,
     store,

@@ -626,6 +626,70 @@ def list_datasets():
 
 
 # ---------------------------------------------------------------------------
+# GET /api/datasets/{name}/health  — data-quality check for a dataset
+# ---------------------------------------------------------------------------
+
+class DatasetHealthResponse(BaseModel):
+    name:          str
+    overall_score: float
+    n_tickers:     int
+    n_dates:       int
+    n_gaps:        int
+    n_spikes:      int
+    n_zero_volume: int
+    mean_nan_pct:  float
+    notes:         List[str]
+
+
+@router.get("/datasets/{name}/health", response_model=DatasetHealthResponse, tags=["Data"])
+def dataset_health(
+    name:  str,
+    start: str = Query("2020-01-01"),
+    end:   str = Query("2024-01-01"),
+):
+    """
+    Run a data-quality health check on the named dataset.
+    Loads the dataset (uses cache after first call) and returns
+    gap / spike / NaN statistics plus a composite [0, 1] health score.
+    """
+    from app.core.data_engine.dataset_registry import load_registry_dataset, check_dataset_health
+
+    try:
+        ds = load_registry_dataset(name, start=start, end=end)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Dataset load failed: {exc}")
+
+    report = check_dataset_health(ds, min_score=0.0, warn_only=True)
+    if report is None:
+        # Health checker unavailable — return a neutral score
+        close = ds.data.get("close")
+        n_t = close.shape[1] if close is not None else 0
+        n_d = close.shape[0] if close is not None else 0
+        return DatasetHealthResponse(
+            name=name, overall_score=1.0,
+            n_tickers=n_t, n_dates=n_d,
+            n_gaps=0, n_spikes=0, n_zero_volume=0,
+            mean_nan_pct=0.0, notes=["Health checker unavailable"],
+        )
+
+    nan_pct = float(report.nan_summary["nan_pct"].mean()) if not report.nan_summary.empty else 0.0
+
+    return DatasetHealthResponse(
+        name          = name,
+        overall_score = float(report.overall_score),
+        n_tickers     = int(report.n_tickers),
+        n_dates       = int(report.n_dates),
+        n_gaps        = len(report.gaps),
+        n_spikes      = len(report.spikes),
+        n_zero_volume = len(report.zero_volume),
+        mean_nan_pct  = float(nan_pct),
+        notes         = list(report.notes),
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /api/report/query
 # ---------------------------------------------------------------------------
 

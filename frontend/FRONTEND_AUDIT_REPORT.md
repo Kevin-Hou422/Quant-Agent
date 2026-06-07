@@ -1,9 +1,9 @@
 # Quant Agent Frontend — 综合审计报告
 
 **审计日期：** 2026-06-07  
-**覆盖范围：** `frontend/src/` 全部 TypeScript/TSX 源文件（18 个文件）  
-**参考文件：** `backend/AUDIT_REPORT.md`（2026-06-01）| `backend/DEV_ROADMAP.md`（v3.0，2026-06-07）  
-**最后更新：** 2026-06-07 v3（Phase 1 全部前端任务完成）
+**覆盖范围：** `frontend/src/` 全部 TypeScript/TSX 源文件（20 个文件）  
+**参考文件：** `backend/AUDIT_REPORT.md`（2026-06-01）| `backend/DEV_ROADMAP.md`（v5，2026-06-07）  
+**最后更新：** 2026-06-07 v4（Phase 2 全部前端任务完成）
 
 ---
 
@@ -172,6 +172,9 @@ frontend/
 | ★ 数据集选择生效 | ✅ 新增 | 选择后更新 simConfig，所有 API 调用传入真实数据集参数 |
 | ★ 侧边栏数据集入口 | ✅ 新增 | Database 图标 + 底部活跃数据集指示器 |
 | ★ ConfigModal 数据集显示 | ✅ 新增 | 顶部展示当前数据集 + 快速跳转按钮 |
+| ★ Walk-Forward 验证 | ✅ Phase 2 | Walk-Forward 按钮 + WalkForwardChart（折叠柱图+汇总统计+折明细表）|
+| ★ 数据质量 HealthBadge | ✅ Phase 2 | DatasetView 内一键检测数据质量，展示综合评分+缺口/跳变/NaN 统计 |
+| ★ RightPane 双标签页 | ✅ Phase 2 | Backtest / Walk-Fwd 两个分析标签，含内联过拟合/折数徽章 |
 | 双视图布局（Chat/Compiler/Dataset）| ✅ | 三视图切换流畅 |
 | Monaco DSL 语法高亮 + IntelliSense | ✅ | QuantDSL 自定义语言完整 |
 | 多标签页 DSL 编辑 | ✅ | |
@@ -251,7 +254,7 @@ useEffect(() => { initSessions() }, [])  // eslint-disable-line react-hooks/exha
 |-------|------------|------------|------------|
 | **Phase 0** | ✅ 全部完成 | ✅ 已同步 | 数据集选择UI已实现，API调用已修复 |
 | **Phase 1** | ✅ 全部完成 | ✅ 全部完成 | 429/408 拦截器、Console 滚动、PnL 日期轴、OOS 指标、AbortController 均已实现 |
-| **Phase 2** | ❌ 未开始 | ❌ 缺 WF 展示 | Walk-Forward 多折图表组件 |
+| **Phase 2** | ✅ 全部完成 | ✅ 全部完成 | WalkForwardChart（5折柱状图+汇总指标）、数据质量 HealthBadge、RightPane 双标签页 |
 | **Phase 3** | ❌ 未开始 | ❌ 缺多Alpha | 多Alpha对比视图 + Beta/行业暴露展示 |
 | **Phase 4** | ❌ 未开始 | ❌ 缺Regime | Regime 状态徽章 + DSR 指标行 |
 | **Phase 5** | ❌ 未开始 | ❌ 缺仪表板 | Alpha 生命周期仪表板 + IC 历史图 |
@@ -377,8 +380,8 @@ Alpha 详情页展示 30/60 天滚动 IC 折线图 + 衰减阈值参考线。
 | ~~FE-1.3~~ | ~~PnL 图表 X 轴使用真实日期~~ | ~~1 天~~ | ~~🟡~~ | ✅ 已完成 |
 | ~~FE-1.4~~ | ~~GP 优化 OOS 指标映射完整性~~ | ~~0.5 天~~ | ~~🟡~~ | ✅ 已完成 |
 | ~~FE-1.5~~ | ~~请求 AbortController~~ | ~~1 天~~ | ~~🟢~~ | ✅ 已完成 |
-| FE-2.1 | Walk-Forward 结果图表 | 2 天 | 🟡 | 待后端 Phase 2 |
-| FE-2.2 | 数据集健康评分 Banner | 1 天 | 🟢 | 待后端 Phase 2 |
+| ~~FE-2.1~~ | ~~Walk-Forward 结果图表~~ | ~~2 天~~ | ~~🟡~~ | ✅ 已完成 |
+| ~~FE-2.2~~ | ~~数据集健康评分 Banner~~ | ~~1 天~~ | ~~🟢~~ | ✅ 已完成 |
 | FE-3.1 | 多 Alpha 对比视图 | 3 天 | 🟡 | 待后端 Phase 3 |
 | FE-3.2 | Beta / 行业暴露展示 | 2 天 | 🟡 | 待后端 Phase 3 |
 | FE-4.1 | Regime 状态徽章 | 1 天 | 🟢 | 待后端 Phase 4 |
@@ -401,9 +404,9 @@ Alpha 详情页展示 30/60 天滚动 IC 折线图 + 衰减阈值参考线。
 | 用户体验 | 8 | Dataset 视图提供直观的数据集探索和选择体验（↑ 原 7）|
 | 可扩展性 | 6 | 单页应用无路由；Phase 5 多页面需求需引入 react-router |
 | 类型安全 | 7 | 全量 TypeScript；部分 `as any` 类型断言需整理 |
-| 与后端对齐 | 9 | Phase 0+1 前后端完全同步；OOS 指标、PnL 日期、AbortController 均已修复（↑ 原 8）|
-| **综合** | **8.1** | Phase 0+1 全部完成，综合评分从 7.6 升至 8.1 |
+| 与后端对齐 | 9 | Phase 0+1+2 前后端完全同步；WF 验证、健康检查、双标签 RightPane 均已实现（↑ 原 9）|
+| **综合** | **8.5** | Phase 0+1+2 全部完成，综合评分从 8.1 升至 8.5 |
 
 ---
 
-*报告版本 v3.0 | 2026-06-07 | Phase 1 全部前端任务完成 | 覆盖文件数：18 个 .tsx/.ts 文件*
+*报告版本 v4.0 | 2026-06-07 | Phase 2 全部前端任务完成 | 覆盖文件数：20 个 .tsx/.ts 文件*

@@ -1,6 +1,14 @@
-interface Props { score: number }
+interface Props {
+  score:   number
+  inline?: boolean   // compact dot-only mode for tab headers
+}
 
-export default function OverfitBadge({ score }: Props) {
+export default function OverfitBadge({ score, inline }: Props) {
+  if (inline) {
+    const color = score < 0.4 ? 'bg-emerald-400' : score < 0.6 ? 'bg-amber-400' : 'bg-rose-400'
+    return <span className={`w-1.5 h-1.5 rounded-full ${color} ${score >= 0.4 ? 'animate-pulse' : ''}`} />
+  }
+
   if (score < 0.4) {
     return (
       <span className="inline-flex items-center gap-1 text-xs bg-emerald-900/40 text-emerald-400 border border-emerald-800 rounded-full px-2 py-0.5">

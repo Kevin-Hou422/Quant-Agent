@@ -59,11 +59,12 @@ export default function ConsoleOutput() {
   }, [consoleLogs])
 
   const statusColor: Record<string, string> = {
-    idle:        'text-slate-500',
-    backtesting: 'text-amber-400',
-    optimizing:  'text-violet-400',
-    ready:       'text-emerald-400',
-    error:       'text-rose-400',
+    idle:         'text-slate-500',
+    backtesting:  'text-amber-400',
+    optimizing:   'text-violet-400',
+    walkforward:  'text-sky-400',
+    ready:        'text-emerald-400',
+    error:        'text-rose-400',
   }
 
   function getActions(line: string): LogAction[] | undefined {

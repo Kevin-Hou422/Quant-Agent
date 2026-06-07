@@ -249,7 +249,8 @@ Quant Agent/
             └── analysis/
                 ├── PnLChart.tsx          # ECharts IS/OOS, X-axis anchored on real split_date
                 ├── MetricsGrid.tsx       # IS vs OOS 6-metric comparison table (full OOS mapping)
-                └── OverfitBadge.tsx      # Overfitting indicator (pulsing)
+                ├── WalkForwardChart.tsx  # Walk-Forward fold bar chart + summary + fold table
+                └── OverfitBadge.tsx      # Overfitting indicator (pulsing); inline dot mode for tabs
 ```
 
 ---
@@ -1079,6 +1080,8 @@ All endpoints are served under the FastAPI app at `http://127.0.0.1:8000`. Inter
 | `POST` | `/agent/run` | AlphaAgent run (hypothesis-driven, returns initial DSLs) |
 | `POST` | `/gp/evolve` | PopulationEvolver GP evolution — concurrency-limited (429 if busy, 408 on timeout) |
 | `GET` | `/datasets` | List all 10 registered datasets with metadata (no data loading) |
+| `GET` | `/datasets/{name}/health` | Data-quality check: gap/spike/NaN stats + composite health score [0,1] |
+| `POST` | `/backtest/walk_forward` | Walk-Forward validation across n_splits folds with embargo; returns per-fold IS/OOS Sharpe |
 | `GET` | `/health` | Health check |
 
 ---
@@ -1176,14 +1179,14 @@ const { sendChat, runBacktest, runOptimize, loadHistory,
 - List of saved chat sessions
 - Create new session, switch between sessions
 
-**`RightPane`** (COMPILER mode)
-- `PnLChart` — ECharts cumulative PnL with IS/OOS regions; X-axis anchored on real `split_date`
-- `MetricsGrid` — IS vs OOS 6-metric comparison table (Sharpe, Return, Drawdown, IC, IC-IR, Turnover); full OOS metric mapping
-- `OverfitBadge` — overfitting indicator
+**`RightPane`** (COMPILER mode) — two-tab analysis panel:
+- **Backtest tab**: `PnLChart` (IS/OOS area chart, X-axis = real `split_date`), `MetricsGrid` (6-metric IS vs OOS, full OOS mapping), `OverfitBadge`
+- **Walk-Fwd tab**: `WalkForwardChart` — fold-by-fold OOS Sharpe bar chart, mean ± std summary chips, fold detail table; activated by clicking "Walk-Forward" in the compiler toolbar
 
 **`DatasetView`** (DATASET mode) — full-width dataset registry browser:
 - Left column: 10 datasets grouped by region (US / China A / HK / Crypto), with ACTIVE badge
 - Right column: per-dataset detail — provider, asset count, data start, date-range picker, **Use this dataset** button, full ticker universe
+- **Data Quality panel** — "Check now" button calls `GET /api/datasets/{name}/health`; shows HealthBadge with overall score, gap/spike/NaN counts
 - Activating a dataset updates `simConfig.dataset`, `start_date`, `end_date` — all subsequent backtests and GP optimisations use the selected dataset
 
 #### Chat
@@ -1485,9 +1488,10 @@ pytest tests/test_alpha_discovery.py -v      # End-to-end alpha discovery
 | Phase | Goal | Status |
 |-------|------|--------|
 | **Phase 0** | Real data pipeline, true industry groups, GP fitness | ✅ Complete |
-| **Phase 1** | Code cleanup, unified imports, API concurrency guard | ✅ Complete |
-| Phase 2 | Walk-Forward validation (5+ folds), Embargo period | Planned |
+| **Phase 1** | Code cleanup (3/5), API concurrency guard | ⚠️ Partial (1.2 + 1.4 pending) |
+| **Phase 2** | Walk-Forward validation, Embargo period, data health checks | ✅ Complete |
 | Phase 3 | Multi-Alpha joint portfolio, Beta neutralisation | Planned |
+| Phase 3 | Multi-Alpha joint portfolio, Beta neutralisation, DSL new ops | Planned |
 | Phase 4 | Regime detection, MVO portfolio, Deflated Sharpe | Planned |
 | Phase 5 | Alpha lifecycle monitoring, IC decay alerts, scheduler | Planned |
 

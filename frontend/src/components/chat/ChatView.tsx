@@ -7,8 +7,9 @@ import { Send, Loader2 } from 'lucide-react'
 // ── Thinking indicator ────────────────────────────────────────────────────────
 
 const THINKING_LABELS: Record<string, string> = {
-  optimizing:  'Running GP optimization…',
-  backtesting: 'Backtesting IS + OOS…',
+  optimizing:   'Running GP optimization…',
+  backtesting:  'Backtesting IS + OOS…',
+  walkforward:  'Running Walk-Forward validation…',
 }
 
 function ThinkingIndicator({ status }: { status: string }) {

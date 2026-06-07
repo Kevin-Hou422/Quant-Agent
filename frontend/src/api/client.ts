@@ -1,7 +1,7 @@
 import axios from 'axios'
 import type {
   SimulationConfig, SimResult, AlphaRecord, BacktestRunResponse,
-  WorkflowResponse, DatasetInfo,
+  WorkflowResponse, DatasetInfo, WalkForwardResult, DatasetHealth,
 } from '../types'
 
 const http = axios.create({ baseURL: '/api', timeout: 120_000 })
@@ -22,6 +22,30 @@ http.interceptors.response.use(
 // ── Datasets ──────────────────────────────────────────────────────────────
 export const apiFetchDatasets = () =>
   http.get<{ datasets: DatasetInfo[]; total: number }>('/datasets')
+
+export const apiFetchDatasetHealth = (name: string, start: string, end: string) =>
+  http.get<DatasetHealth>(`/datasets/${encodeURIComponent(name)}/health`, {
+    params: { start, end },
+    timeout: 60_000,   // health check loads real data — may be slow on first call
+  })
+
+// ── Walk-Forward Backtest ────────────────────────────────────────────────
+export const apiWalkForwardBacktest = (
+  dsl:          string,
+  config:       SimulationConfig,
+  nSplits      = 5,
+  embargoDays  = 20,
+) =>
+  http.post<WalkForwardResult>('/backtest/walk_forward', {
+    dsl,
+    dataset_name:  config.dataset    || 'us_tech_large',
+    dataset_start: config.start_date || '2020-01-01',
+    dataset_end:   config.end_date   || '2024-01-01',
+    n_splits:      nSplits,
+    embargo_days:  embargoDays,
+    portfolio_mode: config.portfolio_mode,
+    delay:         config.delay,
+  }, { timeout: 300_000 })
 
 // ── Chat ──────────────────────────────────────────────────────────────────
 export const apiChat = (message: string, sessionId: string) =>

@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type {
   ActiveView, Status, ChatMessage, AlphaRecord,
   SimResult, SimulationConfig, ChatSession, EditorTab, DatasetInfo,
+  WalkForwardResult,
 } from '../types'
 
 const genId = () => Math.random().toString(36).slice(2)
@@ -84,6 +85,13 @@ interface WorkspaceState {
 
   simulationResult:    SimResult | null
   setSimulationResult: (r: SimResult | null) => void
+
+  walkForwardResult:    WalkForwardResult | null
+  setWalkForwardResult: (r: WalkForwardResult | null) => void
+
+  // Which analysis tab is active in RightPane
+  analysisTab: 'backtest' | 'walkforward'
+  setAnalysisTab: (t: 'backtest' | 'walkforward') => void
 
   status:    Status
   setStatus: (s: Status) => void
@@ -223,6 +231,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
 
   simulationResult:    null,
   setSimulationResult: (r) => set({ simulationResult: r }),
+
+  walkForwardResult:    null,
+  setWalkForwardResult: (r) => set({ walkForwardResult: r }),
+
+  analysisTab:    'backtest',
+  setAnalysisTab: (t) => set({ analysisTab: t }),
 
   status:    'idle',
   setStatus: (s) => set({ status: s }),

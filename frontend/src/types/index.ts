@@ -1,7 +1,7 @@
 // ─── Shared domain types ──────────────────────────────────────────────────
 
 export type ActiveView = 'CHAT' | 'COMPILER' | 'DATASET'
-export type Status = 'idle' | 'optimizing' | 'backtesting' | 'ready' | 'error'
+export type Status = 'idle' | 'optimizing' | 'backtesting' | 'walkforward' | 'ready' | 'error'
 
 export interface DatasetInfo {
   name:     string
@@ -114,6 +114,45 @@ export interface WorkflowResponse {
   split_date:        string | null
   overfitting_score: number
   is_overfit:        boolean
+}
+
+export interface WalkForwardFoldReport {
+  fold_idx:     number
+  is_start:     string
+  is_end:       string
+  oos_start:    string
+  oos_end:      string
+  is_days:      number
+  oos_days:     number
+  is_sharpe:    number
+  oos_sharpe:   number
+  oos_maxdd:    number
+  oos_turnover: number
+  oos_ic_ir:    number
+  overfitting:  number
+}
+
+export interface WalkForwardResult {
+  dsl:              string
+  n_folds:          number
+  mean_oos_sharpe:  number
+  std_oos_sharpe:   number
+  min_oos_sharpe:   number
+  pct_positive:     number
+  mean_overfitting: number
+  fold_reports:     WalkForwardFoldReport[]
+}
+
+export interface DatasetHealth {
+  name:          string
+  overall_score: number
+  n_tickers:     number
+  n_dates:       number
+  n_gaps:        number
+  n_spikes:      number
+  n_zero_volume: number
+  mean_nan_pct:  number
+  notes:         string[]
 }
 
 export interface BacktestRunResponse {

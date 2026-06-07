@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Database, Globe2, Building2, ChevronRight, Check, ArrowLeft, RefreshCw, Calendar, Hash } from 'lucide-react'
+import { Database, Globe2, Building2, ChevronRight, Check, ArrowLeft, RefreshCw, Calendar, Hash, ShieldCheck, ShieldAlert, ShieldX, Loader2 } from 'lucide-react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
-import { apiFetchDatasets } from '../../api/client'
-import type { DatasetInfo } from '../../types'
+import { apiFetchDatasets, apiFetchDatasetHealth } from '../../api/client'
+import type { DatasetInfo, DatasetHealth } from '../../types'
 
 // ── Region / provider badges ─────────────────────────────────────────────────
 
@@ -24,6 +24,57 @@ const REGION_LABELS: Record<string, string> = {
   China:    'China A-shares',
   HongKong: 'Hong Kong',
   Global:   'Crypto',
+}
+
+// ── Health badge ─────────────────────────────────────────────────────────────
+
+function HealthBadge({ health, loading }: { health: DatasetHealth | null; loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
+        <Loader2 size={10} className="animate-spin" />
+        Checking data quality…
+      </div>
+    )
+  }
+  if (!health) return null
+
+  const score  = health.overall_score
+  const pct    = (score * 100).toFixed(0)
+  const isGood = score >= 0.85
+  const isWarn = score >= 0.70
+
+  const Icon    = isGood ? ShieldCheck : isWarn ? ShieldAlert : ShieldX
+  const color   = isGood ? 'text-emerald-400' : isWarn ? 'text-amber-400' : 'text-rose-400'
+  const bgColor = isGood ? 'bg-emerald-900/30 border-emerald-800/60' : isWarn ? 'bg-amber-900/30 border-amber-800/60' : 'bg-rose-900/30 border-rose-800/60'
+  const label   = isGood ? 'Healthy' : isWarn ? 'Acceptable' : 'Low Quality'
+
+  return (
+    <div className={`flex flex-col gap-2 p-3 rounded-lg border ${bgColor}`}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Icon size={14} className={color} />
+          <span className={`text-xs font-semibold ${color}`}>Data Quality: {label}</span>
+        </div>
+        <span className={`text-sm font-mono font-bold ${color}`}>{pct}%</span>
+      </div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] text-slate-500">
+        <span>{health.n_tickers} tickers × {health.n_dates.toLocaleString()} dates</span>
+        <span className={health.n_gaps > 0 ? 'text-amber-500' : ''}>
+          {health.n_gaps} price gap{health.n_gaps !== 1 ? 's' : ''}
+        </span>
+        <span className={health.n_spikes > 0 ? 'text-amber-500' : ''}>
+          {health.n_spikes} spike{health.n_spikes !== 1 ? 's' : ''} detected
+        </span>
+        <span className={health.mean_nan_pct > 0.02 ? 'text-amber-500' : ''}>
+          NaN: {(health.mean_nan_pct * 100).toFixed(1)}% avg
+        </span>
+      </div>
+      {health.notes.length > 0 && (
+        <p className="text-[10px] text-slate-600 italic">{health.notes[0]}</p>
+      )}
+    </div>
+  )
 }
 
 // ── Ticker chip ───────────────────────────────────────────────────────────────
@@ -101,17 +152,23 @@ function DatasetDetail({
   isActive,
   startDate,
   endDate,
+  health,
+  healthLoading,
   onStartChange,
   onEndChange,
   onActivate,
+  onCheckHealth,
 }: {
   ds:            DatasetInfo
   isActive:      boolean
   startDate:     string
   endDate:       string
+  health:        DatasetHealth | null
+  healthLoading: boolean
   onStartChange: (v: string) => void
   onEndChange:   (v: string) => void
   onActivate:    () => void
+  onCheckHealth: () => void
 }) {
   const regionCls = REGION_COLORS[ds.region] ?? 'bg-slate-800 text-slate-400 border-slate-700'
 
@@ -204,6 +261,29 @@ function DatasetDetail({
         </button>
       </div>
 
+      {/* Health check section */}
+      <div className="px-6 py-4 border-b border-slate-800 shrink-0">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+            Data Quality
+          </p>
+          <button
+            onClick={onCheckHealth}
+            disabled={healthLoading}
+            className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-slate-300 transition-colors disabled:opacity-40"
+          >
+            <RefreshCw size={10} className={healthLoading ? 'animate-spin' : ''} />
+            {health ? 'Re-check' : 'Check now'}
+          </button>
+        </div>
+        <HealthBadge health={health} loading={healthLoading} />
+        {!health && !healthLoading && (
+          <p className="text-[10px] text-slate-700 mt-1">
+            Loads dataset and runs gap/spike/NaN analysis.
+          </p>
+        )}
+      </div>
+
       {/* Universe list */}
       <div className="flex-1 overflow-y-auto px-6 py-4">
         <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-3">
@@ -234,16 +314,28 @@ function EmptyDetail() {
 
 export default function DatasetView() {
   const { datasets, setDatasets, simConfig, setSimConfig, prevView, setActiveView } = useWorkspaceStore()
-  const [selected, setSelected]   = useState<DatasetInfo | null>(null)
-  const [loading, setLoading]     = useState(false)
-  const [localStart, setLocalStart] = useState(simConfig.start_date)
-  const [localEnd,   setLocalEnd]   = useState(simConfig.end_date)
+  const [selected, setSelected]       = useState<DatasetInfo | null>(null)
+  const [loading, setLoading]         = useState(false)
+  const [localStart, setLocalStart]   = useState(simConfig.start_date)
+  const [localEnd,   setLocalEnd]     = useState(simConfig.end_date)
+  const [health,     setHealth]       = useState<DatasetHealth | null>(null)
+  const [healthLoading, setHealthLoading] = useState(false)
 
-  // Keep local dates in sync when a different card is selected
+  // Reset health when a different dataset is selected
   useEffect(() => {
+    setHealth(null)
     setLocalStart(simConfig.start_date)
     setLocalEnd(simConfig.end_date)
   }, [selected])
+
+  const handleCheckHealth = () => {
+    if (!selected || healthLoading) return
+    setHealthLoading(true)
+    apiFetchDatasetHealth(selected.name, localStart, localEnd)
+      .then((r) => setHealth(r.data))
+      .catch(() => setHealth(null))
+      .finally(() => setHealthLoading(false))
+  }
 
   // Load datasets on first mount if not cached
   useEffect(() => {
@@ -360,9 +452,12 @@ export default function DatasetView() {
               isActive={selected.name === simConfig.dataset}
               startDate={localStart}
               endDate={localEnd}
+              health={health}
+              healthLoading={healthLoading}
               onStartChange={setLocalStart}
               onEndChange={setLocalEnd}
               onActivate={handleActivate}
+              onCheckHealth={handleCheckHealth}
             />
           ) : (
             <EmptyDetail />

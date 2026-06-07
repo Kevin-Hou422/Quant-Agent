@@ -2,7 +2,7 @@
 
 **基于：** `AUDIT_REPORT.md`（2026-06-01 审计）  
 **制定日期：** 2026-06-01  
-**最后更新：** 2026-06-07 v5（代码审计 + Phase 1 状态修正）  
+**最后更新：** 2026-06-07 v6（Phase 2 前端完成；新增 GET /api/datasets/{name}/health 端点）  
 **目标：** 从当前综合评分，分阶段提升至可交易水平（≥ 66%）
 
 ---
@@ -13,7 +13,7 @@
 |-------|---------|---------|------|
 | Phase 0 | 38% | ✅ **已完成** | 三个 P0 任务全部实现 |
 | Phase 1 | 44% | ⚠️ **部分完成** | 3/5 任务完成：1.3（AlphaEvolver 退役）✅ 1.5（API并发保护）✅ 1.1（冗余包转为re-export桩）✅；1.2（import风格未统一）❌ 1.4（_quick_eval重复未合并）❌ |
-| Phase 2 | 54% | ✅ **已完成** | 全部 4 个任务完成（WF框架 + Embargo + 并发加载 + 健康检查）|
+| Phase 2 | 54% | ✅ **已完成** | 全部 4 个任务完成（WF框架 + Embargo + 并发加载 + 健康检查）；前端 Phase 2 同步完成 |
 | Phase 3 | 64% | ❌ 未开始 | |
 | Phase 4 | 74% | ❌ 未开始 | |
 | Phase 5 | 82% | ❌ 未开始 | |
@@ -429,6 +429,8 @@ class AlphaStatus(Enum):
 **新增端点：**
 ```
 GET  /api/datasets                    ✅ 已实现（2026-06-07）
+GET  /api/datasets/{name}/health      ✅ 已实现（2026-06-07）
+POST /api/backtest/walk_forward       ✅ 已实现（Phase 2）
 GET  /api/alphas/dashboard
 GET  /api/alphas/{id}/ic_history
 POST /api/alphas/{id}/retrain
