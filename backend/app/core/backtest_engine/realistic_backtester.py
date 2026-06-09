@@ -591,6 +591,13 @@ class WalkForwardBacktester:
                 f" 请提供至少 {self.min_train_days + self.n_splits * 30} 个交易日的数据。"
             )
 
+        def _f(v) -> float:
+            try:
+                fv = float(v)
+                return fv if not np.isnan(fv) else 0.0
+            except Exception:
+                return 0.0
+
         bt       = RealisticBacktester(config=self.config, cost_params=self.cost_params)
         fold_rpts: List[WalkForwardFoldReport] = []
 
@@ -599,13 +606,6 @@ class WalkForwardBacktester:
                 result  = bt.run(dsl, is_data, oos_dataset=oos_data)
                 is_r    = result.is_report
                 oos_r   = result.oos_report
-
-                def _f(v) -> float:
-                    try:
-                        fv = float(v)
-                        return fv if not np.isnan(fv) else 0.0
-                    except Exception:
-                        return 0.0
 
                 is_s  = _f(is_r.sharpe_ratio)
                 oos_s = _f(oos_r.sharpe_ratio) if oos_r else 0.0

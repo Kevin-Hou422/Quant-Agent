@@ -179,12 +179,24 @@ Phase 5 ── 在线化与生命周期       ❌ 待开始
 
 ### Task 2.1 ✅ Walk-Forward 多轮验证框架
 
-**完成状态：已完成（已验证）**
+**完成状态：已完成；2026-06-09 代码审计发现 2 个 bug，已修复**
+
+**Bug 修复记录（2026-06-09）：**
+
+| Bug | 严重性 | 描述 | 修复 |
+|-----|--------|------|------|
+| OOS 未按 fold.oos_end 截断 | 严重 | `split()` 调用 `_slice_dataset(start=fold.oos_start)` 时缺少 `end=fold.oos_end`，导致每折 OOS 数据从该折起始延伸至全部数据末尾，各折 OOS Sharpe 计算于错误（更长）的时间窗口 | 新增 `end=fold.oos_end` 参数 |
+| `oos_per_fold` 除数错误 | 显著 | 使用 `available_oos // (n_splits + 1)` 而非正确的 `(n - min_train - embargo) // n_splits`，导致约 13% 数据未被任何折覆盖（600天数据中约 80 天浪费）| 修正公式；分子减去 embargo_days，分母改为 n_splits |
+
+**修复后验证（600天×10资产，n_splits=5，embargo=20）：**
+- 5 折均生成，每折 OOS=92 天（均等）
+- IS/OOS 无重叠 ✅；embargo 区域不出现在 IS 或 OOS ✅；各折 OOS 窗口不互相重叠 ✅
+- 最后一折 OOS 恰好覆盖到数据末尾（零浪费）✅
 
 **已实现内容：**
 - `data_partitioner.py` 新增 `WalkForwardPartitioner`：扩展窗口策略，`n_splits`/`embargo_days`/`min_train_days` 可配
 - `WalkForwardFold` dataclass 描述单折元信息（is_start/end、oos_start/end、embargo_days）
-- `realistic_backtester.py` 新增 `WalkForwardBacktester`：在所有折上运行 `RealisticBacktester` 并聚合
+- `realistic_backtester.py` 新增 `WalkForwardBacktester`：在所有折上运行 `RealisticBacktester` 并聚合；`_f()` 辅助函数移至循环外
 - `WalkForwardResult` dataclass：含各折明细 + `mean/std/min_oos_sharpe`、`pct_positive`、`mean_overfitting`
 - `router.py` 新增 `POST /api/backtest/walk_forward` 端点（`WalkForwardRequest`/`WalkForwardResponse`）
 - CLI `--walk-forward` / `--wf-splits` 参数，`run_realistic()` 分支执行 `WalkForwardBacktester`

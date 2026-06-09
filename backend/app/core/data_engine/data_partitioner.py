@@ -360,8 +360,8 @@ class WalkForwardPartitioner:
 
         result: List[Tuple[Dict, Dict]] = []
         for fold in folds:
-            is_data  = _slice_dataset(dataset, end=fold.is_end,    inclusive=True)
-            oos_data = _slice_dataset(dataset, start=fold.oos_start, inclusive=True)
+            is_data  = _slice_dataset(dataset, end=fold.is_end,                   inclusive=True)
+            oos_data = _slice_dataset(dataset, start=fold.oos_start, end=fold.oos_end, inclusive=True)
             result.append((is_data, oos_data))
             logger.debug("WF %s", fold)
 
@@ -375,18 +375,24 @@ class WalkForwardPartitioner:
         """
         核心逻辑：基于 dates 计算每折的起止索引。
 
-        策略：
-          - 整体 OOS 区域 = 后 (n_splits * oos_per_fold) 个交易日
-          - IS 从全局起始到各 OOS 段之前（扩展窗口）
-          - 每折 OOS 大小相等（最后一折可能略多）
+        策略（扩展窗口）：
+          - IS 从全局起始固定，末日随折数向后扩展
+          - 每折 OOS 窗口大小相等，非重叠，折间有 embargo 间隔
+          - 每折数据使用量：每折推进 oos_per_fold 个交易日；embargo 天数不计入 IS 也不计入 OOS
+
+        oos_per_fold 计算：
+          末折 OOS 末日索引 = min_train_days + n_splits * oos_per_fold + embargo_days - 1 ≤ n - 1
+          ⟹ oos_per_fold ≤ (n - min_train_days - embargo_days) / n_splits
+          ⟹ oos_per_fold = (n - min_train_days - embargo_days) // n_splits
         """
         n = len(dates)
         if n < self.min_train_days + self.embargo_days + self.n_splits:
             return []
 
-        # 可用于 OOS 的总天数 = 总天数 - 最小 IS 天数
-        available_oos = n - self.min_train_days
-        oos_per_fold  = max(1, available_oos // (self.n_splits + 1))
+        # 减去 min_train_days 和一个 embargo 间隔后，剩余天数均分给每折 OOS
+        # (embargo 只需扣减一次：每折 OOS 之间没有额外间隔，间隔只在 IS 末 → OOS 首之间)
+        available = n - self.min_train_days - self.embargo_days
+        oos_per_fold = max(1, available // self.n_splits)
         if oos_per_fold < 5:
             return []
 
