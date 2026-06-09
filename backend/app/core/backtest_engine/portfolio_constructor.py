@@ -194,6 +194,70 @@ class NeutralizationLayer:
         return pd.DataFrame(w, index=weights.index, columns=weights.columns)
 
     @staticmethod
+    def beta_neutral(
+        weights:        pd.DataFrame,
+        asset_returns:  pd.DataFrame,
+        market_returns: pd.Series,
+        window:         int = 60,
+    ) -> pd.DataFrame:
+        """
+        Beta-neutralize the weight matrix (Task 3.3).
+
+        Adjusts weights so that the portfolio's net market-beta exposure ≈ 0.
+        Uses rolling OLS Beta estimates (window trading days).
+
+        Algorithm:
+          1. Estimate beta_i(t) = Cov(r_i, r_m) / Var(r_m) over [t-window, t]
+          2. Portfolio beta = sum_i w_i(t) * beta_i(t)
+          3. Adjust by hedging out the market: w_adj = w - port_beta * (1/N)
+          4. Re-normalize to L1 = 1
+
+        Parameters
+        ----------
+        weights        : (T×N) target weight matrix
+        asset_returns  : (T×N) asset daily log returns
+        market_returns : (T,)  market index daily returns
+        window         : rolling window for beta estimation
+
+        Returns
+        -------
+        pd.DataFrame (T×N) beta-adjusted weights
+        """
+        dates   = weights.index
+        tickers = list(weights.columns)
+        T, N    = len(dates), len(tickers)
+
+        ret_arr = asset_returns.reindex(index=dates, columns=tickers).to_numpy(dtype=float)
+        mkt_arr = market_returns.reindex(dates).to_numpy(dtype=float)
+        w       = weights.to_numpy(dtype=float).copy()
+
+        # Rolling Beta: (T, N)
+        beta = np.full((T, N), 1.0)   # default beta = 1 (fully correlated with market)
+        for t in range(window, T):
+            r_m   = mkt_arr[t - window : t]
+            mask  = ~np.isnan(r_m)
+            if mask.sum() < 10:
+                continue
+            var_m = np.nanvar(r_m)
+            if var_m < 1e-12:
+                continue
+            for j in range(N):
+                r_i = ret_arr[t - window : t, j]
+                both = mask & ~np.isnan(r_i)
+                if both.sum() < 10:
+                    continue
+                beta[t, j] = float(np.cov(r_i[both], r_m[both])[0, 1] / var_m)
+
+        # Portfolio beta per day
+        port_beta = np.nansum(w * beta, axis=1, keepdims=True)   # (T, 1)
+
+        # Subtract beta exposure: w_adj = w - port_beta * (1/N) for each asset
+        w_adj = w - port_beta / N
+
+        w_adj = NeutralizationLayer._l1_normalize(w_adj)
+        return pd.DataFrame(w_adj, index=dates, columns=tickers)
+
+    @staticmethod
     def _l1_normalize(w: np.ndarray) -> np.ndarray:
         """逐行 L1 归一化；全零行保持全零。"""
         l1 = np.nansum(np.abs(w), axis=1, keepdims=True)

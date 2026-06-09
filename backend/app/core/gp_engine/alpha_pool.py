@@ -61,13 +61,16 @@ class AlphaPool:
     Parameters
     ----------
     max_size       : maximum entries retained (worst pruned on overflow)
-    corr_threshold : |ρ| >= this → new entry rejected as too similar
+    corr_threshold : |ρ| >= this → new entry rejected as too similar.
+                     Lowered from 0.90 to 0.70 (Task 3.5): allows more
+                     distinct factor families into the pool, enabling better
+                     diversification when combining alphas downstream.
     """
 
     def __init__(
         self,
         max_size:       int   = 200,
-        corr_threshold: float = 0.90,
+        corr_threshold: float = 0.70,
     ) -> None:
         self._max_size       = max_size
         self._corr_threshold = corr_threshold
@@ -126,6 +129,56 @@ class AlphaPool:
 
     def __len__(self) -> int:
         return len(self._entries)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def get_orthogonal_signals(
+        self,
+        n_components: Optional[int] = None,
+    ) -> Dict[str, np.ndarray]:
+        """
+        Return PCA-whitened signal vectors to reduce redundancy before
+        combining multiple alphas in AlphaCombiner.
+
+        Each vector is the cross-sectional mean of the rank signal across
+        IS dates — a 1-D fingerprint for the alpha's factor exposure.
+
+        Parameters
+        ----------
+        n_components : number of PCA components to retain.
+                       None (default) = min(n_entries, 10).
+
+        Returns
+        -------
+        dict[dsl → orthogonal_vector] for all pool entries that have
+        signal_vec.  If fewer than 2 entries exist, returns original vectors.
+        """
+        valid = [(e.dsl, e.signal_vec) for e in self._entries if e.signal_vec is not None]
+        if len(valid) < 2:
+            return {dsl: vec for dsl, vec in valid}
+
+        # Stack as (n_alphas, T) matrix
+        try:
+            mat = np.stack([v for _, v in valid], axis=0)   # (n_alphas, T)
+            # Impute column-wise NaN with 0 for PCA
+            mat_clean = np.where(np.isnan(mat), 0.0, mat)
+
+            k = min(n_components or 10, len(valid), mat_clean.shape[1])
+            # SVD-based whitening (sklearn not required)
+            mu  = mat_clean.mean(axis=0, keepdims=True)
+            X   = mat_clean - mu
+            _, s, Vt = np.linalg.svd(X, full_matrices=False)
+            # Project onto top-k components and scale to unit variance
+            S_inv = np.diag(1.0 / (s[:k] + 1e-9))
+            W     = S_inv @ Vt[:k]          # (k, T)
+            orth  = (X @ W.T)               # (n_alphas, k)
+
+            return {dsl: orth[i] for i, (dsl, _) in enumerate(valid)}
+        except Exception:
+            # Fall back to original vectors on any numerical failure
+            return {dsl: vec for dsl, vec in valid}
 
     # ------------------------------------------------------------------
     # Internal helpers

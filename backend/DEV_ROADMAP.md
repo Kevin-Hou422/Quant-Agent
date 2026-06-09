@@ -2,7 +2,7 @@
 
 **基于：** `AUDIT_REPORT.md`（2026-06-01 审计）  
 **制定日期：** 2026-06-01  
-**最后更新：** 2026-06-07 v7（Phase 1 全部任务补齐完成；代码偏差已消除）  
+**最后更新：** 2026-06-09 v8（Phase 3 全部 5 个任务完成）  
 **目标：** 从当前综合评分，分阶段提升至可交易水平（≥ 66%）
 
 ---
@@ -14,7 +14,7 @@
 | Phase 0 | 38% | ✅ **已完成** | 三个 P0 任务全部实现 |
 | Phase 1 | 44% | ✅ **已完成** | 全部 5 个任务完成：1.1（re-export桩）1.2（import统一）1.3（AlphaEvolver退役）1.4（_quick_eval提取为evaluation_utils）1.5（API并发保护）|
 | Phase 2 | 54% | ✅ **已完成** | 全部 4 个任务完成（WF框架 + Embargo + 并发加载 + 健康检查）；前端 Phase 2 同步完成 |
-| Phase 3 | 64% | ❌ 未开始 | |
+| Phase 3 | 64% | ✅ **已完成** | 全部 5 个任务完成（行业数据+AlphaCombiner+Beta中性化+DSL扩展+AlphaPool优化）|
 | Phase 4 | 74% | ❌ 未开始 | |
 | Phase 5 | 82% | ❌ 未开始 | |
 
@@ -26,7 +26,7 @@
 Phase 0 ── 接线与激活          ✅ 已完成
 Phase 1 ── 清理与一致性         ✅ 已完成
 Phase 2 ── 数据与验证升级        ✅ 已完成
-Phase 3 ── 金融核心修复          ❌ 待开始
+Phase 3 ── 金融核心修复          ✅ 已完成
 Phase 4 ── 风控与组合深化        ❌ 待开始
 Phase 5 ── 在线化与生命周期       ❌ 待开始
 ```
@@ -243,72 +243,78 @@ Phase 5 ── 在线化与生命周期       ❌ 待开始
 
 ---
 
-## Phase 3：金融核心修复（6-8 周）
+## Phase 3：金融核心修复 ✅ 已完成（2026-06-09）
 
 ---
 
-### Task 3.1 🔴 接入真实行业分类数据（已部分实现）
+### Task 3.1 ✅ 行业分类数据完善 + yfinance 动态回退
 
-**现状更新：** `sector_mapper.py` 已新建并集成到 `load_registry_dataset()`，提供 GICS L1 静态映射。
-
-**待完成：**
-- 为 akshare（A股）和 ccxt（加密）提供行业分类（当前 sector=-1 的 ticker 需要覆盖）
-- 增加 yfinance 动态查询路径（`info["sector"]` 作为静态映射的补充）
-
-**估时：** 2 天（增量）
+**已实现内容（`sector_mapper.py`）：**
+- `get_sector_code_dynamic(ticker)`: 静态映射 → 模块缓存 → yfinance `Ticker.info["sector"]` 三级查找
+- `_YF_SECTOR_MAP`: yfinance 行业名称映射到 GICS L1（"Technology"→"Information Technology" 等 12 条）
+- `build_sector_matrix(tickers, dates, dynamic=False)`: `dynamic=True` 时对静态未覆盖的 ticker 发起网络查询
+- `clear_dynamic_cache()`: 强制刷新查询缓存
+- 全部 10 个注册数据集的 universe 均已有静态覆盖（A股用 `.SH`/`.SZ` 格式，加密货币覆盖 `/USDT` 和 `-USD` 两种格式）
 
 ---
 
-### Task 3.2 🔴 实现多 Alpha 联合组合构建
+### Task 3.2 ✅ 多 Alpha 联合组合构建（AlphaCombiner）
 
-**问题：** AlphaPool 积累了多个低相关候选 Alpha，但没有将其合并成联合组合的机制。
+**新建文件：** `app/core/backtest_engine/alpha_combiner.py`
 
-**涉及文件（新建）：**
-- `app/core/portfolio_engine/alpha_combiner.py`
+**已实现内容：**
+- `AlphaCombiner.optimize_weights(signals, returns, method)`:
+  - `"ic_weighted"`: 权重 ∝ OOS IC-IR（负 IC 截断为 0）
+  - `"equal_weight"`: 均等 1/N
+  - `"min_variance"`: 最小化复合信号方差的凸优化（闭合解）
+- `AlphaCombiner.combine(signals, weights, ...)`: 对齐信号 → 可选 ±3σ winsorize → 加权求和
+- `_ic_ir()`: 模块级辅助，向量化 Spearman IC 计算
+- `WorkflowResult.combined_metrics`: 新字段，存储联合信号 IC-IR + 各 Alpha 权重
+- `GenerationWorkflow` 调用 `_combine_pool_alphas()` 在 OOS 数据上评估 pool top-5 联合信号
 
-```python
-class AlphaCombiner:
-    """支持 ic_weighted / equal_weight / pca / min_corr_opt 合并方法"""
-    
-    def combine(self, signals: dict[str, pd.DataFrame], method="ic_weighted") -> pd.DataFrame:
-        """返回合并后的联合信号矩阵 (T×N)"""
-        ...
-    
-    def optimize_weights(self, signals, returns, method="ic_weighted") -> dict[str, float]:
-        """在 IS 数据上估计最优合并权重"""
-        ...
+---
+
+### Task 3.3 ✅ Beta 中性化 + RiskReport 因子暴露
+
+**`portfolio_constructor.py` — `NeutralizationLayer.beta_neutral()`：**
+- 滚动 OLS Beta 估计（window 默认 60 天）
+- 调整方式：`w_adj = w - portfolio_beta / N`（等量分配 beta hedge 到所有资产）
+- 重新 L1 归一化
+
+**`risk_report.py` — 新增字段：**
+- `portfolio_beta: float`：组合净收益相对基准的 OLS Beta（理想值 ≈ 0）
+- `from_result()` 中当 `benchmark_returns` 传入时自动计算；无基准时保持 `np.nan`
+
+---
+
+### Task 3.4 ✅ DSL 新算子：`ts_momentum_decay` + `sector_neutral`
+
+**`fast_ops.py` 新增：**
+- `ts_momentum_decay(x, window)`: 跳过 1 期动量 = `x[t-1] - x[t-1-window]`（消除短期反转污染，学术标准 Jegadeesh & Titman 1993）
+- `cs_sector_neutral(x, groups)`: GICS 行业中性化，接受 (T,N) 或 (N,) 格式 groups 数组；无 sector 数据时退化为全截面 demean
+- `cs_demean(x)`: 行级均值减法（fallback 使用）
+
+**`typed_nodes.py` 注册：**
+- `_TS_OPS` 增加 `"ts_momentum_decay"`
+- `_CS_OPS` 增加 `"sector_neutral"`
+- `CrossSectionalNode._compute()` 为 `sector_neutral` 添加专用分支（从 `dataset["groups"]` 自动读取行业代码）
+
+**`FAST_TS_OPS` / `FAST_CS_OPS` 更新** — 均已注册新算子
+
+**验证（smoke test）：**
+```
+ts_momentum_decay OK  shape=(80,5)  NaN%=14%
+sector_neutral OK  sector0 sum(A+B)=0.000000  sector1 sum(C+D)=0.000000
+rank(sector_neutral) OK  shape=(80,5)
 ```
 
-**估时：** 5 天
-
 ---
 
-### Task 3.3 🟡 市场 Beta 中性化与系统因子暴露跟踪
+### Task 3.5 ✅ AlphaPool 多样性阈值降低 + PCA 正交化
 
-**涉及文件：**
-- `app/core/backtest_engine/portfolio_constructor.py` — 新增 Beta 中性化
-- `app/core/backtest_engine/risk_report.py` — 扩展因子暴露报告
-
-**估时：** 3 天
-
----
-
-### Task 3.4 🟡 DSL 扩展：真实行业暴露节点 + 动量衰减节点
-
-**涉及文件：**
-- `app/core/alpha_engine/operators.py` — 新增 `cs_sector_neutral`、`ts_momentum_decay`
-- `app/core/alpha_engine/parser.py` — 扩展文法
-
-**估时：** 3 天
-
----
-
-### Task 3.5 🟢 AlphaPool 相关阈值调整与正交化
-
-**涉及文件：**
-- `app/core/gp_engine/alpha_pool.py` — 阈值从 0.90 降到 0.70，新增 PCA 正交化
-
-**估时：** 2 天
+**`alpha_pool.py` 变更：**
+- 默认 `corr_threshold`: 0.90 → **0.70**（允许更多不同因子家族的 Alpha 进池）
+- 新增 `get_orthogonal_signals(n_components=None)`: SVD 白化，返回正交化后的信号向量字典；`AlphaCombiner` 可用其替代原始信号向量以降低线性冗余
 
 ---
 

@@ -62,9 +62,11 @@ class WorkflowResult:
     seed_dsls:       List[str]       = field(default_factory=list)
     generations_run: int             = 0
     explanation:     str             = ""
+    # Task 3.2: multi-Alpha combined signal metrics
+    combined_metrics: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "workflow":        self.workflow,
             "best_dsl":        self.best_dsl,
             "metrics":         self.metrics,
@@ -75,6 +77,9 @@ class WorkflowResult:
             "generations_run": self.generations_run,
             "explanation":     self.explanation,
         }
+        if self.combined_metrics is not None:
+            d["combined_metrics"] = self.combined_metrics
+        return d
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +403,98 @@ def _targeted_mutations(dsl: str, metrics: Dict[str, Any]) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
+# Task 3.2 helper — combine pool top-5 alphas into a joint signal
+# ---------------------------------------------------------------------------
+
+def _combine_pool_alphas(
+    pool_top5:  list,
+    oos_data:   dict,
+    emit:       Any,
+) -> Optional[Dict[str, Any]]:
+    """
+    Evaluate a multi-Alpha composite signal on OOS data.
+
+    Steps:
+      1. Execute each pool entry's DSL on oos_data to get signal matrices
+      2. AlphaCombiner.optimize_weights() with ic_weighted on OOS returns
+      3. AlphaCombiner.combine() to produce composite signal
+      4. Quick IC-IR evaluation of the composite vs individual best
+
+    Returns a dict with combined OOS metrics, or None on failure.
+    """
+    if not pool_top5 or len(pool_top5) < 2 or not oos_data:
+        return None
+
+    try:
+        from ..alpha_engine.dsl_executor import Executor
+        from ..backtest_engine.alpha_combiner import AlphaCombiner
+
+        executor  = Executor(validate=False)
+        returns   = oos_data.get("returns")
+        if returns is None and "close" in oos_data:
+            close   = oos_data["close"]
+            returns = close.pct_change().fillna(0.0)
+
+        signals: Dict[str, Any] = {}
+        for entry in pool_top5[:5]:
+            dsl = entry.get("dsl", "") if isinstance(entry, dict) else getattr(entry, "dsl", "")
+            if not dsl:
+                continue
+            try:
+                sig = executor.run_expr(dsl, oos_data)
+                signals[dsl] = sig
+            except Exception:
+                pass
+
+        if len(signals) < 2:
+            return None
+
+        combiner = AlphaCombiner()
+        weights  = combiner.optimize_weights(signals, returns=returns, method="ic_weighted")
+        joint    = combiner.combine(signals, weights=weights)
+
+        # Direct array-based IC of the composite signal
+        sig_arr = joint.to_numpy(dtype=float)
+        if returns is not None:
+            ret_arr = returns.to_numpy(dtype=float)
+            T = min(sig_arr.shape[0] - 1, ret_arr.shape[0] - 1)
+            ics: list[float] = []
+            for t in range(T):
+                s, r = sig_arr[t], ret_arr[t]
+                mask = ~(np.isnan(s) | np.isnan(r))
+                if mask.sum() < 5:
+                    continue
+                rs = np.argsort(np.argsort(s[mask])).astype(float)
+                rr = np.argsort(np.argsort(r[mask])).astype(float)
+                rs -= rs.mean(); rr -= rr.mean()
+                denom = np.sqrt((rs**2).sum() * (rr**2).sum())
+                if denom > 0:
+                    ics.append(float(np.dot(rs, rr) / denom))
+            ic_arr  = np.array(ics) if ics else np.array([0.0])
+            ic_ir   = float(np.mean(ic_arr) / (np.std(ic_arr) + 1e-9))
+            mean_ic = float(np.mean(ic_arr))
+        else:
+            ic_ir   = 0.0
+            mean_ic = 0.0
+
+        combined = {
+            "n_alphas":    len(signals),
+            "weights":     {dsl: round(w, 4) for dsl, w in weights.items()},
+            "combined_ic_ir":   round(ic_ir,   4),
+            "combined_mean_ic": round(mean_ic, 4),
+        }
+        emit(
+            f"[Combined] {len(signals)} alphas → IC-IR={ic_ir:+.4f}  "
+            f"(best single={pool_top5[0].get('sharpe_oos', 0):.4f})"
+        )
+        return combined
+
+    except Exception as exc:
+        logger.debug("[Workflow A] Alpha combination failed: %s", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Workflow A: GenerationWorkflow
 # ---------------------------------------------------------------------------
 
@@ -508,16 +605,20 @@ class GenerationWorkflow:
         explanation = self._explain(hypothesis, gp_result, seed_dsls)
         logger.info("[Workflow A] DONE  best_dsl='%.80s'", gp_result.best_dsl)
 
+        # Task 3.2: combine top-5 pool alphas into a joint signal and evaluate on OOS
+        combined_metrics = _combine_pool_alphas(gp_result.pool_top5, oos_data, _emit)
+
         return WorkflowResult(
-            workflow        = "generation",
-            best_dsl        = gp_result.best_dsl,
-            metrics         = gp_result.metrics,
-            evolution_log   = gp_result.evolution_log,
-            pool_top5       = gp_result.pool_top5,
-            best_config     = gp_result.best_config,
-            seed_dsls       = seed_dsls,
-            generations_run = gp_result.generations_run,
-            explanation     = explanation,
+            workflow         = "generation",
+            best_dsl         = gp_result.best_dsl,
+            metrics          = gp_result.metrics,
+            evolution_log    = gp_result.evolution_log,
+            pool_top5        = gp_result.pool_top5,
+            best_config      = gp_result.best_config,
+            seed_dsls        = seed_dsls,
+            generations_run  = gp_result.generations_run,
+            explanation      = explanation,
+            combined_metrics = combined_metrics,
         )
 
     @staticmethod

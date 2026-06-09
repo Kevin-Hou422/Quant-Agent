@@ -23,10 +23,16 @@ GICS L1 代码映射：
 
 from __future__ import annotations
 
-from typing import Dict, List
+import logging
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+# Module-level cache for dynamically looked-up sector names (avoids repeated API calls)
+_DYNAMIC_CACHE: Dict[str, Optional[str]] = {}
 
 # ---------------------------------------------------------------------------
 # GICS L1 名称 → 整数代码
@@ -330,8 +336,8 @@ _STATIC_SECTOR_MAP: Dict[str, str] = {
 
 def get_sector_code(ticker: str) -> int:
     """
-    返回 ticker 的整数 GICS 行业代码。
-    未知 ticker 返回 -1。
+    返回 ticker 的整数 GICS 行业代码（静态映射）。
+    未知 ticker 返回 -1；不触发网络请求。
     """
     sector_name = _STATIC_SECTOR_MAP.get(ticker)
     if sector_name is None:
@@ -339,31 +345,103 @@ def get_sector_code(ticker: str) -> int:
     return SECTOR_CODES.get(sector_name, -1)
 
 
+def get_sector_code_dynamic(ticker: str) -> int:
+    """
+    返回 ticker 的整数 GICS 行业代码。
+
+    查找顺序：
+      1. 静态映射（_STATIC_SECTOR_MAP）— 无网络，最快
+      2. 模块级缓存（_DYNAMIC_CACHE）— 本次进程内已查询过
+      3. yfinance Ticker.info["sector"] — 单次网络请求，结果写入缓存
+
+    对于无法识别的 ticker（yfinance 也无 sector 信息）返回 -1 并缓存，
+    避免后续重复发起无效请求。
+    """
+    # 1. Static map (fast path)
+    static = _STATIC_SECTOR_MAP.get(ticker)
+    if static is not None:
+        return SECTOR_CODES.get(static, -1)
+
+    # 2. Dynamic cache
+    if ticker in _DYNAMIC_CACHE:
+        cached = _DYNAMIC_CACHE[ticker]
+        return SECTOR_CODES.get(cached, -1) if cached else -1
+
+    # 3. yfinance lookup (network call, timeout-protected)
+    sector_name: Optional[str] = None
+    try:
+        import yfinance as yf
+        info = yf.Ticker(ticker).info
+        raw = info.get("sector", None)
+        if raw:
+            # yfinance returns "Technology", "Financial Services", etc.
+            # Map common yfinance sector names to our GICS L1 names
+            sector_name = _YF_SECTOR_MAP.get(raw, raw)
+            if sector_name not in SECTOR_CODES:
+                sector_name = None
+    except Exception as exc:
+        logger.debug("yfinance sector lookup failed for '%s': %s", ticker, exc)
+
+    _DYNAMIC_CACHE[ticker] = sector_name
+    if sector_name:
+        logger.debug("Dynamic sector: '%s' → '%s'", ticker, sector_name)
+    else:
+        logger.debug("No sector found for '%s', using -1", ticker)
+
+    return SECTOR_CODES.get(sector_name, -1) if sector_name else -1
+
+
+# Mapping from yfinance sector labels to GICS L1 names used in SECTOR_CODES
+_YF_SECTOR_MAP: Dict[str, str] = {
+    "Technology":             "Information Technology",
+    "Financial Services":     "Financials",
+    "Financial":              "Financials",
+    "Healthcare":             "Healthcare",
+    "Energy":                 "Energy",
+    "Consumer Cyclical":      "Consumer Discretionary",
+    "Consumer Defensive":     "Consumer Staples",
+    "Industrials":            "Industrials",
+    "Communication Services": "Communication Services",
+    "Basic Materials":        "Materials",
+    "Real Estate":            "Real Estate",
+    "Utilities":              "Utilities",
+}
+
+
 def get_sector_name(ticker: str) -> str:
     """返回 ticker 的 GICS L1 行业名称，未知时返回 'Unknown'。"""
     return _STATIC_SECTOR_MAP.get(ticker, "Unknown")
 
 
+def clear_dynamic_cache() -> None:
+    """清除 yfinance 动态查询缓存（测试 / 强制刷新时使用）。"""
+    _DYNAMIC_CACHE.clear()
+
+
 def build_sector_matrix(
     tickers: List[str],
     dates: pd.DatetimeIndex,
+    dynamic: bool = False,
 ) -> pd.DataFrame:
     """
     构建 (T × N) 行业代码矩阵。
 
     行为日期，列为 ticker，值为整数 GICS L1 代码。
-    未知 ticker 的代码为 -1。
+    未知 ticker 的代码为 -1（静态映射未覆盖时）。
 
     Parameters
     ----------
     tickers : 资产代码列表
     dates   : 时间索引（DatetimeIndex）
+    dynamic : False（默认）= 仅使用静态映射；
+              True = 对静态未覆盖的 ticker 额外尝试 yfinance 动态查询
 
     Returns
     -------
     pd.DataFrame (T × N)，dtype=float（与其他字段保持一致）
     """
-    codes = np.array([get_sector_code(t) for t in tickers], dtype=float)
+    getter = get_sector_code_dynamic if dynamic else get_sector_code
+    codes  = np.array([getter(t) for t in tickers], dtype=float)
     # 行业代码在时间维度上为静态（不随日期变化），广播为 (T, N)
     data = np.tile(codes, (len(dates), 1))
     return pd.DataFrame(data, index=dates, columns=tickers)

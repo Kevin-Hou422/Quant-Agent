@@ -607,6 +607,58 @@ def group_neutralize(x: np.ndarray, groups: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# New operators (Task 3.4)
+# ---------------------------------------------------------------------------
+
+def ts_momentum_decay(x: np.ndarray, window: int) -> np.ndarray:
+    """
+    Skip-1 momentum: return from t-window-1 to t-1, excluding the most
+    recent period.  Eliminates the short-term reversal that contaminates
+    raw momentum signals.
+
+    Equivalent to: ts_delay(ts_delta(x, window), 1) = x[t-1] - x[t-1-window]
+
+    Academic reference: Jegadeesh & Titman (1993) standard 12-1 momentum uses
+    the prior 12 months' return while skipping the most recent month to avoid
+    short-term reversal contamination.
+    """
+    delayed = ts_delay(x, 1)        # x[t-1]
+    return ts_delta(delayed, window)  # x[t-1] - x[t-1-window]
+
+
+def cs_demean(x: np.ndarray) -> np.ndarray:
+    """Subtract cross-sectional mean per row (pure demean, no scaling)."""
+    mu = np.nanmean(x, axis=1, keepdims=True)
+    return x - mu
+
+
+def cs_sector_neutral(x: np.ndarray, groups: np.ndarray) -> np.ndarray:
+    """
+    Sector-neutralized cross-sectional signal.
+
+    Subtracts the within-sector (GICS) mean from each asset's signal,
+    producing a signal with zero net exposure to each sector.
+
+    Uses the dataset['groups'] field which carries real GICS L1 integer
+    codes after Phase 0 real-data activation.
+
+    Functionally equivalent to ind_neutralize(x, groups); named separately
+    to express explicit financial intent in DSL expressions.
+
+    Parameters
+    ----------
+    x      : (T, N) signal array
+    groups : (T, N) or (N,) integer sector-code array.
+             GICS codes are static so if 2-D, row 0 is used as the grouping
+             vector (same assignment for every time step).
+    """
+    g = np.asarray(groups)
+    # ind_neutralize expects a 1-D (N,) group vector
+    groups_1d = g[0] if g.ndim == 2 else g
+    return ind_neutralize(x, groups_1d)
+
+
+# ---------------------------------------------------------------------------
 # Advanced / Conditional Operators
 # ---------------------------------------------------------------------------
 
@@ -652,37 +704,39 @@ def op_not(x: np.ndarray) -> np.ndarray:
 
 # Single-input TS ops: fn(x, window)
 FAST_TS_OPS = {
-    "ts_mean":         bn_ts_mean,
-    "ts_std":          bn_ts_std,
-    "ts_var":          bn_ts_var,
-    "ts_sum":          bn_ts_sum,
-    "ts_max":          bn_ts_max,
-    "ts_min":          bn_ts_min,
-    "ts_rank":         bn_ts_rank,
-    "ts_decay_linear": ts_decay_linear,
-    "ts_delta":        ts_delta,
-    "ts_delay":        ts_delay,
-    "ts_argmax":       ts_argmax,
-    "ts_argmin":       ts_argmin,
-    "ts_zscore":       ts_zscore,
-    "ts_skew":         ts_skew,
-    "ts_kurt":         ts_kurt,
-    "ts_entropy":      ts_entropy,
+    "ts_mean":            bn_ts_mean,
+    "ts_std":             bn_ts_std,
+    "ts_var":             bn_ts_var,
+    "ts_sum":             bn_ts_sum,
+    "ts_max":             bn_ts_max,
+    "ts_min":             bn_ts_min,
+    "ts_rank":            bn_ts_rank,
+    "ts_decay_linear":    ts_decay_linear,
+    "ts_delta":           ts_delta,
+    "ts_delay":           ts_delay,
+    "ts_argmax":          ts_argmax,
+    "ts_argmin":          ts_argmin,
+    "ts_zscore":          ts_zscore,
+    "ts_skew":            ts_skew,
+    "ts_kurt":            ts_kurt,
+    "ts_entropy":         ts_entropy,
+    "ts_momentum_decay":  ts_momentum_decay,   # Task 3.4
     # Two-input ops — called as fn(x, y, window) via TimeSeriesNode._second_child
-    "ts_corr":         ts_corr,
-    "ts_cov":          ts_cov,
+    "ts_corr":            ts_corr,
+    "ts_cov":             ts_cov,
 }
 
 # Two-input TS ops requiring a second child series
 _TWO_INPUT_TS_OPS = frozenset({"ts_corr", "ts_cov"})
 
 FAST_CS_OPS = {
-    "rank":            cs_rank,
-    "zscore":          cs_zscore,
-    "scale":           cs_scale,
-    "ind_neutralize":  ind_neutralize,
-    "winsorize":       cs_winsorize,
-    "normalize":       cs_normalize,
+    "rank":             cs_rank,
+    "zscore":           cs_zscore,
+    "scale":            cs_scale,
+    "ind_neutralize":   ind_neutralize,
+    "sector_neutral":   cs_sector_neutral,     # Task 3.4
+    "winsorize":        cs_winsorize,
+    "normalize":        cs_normalize,
 }
 
 FAST_GROUP_OPS = {

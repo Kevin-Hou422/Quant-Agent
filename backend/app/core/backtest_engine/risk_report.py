@@ -65,6 +65,10 @@ class RiskReport:
     tracking_error:     float = np.nan
     information_ratio:  float = np.nan
 
+    # ---- Task 3.3: 组合自身 Beta 暴露（市场中性化质量指标）----
+    # 理想值 ≈ 0（完全市场中性）；可用于判断 NeutralizationLayer.beta_neutral() 效果
+    portfolio_beta:      float = np.nan
+
     # ---- O2: 压力测试 ----
     stress_test:        Optional[dict] = field(default=None, repr=False)
 
@@ -132,6 +136,22 @@ class RiskReport:
         if benchmark_returns is not None:
             bench_metrics = pa.benchmark_analysis(benchmark_returns)
 
+        # Task 3.3: 组合自身 Beta — 净收益与基准（或等权市场）的 OLS beta
+        portfolio_beta = np.nan
+        if benchmark_returns is not None:
+            try:
+                net_r = result.net_returns.reindex(benchmark_returns.index).dropna()
+                mkt_r = benchmark_returns.reindex(net_r.index).dropna()
+                common = net_r.index.intersection(mkt_r.index)
+                if len(common) >= 20:
+                    x = mkt_r.loc[common].to_numpy(dtype=float)
+                    y = net_r.loc[common].to_numpy(dtype=float)
+                    var_m = float(np.var(x))
+                    if var_m > 1e-12:
+                        portfolio_beta = float(np.cov(y, x)[0, 1] / var_m)
+            except Exception:
+                pass
+
         # O2: 压力测试子区间分析
         stress = pa.stress_test()
 
@@ -166,6 +186,7 @@ class RiskReport:
             benchmark_ann_ret  = bench_metrics.get("benchmark_ann_ret", np.nan),
             tracking_error     = bench_metrics.get("tracking_error",    np.nan),
             information_ratio  = bench_metrics.get("information_ratio", np.nan),
+            portfolio_beta     = portfolio_beta,
             stress_test        = stress,
             decile_returns     = decile_ret,
             equity_curve       = result.equity_curve,

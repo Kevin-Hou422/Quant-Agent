@@ -173,6 +173,8 @@ _TS_OPS = frozenset({
     # Extended single-input
     "ts_argmax", "ts_argmin", "ts_zscore",
     "ts_skew", "ts_kurt", "ts_entropy",
+    # Task 3.4: skip-1 momentum (removes short-term reversal bias)
+    "ts_momentum_decay",
     # Two-input (require second_child)
     "ts_corr", "ts_cov",
 })
@@ -240,6 +242,7 @@ class TimeSeriesNode(Node):
 
 _CS_OPS = frozenset({
     "rank", "zscore", "scale", "ind_neutralize",
+    "sector_neutral",   # Task 3.4: GICS-sector neutralization using dataset['groups']
     "winsorize", "normalize",
 })
 
@@ -273,6 +276,15 @@ class CrossSectionalNode(Node):
         fn = FAST_CS_OPS[self.op]
         if self.op == "ind_neutralize":
             groups = self.params.get("groups")
+            return fn(x, groups)
+        if self.op == "sector_neutral":
+            # Reads GICS sector codes from dataset["groups"] (set by dsl_executor
+            # from dataset["sector"] when real sector data is present).
+            # Falls back to full cross-sectional demean when sector data is absent.
+            groups = dataset.get("groups")
+            if groups is None:
+                from .fast_ops import cs_demean
+                return cs_demean(x)
             return fn(x, groups)
         if self.op == "winsorize":
             k = self.params.get("k", 3.0)
