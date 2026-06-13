@@ -37,6 +37,9 @@ export default function MetricsGrid() {
   const oos = simulationResult.oos_metrics ?? {}
   const score = simulationResult.overfitting_score ?? 0
 
+  // FE-3.2: portfolio beta — from is_metrics or oos_metrics (shown only when non-null)
+  const portfolioBeta = (is as any).portfolio_beta ?? (oos as any).portfolio_beta ?? null
+
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
@@ -77,7 +80,36 @@ export default function MetricsGrid() {
         </tbody>
       </table>
 
-      {simulationResult.ic_decay && (
+      {/* FE-3.2: Risk Exposure section — shown only when portfolio_beta is available */}
+      {portfolioBeta != null && !isNaN(portfolioBeta) && (
+        <div className="border-t border-slate-800 pt-2">
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+            Risk Exposure
+          </p>
+          <div className="flex items-center justify-between text-xs py-1.5">
+            <span className="text-slate-400">Market Beta (β)</span>
+            <span className={`font-mono font-semibold ${
+              Math.abs(portfolioBeta) < 0.1
+                ? 'text-emerald-400'
+                : Math.abs(portfolioBeta) < 0.3
+                  ? 'text-amber-400'
+                  : 'text-rose-400'
+            }`}>
+              {portfolioBeta.toFixed(3)}
+            </span>
+          </div>
+          <p className="text-[10px] text-slate-600 mt-1">
+            {Math.abs(portfolioBeta) < 0.1
+              ? '✓ Near market-neutral'
+              : Math.abs(portfolioBeta) < 0.3
+                ? '⚠ Moderate market exposure'
+                : '✗ High market exposure — consider beta_neutral()'}
+          </p>
+        </div>
+      )}
+
+      {/* IC Decay section */}
+      {simulationResult.ic_decay && Object.keys(simulationResult.ic_decay).length > 0 && (
         <div className="mt-1">
           <p className="text-xs text-slate-500 mb-1.5">IC Decay</p>
           <div className="flex gap-3">

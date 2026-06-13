@@ -72,6 +72,8 @@ export interface SimMetrics {
   ann_turnover?: number | null
   ic_decay_t1?: number | null
   ic_decay_t5?: number | null
+  // Task 3.3: portfolio beta vs market benchmark (null when no benchmark provided)
+  portfolio_beta?: number | null
 }
 
 export interface SimResult {
@@ -91,6 +93,25 @@ export interface SimResult {
   split_date?: string | null
 }
 
+/** Single entry from AlphaPool top-5 (Task 3.2) */
+export interface PoolEntry {
+  dsl:               string
+  fitness:           number
+  sharpe_is:         number
+  sharpe_oos:        number
+  turnover:          number
+  overfitting_score: number
+  generation:        number
+}
+
+/** Combined multi-Alpha signal metrics (Task 3.2 AlphaCombiner) */
+export interface CombinedAlphaMetrics {
+  n_alphas:           number
+  weights:            Record<string, number>   // {dsl: ic_weighted_weight}
+  combined_ic_ir:     number
+  combined_mean_ic:   number
+}
+
 /** Response from /api/workflow/generate and /api/workflow/optimize */
 export interface WorkflowResponse {
   workflow:          string
@@ -104,7 +125,7 @@ export interface WorkflowResponse {
     best_dsl:         string
     mean_fitness:     number
   }>
-  pool_top5:         Array<Record<string, unknown>>
+  pool_top5:         PoolEntry[]
   best_config:       Record<string, unknown> | null
   seed_dsls:         string[]
   generations_run:   number
@@ -114,6 +135,8 @@ export interface WorkflowResponse {
   split_date:        string | null
   overfitting_score: number
   is_overfit:        boolean
+  // Task 3.2: multi-Alpha combined signal (present when pool has ≥ 2 entries)
+  combined_metrics?: CombinedAlphaMetrics | null
 }
 
 export interface WalkForwardFoldReport {

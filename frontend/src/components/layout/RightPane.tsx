@@ -2,14 +2,19 @@ import PnLChart from '../analysis/PnLChart'
 import MetricsGrid from '../analysis/MetricsGrid'
 import OverfitBadge from '../analysis/OverfitBadge'
 import WalkForwardChart from '../analysis/WalkForwardChart'
+import AlphaPoolPanel from '../analysis/AlphaPoolPanel'
 import { useWorkspaceStore } from '../../store/workspaceStore'
-import { BarChart2, GitBranch } from 'lucide-react'
+import { BarChart2, GitBranch, Layers } from 'lucide-react'
 
 export default function RightPane() {
-  const { simulationResult, walkForwardResult, analysisTab, setAnalysisTab } = useWorkspaceStore()
+  const {
+    simulationResult, walkForwardResult, workflowResult,
+    analysisTab, setAnalysisTab,
+  } = useWorkspaceStore()
 
   const hasBacktest  = simulationResult !== null
   const hasWalkFwd   = walkForwardResult !== null
+  const hasPool      = workflowResult !== null && (workflowResult.pool_top5?.length ?? 0) > 0
 
   return (
     <aside className="h-full flex flex-col bg-slate-900 border-l border-slate-800 overflow-hidden">
@@ -27,6 +32,7 @@ export default function RightPane() {
           Backtest
           {hasBacktest && <OverfitBadge score={simulationResult!.overfitting_score} inline />}
         </button>
+
         <button
           onClick={() => setAnalysisTab('walkforward')}
           className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
@@ -47,6 +53,24 @@ export default function RightPane() {
             </span>
           )}
         </button>
+
+        {/* FE-3.1: Pool tab — shows AlphaPool top-5 + combined signal metrics */}
+        <button
+          onClick={() => setAnalysisTab('pool')}
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
+            analysisTab === 'pool'
+              ? 'bg-slate-800 text-violet-400'
+              : 'text-slate-500 hover:text-slate-300'
+          }`}
+        >
+          <Layers size={12} />
+          Pool
+          {hasPool && (
+            <span className="ml-1 text-[9px] font-semibold rounded px-1 py-0.5 bg-violet-900/60 text-violet-400">
+              {workflowResult!.pool_top5.length}
+            </span>
+          )}
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto flex flex-col gap-2 p-2">
@@ -62,8 +86,10 @@ export default function RightPane() {
               <p>Run a backtest or send a chat<br/>message to see analysis here.</p>
             </div>
           )
-        ) : (
+        ) : analysisTab === 'walkforward' ? (
           <WalkForwardChart />
+        ) : (
+          <AlphaPoolPanel />
         )}
       </div>
     </aside>

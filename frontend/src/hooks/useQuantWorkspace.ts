@@ -280,9 +280,15 @@ export function useQuantWorkspace() {
       })
 
       if (finalResult) {
-        const { dsl, metrics } = finalResult as any
+        const r = finalResult as any
+        const { dsl, metrics } = r
         store.finalizeStreamingMessage(streamId, { dsl, metrics, type: 'message' })
         if (dsl) store.setEditorDsl(dsl)
+        // Capture pool top-5 if the chat result came from a GP workflow
+        if (r.pool_top5?.length >= 1) {
+          store.setWorkflowResult(r)
+          store.setAnalysisTab('pool')
+        }
         store.setStatus('ready')
       } else {
         store.finalizeStreamingMessage(streamId)
@@ -473,6 +479,20 @@ export function useQuantWorkspace() {
           pnl_oos:           wf.pnl_oos  ?? [],
           split_date:        wf.split_date ?? null,
         })
+
+        // FE-3.1: store full workflow result (pool_top5 + combined_metrics)
+        store.setWorkflowResult(wf as any)
+
+        // Show pool tab if pool has ≥ 2 entries (combined metrics available)
+        if ((wf.pool_top5?.length ?? 0) >= 1) {
+          store.setAnalysisTab('pool')
+          const cm = (wf as any).combined_metrics
+          if (cm) {
+            store.appendLog(
+              `[Combined] ${cm.n_alphas} alphas → IC-IR=${cm.combined_ic_ir?.toFixed(4)}`
+            )
+          }
+        }
 
         if (wf.best_dsl && wf.best_dsl !== dsl) {
           store.newEmptyTab()

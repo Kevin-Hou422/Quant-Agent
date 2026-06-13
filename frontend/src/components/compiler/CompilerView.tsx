@@ -8,25 +8,29 @@ import ConfigModal from './ConfigModal'
 // ── DSL operator catalogue with documentation ────────────────────────────────
 
 const TS_OPS = [
-  { name: 'ts_mean',         doc: 'ts_mean(x, window) — Rolling mean over past `window` days.' },
-  { name: 'ts_std',          doc: 'ts_std(x, window) — Rolling standard deviation.' },
-  { name: 'ts_sum',          doc: 'ts_sum(x, window) — Rolling sum over past `window` days.' },
-  { name: 'ts_delta',        doc: 'ts_delta(x, window) — x[t] - x[t-window].' },
-  { name: 'ts_delay',        doc: 'ts_delay(x, d) — Lag x by d days.' },
-  { name: 'ts_rank',         doc: 'ts_rank(x, window) — Time-series percentile rank.' },
-  { name: 'ts_max',          doc: 'ts_max(x, window) — Rolling maximum.' },
-  { name: 'ts_min',          doc: 'ts_min(x, window) — Rolling minimum.' },
-  { name: 'ts_decay_linear', doc: 'ts_decay_linear(x, window) — Linearly-weighted decay.' },
-  { name: 'ts_corr',         doc: 'ts_corr(x, y, window) — Rolling correlation between x and y.' },
+  { name: 'ts_mean',            doc: 'ts_mean(x, window) — Rolling mean over past `window` days.' },
+  { name: 'ts_std',             doc: 'ts_std(x, window) — Rolling standard deviation.' },
+  { name: 'ts_sum',             doc: 'ts_sum(x, window) — Rolling sum over past `window` days.' },
+  { name: 'ts_delta',           doc: 'ts_delta(x, window) — x[t] - x[t-window].' },
+  { name: 'ts_delay',           doc: 'ts_delay(x, d) — Lag x by d days.' },
+  { name: 'ts_rank',            doc: 'ts_rank(x, window) — Time-series percentile rank.' },
+  { name: 'ts_max',             doc: 'ts_max(x, window) — Rolling maximum.' },
+  { name: 'ts_min',             doc: 'ts_min(x, window) — Rolling minimum.' },
+  { name: 'ts_decay_linear',    doc: 'ts_decay_linear(x, window) — Linearly-weighted decay.' },
+  { name: 'ts_corr',            doc: 'ts_corr(x, y, window) — Rolling correlation between x and y.' },
+  // Phase 3 additions
+  { name: 'ts_momentum_decay',  doc: 'ts_momentum_decay(x, window) — Skip-1 momentum: x[t-1] - x[t-1-window]. Eliminates short-term reversal contamination (Jegadeesh & Titman 1993).' },
 ]
 
 const CS_OPS = [
-  { name: 'rank',         doc: 'rank(x) — Cross-sectional percentile rank [0,1].' },
-  { name: 'zscore',       doc: 'zscore(x) — Cross-sectional z-score.' },
-  { name: 'cs_rank',      doc: 'cs_rank(x) — Alias for rank().' },
-  { name: 'cs_zscore',    doc: 'cs_zscore(x) — Alias for zscore().' },
+  { name: 'rank',           doc: 'rank(x) — Cross-sectional percentile rank [0,1].' },
+  { name: 'zscore',         doc: 'zscore(x) — Cross-sectional z-score.' },
+  { name: 'cs_rank',        doc: 'cs_rank(x) — Alias for rank().' },
+  { name: 'cs_zscore',      doc: 'cs_zscore(x) — Alias for zscore().' },
   { name: 'ind_neutralize', doc: 'ind_neutralize(x) — Industry-neutral residual.' },
-  { name: 'scale',        doc: 'scale(x) — Scale x to unit L1 norm.' },
+  { name: 'scale',          doc: 'scale(x) — Scale x to unit L1 norm.' },
+  // Phase 3 additions
+  { name: 'sector_neutral', doc: 'sector_neutral(x) — Subtract within-GICS-sector mean. Requires real sector data (loaded via dataset_registry). Falls back to cross-sectional demean when sector data unavailable.' },
 ]
 
 const SCALAR_OPS = [
@@ -66,9 +70,9 @@ function setupMonaco(monaco: any) {
     tokenizer: {
       root: [
         // TS operators (must come before CS to avoid partial matches on 'rank')
-        [/\b(ts_mean|ts_std|ts_sum|ts_delta|ts_delay|ts_rank|ts_max|ts_min|ts_decay_linear|ts_corr)\b/, 'keyword.ts'],
+        [/\b(ts_mean|ts_std|ts_sum|ts_delta|ts_delay|ts_rank|ts_max|ts_min|ts_decay_linear|ts_corr|ts_momentum_decay)\b/, 'keyword.ts'],
         // CS operators
-        [/\b(rank|zscore|cs_rank|cs_zscore|ind_neutralize|scale|signed_power)\b/, 'keyword.cs'],
+        [/\b(rank|zscore|cs_rank|cs_zscore|ind_neutralize|sector_neutral|scale|signed_power)\b/, 'keyword.cs'],
         // Scalar operators
         [/\b(log|abs|sign|sqrt|if_else)\b/, 'keyword.scalar'],
         // Price fields — sky blue, must NOT default to white when unrecognized

@@ -1,9 +1,9 @@
 # Quant Agent Frontend — 综合审计报告
 
 **审计日期：** 2026-06-07  
-**覆盖范围：** `frontend/src/` 全部 TypeScript/TSX 源文件（20 个文件）  
-**参考文件：** `backend/AUDIT_REPORT.md`（2026-06-01）| `backend/DEV_ROADMAP.md`（v5，2026-06-07）  
-**最后更新：** 2026-06-07 v4（Phase 2 全部前端任务完成）
+**覆盖范围：** `frontend/src/` 全部 TypeScript/TSX 源文件（21 个文件）  
+**参考文件：** `backend/AUDIT_REPORT.md`（2026-06-01）| `backend/DEV_ROADMAP.md`（v8，2026-06-09）  
+**最后更新：** 2026-06-09 v5（Phase 3 前端任务完成：Pool 标签页 + Beta 暴露 + DSL 新算子）
 
 ---
 
@@ -201,17 +201,18 @@ frontend/
 
 ### 4.3 完全缺失（对应后端路线图未来阶段）
 
-| 功能 | 优先级 | 对应后端 Phase |
-|------|--------|---------------|
-| Walk-Forward 结果展示（多折图表）| P2 | Phase 2 Task 2.1 |
-| 数据健康评分 Banner | P2 | Phase 2 Task 2.4 |
-| 多 Alpha 对比视图 | P3 | Phase 3 Task 3.2 |
-| Beta / 行业暴露展示 | P3 | Phase 3 Task 3.3 |
-| Regime 市场状态指示器 | P4 | Phase 4 Task 4.1 |
-| Deflated Sharpe 指标行 | P4 | Phase 4 Task 4.3 |
-| Alpha 生命周期仪表板 | P5 | Phase 5 Task 5.4 |
-| IC 衰减监控折线图 | P5 | Phase 5 Task 5.1 |
-| 任务调度状态展示 | P5 | Phase 5 Task 5.3 |
+| 功能 | 优先级 | 对应后端 Phase | 状态 |
+|------|--------|---------------|------|
+| Walk-Forward 结果展示（多折图表）| P2 | Phase 2 Task 2.1 | ✅ 已实现 |
+| 数据健康评分 Banner | P2 | Phase 2 Task 2.4 | ✅ 已实现 |
+| 多 Alpha Pool 视图（pool_top5 + combined_metrics）| P3 | Phase 3 Task 3.2 | ✅ 已实现 |
+| Beta 暴露展示（portfolio_beta in MetricsGrid）| P3 | Phase 3 Task 3.3 | ✅ 已实现 |
+| DSL 新算子高亮（ts_momentum_decay / sector_neutral）| P3 | Phase 3 Task 3.4 | ✅ 已实现 |
+| Regime 市场状态指示器 | P4 | Phase 4 Task 4.1 | ❌ 待后端 Phase 4 |
+| Deflated Sharpe 指标行 | P4 | Phase 4 Task 4.3 | ❌ 待后端 Phase 4 |
+| Alpha 生命周期仪表板 | P5 | Phase 5 Task 5.4 | ❌ 待后端 Phase 5 |
+| IC 衰减监控折线图 | P5 | Phase 5 Task 5.1 | ❌ 待后端 Phase 5 |
+| 任务调度状态展示 | P5 | Phase 5 Task 5.3 | ❌ 待后端 Phase 5 |
 
 ---
 
@@ -255,7 +256,7 @@ useEffect(() => { initSessions() }, [])  // eslint-disable-line react-hooks/exha
 | **Phase 0** | ✅ 全部完成 | ✅ 已同步 | 数据集选择UI已实现，API调用已修复 |
 | **Phase 1** | ✅ 全部完成 | ✅ 全部完成 | 429/408 拦截器、Console 滚动、PnL 日期轴、OOS 指标、AbortController 均已实现 |
 | **Phase 2** | ✅ 全部完成 | ✅ 全部完成 | WalkForwardChart（5折柱状图+汇总指标）、数据质量 HealthBadge、RightPane 双标签页 |
-| **Phase 3** | ❌ 未开始 | ❌ 缺多Alpha | 多Alpha对比视图 + Beta/行业暴露展示 |
+| **Phase 3** | ✅ 全部完成 | ✅ **已同步** | Pool 标签页（AlphaPoolPanel）、Beta 暴露行、ts_momentum_decay/sector_neutral 算子 |
 | **Phase 4** | ❌ 未开始 | ❌ 缺Regime | Regime 状态徽章 + DSR 指标行 |
 | **Phase 5** | ❌ 未开始 | ❌ 缺仪表板 | Alpha 生命周期仪表板 + IC 历史图 |
 
@@ -329,15 +330,62 @@ useEffect(() => {
 
 ---
 
-### P3（6-8 周，与后端 Phase 3 同步）
+### P3 ✅ 已完成（2026-06-09）
 
-#### 7.7 多 Alpha 对比视图
+#### 7.7 Alpha Pool 视图（FE-3.1）
 
-在 Alpha Ledger 中增加多选 checkbox，选中多个 Alpha 后触发"Compare"面板，显示 PnL 曲线叠加和相关性矩阵。
+**新建 `components/analysis/AlphaPoolPanel.tsx`（21 个源文件）：**
 
-#### 7.8 Beta / 行业暴露展示
+- Pool Top-5 表格：各条目显示 DSL 预览（截断42字符 + title tooltip）、OOS Sharpe（颜色分级：emerald/sky/amber/rose）、Fitness、Turnover
+- 过拟合徽章：`overfitting_score > 0.5` 时显示 amber "overfit XX%" 标签
+- Combined Signal 区块（当 `combined_metrics` 存在时）：
+  - IS IC-IR + Mean IC 双格指标
+  - IC 权重分布条形图（各 Alpha 的 IC-IR 加权占比可视化）
+- 生成代数摘要（`generations_run`）+ 折叠式 Explanation 文字
 
-MetricsGrid 下方增加风险暴露区块，展示 `market_beta` 和 `sector_exposures`。
+**RightPane 新增第三标签页"Pool"（violet 主题）：**
+
+- 图标：`Layers`（Lucide）
+- 标签数量徽章：pool 非空时显示 `{n}` 个紫色徽章
+- GP Optimize 完成后自动切换到 Pool 标签
+
+**Store/Hook 更新：**
+
+- `workspaceStore`: 新增 `workflowResult: WorkflowResponse | null` + `setWorkflowResult`
+- `analysisTab` 类型扩展为 `'backtest' | 'walkforward' | 'pool'`
+- `useQuantWorkspace.runOptimize()`: GP 完成后调用 `store.setWorkflowResult(wf)` + `store.setAnalysisTab('pool')`
+- Chat 流也支持：当 SSE `done` 结果包含 `pool_top5` 时同样切换到 Pool 标签
+
+**类型更新 `types/index.ts`：**
+- 新增 `PoolEntry` 接口（`dsl, fitness, sharpe_is, sharpe_oos, turnover, overfitting_score, generation`）
+- 新增 `CombinedAlphaMetrics` 接口（`n_alphas, weights, combined_ic_ir, combined_mean_ic`）
+- `WorkflowResponse.pool_top5` 从 `Array<Record<string, unknown>>` 改为 `PoolEntry[]`
+- `WorkflowResponse.combined_metrics?: CombinedAlphaMetrics | null`
+
+---
+
+#### 7.8 Beta 暴露展示（FE-3.2）
+
+**MetricsGrid.tsx 更新：**
+
+- 读取 `is_metrics.portfolio_beta`（后端 Task 3.3 新字段，仅当 `benchmark_returns` 提供时非 null）
+- 新增 "Risk Exposure" 区块：
+  - Beta 数值展示（color: emerald |β| < 0.1 / amber |β| < 0.3 / rose |β| ≥ 0.3）
+  - 状态文字："✓ Near market-neutral" / "⚠ Moderate" / "✗ High — consider beta_neutral()"
+- 仅当 `portfolio_beta` 非 null 且非 NaN 时渲染（避免显示 "—" 行）
+
+**`SimMetrics` 类型新增 `portfolio_beta?: number | null`**
+
+---
+
+#### 7.9 DSL 新算子（Phase 3 Task 3.4 前端同步）
+
+**CompilerView.tsx 更新：**
+
+- `TS_OPS` 新增 `ts_momentum_decay`（含完整文档：跳过1期动量、Jegadeesh-Titman）
+- `CS_OPS` 新增 `sector_neutral`（含说明：GICS 行业中性化，需真实 sector 数据，无数据时退化为截面 demean）
+- Monaco Monarch 正则新增两个算子的语法高亮（`keyword.ts` / `keyword.cs`）
+- IntelliSense 自动补全列表包含两个新算子（从 `ALL_OPS` 派生）
 
 ---
 
@@ -382,14 +430,14 @@ Alpha 详情页展示 30/60 天滚动 IC 折线图 + 衰减阈值参考线。
 | ~~FE-1.5~~ | ~~请求 AbortController~~ | ~~1 天~~ | ~~🟢~~ | ✅ 已完成 |
 | ~~FE-2.1~~ | ~~Walk-Forward 结果图表~~ | ~~2 天~~ | ~~🟡~~ | ✅ 已完成 |
 | ~~FE-2.2~~ | ~~数据集健康评分 Banner~~ | ~~1 天~~ | ~~🟢~~ | ✅ 已完成 |
-| FE-3.1 | 多 Alpha 对比视图 | 3 天 | 🟡 | 待后端 Phase 3 |
-| FE-3.2 | Beta / 行业暴露展示 | 2 天 | 🟡 | 待后端 Phase 3 |
+| ~~FE-3.1~~ | ~~多 Alpha Pool 视图~~ | ~~3 天~~ | ~~🟡~~ | ✅ 已完成 |
+| ~~FE-3.2~~ | ~~Beta 暴露展示~~ | ~~2 天~~ | ~~🟡~~ | ✅ 已完成 |
 | FE-4.1 | Regime 状态徽章 | 1 天 | 🟢 | 待后端 Phase 4 |
 | FE-4.2 | Deflated Sharpe 指标行 | 1 天 | 🟢 | 待后端 Phase 4 |
 | FE-5.1 | Alpha 生命周期仪表板 | 5 天 | 🟡 | 待后端 Phase 5 |
 | FE-5.2 | IC 历史监控折线图 | 2 天 | 🟡 | 待后端 Phase 5 |
 | FE-5.3 | 调度任务状态展示 | 1 天 | 🟢 | 待后端 Phase 5 |
-| **剩余总计** | | **~21 天** | | |
+| **剩余总计** | | **~9 天** | | |
 
 ---
 
@@ -404,9 +452,9 @@ Alpha 详情页展示 30/60 天滚动 IC 折线图 + 衰减阈值参考线。
 | 用户体验 | 8 | Dataset 视图提供直观的数据集探索和选择体验（↑ 原 7）|
 | 可扩展性 | 6 | 单页应用无路由；Phase 5 多页面需求需引入 react-router |
 | 类型安全 | 7 | 全量 TypeScript；部分 `as any` 类型断言需整理 |
-| 与后端对齐 | 9 | Phase 0+1+2 前后端完全同步；WF 验证、健康检查、双标签 RightPane 均已实现（↑ 原 9）|
-| **综合** | **8.5** | Phase 0+1+2 全部完成，综合评分从 8.1 升至 8.5 |
+| 与后端对齐 | 9.5 | Phase 0+1+2+3 前后端完全同步；Pool 标签页、Beta 暴露、DSL 新算子均已实现（↑ 原 9）|
+| **综合** | **8.7** | Phase 0+1+2+3 全部完成，综合评分从 8.5 升至 8.7 |
 
 ---
 
-*报告版本 v4.0 | 2026-06-07 | Phase 2 全部前端任务完成 | 覆盖文件数：20 个 .tsx/.ts 文件*
+*报告版本 v5.0 | 2026-06-09 | Phase 3 全部前端任务完成 | 覆盖文件数：21 个 .tsx/.ts 文件*
