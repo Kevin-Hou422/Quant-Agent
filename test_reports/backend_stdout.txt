@@ -1,0 +1,716 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.0.3, pluggy-1.6.0
+rootdir: C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend
+plugins: anyio-4.13.0, langsmith-0.7.30, asyncio-1.4.0, cov-7.1.0, html-4.2.0, json-report-1.5.0, metadata-3.1.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 290 items
+
+tests\integration\test_api_backtest.py .............                     [  4%]
+tests\integration\test_api_chat.py ................                      [ 10%]
+tests\integration\test_api_datasets.py .......                           [ 12%]
+tests\integration\test_api_gp.py .....                                   [ 14%]
+tests\integration\test_api_health.py ...                                 [ 15%]
+tests\integration\test_api_report.py ......                              [ 17%]
+tests\integration\test_api_workflow.py ........                          [ 20%]
+tests\performance\test_perf_api.py ......                                [ 22%]
+tests\performance\test_perf_dsl.py .....                                 [ 23%]
+tests\test_backtest_engine.py .......                                    [ 26%]
+tests\test_dsl_engine.py ....FF.F....                                    [ 30%]
+tests\test_phase1_upgrade.py .....F......F.                              [ 35%]
+tests\test_phase2.py ..................                                  [ 41%]
+tests\test_phase3.py .....FFFFEEEEEEFFFFEEEEEEEEE....F                   [ 52%]
+tests\unit\test_agent_critic.py ............                             [ 56%]
+tests\unit\test_agent_fallback.py ........ss                             [ 60%]
+tests\unit\test_backtest_edge_cases.py ........s                         [ 63%]
+tests\unit\test_db_alpha_store.py .............                          [ 67%]
+tests\unit\test_db_chat_store.py .................                       [ 73%]
+tests\unit\test_dsl_edge_cases.py .......................                [ 81%]
+tests\unit\test_dsl_operators.py ..........................              [ 90%]
+tests\unit\test_gp_alpha_pool.py ..............                          [ 95%]
+tests\unit\test_gp_evolution_full.py .....                               [ 97%]
+tests\unit\test_ml_optimizer.py ........                                 [100%]
+
+=================================== ERRORS ====================================
+______ ERROR at setup of TestQuantTools.test_generate_alpha_dsl_fallback ______
+tests\test_phase3.py:116: in tools
+    from app.core.ml_engine.quant_agent import QuantTools
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+_____ ERROR at setup of TestQuantTools.test_generate_dsl_unknown_keyword ______
+tests\test_phase3.py:116: in tools
+    from app.core.ml_engine.quant_agent import QuantTools
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+____ ERROR at setup of TestQuantTools.test_run_optuna_returns_best_config _____
+tests\test_phase3.py:116: in tools
+    from app.core.ml_engine.quant_agent import QuantTools
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+______ ERROR at setup of TestQuantTools.test_run_backtest_returns_sharpe ______
+tests\test_phase3.py:116: in tools
+    from app.core.ml_engine.quant_agent import QuantTools
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+_______ ERROR at setup of TestQuantTools.test_run_backtest_with_config ________
+tests\test_phase3.py:116: in tools
+    from app.core.ml_engine.quant_agent import QuantTools
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+_________ ERROR at setup of TestQuantTools.test_save_alpha_returns_id _________
+tests\test_phase3.py:116: in tools
+    from app.core.ml_engine.quant_agent import QuantTools
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+_ ERROR at setup of TestFallbackOrchestrator.test_workflow_a_returns_dsl_and_metrics _
+tests\test_phase3.py:198: in orchestrator
+    from app.core.ml_engine.quant_agent import QuantTools, FallbackOrchestrator
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+_ ERROR at setup of TestFallbackOrchestrator.test_workflow_b_returns_metrics __
+tests\test_phase3.py:198: in orchestrator
+    from app.core.ml_engine.quant_agent import QuantTools, FallbackOrchestrator
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+__ ERROR at setup of TestFallbackOrchestrator.test_workflow_a_volume_keyword __
+tests\test_phase3.py:198: in orchestrator
+    from app.core.ml_engine.quant_agent import QuantTools, FallbackOrchestrator
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+__________ ERROR at setup of TestQuantAgent.test_chat_returns_reply ___________
+tests\test_phase3.py:225: in agent
+    from app.core.ml_engine.quant_agent import QuantAgent
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+___________ ERROR at setup of TestQuantAgent.test_chat_returns_dsl ____________
+tests\test_phase3.py:225: in agent
+    from app.core.ml_engine.quant_agent import QuantAgent
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+_________ ERROR at setup of TestQuantAgent.test_chat_returns_metrics __________
+tests\test_phase3.py:225: in agent
+    from app.core.ml_engine.quant_agent import QuantAgent
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+_____ ERROR at setup of TestQuantAgent.test_memory_persists_across_turns ______
+tests\test_phase3.py:225: in agent
+    from app.core.ml_engine.quant_agent import QuantAgent
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+______ ERROR at setup of TestQuantAgent.test_intent_detection_workflow_b ______
+tests\test_phase3.py:225: in agent
+    from app.core.ml_engine.quant_agent import QuantAgent
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+______ ERROR at setup of TestQuantAgent.test_intent_detection_workflow_a ______
+tests\test_phase3.py:225: in agent
+    from app.core.ml_engine.quant_agent import QuantAgent
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+================================== FAILURES ===================================
+___________________________ test_window_validation ____________________________
+tests\test_dsl_engine.py:179: in test_window_validation
+    validator.validate(node)
+app\core\alpha_engine\validator.py:182: in validate
+    all_errors.extend(v.collect(node))
+                      ^^^^^^^^^^^^^^^
+app\core\alpha_engine\validator.py:149: in collect
+    d = node.depth()
+        ^^^^^^^^^^^^
+app\core\alpha_engine\typed_nodes.py:229: in depth
+    if self.second_child is not None:
+       ^^^^^^^^^^^^^^^^^
+E   AttributeError: 'TimeSeriesNode' object has no attribute 'second_child'
+__________________________ test_lookahead_validation __________________________
+tests\test_dsl_engine.py:197: in test_lookahead_validation
+    validator.validate(node)
+app\core\alpha_engine\validator.py:182: in validate
+    all_errors.extend(v.collect(node))
+                      ^^^^^^^^^^^^^^^
+app\core\alpha_engine\validator.py:149: in collect
+    d = node.depth()
+        ^^^^^^^^^^^^
+app\core\alpha_engine\typed_nodes.py:229: in depth
+    if self.second_child is not None:
+       ^^^^^^^^^^^^^^^^^
+E   AttributeError: 'TimeSeriesNode' object has no attribute 'second_child'
+___________________________ test_cs_type_constraint ___________________________
+tests\test_dsl_engine.py:227: in test_cs_type_constraint
+    with pytest.raises(TypeError, match="CrossSectionalNode"):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE <class 'TypeError'>
+____________________ TestDataPartitioner.test_split_ratio _____________________
+tests\test_phase1_upgrade.py:128: in test_split_ratio
+    assert total == 100
+E   assert 80 == 100
+__________________ TestRealisticBacktester.test_signal_shape __________________
+tests\test_phase1_upgrade.py:213: in test_signal_shape
+    assert res.processed_signal.shape == ds["close"].shape
+E   assert (114, 20) == (120, 20)
+E     
+E     At index 0 diff: 114 != 120
+E     Use -v to get more diff
+____________ TestConversationMemory.test_add_and_retrieve_last_dsl ____________
+tests\test_phase3.py:80: in test_add_and_retrieve_last_dsl
+    from app.core.ml_engine.quant_agent import ConversationMemory
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+_____________ TestConversationMemory.test_history_text_not_empty ______________
+tests\test_phase3.py:87: in test_history_text_not_empty
+    from app.core.ml_engine.quant_agent import ConversationMemory
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+_______________ TestConversationMemory.test_max_turns_enforced ________________
+tests\test_phase3.py:95: in test_max_turns_enforced
+    from app.core.ml_engine.quant_agent import ConversationMemory
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+______________ TestConversationMemory.test_last_metrics_updated _______________
+tests\test_phase3.py:103: in test_last_metrics_updated
+    from app.core.ml_engine.quant_agent import ConversationMemory
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+__________________ TestOverfitCritic.test_pass_good_strategy __________________
+tests\test_phase3.py:164: in test_pass_good_strategy
+    from app.core.ml_engine.quant_agent import OverfitCritic
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+_____________________ TestOverfitCritic.test_fail_overfit _____________________
+tests\test_phase3.py:170: in test_fail_overfit
+    from app.core.ml_engine.quant_agent import OverfitCritic
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+_________________ TestOverfitCritic.test_fail_low_oos_sharpe __________________
+tests\test_phase3.py:177: in test_fail_low_oos_sharpe
+    from app.core.ml_engine.quant_agent import OverfitCritic
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+__________ TestOverfitCritic.test_no_oos_always_passes_overfit_check __________
+tests\test_phase3.py:183: in test_no_oos_always_passes_overfit_check
+    from app.core.ml_engine.quant_agent import OverfitCritic
+E   ModuleNotFoundError: No module named 'app.core.ml_engine.quant_agent'
+_______________ TestChatAPI.test_session_memory_across_requests _______________
+tests\test_phase3.py:335: in test_session_memory_across_requests
+    assert sid in sessions_resp.json()["sessions"]
+E   AssertionError: assert 'memory_test_session' in [{'created_at': '2026-06-13 17:20:02.558224', 'session_id': '0f04f66b-b385-40a1-b283-265b749aefaf', 'title': 'session-...6-06-13 17:19:49.368578', 'session_id': 'multiturn-728815f9-a548-4f1a-ba43-d0a1dfbd8ee6', 'title': 'New Session'}, ...]
+---------------------------- Captured stderr call -----------------------------
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\gp_engine\population_evolver.py:552: RuntimeWarning: Mean of empty slice
+  return np.nanmean(sig.to_numpy(dtype=float), axis=1)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\gp_engine\population_evolver.py:552: RuntimeWarning: Mean of empty slice
+  return np.nanmean(sig.to_numpy(dtype=float), axis=1)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\gp_engine\population_evolver.py:552: RuntimeWarning: Mean of empty slice
+  return np.nanmean(sig.to_numpy(dtype=float), axis=1)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:631: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:631: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\gp_engine\population_evolver.py:552: RuntimeWarning: Mean of empty slice
+  return np.nanmean(sig.to_numpy(dtype=float), axis=1)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:631: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\gp_engine\population_evolver.py:552: RuntimeWarning: Mean of empty slice
+  return np.nanmean(sig.to_numpy(dtype=float), axis=1)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\gp_engine\population_evolver.py:552: RuntimeWarning: Mean of empty slice
+  return np.nanmean(sig.to_numpy(dtype=float), axis=1)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:512: RuntimeWarning: Mean of empty slice
+  mu    = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\gp_engine\population_evolver.py:552: RuntimeWarning: Mean of empty slice
+  return np.nanmean(sig.to_numpy(dtype=float), axis=1)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_function_base_impl.py:3023: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[:, None]
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_function_base_impl.py:3024: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[None, :]
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\backtest_engine\performance_analyzer.py:219: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  rho, _ = scipy_stats.spearmanr(s[mask], f[mask])
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\gp_engine\population_evolver.py:552: RuntimeWarning: Mean of empty slice
+  return np.nanmean(sig.to_numpy(dtype=float), axis=1)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_function_base_impl.py:3023: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[:, None]
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_function_base_impl.py:3024: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[None, :]
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:559: RuntimeWarning: All-NaN slice encountered
+  mn = np.nanmin(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:560: RuntimeWarning: All-NaN slice encountered
+  mx = np.nanmax(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\backend\tests\..\app\core\alpha_engine\fast_ops.py:551: RuntimeWarning: Mean of empty slice
+  mu = np.nanmean(x, axis=1, keepdims=True)
+C:\Users\Administrator\OneDrive\Desktop\Quant Agent\venv\Lib\site-packages\numpy\lib\_nanfunctions_impl.py:1997: RuntimeWarning: Degrees of freedom <= 0 for slice.
+  var = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof,
+--------------------------------- JSON report ---------------------------------
+report saved to: ../test_reports/backend_results.json
+=========================== short test summary info ===========================
+FAILED tests/test_dsl_engine.py::test_window_validation - AttributeError: 'Ti...
+FAILED tests/test_dsl_engine.py::test_lookahead_validation - AttributeError: ...
+FAILED tests/test_dsl_engine.py::test_cs_type_constraint - Failed: DID NOT RA...
+FAILED tests/test_phase1_upgrade.py::TestDataPartitioner::test_split_ratio - ...
+FAILED tests/test_phase1_upgrade.py::TestRealisticBacktester::test_signal_shape
+FAILED tests/test_phase3.py::TestConversationMemory::test_add_and_retrieve_last_dsl
+FAILED tests/test_phase3.py::TestConversationMemory::test_history_text_not_empty
+FAILED tests/test_phase3.py::TestConversationMemory::test_max_turns_enforced
+FAILED tests/test_phase3.py::TestConversationMemory::test_last_metrics_updated
+FAILED tests/test_phase3.py::TestOverfitCritic::test_pass_good_strategy - Mod...
+FAILED tests/test_phase3.py::TestOverfitCritic::test_fail_overfit - ModuleNot...
+FAILED tests/test_phase3.py::TestOverfitCritic::test_fail_low_oos_sharpe - Mo...
+FAILED tests/test_phase3.py::TestOverfitCritic::test_no_oos_always_passes_overfit_check
+FAILED tests/test_phase3.py::TestChatAPI::test_session_memory_across_requests
+ERROR tests/test_phase3.py::TestQuantTools::test_generate_alpha_dsl_fallback
+ERROR tests/test_phase3.py::TestQuantTools::test_generate_dsl_unknown_keyword
+ERROR tests/test_phase3.py::TestQuantTools::test_run_optuna_returns_best_config
+ERROR tests/test_phase3.py::TestQuantTools::test_run_backtest_returns_sharpe
+ERROR tests/test_phase3.py::TestQuantTools::test_run_backtest_with_config - M...
+ERROR tests/test_phase3.py::TestQuantTools::test_save_alpha_returns_id - Modu...
+ERROR tests/test_phase3.py::TestFallbackOrchestrator::test_workflow_a_returns_dsl_and_metrics
+ERROR tests/test_phase3.py::TestFallbackOrchestrator::test_workflow_b_returns_metrics
+ERROR tests/test_phase3.py::TestFallbackOrchestrator::test_workflow_a_volume_keyword
+ERROR tests/test_phase3.py::TestQuantAgent::test_chat_returns_reply - ModuleN...
+ERROR tests/test_phase3.py::TestQuantAgent::test_chat_returns_dsl - ModuleNot...
+ERROR tests/test_phase3.py::TestQuantAgent::test_chat_returns_metrics - Modul...
+ERROR tests/test_phase3.py::TestQuantAgent::test_memory_persists_across_turns
+ERROR tests/test_phase3.py::TestQuantAgent::test_intent_detection_workflow_b
+ERROR tests/test_phase3.py::TestQuantAgent::test_intent_detection_workflow_a
+====== 14 failed, 258 passed, 3 skipped, 15 errors in 297.38s (0:04:57) =======

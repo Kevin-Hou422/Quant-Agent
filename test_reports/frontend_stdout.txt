@@ -1,0 +1,388 @@
+
+> frontend@0.0.0 test
+> vitest run
+
+
+ RUN  v4.1.8 C:/Users/Administrator/OneDrive/Desktop/Quant Agent/frontend
+
+ ❯ src/__tests__/unit/api/client.test.ts (6 tests | 6 failed) 13ms
+     × calls GET /datasets 7ms
+     × returns datasets array on success 1ms
+     × calls POST /chat with correct payload 1ms
+     × returns reply on success 1ms
+     × calls POST /backtest/run 1ms
+     × rejects with error on 500 response 1ms
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts (21 tests | 21 failed) 27ms
+     × default activeView is COMPILER 6ms
+     × setActiveView updates activeView 1ms
+     × setActiveView to DATASET updates prevView 1ms
+     × initial chatMessages is empty 1ms
+     × addMessage appends a message with id and timestamp 1ms
+     × addMessage appends multiple messages 1ms
+     × clearChat empties chatMessages 1ms
+     × setMessages replaces chatMessages 1ms
+     × startStreamingMessage adds empty assistant message 1ms
+     × appendToStreamingMessage appends content 1ms
+     × finalizeStreamingMessage sets isStreaming to false 1ms
+     × default editorTabs has one tab 1ms
+     × newEmptyTab adds a new tab 1ms
+     × setEditorDsl updates active tab dsl 1ms
+     × default status is idle 1ms
+     × setStatus updates status 2ms
+     × appendLog adds a line 1ms
+     × clearLogs empties consoleLogs 1ms
+     × default simulationResult is null 1ms
+     × setSimulationResult stores result 1ms
+     × toggleLedger flips ledgerOpen 1ms
+ ❯ src/__tests__/components/chat/ChatMessage.test.tsx (6 tests | 6 failed) 30ms
+     × renders user message content 18ms
+     × does not render DSL block for user message without dsl 2ms
+     × renders assistant message content 2ms
+     × renders DSL when dsl field is provided 2ms
+     × does not render DSL block when dsl is null 2ms
+     × renders streaming message with content 2ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 33 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/components/chat/ChatMessage.test.tsx > ChatMessage - user message > renders user message content
+ FAIL  src/__tests__/components/chat/ChatMessage.test.tsx > ChatMessage - user message > does not render DSL block for user message without dsl
+ FAIL  src/__tests__/components/chat/ChatMessage.test.tsx > ChatMessage - assistant message > renders assistant message content
+ FAIL  src/__tests__/components/chat/ChatMessage.test.tsx > ChatMessage - assistant message > renders DSL when dsl field is provided
+ FAIL  src/__tests__/components/chat/ChatMessage.test.tsx > ChatMessage - assistant message > does not render DSL block when dsl is null
+ FAIL  src/__tests__/components/chat/ChatMessage.test.tsx > ChatMessage - streaming state > renders streaming message with content
+TypeError: Cannot read properties of undefined (reading 'role')
+ ❯ ChatMessage src/components/chat/ChatMessage.tsx:42:26
+     40| export default function ChatMessage({ message }: Props) {
+     41|   const { setEditorDsl, setActiveView } = useWorkspaceStore()
+     42|   const isUser = message.role === 'user'
+       |                          ^
+     43|
+     44|   if (message.type === 'thought') return <ThoughtBlock content={messag…
+ ❯ Object.react_stack_bottom_frame node_modules/react-dom/cjs/react-dom-client.development.js:25904:20
+ ❯ renderWithHooks node_modules/react-dom/cjs/react-dom-client.development.js:7662:22
+ ❯ updateFunctionComponent node_modules/react-dom/cjs/react-dom-client.development.js:10166:19
+ ❯ beginWork node_modules/react-dom/cjs/react-dom-client.development.js:11778:18
+ ❯ runWithFiberInDEV node_modules/react-dom/cjs/react-dom-client.development.js:874:13
+ ❯ performUnitOfWork node_modules/react-dom/cjs/react-dom-client.development.js:17641:22
+ ❯ workLoopSync node_modules/react-dom/cjs/react-dom-client.development.js:17469:41
+ ❯ renderRootSync node_modules/react-dom/cjs/react-dom-client.development.js:17450:11
+ ❯ performWorkOnRoot node_modules/react-dom/cjs/react-dom-client.development.js:16583:35
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/33]⎯
+
+ FAIL  src/__tests__/unit/api/client.test.ts > API Client - apiFetchDatasets > calls GET /datasets
+TypeError: Cannot read properties of undefined (reading 'mockResolvedValue')
+ ❯ src/__tests__/unit/api/client.test.ts:38:18
+     36|   it('calls GET /datasets', async () => {
+     37|     const mockHttp = getMockHttp()
+     38|     mockHttp.get.mockResolvedValue({ data: { datasets: [], total: 0 } …
+       |                  ^
+     39|
+     40|     const { apiFetchDatasets } = await import('../../../api/client')
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/33]⎯
+
+ FAIL  src/__tests__/unit/api/client.test.ts > API Client - apiFetchDatasets > returns datasets array on success
+TypeError: Cannot read properties of undefined (reading 'mockResolvedValue')
+ ❯ src/__tests__/unit/api/client.test.ts:49:18
+     47|     const mockHttp = getMockHttp()
+     48|     const mockData = { datasets: [{ name: 'us_tech_large', region: 'US…
+     49|     mockHttp.get.mockResolvedValue({ data: mockData })
+       |                  ^
+     50|
+     51|     const { apiFetchDatasets } = await import('../../../api/client')
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/33]⎯
+
+ FAIL  src/__tests__/unit/api/client.test.ts > API Client - apiChat > calls POST /chat with correct payload
+TypeError: Cannot read properties of undefined (reading 'mockResolvedValue')
+ ❯ src/__tests__/unit/api/client.test.ts:63:19
+     61|     vi.resetModules()
+     62|     const mockHttp = getMockHttp()
+     63|     mockHttp.post.mockResolvedValue({
+       |                   ^
+     64|       data: { session_id: 'sid-1', reply: 'Hello', dsl: null }
+     65|     })
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/33]⎯
+
+ FAIL  src/__tests__/unit/api/client.test.ts > API Client - apiChat > returns reply on success
+TypeError: Cannot read properties of undefined (reading 'mockResolvedValue')
+ ❯ src/__tests__/unit/api/client.test.ts:79:19
+     77|     vi.resetModules()
+     78|     const mockHttp = getMockHttp()
+     79|     mockHttp.post.mockResolvedValue({
+       |                   ^
+     80|       data: { session_id: 'sid', reply: 'Alpha generated', dsl: 'rank(…
+     81|     })
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/33]⎯
+
+ FAIL  src/__tests__/unit/api/client.test.ts > API Client - apiRunBacktest > calls POST /backtest/run
+TypeError: Cannot read properties of undefined (reading 'mockResolvedValue')
+ ❯ src/__tests__/unit/api/client.test.ts:95:19
+     93|     vi.resetModules()
+     94|     const mockHttp = getMockHttp()
+     95|     mockHttp.post.mockResolvedValue({ data: { dsl: 'rank(close)', repo…
+       |                   ^
+     96|
+     97|     const { apiRunBacktest } = await import('../../../api/client')
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/33]⎯
+
+ FAIL  src/__tests__/unit/api/client.test.ts > API Client - error handling > rejects with error on 500 response
+TypeError: Cannot read properties of undefined (reading 'mockRejectedValue')
+ ❯ src/__tests__/unit/api/client.test.ts:117:19
+    115|     const err = new Error('Server Error')
+    116|     ;(err as any).response = { status: 500 }
+    117|     mockHttp.post.mockRejectedValue(err)
+       |                   ^
+    118|
+    119|     const { apiChat } = await import('../../../api/client')
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/33]⎯
+
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - activeView > default activeView is COMPILER
+Error: Cannot find module '../../../store/workspaceStore'
+Require stack:
+- C:\Users\Administrator\OneDrive\Desktop\Quant Agent\frontend\src\__tests__\unit\store\workspaceStore.test.ts
+ ❯ getStore src/__tests__/unit/store/workspaceStore.test.ts:10:33
+      8| function getStore() {
+      9|   // 动态导入以避免模块缓存问题
+     10|   const { useWorkspaceStore } = require('../../../store/workspaceStore…
+       |                                 ^
+     11|   return useWorkspaceStore.getState()
+     12| }
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts:16:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/33]⎯
+
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - activeView > setActiveView updates activeView
+Error: Cannot find module '../../../store/workspaceStore'
+Require stack:
+- C:\Users\Administrator\OneDrive\Desktop\Quant Agent\frontend\src\__tests__\unit\store\workspaceStore.test.ts
+ ❯ getStore src/__tests__/unit/store/workspaceStore.test.ts:10:33
+      8| function getStore() {
+      9|   // 动态导入以避免模块缓存问题
+     10|   const { useWorkspaceStore } = require('../../../store/workspaceStore…
+       |                                 ^
+     11|   return useWorkspaceStore.getState()
+     12| }
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts:21:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/33]⎯
+
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - activeView > setActiveView to DATASET updates prevView
+Error: Cannot find module '../../../store/workspaceStore'
+Require stack:
+- C:\Users\Administrator\OneDrive\Desktop\Quant Agent\frontend\src\__tests__\unit\store\workspaceStore.test.ts
+ ❯ getStore src/__tests__/unit/store/workspaceStore.test.ts:10:33
+      8| function getStore() {
+      9|   // 动态导入以避免模块缓存问题
+     10|   const { useWorkspaceStore } = require('../../../store/workspaceStore…
+       |                                 ^
+     11|   return useWorkspaceStore.getState()
+     12| }
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts:27:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/33]⎯
+
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - chatMessages > initial chatMessages is empty
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - chatMessages > addMessage appends a message with id and timestamp
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - chatMessages > addMessage appends multiple messages
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - chatMessages > clearChat empties chatMessages
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - chatMessages > setMessages replaces chatMessages
+Error: Cannot find module '../../../store/workspaceStore'
+Require stack:
+- C:\Users\Administrator\OneDrive\Desktop\Quant Agent\frontend\src\__tests__\unit\store\workspaceStore.test.ts
+ ❯ getStore src/__tests__/unit/store/workspaceStore.test.ts:10:33
+      8| function getStore() {
+      9|   // 动态导入以避免模块缓存问题
+     10|   const { useWorkspaceStore } = require('../../../store/workspaceStore…
+       |                                 ^
+     11|   return useWorkspaceStore.getState()
+     12| }
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts:38:15
+ ❯ node_modules/@testing-library/react/dist/act-compat.js:47:24
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/33]⎯
+
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - streaming messages > startStreamingMessage adds empty assistant message
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - streaming messages > appendToStreamingMessage appends content
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - streaming messages > finalizeStreamingMessage sets isStreaming to false
+Error: Cannot find module '../../../store/workspaceStore'
+Require stack:
+- C:\Users\Administrator\OneDrive\Desktop\Quant Agent\frontend\src\__tests__\unit\store\workspaceStore.test.ts
+ ❯ getStore src/__tests__/unit/store/workspaceStore.test.ts:10:33
+      8| function getStore() {
+      9|   // 动态导入以避免模块缓存问题
+     10|   const { useWorkspaceStore } = require('../../../store/workspaceStore…
+       |                                 ^
+     11|   return useWorkspaceStore.getState()
+     12| }
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts:87:15
+ ❯ node_modules/@testing-library/react/dist/act-compat.js:47:24
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/33]⎯
+
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - editorTabs > default editorTabs has one tab
+Error: Cannot find module '../../../store/workspaceStore'
+Require stack:
+- C:\Users\Administrator\OneDrive\Desktop\Quant Agent\frontend\src\__tests__\unit\store\workspaceStore.test.ts
+ ❯ getStore src/__tests__/unit/store/workspaceStore.test.ts:10:33
+      8| function getStore() {
+      9|   // 动态导入以避免模块缓存问题
+     10|   const { useWorkspaceStore } = require('../../../store/workspaceStore…
+       |                                 ^
+     11|   return useWorkspaceStore.getState()
+     12| }
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts:115:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/33]⎯
+
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - editorTabs > newEmptyTab adds a new tab
+Error: Cannot find module '../../../store/workspaceStore'
+Require stack:
+- C:\Users\Administrator\OneDrive\Desktop\Quant Agent\frontend\src\__tests__\unit\store\workspaceStore.test.ts
+ ❯ getStore src/__tests__/unit/store/workspaceStore.test.ts:10:33
+      8| function getStore() {
+      9|   // 动态导入以避免模块缓存问题
+     10|   const { useWorkspaceStore } = require('../../../store/workspaceStore…
+       |                                 ^
+     11|   return useWorkspaceStore.getState()
+     12| }
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts:119:21
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/33]⎯
+
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - editorTabs > setEditorDsl updates active tab dsl
+Error: Cannot find module '../../../store/workspaceStore'
+Require stack:
+- C:\Users\Administrator\OneDrive\Desktop\Quant Agent\frontend\src\__tests__\unit\store\workspaceStore.test.ts
+ ❯ getStore src/__tests__/unit/store/workspaceStore.test.ts:10:33
+      8| function getStore() {
+      9|   // 动态导入以避免模块缓存问题
+     10|   const { useWorkspaceStore } = require('../../../store/workspaceStore…
+       |                                 ^
+     11|   return useWorkspaceStore.getState()
+     12| }
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts:125:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/33]⎯
+
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - status > default status is idle
+Error: Cannot find module '../../../store/workspaceStore'
+Require stack:
+- C:\Users\Administrator\OneDrive\Desktop\Quant Agent\frontend\src\__tests__\unit\store\workspaceStore.test.ts
+ ❯ getStore src/__tests__/unit/store/workspaceStore.test.ts:10:33
+      8| function getStore() {
+      9|   // 动态导入以避免模块缓存问题
+     10|   const { useWorkspaceStore } = require('../../../store/workspaceStore…
+       |                                 ^
+     11|   return useWorkspaceStore.getState()
+     12| }
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts:134:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/33]⎯
+
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - status > setStatus updates status
+Error: Cannot find module '../../../store/workspaceStore'
+Require stack:
+- C:\Users\Administrator\OneDrive\Desktop\Quant Agent\frontend\src\__tests__\unit\store\workspaceStore.test.ts
+ ❯ getStore src/__tests__/unit/store/workspaceStore.test.ts:10:33
+      8| function getStore() {
+      9|   // 动态导入以避免模块缓存问题
+     10|   const { useWorkspaceStore } = require('../../../store/workspaceStore…
+       |                                 ^
+     11|   return useWorkspaceStore.getState()
+     12| }
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts:138:15
+ ❯ node_modules/@testing-library/react/dist/act-compat.js:47:24
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[17/33]⎯
+
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - consoleLogs > appendLog adds a line
+Error: Cannot find module '../../../store/workspaceStore'
+Require stack:
+- C:\Users\Administrator\OneDrive\Desktop\Quant Agent\frontend\src\__tests__\unit\store\workspaceStore.test.ts
+ ❯ getStore src/__tests__/unit/store/workspaceStore.test.ts:10:33
+      8| function getStore() {
+      9|   // 动态导入以避免模块缓存问题
+     10|   const { useWorkspaceStore } = require('../../../store/workspaceStore…
+       |                                 ^
+     11|   return useWorkspaceStore.getState()
+     12| }
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts:146:15
+ ❯ node_modules/@testing-library/react/dist/act-compat.js:47:24
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[18/33]⎯
+
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - consoleLogs > clearLogs empties consoleLogs
+Error: Cannot find module '../../../store/workspaceStore'
+Require stack:
+- C:\Users\Administrator\OneDrive\Desktop\Quant Agent\frontend\src\__tests__\unit\store\workspaceStore.test.ts
+ ❯ getStore src/__tests__/unit/store/workspaceStore.test.ts:10:33
+      8| function getStore() {
+      9|   // 动态导入以避免模块缓存问题
+     10|   const { useWorkspaceStore } = require('../../../store/workspaceStore…
+       |                                 ^
+     11|   return useWorkspaceStore.getState()
+     12| }
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts:152:15
+ ❯ node_modules/@testing-library/react/dist/act-compat.js:47:24
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[19/33]⎯
+
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - simulationResult > default simulationResult is null
+Error: Cannot find module '../../../store/workspaceStore'
+Require stack:
+- C:\Users\Administrator\OneDrive\Desktop\Quant Agent\frontend\src\__tests__\unit\store\workspaceStore.test.ts
+ ❯ getStore src/__tests__/unit/store/workspaceStore.test.ts:10:33
+      8| function getStore() {
+      9|   // 动态导入以避免模块缓存问题
+     10|   const { useWorkspaceStore } = require('../../../store/workspaceStore…
+       |                                 ^
+     11|   return useWorkspaceStore.getState()
+     12| }
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts:160:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[20/33]⎯
+
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - simulationResult > setSimulationResult stores result
+Error: Cannot find module '../../../store/workspaceStore'
+Require stack:
+- C:\Users\Administrator\OneDrive\Desktop\Quant Agent\frontend\src\__tests__\unit\store\workspaceStore.test.ts
+ ❯ getStore src/__tests__/unit/store/workspaceStore.test.ts:10:33
+      8| function getStore() {
+      9|   // 动态导入以避免模块缓存问题
+     10|   const { useWorkspaceStore } = require('../../../store/workspaceStore…
+       |                                 ^
+     11|   return useWorkspaceStore.getState()
+     12| }
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts:173:15
+ ❯ node_modules/@testing-library/react/dist/act-compat.js:47:24
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[21/33]⎯
+
+ FAIL  src/__tests__/unit/store/workspaceStore.test.ts > WorkspaceStore - ledger > toggleLedger flips ledgerOpen
+Error: Cannot find module '../../../store/workspaceStore'
+Require stack:
+- C:\Users\Administrator\OneDrive\Desktop\Quant Agent\frontend\src\__tests__\unit\store\workspaceStore.test.ts
+ ❯ getStore src/__tests__/unit/store/workspaceStore.test.ts:10:33
+      8| function getStore() {
+      9|   // 动态导入以避免模块缓存问题
+     10|   const { useWorkspaceStore } = require('../../../store/workspaceStore…
+       |                                 ^
+     11|   return useWorkspaceStore.getState()
+     12| }
+ ❯ src/__tests__/unit/store/workspaceStore.test.ts:181:15
+ ❯ node_modules/@testing-library/react/dist/act-compat.js:47:24
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[22/33]⎯
+
+
+ Test Files  3 failed | 5 passed (8)
+      Tests  33 failed | 48 passed (81)
+   Start at  01:14:15
+   Duration  2.08s (transform 1.13s, setup 1.24s, import 1.77s, tests 509ms, environment 8.42s)
+
