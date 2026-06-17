@@ -170,9 +170,10 @@ def test_window_validation():
     """ts_mean(close, -1) must raise ValidationError."""
     validator = AlphaValidator()
     node = TimeSeriesNode.__new__(TimeSeriesNode)
-    node.op     = "ts_mean"
-    node.child  = DataNode("close")
-    node.window = -1
+    node.op           = "ts_mean"
+    node.child        = DataNode("close")
+    node.window       = -1
+    node.second_child = None
     node.extra_params = {}
 
     with pytest.raises(ValidationError) as exc_info:
@@ -188,9 +189,10 @@ def test_lookahead_validation():
     """ts_delay(close, 0) must raise ValidationError (look-ahead bias)."""
     validator = AlphaValidator()
     node = TimeSeriesNode.__new__(TimeSeriesNode)
-    node.op     = "ts_delay"
-    node.child  = DataNode("close")
-    node.window = 0
+    node.op           = "ts_delay"
+    node.child        = DataNode("close")
+    node.window       = 0
+    node.second_child = None
     node.extra_params = {}
 
     with pytest.raises(ValidationError) as exc_info:

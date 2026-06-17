@@ -50,6 +50,10 @@ class ConversationMemory:
         if metrics:
             self._last_metrics = metrics
 
+    def history_text(self) -> str:
+        lines = [f"{rec.role.capitalize()}: {rec.content}" for rec in self._buffer]
+        return "\n".join(lines)
+
     @property
     def last_dsl(self) -> Optional[str]:
         return self._last_dsl

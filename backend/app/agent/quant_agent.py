@@ -19,6 +19,7 @@ This module re-exports the public API so existing imports remain unchanged.
 """
 from app.agent._agent        import QuantAgent
 from app.agent._chat_history import SQLAlchemyChatMessageHistory
+from app.agent._critic       import OverfitCritic
 from app.agent._fallback     import FallbackOrchestrator
 from app.agent._memory       import ConversationMemory
 from app.agent._tools        import QuantTools
@@ -27,6 +28,7 @@ __all__ = [
     "QuantAgent",
     "ConversationMemory",
     "FallbackOrchestrator",
+    "OverfitCritic",
     "QuantTools",
     "SQLAlchemyChatMessageHistory",
 ]

@@ -255,6 +255,11 @@ class CrossSectionalNode(Node):
     def __init__(self, op: str, child: Node, **params) -> None:
         if op not in _CS_OPS:
             raise ValueError(f"Unknown CS operator: '{op}'")
+        if isinstance(child, CrossSectionalNode):
+            raise TypeError(
+                f"CrossSectionalNode '{op}' cannot take another CrossSectionalNode as child. "
+                "CS-in-CS nesting is not supported."
+            )
         self.op     = op
         self.child  = child
         self.params = params

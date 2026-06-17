@@ -122,7 +122,8 @@ class TestDataPartitioner:
     def test_split_ratio(self):
         from app.core.data_engine.data_partitioner import DataPartitioner
         ds = _make_dataset(n_days=100)
-        dp = DataPartitioner(start="2022-01-03", end="2022-05-31", oos_ratio=0.3)
+        # embargo_days=0 ensures IS + OOS covers all dataset rows (no gap)
+        dp = DataPartitioner(start="2022-01-03", end="2022-05-31", oos_ratio=0.3, embargo_days=0)
         part = dp.partition(ds)
         total = part.is_days + part.oos_days
         assert total == 100
@@ -210,7 +211,9 @@ class TestRealisticBacktester:
         cfg = SimulationConfig(delay=1)
         bt  = RealisticBacktester(config=cfg)
         res = bt.run(self.DSL, ds)
-        assert res.processed_signal.shape == ds["close"].shape
+        # Column count must match exactly; row count may be fewer due to NaN warmup rows dropped
+        assert res.processed_signal.shape[1] == ds["close"].shape[1]
+        assert res.processed_signal.shape[0] <= ds["close"].shape[0]
 
     def test_summary_no_crash(self):
         from app.core.alpha_engine.signal_processor import SimulationConfig

@@ -141,6 +141,11 @@ class QuantAgent:
     def tools(self) -> QuantTools:
         return self._tools
 
+    @property
+    def memory(self) -> ConversationMemory:
+        """Return the ConversationMemory for the default session (for testing / introspection)."""
+        return self._get_or_create_memory("default")
+
     # ------------------------------------------------------------------
     # LangChain path
     # ------------------------------------------------------------------

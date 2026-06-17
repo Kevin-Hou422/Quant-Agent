@@ -425,11 +425,11 @@ def main():
 
     # 打印摘要到 stdout
     if backend:
-        emoji = "✅" if backend["failed"]+backend["error"] == 0 else "❌"
-        print(f"\n后端  {emoji}  {backend['passed']}/{backend['total']} passed  ({backend['failed']+backend['error']} failed/error)")
+        status = "PASS" if backend["failed"]+backend["error"] == 0 else "FAIL"
+        print(f"\n[{status}] Backend  {backend['passed']}/{backend['total']} passed  ({backend['failed']+backend['error']} failed/error)")
     if frontend:
-        emoji = "✅" if frontend["failed"]+frontend["error"] == 0 else "❌"
-        print(f"前端  {emoji}  {frontend['passed']}/{frontend['total']} passed  ({frontend['failed']+frontend['error']} failed/error)")
+        status = "PASS" if frontend["failed"]+frontend["error"] == 0 else "FAIL"
+        print(f"[{status}] Frontend {frontend['passed']}/{frontend['total']} passed  ({frontend['failed']+frontend['error']} failed/error)")
 
 
 if __name__ == "__main__":
