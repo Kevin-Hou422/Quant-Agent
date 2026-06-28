@@ -195,7 +195,7 @@ frontend/
 | 回测进度反馈 | ⚠️ | 假动画，与实际执行无关（后端无 SSE 回测流）|
 | PnL 图表时间轴 | ✅ 已修复 | 现使用 `split_date` 对齐真实日期轴，退化到今日倒推 |
 | GP 优化后指标展示 | ✅ 已修复 | OOS 指标 6 项全部映射（含 return/drawdown/ic_ir/turnover）|
-| IC Decay 展示 | ⚠️ | 后端当前返回空 `{}` 导致区块不渲染 |
+| IC Decay 展示 | ✅ 已修复（2026-06-28）| `_add_workflow_pnl` 补充 AlphaEvaluator 调用，`ic_decay` 字段写入 WorkflowResponse；前端 `useQuantWorkspace` 映射 `wf.ic_decay ?? {}` |
 | Alpha 台账状态点 | ⚠️ | `status` 固定显示为 active 颜色 |
 | 请求取消 | ✅ 已修复 | Chat 流和 Optimize 流均绑定 AbortController |
 
@@ -452,9 +452,9 @@ Alpha 详情页展示 30/60 天滚动 IC 折线图 + 衰减阈值参考线。
 | 用户体验 | 8 | Dataset 视图提供直观的数据集探索和选择体验（↑ 原 7）|
 | 可扩展性 | 6 | 单页应用无路由；Phase 5 多页面需求需引入 react-router |
 | 类型安全 | 7 | 全量 TypeScript；部分 `as any` 类型断言需整理 |
-| 与后端对齐 | 9.5 | Phase 0+1+2+3 前后端完全同步；Pool 标签页、Beta 暴露、DSL 新算子均已实现（↑ 原 9）|
-| **综合** | **8.7** | Phase 0+1+2+3 全部完成，综合评分从 8.5 升至 8.7 |
+| 与后端对齐 | 9.8 | Phase 0+1+2+3 前后端完全同步；IC Decay 接线修复（↑ 原 9.5）|
+| **综合** | **8.8** | IC Decay 渲染修复，综合评分从 8.7 升至 8.8 |
 
 ---
 
-*报告版本 v5.0 | 2026-06-09 | Phase 3 全部前端任务完成 | 覆盖文件数：21 个 .tsx/.ts 文件*
+*报告版本 v6.0 | 2026-06-28 | IC Decay 接线修复（WorkflowResponse + useQuantWorkspace） | 覆盖文件数：21 个 .tsx/.ts 文件*

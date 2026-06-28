@@ -1277,6 +1277,8 @@ class WorkflowResponse(BaseModel):
     # Flat metrics for direct frontend consumption (mirrors EvalResponse fields)
     overfitting_score: float = 0.0
     is_overfit:        bool  = False
+    # IC Decay: {"t1": float, "t5": float} — populated by _add_workflow_pnl
+    ic_decay:          Dict[str, Any] = Field(default_factory=dict)
 
 
 def _add_workflow_pnl(
@@ -1287,12 +1289,13 @@ def _add_workflow_pnl(
     oos_data:      dict,
 ) -> None:
     """
-    Run one final IS+OOS backtest with best_config and inject PnL series +
-    flat metrics into response_dict (in-place).
+    Run one final IS+OOS backtest with best_config and inject PnL series,
+    flat metrics, and IC decay into response_dict (in-place).
     Used by workflow endpoints to supply chart data to the frontend.
     """
     from app.core.backtest_engine.realistic_backtester import RealisticBacktester
     from app.core.alpha_engine.signal_processor import SimulationConfig
+    from app.core.ml_engine.alpha_evaluator import AlphaEvaluator
     import pandas as pd
 
     try:
@@ -1336,11 +1339,28 @@ def _add_workflow_pnl(
         s_oos   = float(m.get("oos_sharpe") or 0.0)
         overfit = float(np.clip((s_is - s_oos) / abs(s_is), 0.0, 1.0)) if abs(s_is) > 1e-9 else 0.0
 
-        response_dict["pnl_is"]           = pnl_is
-        response_dict["pnl_oos"]          = pnl_oos
-        response_dict["split_date"]       = split_dt
+        response_dict["pnl_is"]            = pnl_is
+        response_dict["pnl_oos"]           = pnl_oos
+        response_dict["split_date"]        = split_dt
         response_dict["overfitting_score"] = overfit
         response_dict["is_overfit"]        = overfit > 0.5
+
+        # IC Decay — run AlphaEvaluator on IS signal + prices
+        try:
+            is_prices = is_data.get("close")
+            is_signal = result.processed_signal
+            if is_prices is not None and is_signal is not None:
+                evaluator = AlphaEvaluator()
+                ic_decay  = evaluator._ic_decay(is_signal, is_prices)
+                response_dict["ic_decay"] = {
+                    k: (None if (v is None or (isinstance(v, float) and np.isnan(v))) else float(v))
+                    for k, v in ic_decay.items()
+                }
+            else:
+                response_dict.setdefault("ic_decay", {})
+        except Exception as ic_exc:
+            logger.debug("IC decay computation skipped for workflow: %s", ic_exc)
+            response_dict.setdefault("ic_decay", {})
 
     except Exception as exc:
         logger.warning("_add_workflow_pnl failed for '%s': %s", best_dsl[:60], exc)
@@ -1348,6 +1368,7 @@ def _add_workflow_pnl(
         response_dict.setdefault("pnl_oos", [])
         response_dict.setdefault("overfitting_score", 0.0)
         response_dict.setdefault("is_overfit", False)
+        response_dict.setdefault("ic_decay", {})
 
 
 # ---------------------------------------------------------------------------

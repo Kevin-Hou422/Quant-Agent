@@ -135,6 +135,8 @@ export interface WorkflowResponse {
   split_date:        string | null
   overfitting_score: number
   is_overfit:        boolean
+  // IC Decay: {"t1": number, "t5": number} — populated by _add_workflow_pnl
+  ic_decay?:         Record<string, number | null>
   // Task 3.2: multi-Alpha combined signal (present when pool has ≥ 2 entries)
   combined_metrics?: CombinedAlphaMetrics | null
 }

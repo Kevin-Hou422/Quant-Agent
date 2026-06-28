@@ -472,7 +472,7 @@ export function useQuantWorkspace() {
           } : null,
           overfitting_score: wf.overfitting_score ?? 0,
           is_overfit:        wf.is_overfit        ?? false,
-          ic_decay:          {},
+          ic_decay:          (wf.ic_decay as Record<string, number>) ?? {},
           best_config:       wf.best_config ?? null,
           n_trials_run:      null,
           pnl_is:            wf.pnl_is   ?? [],
