@@ -32,8 +32,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
-# One GP evolution at a time — prevents OOM from concurrent long-running jobs
+# One GP evolution at a time — prevents OOM from concurrent long-running jobs.
+# Guards ALL endpoints that run GP evolution: /gp/evolve, /workflow/generate,
+# /workflow/optimize and both /stream variants (Task 1.5).
 _gp_lock = Lock()
+
+
+def _acquire_gp_slot() -> None:
+    """Non-blocking acquire of the global GP slot; raises 429 when busy."""
+    if not _gp_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429,
+            detail="GP 任务正在运行，请稍后重试",
+        )
 
 # Shared field description — must be defined before any Pydantic model that references it
 _DATASET_FIELD_DESC = (
@@ -319,12 +330,9 @@ def gp_evolve(
     并发限制：同时只允许一个 GP 任务运行（超额请求返回 429）。
     超时：300 秒（通过线程 join 控制）。
     """
-    if not _gp_lock.acquire(blocking=False):
-        raise HTTPException(
-            status_code=429,
-            detail="GP 任务正在运行，请稍后重试",
-        )
+    _acquire_gp_slot()
 
+    timed_out = False
     try:
         from app.core.gp_engine.population_evolver import PopulationEvolver
         from app.db.alpha_store import AlphaResult
@@ -355,6 +363,17 @@ def gp_evolve(
         t.join(timeout=300)
 
         if t.is_alive():
+            # The runaway thread cannot be cancelled — keep holding the GP slot
+            # until it actually exits, otherwise a second job could start while
+            # this one still consumes CPU/RAM (the exact scenario the lock防范).
+            timed_out = True
+
+            def _release_when_done() -> None:
+                t.join()
+                _gp_lock.release()
+                logger.info("Timed-out GP thread finished; GP slot released")
+
+            threading.Thread(target=_release_when_done, daemon=True).start()
             raise HTTPException(status_code=408, detail="GP 任务超时（300s），请缩小种群规模后重试")
         if error_holder:
             logger.exception("PopulationEvolver.run failed: %s", error_holder[0])
@@ -362,7 +381,8 @@ def gp_evolve(
 
         gp_result = result_holder[0]
     finally:
-        _gp_lock.release()
+        if not timed_out:
+            _gp_lock.release()
 
     pool_top5 = gp_result.pool_top5   # list[dict]
 
@@ -1351,7 +1371,7 @@ def _add_workflow_pnl(
             is_signal = result.processed_signal
             if is_prices is not None and is_signal is not None:
                 evaluator = AlphaEvaluator()
-                ic_decay  = evaluator._ic_decay(is_signal, is_prices)
+                ic_decay  = evaluator.ic_decay(is_signal, is_prices)
                 response_dict["ic_decay"] = {
                     k: (None if (v is None or (isinstance(v, float) and np.isnan(v))) else float(v))
                     for k, v in ic_decay.items()
@@ -1395,29 +1415,33 @@ def workflow_generate(
     from app.core.workflows.alpha_workflows import GenerationWorkflow
     from app.db.alpha_store import AlphaResult
 
-    dataset, is_data, oos_data = _resolve_dataset(
-        req.dataset_name, req.dataset_start, req.dataset_end,
-        req.n_tickers, req.n_days, req.seed, req.oos_ratio,
-    )
-    wf = GenerationWorkflow(
-        pop_size        = req.pop_size,
-        n_generations   = req.n_generations,
-        n_optuna_trials = req.n_optuna,
-        n_seed_dsls     = req.n_seed_dsls,
-        oos_ratio       = req.oos_ratio,
-        seed            = req.seed,
-    )
-
+    _acquire_gp_slot()
     try:
-        result = wf.run(hypothesis=req.hypothesis, dataset=dataset)
-    except Exception as exc:
-        logger.exception("workflow_generate failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        dataset, is_data, oos_data = _resolve_dataset(
+            req.dataset_name, req.dataset_start, req.dataset_end,
+            req.n_tickers, req.n_days, req.seed, req.oos_ratio,
+        )
+        wf = GenerationWorkflow(
+            pop_size        = req.pop_size,
+            n_generations   = req.n_generations,
+            n_optuna_trials = req.n_optuna,
+            n_seed_dsls     = req.n_seed_dsls,
+            oos_ratio       = req.oos_ratio,
+            seed            = req.seed,
+        )
 
-    # Build response dict + inject PnL series for frontend chart
-    # (is_data / oos_data already resolved above)
-    resp_dict = result.to_dict()
-    _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
+        try:
+            result = wf.run(hypothesis=req.hypothesis, dataset=dataset)
+        except Exception as exc:
+            logger.exception("workflow_generate failed")
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        # Build response dict + inject PnL series for frontend chart
+        # (is_data / oos_data already resolved above)
+        resp_dict = result.to_dict()
+        _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
+    finally:
+        _gp_lock.release()
 
     # Auto-save best alpha
     try:
@@ -1472,28 +1496,32 @@ def workflow_optimize(
     except (ParseError, ValidationError, SyntaxError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"[Syntax Error] {exc}")
 
-    dataset, is_data, oos_data = _resolve_dataset(
-        req.dataset_name, req.dataset_start, req.dataset_end,
-        req.n_tickers, req.n_days, req.seed, req.oos_ratio,
-    )
-    wf = OptimizationWorkflow(
-        pop_size        = req.pop_size,
-        n_generations   = req.n_generations,
-        n_optuna_trials = req.n_optuna,
-        n_mutations     = req.n_mutations,
-        oos_ratio       = req.oos_ratio,
-        seed            = req.seed,
-    )
-
+    _acquire_gp_slot()
     try:
-        result = wf.run(dsl=req.dsl, dataset=dataset)
-    except Exception as exc:
-        logger.exception("workflow_optimize failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        dataset, is_data, oos_data = _resolve_dataset(
+            req.dataset_name, req.dataset_start, req.dataset_end,
+            req.n_tickers, req.n_days, req.seed, req.oos_ratio,
+        )
+        wf = OptimizationWorkflow(
+            pop_size        = req.pop_size,
+            n_generations   = req.n_generations,
+            n_optuna_trials = req.n_optuna,
+            n_mutations     = req.n_mutations,
+            oos_ratio       = req.oos_ratio,
+            seed            = req.seed,
+        )
 
-    # Build response dict + inject PnL series (is_data / oos_data already resolved above)
-    resp_dict = result.to_dict()
-    _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
+        try:
+            result = wf.run(dsl=req.dsl, dataset=dataset)
+        except Exception as exc:
+            logger.exception("workflow_optimize failed")
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        # Build response dict + inject PnL series (is_data / oos_data already resolved above)
+        resp_dict = result.to_dict()
+        _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
+    finally:
+        _gp_lock.release()
 
     # Auto-save best alpha
     try:
@@ -1527,6 +1555,7 @@ def workflow_optimize(
 
 async def _sse_run_workflow(
     worker_fn,          # Callable[[Callable[[str], None]], dict]  — runs in thread
+    on_finish=None,     # Optional[Callable[[], None]] — called when worker exits
 ) -> StreamingResponse:
     """
     Generic SSE helper.
@@ -1534,6 +1563,9 @@ async def _sse_run_workflow(
     worker_fn(emit_text) should:
       - call emit_text(line: str) for each progress message
       - return the final WorkflowResponse-shaped dict when done
+
+    on_finish (if given) runs in the worker thread's finally block — used to
+    release the global GP slot only when the job has actually stopped running.
     """
     event_queue: _queue.Queue = _queue.Queue()
 
@@ -1547,6 +1579,12 @@ async def _sse_run_workflow(
         except Exception as exc:
             logger.exception("SSE workflow worker failed")
             event_queue.put({"type": "error", "message": str(exc)})
+        finally:
+            if on_finish is not None:
+                try:
+                    on_finish()
+                except Exception:
+                    logger.exception("SSE workflow on_finish callback failed")
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
@@ -1594,6 +1632,8 @@ async def workflow_optimize_stream(
     except (ParseError, ValidationError, SyntaxError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"[Syntax Error] {exc}")
 
+    _acquire_gp_slot()
+
     def _worker(emit_text):
         from app.core.workflows.alpha_workflows import OptimizationWorkflow
         from app.db.alpha_store import AlphaResult
@@ -1631,7 +1671,7 @@ async def workflow_optimize_stream(
 
         return resp_dict
 
-    return await _sse_run_workflow(_worker)
+    return await _sse_run_workflow(_worker, on_finish=_gp_lock.release)
 
 
 # ---------------------------------------------------------------------------
@@ -1644,6 +1684,8 @@ async def workflow_generate_stream(
     store: AlphaStore = Depends(get_store),
 ) -> StreamingResponse:
     """Streaming SSE version of workflow_generate."""
+
+    _acquire_gp_slot()
 
     def _worker(emit_text):
         from app.core.workflows.alpha_workflows import GenerationWorkflow
@@ -1682,4 +1724,4 @@ async def workflow_generate_stream(
 
         return resp_dict
 
-    return await _sse_run_workflow(_worker)
+    return await _sse_run_workflow(_worker, on_finish=_gp_lock.release)

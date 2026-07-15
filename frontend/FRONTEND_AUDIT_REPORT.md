@@ -196,6 +196,7 @@ frontend/
 | PnL 图表时间轴 | ✅ 已修复 | 现使用 `split_date` 对齐真实日期轴，退化到今日倒推 |
 | GP 优化后指标展示 | ✅ 已修复 | OOS 指标 6 项全部映射（含 return/drawdown/ic_ir/turnover）|
 | IC Decay 展示 | ✅ 已修复（2026-06-28）| `_add_workflow_pnl` 补充 AlphaEvaluator 调用，`ic_decay` 字段写入 WorkflowResponse；前端 `useQuantWorkspace` 映射 `wf.ic_decay ?? {}` |
+| SSE 路径 429/408 提示 | ✅ 已修复（2026-06-29）| 后端并发锁扩展到 workflow SSE 端点后，fetch 抛 `Error("HTTP 429")` 不走 Axios 拦截器；`classifyError` 补充对 fetch 错误消息的 429/408 识别 |
 | Alpha 台账状态点 | ⚠️ | `status` 固定显示为 active 颜色 |
 | 请求取消 | ✅ 已修复 | Chat 流和 Optimize 流均绑定 AbortController |
 
@@ -457,4 +458,4 @@ Alpha 详情页展示 30/60 天滚动 IC 折线图 + 衰减阈值参考线。
 
 ---
 
-*报告版本 v6.0 | 2026-06-28 | IC Decay 接线修复（WorkflowResponse + useQuantWorkspace） | 覆盖文件数：21 个 .tsx/.ts 文件*
+*报告版本 v6.1 | 2026-06-29 | IC Decay 接线修复 + SSE 429/408 错误分类补齐 | 覆盖文件数：21 个 .tsx/.ts 文件*

@@ -51,7 +51,9 @@ def _ic_ir(signal: pd.DataFrame, returns: pd.DataFrame) -> float:
     T   = min(sig.shape[0] - 1, ret.shape[0] - 1)
     ics: list[float] = []
     for t in range(T):
-        s, r = sig[t], ret[t]
+        # ret[t+1] is the t→t+1 realized return: signal at t must predict
+        # the FORWARD return, not the same-day (t-1→t) return
+        s, r = sig[t], ret[t + 1]
         mask = ~(np.isnan(s) | np.isnan(r))
         if mask.sum() < 5:
             continue

@@ -456,11 +456,17 @@ def _combine_pool_alphas(
         # Direct array-based IC of the composite signal
         sig_arr = joint.to_numpy(dtype=float)
         if returns is not None:
-            ret_arr = returns.to_numpy(dtype=float)
+            # Align returns to the joint signal's index/columns so row t in both
+            # arrays refers to the same date and asset order
+            ret_arr = returns.reindex(
+                index=joint.index, columns=joint.columns
+            ).to_numpy(dtype=float)
             T = min(sig_arr.shape[0] - 1, ret_arr.shape[0] - 1)
             ics: list[float] = []
             for t in range(T):
-                s, r = sig_arr[t], ret_arr[t]
+                # ret_arr[t+1] = t→t+1 forward return; ret_arr[t] would be the
+                # same-day (t-1→t) return, i.e. contemporaneous (lookahead) IC
+                s, r = sig_arr[t], ret_arr[t + 1]
                 mask = ~(np.isnan(s) | np.isnan(r))
                 if mask.sum() < 5:
                     continue

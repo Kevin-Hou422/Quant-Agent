@@ -32,6 +32,12 @@ function startProgressStream(steps: string[], appendLog: (l: string) => void, ms
 function classifyError(err: any): string {
   const status = err?.response?.status
   const detail = err?.response?.data?.detail ?? err?.message ?? 'Unknown error'
+  // SSE streams use fetch (not axios) and surface errors as Error("HTTP <code>")
+  const msg = String(err?.message ?? '')
+  if (status === 429 || msg.includes('HTTP 429'))
+    return '[BUSY] GP 任务正在运行，请稍后重试'
+  if (status === 408 || msg.includes('HTTP 408'))
+    return '[TIMEOUT] 任务超时，请缩小种群规模后重试'
   if (status === 400) return `[Syntax Error] Invalid DSL formula — ${detail}`
   if (status === 422) return `[Syntax Error] Validation failed — ${detail}`
   if (status === 500) return `[ERROR] Server error — ${detail}`

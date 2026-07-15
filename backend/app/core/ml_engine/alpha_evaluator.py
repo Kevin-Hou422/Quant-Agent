@@ -234,6 +234,19 @@ class AlphaEvaluator:
             ic_decay          = ic_decay,
         )
 
+    def ic_decay(
+        self,
+        signal: pd.DataFrame,
+        prices: pd.DataFrame,
+    ) -> Dict[str, float]:
+        """
+        公共 API：计算信号与未来 t+1 / t+5 收益的 Rank IC（IC Decay）。
+
+        供 evaluate() 之外的调用方（如 workflow 端点）单独获取 IC Decay，
+        无需构造完整的 RiskReport。
+        """
+        return self._ic_decay(signal, prices)
+
     # ------------------------------------------------------------------
     # 内部：单段高级指标计算
     # ------------------------------------------------------------------

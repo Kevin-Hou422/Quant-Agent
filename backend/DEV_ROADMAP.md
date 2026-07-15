@@ -157,13 +157,15 @@ Phase 5 ── 在线化与生命周期       ❌ 待开始
 
 ### Task 1.5 ✅ API 并发保护与超时限制
 
-**完成状态：已完成（2026-06-07）**
+**完成状态：已完成（2026-06-07 初版仅覆盖 /gp/evolve；2026-06-29 补齐全部端点）**
 
 **实际代码状态（已验证）：**
-- `router.py:36` — `_gp_lock = Lock()`（模块级单例）✅
-- `router.gp_evolve()` — `_gp_lock.acquire(blocking=False)`；并发返回 HTTP 429 ✅
-- `threading.Thread(daemon=True)` + `t.join(timeout=300)`；超时返回 HTTP 408 ✅
-- `finally: _gp_lock.release()` — 锁无条件释放 ✅
+- `router.py` — `_gp_lock = Lock()`（模块级单例）+ `_acquire_gp_slot()` 共享辅助（非阻塞获取，忙时 429）✅
+- **全部 5 个 GP 端点均受锁保护**（2026-06-29 补齐，初版仅 `/gp/evolve`）：
+  - `POST /api/gp/evolve` — 线程 + `join(timeout=300)`，超时 408
+  - `POST /api/workflow/generate` / `POST /api/workflow/optimize` — 同步执行，`finally` 释放
+  - `POST /api/workflow/generate/stream` / `POST /api/workflow/optimize/stream` — SSE 端点在 worker 线程 `finally` 中通过 `on_finish=_gp_lock.release` 释放
+- **超时僵尸线程修复（2026-06-29）**：`gp_evolve` 408 超时后**不再立即释放锁**——runaway 线程无法取消，改由 watcher 线程 `join()` 等其真正退出后再释放，防止超时后新任务与僵尸任务并发（正是锁要防的 OOM 场景）
 
 ---
 
@@ -272,6 +274,15 @@ Phase 5 ── 在线化与生命周期       ❌ 待开始
 - `WorkflowResult.combined_metrics`: 新字段，存储联合信号 IC-IR + 各 Alpha 权重
 - `GenerationWorkflow` 调用 `_combine_pool_alphas()` 在 OOS 数据上评估 pool top-5 联合信号
 
+**Bug 修复记录（2026-06-29）：**
+
+| Bug | 严重性 | 描述 | 修复 |
+|-----|--------|------|------|
+| IC 使用同期收益（前视泄漏）| 严重 | `_ic_ir()` 及 `_combine_pool_alphas()` 内联副本中 `s, r = sig[t], ret[t]`——`ret[t]` 是 t-1→t 的**已实现**收益，信号与同期收益相关导致 combined IC-IR 系统性虚高；循环上界 `T = shape[0]-1` 表明原意为 t+1 但索引写错 | 两处均改为 `ret[t+1]`（1 日前向收益，与 docstring 声称一致）|
+| IC 计算前信号/收益矩阵未对齐 | 中 | `_combine_pool_alphas()` 中 `joint`（信号交集索引）与 `returns`（完整 OOS 索引）直接转 numpy，行序可能错位 | `returns.reindex(index=joint.index, columns=joint.columns)` 后再计算 |
+
+**已知限制（未改，与报告描述一致）：** ic_weighted 权重在 OOS 上拟合后又在同一 OOS 段上评估 combined IC-IR，联合指标存在结构性乐观偏差；严谨做法是 IS 拟合权重、OOS 评估（记入 Phase 4 待办）。
+
 ---
 
 ### Task 3.3 ✅ Beta 中性化 + RiskReport 因子暴露
@@ -314,7 +325,9 @@ rank(sector_neutral) OK  shape=(80,5)
 
 **`alpha_pool.py` 变更：**
 - 默认 `corr_threshold`: 0.90 → **0.70**（允许更多不同因子家族的 Alpha 进池）
-- 新增 `get_orthogonal_signals(n_components=None)`: SVD 白化，返回正交化后的信号向量字典；`AlphaCombiner` 可用其替代原始信号向量以降低线性冗余
+- 新增 `get_orthogonal_signals(n_components=None)`: SVD 白化，返回正交化后的信号向量字典
+
+**准确性更正（2026-06-29 核查）：** `get_orthogonal_signals()` 目前是独立工具函数，**未接入任何调用方**。其返回的是池内存储的扁平化信号向量（用于相关性去重），与 `AlphaCombiner.combine()` 所需的 (T×N) 信号矩阵格式不兼容，无法直接替代原始信号。若需在组合链路中使用正交化，应在 `_combine_pool_alphas()` 内对齐后的 T×N 信号矩阵上做 Gram-Schmidt/PCA（记入 Phase 4 待办）。
 
 ---
 
@@ -500,6 +513,8 @@ Phase 5 ── ← 4.1
 | ~~3.4~~ | ~~DSL 新节点扩展~~ | ~~3 天~~ | ~~中~~ | ✅ 已完成 |
 | ~~3.5~~ | ~~AlphaPool 正交化~~ | ~~2 天~~ | ~~中~~ | ✅ 已完成 |
 | ~~IC Decay~~ | ~~Workflow 端点补充 IC Decay 输出~~ | ~~0.5 天~~ | ~~低~~ | ✅ 已完成（2026-06-28）|
+| ~~1.5 (残)~~ | ~~并发锁覆盖全部 workflow 端点 + 超时僵尸线程修复~~ | ~~0.5 天~~ | ~~低~~ | ✅ 已完成（2026-06-29）|
+| ~~3.2 (bug)~~ | ~~AlphaCombiner 同期 IC 前视泄漏修复（ret[t+1]）~~ | ~~0.5 天~~ | ~~低~~ | ✅ 已完成（2026-06-29）|
 | 4.1 | Regime 识别 | 5 天 | 高 | ❌ |
 | 4.2 | MVO 组合优化 | 5 天 | 高 | ❌ |
 | 4.3 | Deflated Sharpe | 2 天 | 中 | ❌ |
@@ -511,4 +526,4 @@ Phase 5 ── ← 4.1
 
 ---
 
-*路线图版本 v3.0 | 2026-06-28 | Phase 2+3 完成确认 | IC Decay 接线修复 | 剩余 Phase 4+5*
+*路线图版本 v3.1 | 2026-06-29 | 并发保护补齐至全部 GP 端点 | AlphaCombiner 前视 IC 修复 | Task 3.5 正交化声称更正 | 剩余 Phase 4+5*
