@@ -133,6 +133,99 @@ class SignalWeightedPortfolio(PortfolioConstructor):
 
 
 # ---------------------------------------------------------------------------
+# MVOPortfolio（Task 4.2）
+# ---------------------------------------------------------------------------
+
+class MVOPortfolio(PortfolioConstructor):
+    """
+    均值-方差组合优化（Task 4.2）：w_t ∝ Σ_t⁻¹ · s_t，L1 归一化。
+
+    对角收缩协方差（Ledoit-Wolf 简化版）：
+        Σ_shrunk = (1-δ)·S + δ·diag(S)
+    S 为过去 ``cov_window`` 日资产收益的样本协方差。收缩既保证可逆性，
+    又抑制小样本下非对角元素的估计噪声。
+
+    信号先做截面 z-score（±clip_z 裁剪），使 Σ⁻¹s 的量纲稳定。
+    协方差窗口未满或求解失败的日期，退化为 SignalWeighted 行为（z/L1）。
+
+    Parameters
+    ----------
+    cov_window : 协方差估计滚动窗口（交易日，默认 60）
+    shrinkage  : 对角收缩强度 δ ∈ [0,1]（默认 0.5）
+    clip_z     : 信号 z-score 裁剪界（默认 3.0）
+    """
+
+    def __init__(
+        self,
+        cov_window: int   = 60,
+        shrinkage:  float = 0.5,
+        clip_z:     float = 3.0,
+    ) -> None:
+        if cov_window < 20:
+            raise ValueError(f"cov_window 至少 20 个交易日，当前={cov_window}")
+        if not 0.0 <= shrinkage <= 1.0:
+            raise ValueError(f"shrinkage 应在 [0,1] 内，当前={shrinkage}")
+        self.cov_window = cov_window
+        self.shrinkage  = shrinkage
+        self.clip_z     = clip_z
+
+    def construct(
+        self,
+        signal:  pd.DataFrame,
+        returns: Optional[pd.DataFrame] = None,
+        **kwargs,
+    ) -> pd.DataFrame:
+        """
+        Parameters
+        ----------
+        signal  : (T×N) 信号矩阵
+        returns : (T×N) 资产日收益矩阵（协方差估计用）。
+                  为 None 时全程退化为 SignalWeighted 行为。
+        """
+        # 基准权重：截面 z-score / L1（也是回退路径）
+        base = SignalWeightedPortfolio(clip_z=self.clip_z).construct(signal)
+        if returns is None:
+            return base
+
+        ret_arr = (
+            returns.reindex(index=signal.index, columns=signal.columns)
+            .to_numpy(dtype=float)
+        )
+        z_arr = base.to_numpy(dtype=float)          # 已 z-score+L1 的信号方向
+        T, N  = z_arr.shape
+        w_out = z_arr.copy()
+
+        eye = np.eye(N)
+        for t in range(self.cov_window, T):
+            s = z_arr[t]
+            if not np.any(s):
+                continue
+            window = ret_arr[t - self.cov_window : t]      # 不含 t：无前视
+            # 剔除窗口内含 NaN 过多的资产（保留其基准权重）
+            valid = np.isnan(window).mean(axis=0) < 0.3
+            if valid.sum() < 3:
+                continue
+            sub = window[:, valid]
+            sub = np.where(np.isnan(sub), 0.0, sub)
+            S   = np.cov(sub.T)                             # (n_valid, n_valid)
+            S_shrunk = (1 - self.shrinkage) * S + self.shrinkage * np.diag(np.diag(S))
+            try:
+                w_sub = np.linalg.solve(
+                    S_shrunk + 1e-8 * eye[: valid.sum(), : valid.sum()],
+                    s[valid],
+                )
+            except np.linalg.LinAlgError:
+                continue                                    # 保留基准权重
+            row = np.zeros(N)
+            row[valid] = w_sub
+            l1 = np.abs(row).sum()
+            if l1 > 1e-12:
+                w_out[t] = row / l1
+
+        return pd.DataFrame(w_out, index=signal.index, columns=signal.columns)
+
+
+# ---------------------------------------------------------------------------
 # NeutralizationLayer
 # ---------------------------------------------------------------------------
 

@@ -475,12 +475,13 @@ export function useQuantWorkspace() {
             max_drawdown:      m.oos_max_dd      ?? null,
             ic_ir:             m.oos_ic_ir       ?? m.oos_ic ?? null,
             mean_ic:           m.oos_mean_ic     ?? m.oos_ic ?? null,
+            deflated_sharpe:   m.oos_deflated_sharpe ?? null,   // FE-4.2
           } : null,
           overfitting_score: wf.overfitting_score ?? 0,
           is_overfit:        wf.is_overfit        ?? false,
           ic_decay:          (wf.ic_decay as Record<string, number>) ?? {},
           best_config:       wf.best_config ?? null,
-          n_trials_run:      null,
+          n_trials_run:      m?.n_trials ?? null,               // FE-4.2: DSR 校正所用候选数
           pnl_is:            wf.pnl_is   ?? [],
           pnl_oos:           wf.pnl_oos  ?? [],
           split_date:        wf.split_date ?? null,

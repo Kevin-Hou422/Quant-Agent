@@ -710,6 +710,70 @@ def dataset_health(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/regime  — Task 4.1 市场状态识别
+# ---------------------------------------------------------------------------
+
+class RegimeResponse(BaseModel):
+    dataset:       str
+    regime:        str                    # "bull" | "bear" | "sideways" | "high_vol"
+    as_of:         str                    # 最近有效交易日
+    counts:        Dict[str, int]         # 各 Regime 天数统计
+    trend_window:  int
+    vol_window:    int
+    recent_labels: List[str]              # 最近 20 个交易日的标签（前端迷你时间线用）
+
+
+@router.get("/regime", response_model=RegimeResponse, tags=["Data"])
+def market_regime(
+    dataset_name: str = Query("us_tech_large", description=_DATASET_FIELD_DESC),
+    start:        str = Query("2020-01-01"),
+    end:          str = Query("2024-01-01"),
+    trend_window: int = Query(60, ge=20, le=252),
+    vol_window:   int = Query(20, ge=5, le=120),
+):
+    """
+    Task 4.1：对数据集的等权市场收益做 Regime 识别。
+
+    市场收益 = 数据集内所有资产 close 日收益的等权均值。
+    加载失败直接返回 502（不做合成数据静默降级）。
+    """
+    from app.core.data_engine.dataset_registry import load_registry_dataset
+    from app.core.data_engine.regime_detector import RegimeDetector
+
+    try:
+        ds = load_registry_dataset(dataset_name, start=start, end=end)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Dataset load failed: {exc}")
+
+    close = ds.data.get("close")
+    if close is None or close.empty:
+        raise HTTPException(status_code=500, detail="Dataset has no close prices")
+
+    market_ret = close.pct_change().mean(axis=1).dropna()
+
+    try:
+        det = RegimeDetector(trend_window=trend_window, vol_window=vol_window)
+        det.fit(market_ret)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    labels = det.predict().dropna()
+    recent = [str(v) for v in labels.iloc[-20:].tolist()]
+
+    return RegimeResponse(
+        dataset       = dataset_name,
+        regime        = det.current_regime(),
+        as_of         = str(labels.index[-1].date()) if len(labels) else "",
+        counts        = det.regime_counts(),
+        trend_window  = trend_window,
+        vol_window    = vol_window,
+        recent_labels = recent,
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /api/report/query
 # ---------------------------------------------------------------------------
 
@@ -1037,6 +1101,7 @@ def _run_evaluate(
     """
     共享逻辑：用给定 config 执行 IS+OOS 回测 + AlphaEvaluator 高级评估。
     """
+    import pandas as pd, numpy as np
     from app.core.backtest_engine.realistic_backtester import RealisticBacktester
     from app.core.ml_engine.alpha_evaluator import AlphaEvaluator
 
@@ -1074,8 +1139,17 @@ def _run_evaluate(
     eval_dict["is_metrics"]["ic_decay_t1"] = eval_result.ic_decay.get("t1")
     eval_dict["is_metrics"]["ic_decay_t5"] = eval_result.ic_decay.get("t5")
 
+    # Task 4.3: Deflated Sharpe（OOS 段优先；n_trials 来自 Optuna 试验数，simulate=1）
+    from app.core.backtest_engine.performance_analyzer import deflated_sharpe_from_returns
+    _n_tr = max(int(n_trials or 1), 1)
+    if eval_dict.get("oos_metrics") and result.oos_report is not None:
+        dsr = deflated_sharpe_from_returns(result.oos_report.net_returns, n_trials=_n_tr)
+        eval_dict["oos_metrics"]["deflated_sharpe"] = None if np.isnan(dsr) else float(dsr)
+    if result.is_report is not None:
+        dsr_is = deflated_sharpe_from_returns(result.is_report.net_returns, n_trials=_n_tr)
+        eval_dict["is_metrics"]["deflated_sharpe"] = None if np.isnan(dsr_is) else float(dsr_is)
+
     # ── Extract PnL series for frontend visualization ───────────────────────
-    import pandas as pd, numpy as np
 
     def _series_to_list(s) -> list:
         """Convert pd.Series / np.ndarray / list to plain Python float list."""
@@ -1364,6 +1438,30 @@ def _add_workflow_pnl(
         response_dict["split_date"]        = split_dt
         response_dict["overfitting_score"] = overfit
         response_dict["is_overfit"]        = overfit > 0.5
+
+        # Task 4.3: Deflated Sharpe（GP 多重检验校正）
+        # n_trials = 各代种群规模之和；trial_sharpes = pool 候选的 OOS Sharpe
+        try:
+            from app.core.backtest_engine.performance_analyzer import (
+                deflated_sharpe_from_returns,
+            )
+            evo_log  = response_dict.get("evolution_log") or []
+            n_trials = sum(int(g.get("population_size", 0)) for g in evo_log) or 1
+            pool     = response_dict.get("pool_top5") or []
+            trial_sh = [
+                float(e.get("sharpe_oos"))
+                for e in pool
+                if isinstance(e, dict) and e.get("sharpe_oos") is not None
+            ]
+            dsr_ret = oos_nr if oos_nr is not None else is_nr
+            dsr = deflated_sharpe_from_returns(
+                dsr_ret, n_trials=n_trials, trial_sharpes=trial_sh or None,
+            )
+            m["oos_deflated_sharpe"] = None if np.isnan(dsr) else float(dsr)
+            m["n_trials"]            = n_trials
+            response_dict["metrics"] = m
+        except Exception as dsr_exc:
+            logger.debug("Workflow DSR computation skipped: %s", dsr_exc)
 
         # IC Decay — run AlphaEvaluator on IS signal + prices
         try:

@@ -74,6 +74,19 @@ export interface SimMetrics {
   ic_decay_t5?: number | null
   // Task 3.3: portfolio beta vs market benchmark (null when no benchmark provided)
   portfolio_beta?: number | null
+  // Task 4.3: Deflated Sharpe — P(true Sharpe > 0) after multiple-testing correction
+  deflated_sharpe?: number | null
+}
+
+/** Task 4.1: market regime info from GET /api/regime */
+export interface RegimeInfo {
+  dataset:       string
+  regime:        'bull' | 'bear' | 'sideways' | 'high_vol'
+  as_of:         string
+  counts:        Record<string, number>
+  trend_window:  number
+  vol_window:    number
+  recent_labels: string[]
 }
 
 export interface SimResult {

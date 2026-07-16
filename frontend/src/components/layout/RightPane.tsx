@@ -3,6 +3,7 @@ import MetricsGrid from '../analysis/MetricsGrid'
 import OverfitBadge from '../analysis/OverfitBadge'
 import WalkForwardChart from '../analysis/WalkForwardChart'
 import AlphaPoolPanel from '../analysis/AlphaPoolPanel'
+import RegimeBadge from '../analysis/RegimeBadge'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { BarChart2, GitBranch, Layers } from 'lucide-react'
 
@@ -71,6 +72,9 @@ export default function RightPane() {
             </span>
           )}
         </button>
+
+        {/* FE-4.1: market regime indicator for the active dataset */}
+        <RegimeBadge />
       </div>
 
       <div className="flex-1 overflow-y-auto flex flex-col gap-2 p-2">

@@ -36,7 +36,7 @@ class SimulationConfig:
     truncation_min_q  : 截断下分位数（0~1）。None = 不截断。
     truncation_max_q  : 截断上分位数（0~1）。None = 不截断。
     neutralize_groups : (N,) int 数组，资产→行业标签映射。None = 不中性化。
-    portfolio_mode    : 组合构建模式，"long_short" 或 "decile"。
+    portfolio_mode    : 组合构建模式，"long_short"、"decile" 或 "mvo"（Task 4.2）。
     top_pct           : decile 模式下多头/空头各取前 top_pct 比例（默认 0.10）。
     market_neutral    : 是否在组合构建后施加市场中性约束（默认 True）。
     """
@@ -45,7 +45,7 @@ class SimulationConfig:
     truncation_min_q:  Optional[float]        = 0.05
     truncation_max_q:  Optional[float]        = 0.95
     neutralize_groups: Optional[np.ndarray]   = field(default=None, repr=False)
-    portfolio_mode:    Literal["long_short", "decile"] = "long_short"
+    portfolio_mode:    Literal["long_short", "decile", "mvo"] = "long_short"
     top_pct:           float                  = 0.10
     market_neutral:    bool                   = True
     max_single_weight: float                  = 0.0

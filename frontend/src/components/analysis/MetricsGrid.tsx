@@ -40,6 +40,10 @@ export default function MetricsGrid() {
   // FE-3.2: portfolio beta — from is_metrics or oos_metrics (shown only when non-null)
   const portfolioBeta = (is as any).portfolio_beta ?? (oos as any).portfolio_beta ?? null
 
+  // FE-4.2: Deflated Sharpe (OOS-first) + trial count used for the correction
+  const dsr = (oos as any).deflated_sharpe ?? (is as any).deflated_sharpe ?? null
+  const nTrials = simulationResult.n_trials_run ?? null
+
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
@@ -104,6 +108,36 @@ export default function MetricsGrid() {
               : Math.abs(portfolioBeta) < 0.3
                 ? '⚠ Moderate market exposure'
                 : '✗ High market exposure — consider beta_neutral()'}
+          </p>
+        </div>
+      )}
+
+      {/* FE-4.2: Deflated Sharpe Ratio — multiple-testing-corrected significance */}
+      {dsr != null && !isNaN(dsr) && (
+        <div className="border-t border-slate-800 pt-2">
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+            Statistical Significance
+          </p>
+          <div className="flex items-center justify-between text-xs py-1.5">
+            <span className="text-slate-400">
+              Deflated Sharpe{nTrials != null ? ` (n=${nTrials})` : ''}
+            </span>
+            <span className={`font-mono font-semibold ${
+              dsr > 0.95
+                ? 'text-emerald-400'
+                : dsr > 0.5
+                  ? 'text-amber-400'
+                  : 'text-rose-400'
+            }`}>
+              {(dsr * 100).toFixed(1)}%
+            </span>
+          </div>
+          <p className="text-[10px] text-slate-600 mt-1">
+            {dsr > 0.95
+              ? '✓ Sharpe significant after multiple-testing correction'
+              : dsr > 0.5
+                ? '⚠ Weak evidence — may not survive more trials'
+                : '✗ Likely selection bias — Sharpe not distinguishable from noise'}
           </p>
         </div>
       )}

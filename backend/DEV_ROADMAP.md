@@ -15,7 +15,7 @@
 | Phase 1 | 44% | ✅ **已完成** | 全部 5 个任务完成：1.1（re-export桩）1.2（import统一）1.3（AlphaEvolver退役）1.4（_quick_eval提取为evaluation_utils）1.5（API并发保护）|
 | Phase 2 | 54% | ✅ **已完成** | 全部 4 个任务完成（WF框架 + Embargo + 并发加载 + 健康检查）；前端 Phase 2 同步完成 |
 | Phase 3 | 64% | ✅ **已完成** | 全部 5 个任务完成（行业数据+AlphaCombiner+Beta中性化+DSL扩展+AlphaPool优化）|
-| Phase 4 | 74% | ❌ 未开始 | |
+| Phase 4 | 74% | ✅ **已完成** | 全部 3 个任务完成（2026-07-17：Regime识别+MVO组合+Deflated Sharpe），35 项验收测试通过 |
 | Phase 5 | 82% | ❌ 未开始 | |
 
 ---
@@ -27,7 +27,7 @@ Phase 0 ── 接线与激活          ✅ 已完成
 Phase 1 ── 清理与一致性         ✅ 已完成
 Phase 2 ── 数据与验证升级        ✅ 已完成
 Phase 3 ── 金融核心修复          ✅ 已完成
-Phase 4 ── 风控与组合深化        ❌ 待开始
+Phase 4 ── 风控与组合深化        ✅ 已完成（2026-07-17）
 Phase 5 ── 在线化与生命周期       ❌ 待开始
 ```
 
@@ -331,47 +331,83 @@ rank(sector_neutral) OK  shape=(80,5)
 
 ---
 
-## Phase 4：风控与组合深化（6-8 周）
+## Phase 4：风控与组合深化 ✅ 已完成（2026-07-17）
+
+> 验收：`tests/test_phase4.py` 35 项测试全部通过（Regime 12 / MVO 8 / DSR 11 / API 3 + 1 集成）；
+> 全量回归无失败；前端 94 项测试通过。
 
 ---
 
-### Task 4.1 🟡 简单市场 Regime 识别
+### Task 4.1 ✅ 简单市场 Regime 识别
 
-**涉及文件（新建）：**
-- `app/core/data_engine/regime_detector.py`
+**新建文件：** `app/core/data_engine/regime_detector.py`
 
-```python
-class RegimeDetector:
-    """基于趋势强度指标或 HMM 2-state 的市场状态识别"""
-    Regime = Literal["bull", "bear", "sideways", "high_vol"]
-    
-    def fit(self, market_returns: pd.Series, method="trend") -> "RegimeDetector": ...
-    def predict(self, dates: pd.DatetimeIndex) -> pd.Series: ...
-    def regime_to_alpha_weights(self, regime, pool_top5) -> dict[str, float]: ...
-```
-
-**估时：** 5 天
-
----
-
-### Task 4.2 🟡 均值-方差组合优化替代等权
-
-**涉及文件：**
-- `app/core/backtest_engine/portfolio_constructor.py` — 新增 `MVOPortfolio`
-
-**估时：** 5 天
+**已实现内容：**
+- `RegimeDetector(trend_window=60, vol_window=20, trend_threshold=0.05, vol_quantile=0.80)`
+- 规则式分类（无前视，rolling 窗口右对齐）：
+  - `high_vol`：滚动波动率 > 全样本滚动波动率 80 分位（覆盖趋势标签）
+  - `bull` / `bear`：60 日累计收益 > +5% / < -5%
+  - `sideways`：其余；预热期（窗口未满）标注 NaN
+- `fit(market_returns, method="trend")` / `predict(dates)`（ffill 对齐）/ `current_regime()` / `regime_counts()`
+- `regime_to_alpha_weights(regime, pool_top5)`：基准权重 = max(sharpe_oos,0)+0.1，
+  按因子家族倾斜（牛市动量×1.5、熊市回归×1.25、高波动 volatility×1.5 等），归一化和为 1；
+  家族分类复用 `FinancialInterpreter`，失败时保持基准权重
+- **API：** `GET /api/regime?dataset_name=&start=&end=`（`RegimeResponse`：当前状态 + 各状态天数 +
+  最近 20 日标签）；数据加载失败返回 502，**不做合成数据静默降级**
 
 ---
 
-### Task 4.3 🟡 Deflated Sharpe Ratio 与多重检验校正
+### Task 4.2 ✅ 均值-方差组合优化
 
-**涉及文件：**
-- `app/core/backtest_engine/performance_analyzer.py` — 新增 `deflated_sharpe_ratio()`
-- `app/core/backtest_engine/risk_report.py` — 新增 `deflated_sharpe_ratio` 字段
+**修改文件：** `portfolio_constructor.py`（新增 `MVOPortfolio`）、`signal_processor.py`、`realistic_backtester.py`
 
-**估时：** 2 天
+**已实现内容：**
+- `MVOPortfolio(cov_window=60, shrinkage=0.5, clip_z=3.0)`：w_t ∝ Σ_t⁻¹·s_t，L1 归一化
+  - 对角收缩协方差 `(1-δ)S + δ·diag(S)`（Ledoit-Wolf 简化版），保证可逆并抑制小样本噪声
+  - 协方差窗口取 [t-60, t)，**不含 t 日，无前视**
+  - 窗口未满 / 无 returns / 求解失败 → 逐日退化为 SignalWeighted（z/L1）行为
+  - 窗口内 NaN 占比 > 30% 的资产从优化中剔除（保持基准权重）
+- `SimulationConfig.portfolio_mode` 扩展为 `"long_short" | "decile" | "mvo"`
+- `RealisticBacktester._build_weights(signal, dataset)` 新增 mvo 分支，
+  从 `dataset["returns"]`（缺失时 close.pct_change()）取收益矩阵
 
 ---
+
+### Task 4.3 ✅ Deflated Sharpe Ratio 与多重检验校正
+
+**修改文件：** `performance_analyzer.py`、`risk_report.py`、`router.py`
+
+**已实现内容：**
+- 模块级 `deflated_sharpe_from_returns(returns, n_trials, trial_sharpes, tdays)`
+  （Bailey & López de Prado 2014）：
+  - 返回 P(真实 Sharpe > 0) ∈ [0,1]，同时校正多重检验（SR0 期望最大值）与
+    收益非正态（偏度/峰度对 SR 估计量方差的影响）
+  - `n_trials=1` 且无 trial_sharpes 时退化为单策略 PSR（SR0=0）
+  - trial_sharpes（各候选年化 Sharpe）提供时用横截面方差估计 V[SR]；
+    缺省退化为 SR 估计量抽样方差（保守近似）
+  - 观测 < 20 天或收益退化返回 NaN
+- `PerformanceAnalyzer.deflated_sharpe_ratio()` 方法委托模块函数
+- `RiskReport` 新增 `deflated_sharpe`、`n_trials` 字段；`from_result(..., n_trials, trial_sharpes)`
+- **接线：**
+  - `/alpha/simulate|optimize`：`is/oos_metrics["deflated_sharpe"]`（n_trials = Optuna 试验数，simulate=1）
+  - Workflow 端点：`_add_workflow_pnl` 注入 `metrics["oos_deflated_sharpe"]` + `metrics["n_trials"]`
+    （n_trials = Σ各代 population_size；trial_sharpes = pool 候选 OOS Sharpe）
+
+---
+
+**前端 Phase 4 同步（2026-07-17）：**
+- FE-4.1 `RegimeBadge.tsx`：RightPane 标签栏右侧 BULL↑/BEAR↓/SIDEWAYS→/HIGH VOL⚡ 徽章，
+  随 simConfig 数据集变化自动刷新；加载失败静默隐藏（辅助信息不阻塞 UI）
+- FE-4.2 MetricsGrid 新增 "Statistical Significance" 区块：DSR 百分比（>95% emerald /
+  50-95% amber / <50% rose）+ n_trials 标注 + 显著性解读文字
+- `SimMetrics.deflated_sharpe`、`RegimeInfo` 类型；`apiFetchRegime()` 客户端；
+  `runOptimize` 映射 `m.oos_deflated_sharpe` / `m.n_trials`
+
+---
+
+> **后续规划：** Phase 5 完成后到「可测试程度（Paper Trading Ready）」的完整路径
+> 见 [`PAPER_TRADING_ROADMAP.md`](PAPER_TRADING_ROADMAP.md)（2026-07-17 制定，
+> 含 Phase 6 基础设施加固 / Phase 7 PaperBroker / Phase 8 PIT 数据层与验收标准）。
 
 ## Phase 5：在线化与生命周期（8-12 周）
 
@@ -489,7 +525,7 @@ Phase 5 ── ← 4.1
 | Phase 1 | 44% | ✅ **已达成**（全部 5 个任务完成，可维护性提升，API 并发保护上线）|
 | Phase 2 | 54% | 防过拟合（38%→65%）、数据质量（65%→78%）|
 | Phase 3 | 64% | Alpha 信号质量（25%→55%）、组合完整性（28%→55%）|
-| Phase 4 | 74% | 风险模型（8%→65%）、组合完整性（55%→75%）|
+| Phase 4 | 74% | ✅ **已达成**（2026-07-17）风险模型（8%→65%）、组合完整性（55%→75%）、防过拟合（65%→80%，DSR 上线）|
 | Phase 5 | 82% | 运营系统（5%→70%）、因子生命周期（5%→72%）|
 
 ---
@@ -515,15 +551,15 @@ Phase 5 ── ← 4.1
 | ~~IC Decay~~ | ~~Workflow 端点补充 IC Decay 输出~~ | ~~0.5 天~~ | ~~低~~ | ✅ 已完成（2026-06-28）|
 | ~~1.5 (残)~~ | ~~并发锁覆盖全部 workflow 端点 + 超时僵尸线程修复~~ | ~~0.5 天~~ | ~~低~~ | ✅ 已完成（2026-06-29）|
 | ~~3.2 (bug)~~ | ~~AlphaCombiner 同期 IC 前视泄漏修复（ret[t+1]）~~ | ~~0.5 天~~ | ~~低~~ | ✅ 已完成（2026-06-29）|
-| 4.1 | Regime 识别 | 5 天 | 高 | ❌ |
-| 4.2 | MVO 组合优化 | 5 天 | 高 | ❌ |
-| 4.3 | Deflated Sharpe | 2 天 | 中 | ❌ |
+| ~~4.1~~ | ~~Regime 识别~~ | ~~5 天~~ | ~~高~~ | ✅ 已完成（2026-07-17）|
+| ~~4.2~~ | ~~MVO 组合优化~~ | ~~5 天~~ | ~~高~~ | ✅ 已完成（2026-07-17）|
+| ~~4.3~~ | ~~Deflated Sharpe~~ | ~~2 天~~ | ~~中~~ | ✅ 已完成（2026-07-17）|
 | 5.1 | 因子在线监控 | 5 天 | 高 | ❌ |
 | 5.2 | 生命周期状态机 | 3 天 | 中 | ❌ |
 | 5.3 | APScheduler 调度 | 3 天 | 中 | ❌ |
 | 5.4 (残) | API 端点扩展（5个）| 3 天 | 低 | ⚠️ 部分 |
-| **剩余总计** | | **~23 天** | | |
+| **剩余总计** | | **~14 天** | | |
 
 ---
 
-*路线图版本 v3.1 | 2026-06-29 | 并发保护补齐至全部 GP 端点 | AlphaCombiner 前视 IC 修复 | Task 3.5 正交化声称更正 | 剩余 Phase 4+5*
+*路线图版本 v4.0 | 2026-07-17 | Phase 4 全部完成（Regime + MVO + Deflated Sharpe，35 项验收测试）| 剩余 Phase 5*

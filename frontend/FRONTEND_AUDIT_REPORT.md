@@ -209,8 +209,8 @@ frontend/
 | 多 Alpha Pool 视图（pool_top5 + combined_metrics）| P3 | Phase 3 Task 3.2 | ✅ 已实现 |
 | Beta 暴露展示（portfolio_beta in MetricsGrid）| P3 | Phase 3 Task 3.3 | ✅ 已实现 |
 | DSL 新算子高亮（ts_momentum_decay / sector_neutral）| P3 | Phase 3 Task 3.4 | ✅ 已实现 |
-| Regime 市场状态指示器 | P4 | Phase 4 Task 4.1 | ❌ 待后端 Phase 4 |
-| Deflated Sharpe 指标行 | P4 | Phase 4 Task 4.3 | ❌ 待后端 Phase 4 |
+| Regime 市场状态指示器 | P4 | Phase 4 Task 4.1 | ✅ 已实现（2026-07-17）|
+| Deflated Sharpe 指标行 | P4 | Phase 4 Task 4.3 | ✅ 已实现（2026-07-17）|
 | Alpha 生命周期仪表板 | P5 | Phase 5 Task 5.4 | ❌ 待后端 Phase 5 |
 | IC 衰减监控折线图 | P5 | Phase 5 Task 5.1 | ❌ 待后端 Phase 5 |
 | 任务调度状态展示 | P5 | Phase 5 Task 5.3 | ❌ 待后端 Phase 5 |
@@ -258,7 +258,7 @@ useEffect(() => { initSessions() }, [])  // eslint-disable-line react-hooks/exha
 | **Phase 1** | ✅ 全部完成 | ✅ 全部完成 | 429/408 拦截器、Console 滚动、PnL 日期轴、OOS 指标、AbortController 均已实现 |
 | **Phase 2** | ✅ 全部完成 | ✅ 全部完成 | WalkForwardChart（5折柱状图+汇总指标）、数据质量 HealthBadge、RightPane 双标签页 |
 | **Phase 3** | ✅ 全部完成 | ✅ **已同步** | Pool 标签页（AlphaPoolPanel）、Beta 暴露行、ts_momentum_decay/sector_neutral 算子 |
-| **Phase 4** | ❌ 未开始 | ❌ 缺Regime | Regime 状态徽章 + DSR 指标行 |
+| **Phase 4** | ✅ 全部完成 | ✅ **已同步**（2026-07-17）| RegimeBadge（RightPane 标签栏）+ MetricsGrid DSR 显著性区块 |
 | **Phase 5** | ❌ 未开始 | ❌ 缺仪表板 | Alpha 生命周期仪表板 + IC 历史图 |
 
 ---
@@ -433,8 +433,8 @@ Alpha 详情页展示 30/60 天滚动 IC 折线图 + 衰减阈值参考线。
 | ~~FE-2.2~~ | ~~数据集健康评分 Banner~~ | ~~1 天~~ | ~~🟢~~ | ✅ 已完成 |
 | ~~FE-3.1~~ | ~~多 Alpha Pool 视图~~ | ~~3 天~~ | ~~🟡~~ | ✅ 已完成 |
 | ~~FE-3.2~~ | ~~Beta 暴露展示~~ | ~~2 天~~ | ~~🟡~~ | ✅ 已完成 |
-| FE-4.1 | Regime 状态徽章 | 1 天 | 🟢 | 待后端 Phase 4 |
-| FE-4.2 | Deflated Sharpe 指标行 | 1 天 | 🟢 | 待后端 Phase 4 |
+| ~~FE-4.1~~ | ~~Regime 状态徽章~~ | ~~1 天~~ | ~~🟢~~ | ✅ 已完成（2026-07-17）|
+| ~~FE-4.2~~ | ~~Deflated Sharpe 指标行~~ | ~~1 天~~ | ~~🟢~~ | ✅ 已完成（2026-07-17）|
 | FE-5.1 | Alpha 生命周期仪表板 | 5 天 | 🟡 | 待后端 Phase 5 |
 | FE-5.2 | IC 历史监控折线图 | 2 天 | 🟡 | 待后端 Phase 5 |
 | FE-5.3 | 调度任务状态展示 | 1 天 | 🟢 | 待后端 Phase 5 |
@@ -458,4 +458,4 @@ Alpha 详情页展示 30/60 天滚动 IC 折线图 + 衰减阈值参考线。
 
 ---
 
-*报告版本 v6.1 | 2026-06-29 | IC Decay 接线修复 + SSE 429/408 错误分类补齐 | 覆盖文件数：21 个 .tsx/.ts 文件*
+*报告版本 v7.0 | 2026-07-17 | Phase 4 前端任务完成（RegimeBadge + DSR 显著性区块）| 覆盖文件数：22 个 .tsx/.ts 文件*

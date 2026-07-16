@@ -52,6 +52,11 @@ class RiskReport:
     sharpe_tstat:       float = np.nan   # Lo (2002) t 统计量；> 1.96 为 5% 显著
     ic_method:          str   = ""       # "exact_price" | "approx_position" | "provided"
 
+    # ---- Task 4.3: Deflated Sharpe Ratio ----
+    # P(真实 Sharpe > 0)，校正 n_trials 次多重检验与收益非正态性；> 0.95 为显著
+    deflated_sharpe:    float = np.nan
+    n_trials:           int   = 1        # DSR 计算所用的候选策略数
+
     # ---- O4: 多空腿分离 ----
     long_ann_return:    float = np.nan
     long_sharpe:        float = np.nan
@@ -102,6 +107,8 @@ class RiskReport:
         rolling_sharpe_window: int = 60,
         rolling_ic_window: int = 20,
         benchmark_returns: Optional[pd.Series] = None,
+        n_trials:          int = 1,
+        trial_sharpes:     Optional[list] = None,
     ) -> "RiskReport":
         """
         Parameters
@@ -112,6 +119,8 @@ class RiskReport:
         rf_annual         : 年化无风险利率（如 0.05 = 5%），推荐使用此参数
         rolling_ic_window : 仅用于 rolling_ic 序列的平滑窗口（不影响 mean_ic/ic_ir）
         benchmark_returns : 基准日收益率序列（F8：alpha/beta 分解用）
+        n_trials          : Task 4.3：产生该策略时评估过的候选总数（DSR 多重检验校正）
+        trial_sharpes     : Task 4.3：各候选的年化 Sharpe 列表（估计 V[SR] 用，可选）
         """
         pa = PerformanceAnalyzer(result, rf=rf, rf_annual=rf_annual)
         # summarize() 内部已根据 prices 选择正确 IC 方法并返回 ic_method
@@ -155,6 +164,9 @@ class RiskReport:
         # O2: 压力测试子区间分析
         stress = pa.stress_test()
 
+        # Task 4.3: Deflated Sharpe Ratio（多重检验 + 非正态校正）
+        dsr = pa.deflated_sharpe_ratio(n_trials=n_trials, trial_sharpes=trial_sharpes)
+
         # 滚动序列
         rs = pa.rolling_sharpe(rolling_sharpe_window)
         dd = pa.drawdown_series()
@@ -177,6 +189,8 @@ class RiskReport:
             ann_turnover       = metrics["ann_turnover"],
             cost_drag_bps      = metrics["cost_drag_bps"],
             ic_method          = ic_method,
+            deflated_sharpe    = dsr,
+            n_trials           = max(int(n_trials), 1),
             long_ann_return    = metrics.get("long_ann_return",  np.nan),
             long_sharpe        = metrics.get("long_sharpe",      np.nan),
             short_ann_return   = metrics.get("short_ann_return", np.nan),

@@ -2,6 +2,7 @@ import axios from 'axios'
 import type {
   SimulationConfig, SimResult, AlphaRecord, BacktestRunResponse,
   WorkflowResponse, DatasetInfo, WalkForwardResult, DatasetHealth,
+  RegimeInfo,
 } from '../types'
 
 const http = axios.create({ baseURL: '/api', timeout: 120_000 })
@@ -27,6 +28,13 @@ export const apiFetchDatasetHealth = (name: string, start: string, end: string) 
   http.get<DatasetHealth>(`/datasets/${encodeURIComponent(name)}/health`, {
     params: { start, end },
     timeout: 60_000,   // health check loads real data — may be slow on first call
+  })
+
+// ── Market Regime (Task 4.1 / FE-4.1) ─────────────────────────────────────
+export const apiFetchRegime = (dataset: string, start: string, end: string) =>
+  http.get<RegimeInfo>('/regime', {
+    params: { dataset_name: dataset, start, end },
+    timeout: 60_000,   // first call loads the dataset — may be slow
   })
 
 // ── Walk-Forward Backtest ────────────────────────────────────────────────

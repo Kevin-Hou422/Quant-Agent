@@ -100,6 +100,22 @@ class PerformanceAnalyzer:
         T = float(max(len(self._ret.dropna()), 1))
         return float(sr * np.sqrt(T) / np.sqrt(1.0 + 0.5 * sr ** 2))
 
+    def deflated_sharpe_ratio(
+        self,
+        n_trials:      int = 1,
+        trial_sharpes: Optional[list] = None,
+    ) -> float:
+        """
+        Deflated Sharpe Ratio（Bailey & López de Prado 2014，Task 4.3）。
+        委托给模块级 ``deflated_sharpe_from_returns()``，详见其文档。
+        """
+        return deflated_sharpe_from_returns(
+            self._ret,
+            n_trials      = n_trials,
+            trial_sharpes = trial_sharpes,
+            tdays         = self._tdays,
+        )
+
     def calmar_ratio(self) -> float:
         dd_val, *_ = self.max_drawdown()
         if dd_val == 0:
@@ -554,3 +570,83 @@ class PerformanceAnalyzer:
             "ic_method":           ic_method,
             **leg,
         }
+
+
+# ---------------------------------------------------------------------------
+# Deflated Sharpe Ratio（Task 4.3，模块级 — 可脱离 BacktestResult 单独调用）
+# ---------------------------------------------------------------------------
+
+def deflated_sharpe_from_returns(
+    returns:       pd.Series,
+    n_trials:      int = 1,
+    trial_sharpes: Optional[list] = None,
+    tdays:         float = 252.0,
+) -> float:
+    """
+    Deflated Sharpe Ratio（Bailey & López de Prado 2014）。
+
+    返回「真实 Sharpe > 0」的概率 ∈ [0, 1]，对以下两个效应做了校正：
+      1. 多重检验：从 n_trials 个候选中选出最优者，期望最大 SR 天然为正
+      2. 收益非正态：偏度 / 峰度对 SR 估计量方差的影响
+
+    计算（全部使用日频 SR，不年化）：
+      SR0  = √V[SR] × [(1-γ)·Φ⁻¹(1-1/N) + γ·Φ⁻¹(1-1/(N·e))]   （期望最大 SR）
+      DSR  = Φ( (SR - SR0)·√(T-1) / √(1 - γ₃·SR + (γ₄-1)/4·SR²) )
+      其中 γ = 0.5772（Euler-Mascheroni），γ₃ = 偏度，γ₄ = 峰度（非超额）
+
+    Parameters
+    ----------
+    returns       : 策略日净收益序列
+    n_trials      : 候选策略总数（GP: Σ 每代 population_size；Optuna: n_trials）
+    trial_sharpes : 各候选的**年化** Sharpe 列表（可选）。提供时用其横截面
+                    方差估计 V[SR]；缺省时退化为单一策略 SR 估计量的抽样方差
+                    （视各候选统计性质相似的保守近似）
+    tdays         : 年化交易日数（trial_sharpes 反年化用）
+
+    Returns
+    -------
+    float ∈ [0,1]；> 0.95 表示在校正多重检验后 Sharpe 仍显著为正。
+    n_trials <= 1 且无 trial_sharpes 时等价于单策略 PSR（SR0=0）。
+    观测数 < 20 或收益退化时返回 NaN。
+    """
+    _st = scipy_stats
+
+    ret = returns.dropna() if returns is not None else pd.Series(dtype=float)
+    T   = len(ret)
+    if T < 20:
+        return np.nan
+
+    std = ret.std(ddof=1)
+    if std <= 0 or np.isnan(std):
+        return np.nan
+    sr_d = float(ret.mean() / std)
+
+    skew = float(_st.skew(ret))
+    kurt = float(_st.kurtosis(ret, fisher=False))   # 非超额峰度（正态=3）
+
+    # ---- SR 估计量的抽样方差（含高阶矩修正）----
+    denom_adj = 1.0 - skew * sr_d + (kurt - 1.0) / 4.0 * sr_d ** 2
+    if denom_adj <= 0:
+        denom_adj = 1e-9
+    var_sr_hat = denom_adj / max(T - 1, 1)
+
+    # ---- 期望最大 SR（SR0）----
+    n = max(int(n_trials), 1)
+    if n <= 1 and not trial_sharpes:
+        sr0 = 0.0                                     # 单策略 → PSR
+    else:
+        if trial_sharpes and len(trial_sharpes) >= 2:
+            arr    = np.asarray(trial_sharpes, dtype=float) / np.sqrt(max(tdays, 1.0))
+            arr    = arr[~np.isnan(arr)]
+            var_tr = float(np.var(arr, ddof=1)) if len(arr) >= 2 else var_sr_hat
+            n      = max(n, len(arr))
+        else:
+            var_tr = var_sr_hat
+        gamma = 0.5772156649015329
+        z1 = _st.norm.ppf(1.0 - 1.0 / n)
+        z2 = _st.norm.ppf(1.0 - 1.0 / (n * np.e))
+        sr0 = float(np.sqrt(max(var_tr, 0.0)) * ((1 - gamma) * z1 + gamma * z2))
+
+    # ---- DSR ----
+    z = (sr_d - sr0) * np.sqrt(max(T - 1, 1)) / np.sqrt(denom_adj)
+    return float(_st.norm.cdf(z))

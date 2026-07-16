@@ -361,7 +361,7 @@ class RealisticBacktester:
                      proc_signal.isna().mean().mean() * 100)
 
         # Step 4: 构建组合权重
-        weights = self._build_weights(proc_signal)
+        weights = self._build_weights(proc_signal, dataset=dataset)
 
         # Step 5: 可选市场中性
         if self.config.market_neutral:
@@ -395,12 +395,17 @@ class RealisticBacktester:
     # 内部：组合构建（Long-Short or Decile）
     # ------------------------------------------------------------------
 
-    def _build_weights(self, signal: pd.DataFrame) -> pd.DataFrame:
+    def _build_weights(
+        self,
+        signal:  pd.DataFrame,
+        dataset: Optional[dict] = None,
+    ) -> pd.DataFrame:
         """
         根据 config.portfolio_mode 选择合适的 PortfolioConstructor。
 
         long_short : SignalWeightedPortfolio（权重正比于截面 z-score）
         decile     : DecilePortfolio（Top top_pct 做多，Bottom top_pct 做空）
+        mvo        : MVOPortfolio（Task 4.2，收缩协方差 Σ⁻¹s，需 dataset 提供收益）
 
         F11 修复：当 config.max_single_weight > 0 时，对权重矩阵逐资产施加上限约束
         并重新 L1 归一化，防止极端集中风险。
@@ -409,16 +414,24 @@ class RealisticBacktester:
 
         mode = self.config.portfolio_mode
         if mode == "long_short":
-            constructor = SignalWeightedPortfolio(clip_z=3.0)
+            weights = SignalWeightedPortfolio(clip_z=3.0).construct(signal)
         elif mode == "decile":
-            constructor = DecilePortfolio(
+            weights = DecilePortfolio(
                 top_pct    = self.config.top_pct,
                 bottom_pct = self.config.top_pct,
-            )
+            ).construct(signal)
+        elif mode == "mvo":
+            from .portfolio_constructor import MVOPortfolio
+            returns = None
+            if dataset:
+                returns = dataset.get("returns")
+                if returns is None and "close" in dataset:
+                    returns = dataset["close"].pct_change()
+            weights = MVOPortfolio().construct(signal, returns=returns)
         else:
-            raise ValueError(f"未知 portfolio_mode: '{mode}'，应为 'long_short' 或 'decile'")
-
-        weights = constructor.construct(signal)
+            raise ValueError(
+                f"未知 portfolio_mode: '{mode}'，应为 'long_short'、'decile' 或 'mvo'"
+            )
 
         # F11: 单资产权重上限约束
         cap = self.config.max_single_weight
