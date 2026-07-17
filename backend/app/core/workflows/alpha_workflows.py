@@ -410,15 +410,20 @@ def _combine_pool_alphas(
     pool_top5:  list,
     oos_data:   dict,
     emit:       Any,
+    is_data:    Optional[dict] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Evaluate a multi-Alpha composite signal on OOS data.
 
     Steps:
-      1. Execute each pool entry's DSL on oos_data to get signal matrices
-      2. AlphaCombiner.optimize_weights() with ic_weighted on OOS returns
-      3. AlphaCombiner.combine() to produce composite signal
-      4. Quick IC-IR evaluation of the composite vs individual best
+      1. Execute each pool entry's DSL on IS and OOS data
+      2. AlphaCombiner.optimize_weights() with ic_weighted on **IS** signals/returns
+         (B2 修复：权重拟合与评估分离，避免在同一 OOS 段既拟合又打分)
+      3. Apply the IS-fitted weights to combine the **OOS** signals
+      4. Quick IC-IR evaluation of the composite on OOS
+
+    is_data 为 None 时（无 IS 数据可用）回退为 OOS 拟合并在返回值中标注
+    ``weights_fitted_on="oos"``，调用方可据此提示乐观偏差。
 
     Returns a dict with combined OOS metrics, or None on failure.
     """
@@ -430,28 +435,44 @@ def _combine_pool_alphas(
         from ..backtest_engine.alpha_combiner import AlphaCombiner
 
         executor  = Executor(validate=False)
-        returns   = oos_data.get("returns")
-        if returns is None and "close" in oos_data:
-            close   = oos_data["close"]
-            returns = close.pct_change().fillna(0.0)
 
-        signals: Dict[str, Any] = {}
+        def _returns_of(data: dict):
+            ret = data.get("returns")
+            if ret is None and "close" in data:
+                ret = data["close"].pct_change().fillna(0.0)
+            return ret
+
+        returns = _returns_of(oos_data)
+
+        # OOS 信号（评估用）；同一 DSL 同步算 IS 信号（权重拟合用）
+        signals:    Dict[str, Any] = {}
+        is_signals: Dict[str, Any] = {}
         for entry in pool_top5[:5]:
             dsl = entry.get("dsl", "") if isinstance(entry, dict) else getattr(entry, "dsl", "")
             if not dsl:
                 continue
             try:
-                sig = executor.run_expr(dsl, oos_data)
-                signals[dsl] = sig
+                signals[dsl] = executor.run_expr(dsl, oos_data)
+                if is_data:
+                    is_signals[dsl] = executor.run_expr(dsl, is_data)
             except Exception:
-                pass
+                signals.pop(dsl, None)
+                is_signals.pop(dsl, None)
 
         if len(signals) < 2:
             return None
 
         combiner = AlphaCombiner()
-        weights  = combiner.optimize_weights(signals, returns=returns, method="ic_weighted")
-        joint    = combiner.combine(signals, weights=weights)
+        # B2 修复：优先在 IS 上拟合权重（要求 IS 信号覆盖与 OOS 相同的 DSL 集合）
+        fitted_on = "is"
+        if is_data and set(is_signals) == set(signals):
+            weights = combiner.optimize_weights(
+                is_signals, returns=_returns_of(is_data), method="ic_weighted",
+            )
+        else:
+            fitted_on = "oos"
+            weights = combiner.optimize_weights(signals, returns=returns, method="ic_weighted")
+        joint = combiner.combine(signals, weights=weights)
 
         # Direct array-based IC of the composite signal
         sig_arr = joint.to_numpy(dtype=float)
@@ -488,10 +509,13 @@ def _combine_pool_alphas(
             "weights":     {dsl: round(w, 4) for dsl, w in weights.items()},
             "combined_ic_ir":   round(ic_ir,   4),
             "combined_mean_ic": round(mean_ic, 4),
+            # B2：权重拟合数据段。"is" 为正确路径；"oos" 表示回退（指标偏乐观）
+            "weights_fitted_on": fitted_on,
         }
         emit(
-            f"[Combined] {len(signals)} alphas → IC-IR={ic_ir:+.4f}  "
-            f"(best single={pool_top5[0].get('sharpe_oos', 0):.4f})"
+            f"[Combined] {len(signals)} alphas → OOS IC-IR={ic_ir:+.4f}  "
+            f"(weights fitted on {fitted_on.upper()}; "
+            f"best single={pool_top5[0].get('sharpe_oos', 0):.4f})"
         )
         return combined
 
@@ -612,7 +636,10 @@ class GenerationWorkflow:
         logger.info("[Workflow A] DONE  best_dsl='%.80s'", gp_result.best_dsl)
 
         # Task 3.2: combine top-5 pool alphas into a joint signal and evaluate on OOS
-        combined_metrics = _combine_pool_alphas(gp_result.pool_top5, oos_data, _emit)
+        # (B2 修复：权重在 IS 上拟合，OOS 只用于评估)
+        combined_metrics = _combine_pool_alphas(
+            gp_result.pool_top5, oos_data, _emit, is_data=is_data,
+        )
 
         return WorkflowResult(
             workflow         = "generation",

@@ -49,10 +49,29 @@ from app.config import settings
 from app.api.router import router
 from app.api.chat_router import chat_router
 
+# ── Scheduler lifecycle (Task 5.3) — 仅当 ENABLE_SCHEDULER=true 时随服务启停 ──
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    if settings.enable_scheduler:
+        from app.tasks.scheduler import start_scheduler
+        start_scheduler(
+            db_url   = settings.scheduler_db_url,
+            timezone = settings.scheduler_timezone,
+        )
+    yield
+    if settings.enable_scheduler:
+        from app.tasks.scheduler import shutdown_scheduler
+        shutdown_scheduler()
+
+
 app = FastAPI(
-    title   = settings.app_title,
-    version = settings.app_version,
-    debug   = settings.debug,
+    title    = settings.app_title,
+    version  = settings.app_version,
+    debug    = settings.debug,
+    lifespan = _lifespan,
 )
 
 app.add_middleware(

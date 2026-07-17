@@ -519,6 +519,21 @@ class WalkForwardResponse(BaseModel):
     fold_reports:     List[WalkForwardFoldReportSchema]
 
 
+def _walk_forward_to_response(dsl: str, result) -> WalkForwardResponse:
+    """WalkForwardResult → WalkForwardResponse（/backtest/walk_forward 与
+    /alphas/{id}/walk_forward 共用）。"""
+    return WalkForwardResponse(
+        dsl              = result.dsl or dsl,
+        n_folds          = result.n_folds,
+        mean_oos_sharpe  = result.mean_oos_sharpe,
+        std_oos_sharpe   = result.std_oos_sharpe,
+        min_oos_sharpe   = result.min_oos_sharpe,
+        pct_positive     = result.pct_positive,
+        mean_overfitting = result.mean_overfitting,
+        fold_reports     = [WalkForwardFoldReportSchema(**r.to_dict()) for r in result.fold_reports],
+    )
+
+
 @router.post("/backtest/walk_forward", response_model=WalkForwardResponse, tags=["Backtest"])
 def walk_forward_backtest(req: WalkForwardRequest) -> WalkForwardResponse:
     """
@@ -551,16 +566,7 @@ def walk_forward_backtest(req: WalkForwardRequest) -> WalkForwardResponse:
         logger.exception("WalkForwardBacktester failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
-    return WalkForwardResponse(
-        dsl              = result.dsl,
-        n_folds          = result.n_folds,
-        mean_oos_sharpe  = result.mean_oos_sharpe,
-        std_oos_sharpe   = result.std_oos_sharpe,
-        min_oos_sharpe   = result.min_oos_sharpe,
-        pct_positive     = result.pct_positive,
-        mean_overfitting = result.mean_overfitting,
-        fold_reports     = [WalkForwardFoldReportSchema(**r.to_dict()) for r in result.fold_reports],
-    )
+    return _walk_forward_to_response(req.dsl, result)
 
 
 # ---------------------------------------------------------------------------
@@ -771,6 +777,252 @@ def market_regime(
         vol_window    = vol_window,
         recent_labels = recent,
     )
+
+
+# ===========================================================================
+# Phase 5 (Task 5.4) — 因子生命周期管理端点
+# ===========================================================================
+
+class DashboardRowSchema(BaseModel):
+    alpha_id:        int
+    dsl:             str
+    status:          str
+    sharpe:          float
+    n_ic_days:       int
+    latest_ic:       Optional[float]
+    latest_date:     Optional[str]
+    rolling_mean_ic: Optional[float]
+    rolling_ic_ir:   Optional[float]
+    consecutive_neg: int
+    has_alert:       bool
+    allowed_next:    List[str]
+
+
+class DashboardResponse(BaseModel):
+    rows:     List[DashboardRowSchema]
+    n_alerts: int
+
+
+class ICHistoryPoint(BaseModel):
+    date:            str
+    realized_ic:     float
+    realized_return: float
+
+
+class ICHistoryResponse(BaseModel):
+    alpha_id: int
+    points:   List[ICHistoryPoint]
+    rolling_mean_ic: Optional[float]
+    rolling_ic_ir:   Optional[float]
+
+
+class StatusPatchRequest(BaseModel):
+    status: str = Field(..., description="目标状态：candidate/validated/paper/active/decaying/retired/superseded")
+
+
+class StatusPatchResponse(BaseModel):
+    alpha_id:     int
+    old_status:   str
+    new_status:   str
+    allowed_next: List[str]
+
+
+class RetrainResponse(BaseModel):
+    alpha_id:   int
+    new_dsl:    str
+    changed:    bool
+    metrics:    Dict[str, Any]
+
+
+def _nan_to_none(v: float) -> Optional[float]:
+    return None if (v is None or (isinstance(v, float) and np.isnan(v))) else float(v)
+
+
+@router.get("/alphas/dashboard", response_model=DashboardResponse, tags=["Lifecycle"])
+def alphas_dashboard(store: AlphaStore = Depends(get_store)) -> DashboardResponse:
+    """Task 5.4：全部非终态因子的监控摘要（滚动 IC-IR / 衰减告警 / 合法流转）。"""
+    from app.core.monitor.alpha_monitor import AlphaMonitor
+
+    rows = AlphaMonitor(store).get_dashboard()
+    return DashboardResponse(
+        rows=[
+            DashboardRowSchema(
+                alpha_id        = r.alpha_id,
+                dsl             = r.dsl,
+                status          = r.status,
+                sharpe          = r.sharpe,
+                n_ic_days       = r.n_ic_days,
+                latest_ic       = _nan_to_none(r.latest_ic),
+                latest_date     = r.latest_date,
+                rolling_mean_ic = _nan_to_none(r.rolling_mean_ic),
+                rolling_ic_ir   = _nan_to_none(r.rolling_ic_ir),
+                consecutive_neg = r.consecutive_neg,
+                has_alert       = r.has_alert,
+                allowed_next    = r.allowed_next,
+            )
+            for r in rows
+        ],
+        n_alerts=sum(1 for r in rows if r.has_alert),
+    )
+
+
+@router.get("/alphas/{alpha_id}/ic_history", response_model=ICHistoryResponse, tags=["Lifecycle"])
+def alpha_ic_history(
+    alpha_id: int,
+    limit:    int = Query(250, ge=1, le=2000),
+    store:    AlphaStore = Depends(get_store),
+) -> ICHistoryResponse:
+    """Task 5.4：因子逐日 realized IC 历史（升序）。"""
+    from app.core.monitor.alpha_monitor import AlphaMonitor
+
+    if store.get_by_id(alpha_id) is None:
+        raise HTTPException(status_code=404, detail=f"Alpha id={alpha_id} 不存在")
+
+    hist = store.get_ic_history(alpha_id, limit=limit)
+    monitor = AlphaMonitor(store)
+    ics  = [h.realized_ic for h in hist]
+    roll = ics[-monitor.rolling_window:]
+    return ICHistoryResponse(
+        alpha_id = alpha_id,
+        points   = [
+            ICHistoryPoint(
+                date            = str(h.date),
+                realized_ic     = h.realized_ic,
+                realized_return = h.realized_return,
+            )
+            for h in hist
+        ],
+        rolling_mean_ic = _nan_to_none(float(np.mean(roll))) if roll else None,
+        rolling_ic_ir   = _nan_to_none(monitor._ic_ir(roll)),
+    )
+
+
+@router.patch("/alphas/{alpha_id}/status", response_model=StatusPatchResponse, tags=["Lifecycle"])
+def alpha_patch_status(
+    alpha_id: int,
+    req:      StatusPatchRequest,
+    store:    AlphaStore = Depends(get_store),
+) -> StatusPatchResponse:
+    """Task 5.4：流转因子状态（经 alpha_lifecycle 状态机校验，非法流转返回 409）。"""
+    from app.db.alpha_lifecycle import IllegalTransition, allowed_next
+
+    record = store.get_by_id(alpha_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Alpha id={alpha_id} 不存在")
+    old_status = record.status
+
+    try:
+        updated = store.update_status(alpha_id, req.status)
+    except IllegalTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return StatusPatchResponse(
+        alpha_id     = alpha_id,
+        old_status   = old_status,
+        new_status   = updated.status,
+        allowed_next = allowed_next(updated.status),
+    )
+
+
+@router.post("/alphas/{alpha_id}/retrain", response_model=RetrainResponse, tags=["Lifecycle"])
+def alpha_retrain(
+    alpha_id:      int,
+    pop_size:      int = Query(10, ge=5, le=100),
+    n_generations: int = Query(2,  ge=1, le=20),
+    dataset_name:  str = Query("", description=_DATASET_FIELD_DESC),
+    store:         AlphaStore = Depends(get_store),
+) -> RetrainResponse:
+    """
+    Task 5.4：以该因子当前 DSL 为种子重跑 OptimizationWorkflow（小预算），
+    更新记录指标。受全局 GP 锁保护（忙时 429）。
+    """
+    from app.core.workflows.alpha_workflows import OptimizationWorkflow
+
+    record = store.get_by_id(alpha_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Alpha id={alpha_id} 不存在")
+
+    _acquire_gp_slot()
+    try:
+        dataset, _, _ = _resolve_dataset(
+            dataset_name, "2021-01-01", "2024-01-01",
+            n_tickers=20, n_days=180, seed=42, oos_ratio=0.30,
+        )
+        wf = OptimizationWorkflow(
+            pop_size        = pop_size,
+            n_generations   = n_generations,
+            n_optuna_trials = 0,
+            n_mutations     = 4,
+        )
+        result = wf.run(dsl=record.dsl, dataset=dataset)
+    except Exception as exc:
+        logger.exception("alpha_retrain failed for id=%d", alpha_id)
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        _gp_lock.release()
+
+    # 回写最新指标（不改状态——是否采用新版本是运营决策）
+    m = result.metrics
+    try:
+        with store._Session() as session:                       # noqa: SLF001
+            rec = session.get(type(record), alpha_id)
+            rec.sharpe       = float(m.get("is_sharpe") or 0.0)
+            rec.ann_return   = float(m.get("is_return") or 0.0)
+            rec.ic_ir        = float(m.get("is_ic") or 0.0)
+            rec.ann_turnover = float(m.get("is_turnover") or 0.0)
+            session.commit()
+    except Exception:
+        logger.warning("alpha_retrain: metrics write-back failed for id=%d", alpha_id)
+
+    return RetrainResponse(
+        alpha_id = alpha_id,
+        new_dsl  = result.best_dsl,
+        changed  = result.best_dsl.strip() != record.dsl.strip(),
+        metrics  = {k: v for k, v in m.items() if isinstance(v, (int, float, str, bool))},
+    )
+
+
+@router.get("/alphas/{alpha_id}/walk_forward", response_model=WalkForwardResponse, tags=["Lifecycle"])
+def alpha_walk_forward(
+    alpha_id:     int,
+    n_splits:     int = Query(5, ge=2, le=10),
+    embargo_days: int = Query(20, ge=0, le=60),
+    dataset_name: str = Query("", description=_DATASET_FIELD_DESC),
+    store:        AlphaStore = Depends(get_store),
+) -> WalkForwardResponse:
+    """Task 5.4：对已存因子的 DSL 跑 Walk-Forward 多折验证。"""
+    record = store.get_by_id(alpha_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Alpha id={alpha_id} 不存在")
+
+    from app.core.backtest_engine.realistic_backtester import WalkForwardBacktester
+    from app.core.alpha_engine.signal_processor import SimulationConfig
+
+    dataset, _, _ = _resolve_dataset(
+        dataset_name, "2021-01-01", "2024-01-01",
+        n_tickers=20, n_days=400, seed=42, oos_ratio=0.0,
+    )
+    try:
+        wf_bt  = WalkForwardBacktester(
+            config       = SimulationConfig(),
+            n_splits     = n_splits,
+            embargo_days = embargo_days,
+        )
+        result = wf_bt.run(record.dsl, dataset)
+    except Exception as exc:
+        logger.exception("alpha_walk_forward failed for id=%d", alpha_id)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return _walk_forward_to_response(record.dsl, result)
+
+
+@router.get("/scheduler/status", tags=["Lifecycle"])
+def scheduler_status() -> dict:
+    """FE-5.3：调度器运行状态与任务列表。"""
+    from app.tasks.scheduler import get_scheduler_status
+    return get_scheduler_status()
 
 
 # ---------------------------------------------------------------------------

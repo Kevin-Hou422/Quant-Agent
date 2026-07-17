@@ -1,4 +1,4 @@
-import { MessageSquare, Code2, BookOpen, Play, Zap, Database } from 'lucide-react'
+import { MessageSquare, Code2, BookOpen, Play, Zap, Database, Activity } from 'lucide-react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { useQuantWorkspace } from '../../hooks/useQuantWorkspace'
 
@@ -39,10 +39,11 @@ export default function GlobalSidebar() {
   } = useWorkspaceStore()
   const { runBacktest, runOptimize } = useQuantWorkspace()
 
-  const isRunning  = status === 'backtesting' || status === 'optimizing' || status === 'walkforward'
-  const inChat     = activeView === 'CHAT'
-  const inCompiler = activeView === 'COMPILER'
-  const inDataset  = activeView === 'DATASET'
+  const isRunning   = status === 'backtesting' || status === 'optimizing' || status === 'walkforward'
+  const inChat      = activeView === 'CHAT'
+  const inCompiler  = activeView === 'COMPILER'
+  const inDataset   = activeView === 'DATASET'
+  const inDashboard = activeView === 'DASHBOARD'
 
   // Chat button: toggle between CHAT ↔ COMPILER
   const handleChat = () => {
@@ -111,6 +112,12 @@ export default function GlobalSidebar() {
           label="Data"
           active={inDataset}
           onClick={handleDataset}
+        />
+        <NavBtn
+          icon={Activity}
+          label="Live"
+          active={inDashboard}
+          onClick={() => setActiveView(inDashboard ? 'COMPILER' : 'DASHBOARD')}
         />
       </nav>
 

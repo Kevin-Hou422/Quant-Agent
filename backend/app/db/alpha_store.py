@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import (
-    Column, DateTime, Float, Integer, String, Text,
+    Column, Date, DateTime, Float, Integer, String, Text, UniqueConstraint,
     create_engine, select,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -47,6 +47,22 @@ class AlphaRecord(_Base):
     ann_turnover: float    = Column(Float, default=0.0)
     status:       str      = Column(String(32), default="active")
     reasoning:    str      = Column(Text, default="")
+
+
+class AlphaICRecord(_Base):
+    """Task 5.1：因子逐日 realized IC 历史（AlphaMonitor 写入）。"""
+    __tablename__ = "alpha_ic_history"
+    __table_args__ = (
+        # 幂等键：同一因子同一天只允许一条记录（重跑覆盖而非追加）
+        UniqueConstraint("alpha_id", "date", name="uq_alpha_ic_date"),
+    )
+
+    id:              int      = Column(Integer, primary_key=True, autoincrement=True)
+    alpha_id:        int      = Column(Integer, nullable=False, index=True)
+    date:            object   = Column(Date, nullable=False)
+    realized_ic:     float    = Column(Float, default=0.0)
+    realized_return: float    = Column(Float, default=0.0)
+    recorded_at:     datetime = Column(DateTime, default=datetime.utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +140,77 @@ class AlphaStore:
     def get_by_id(self, alpha_id: int) -> Optional[AlphaRecord]:
         with self._Session() as session:
             return session.get(AlphaRecord, alpha_id)
+
+    # ------------------------------------------------------------------
+    # Task 5.2：状态流转（经状态机校验）
+    # ------------------------------------------------------------------
+
+    def update_status(self, alpha_id: int, new_status: str) -> AlphaRecord:
+        """
+        流转因子状态；非法流转抛 IllegalTransition，不存在抛 KeyError。
+        校验规则见 app.db.alpha_lifecycle。
+        """
+        from .alpha_lifecycle import validate_transition
+
+        with self._Session() as session:
+            record = session.get(AlphaRecord, alpha_id)
+            if record is None:
+                raise KeyError(f"Alpha id={alpha_id} 不存在")
+            validate_transition(record.status, new_status)
+            record.status = new_status.strip().lower()
+            session.commit()
+            return record
+
+    # ------------------------------------------------------------------
+    # Task 5.1：IC 历史（AlphaMonitor 写入/读取）
+    # ------------------------------------------------------------------
+
+    def record_ic(
+        self,
+        alpha_id:        int,
+        date,                          # datetime.date | str "YYYY-MM-DD"
+        realized_ic:     float,
+        realized_return: float = 0.0,
+    ) -> None:
+        """
+        写入某因子某日的 realized IC。幂等：同 (alpha_id, date) 重复调用
+        覆盖旧值而非追加（重跑当日任务不会重复记账）。
+        """
+        from datetime import date as _date
+        if isinstance(date, str):
+            date = _date.fromisoformat(date)
+
+        with self._Session() as session:
+            existing = session.scalars(
+                select(AlphaICRecord).where(
+                    AlphaICRecord.alpha_id == alpha_id,
+                    AlphaICRecord.date == date,
+                )
+            ).first()
+            if existing is not None:
+                existing.realized_ic     = float(realized_ic)
+                existing.realized_return = float(realized_return)
+                existing.recorded_at     = datetime.utcnow()
+            else:
+                session.add(AlphaICRecord(
+                    alpha_id        = alpha_id,
+                    date            = date,
+                    realized_ic     = float(realized_ic),
+                    realized_return = float(realized_return),
+                ))
+            session.commit()
+
+    def get_ic_history(self, alpha_id: int, limit: int = 250) -> List[AlphaICRecord]:
+        """按日期升序返回某因子最近 limit 条 IC 记录。"""
+        with self._Session() as session:
+            stmt = (
+                select(AlphaICRecord)
+                .where(AlphaICRecord.alpha_id == alpha_id)
+                .order_by(AlphaICRecord.date.desc())
+                .limit(limit)
+            )
+            rows = list(session.scalars(stmt))
+        return list(reversed(rows))
 
     def export_csv(self, path: str) -> None:
         """将所有记录导出为 CSV 文件。"""

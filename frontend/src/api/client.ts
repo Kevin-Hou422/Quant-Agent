@@ -2,7 +2,7 @@ import axios from 'axios'
 import type {
   SimulationConfig, SimResult, AlphaRecord, BacktestRunResponse,
   WorkflowResponse, DatasetInfo, WalkForwardResult, DatasetHealth,
-  RegimeInfo,
+  RegimeInfo, AlphaDashboardRow, ICHistoryData, SchedulerStatus,
 } from '../types'
 
 const http = axios.create({ baseURL: '/api', timeout: 120_000 })
@@ -29,6 +29,22 @@ export const apiFetchDatasetHealth = (name: string, start: string, end: string) 
     params: { start, end },
     timeout: 60_000,   // health check loads real data — may be slow on first call
   })
+
+// ── Lifecycle Dashboard (Phase 5 / FE-5.x) ────────────────────────────────
+export const apiFetchDashboard = () =>
+  http.get<{ rows: AlphaDashboardRow[]; n_alerts: number }>('/alphas/dashboard')
+
+export const apiFetchICHistory = (alphaId: number, limit = 250) =>
+  http.get<ICHistoryData>(`/alphas/${alphaId}/ic_history`, { params: { limit } })
+
+export const apiPatchAlphaStatus = (alphaId: number, status: string) =>
+  http.patch<{ alpha_id: number; old_status: string; new_status: string; allowed_next: string[] }>(
+    `/alphas/${alphaId}/status`,
+    { status },
+  )
+
+export const apiFetchSchedulerStatus = () =>
+  http.get<SchedulerStatus>('/scheduler/status')
 
 // ── Market Regime (Task 4.1 / FE-4.1) ─────────────────────────────────────
 export const apiFetchRegime = (dataset: string, start: string, end: string) =>

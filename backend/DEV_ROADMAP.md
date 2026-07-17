@@ -16,7 +16,7 @@
 | Phase 2 | 54% | ✅ **已完成** | 全部 4 个任务完成（WF框架 + Embargo + 并发加载 + 健康检查）；前端 Phase 2 同步完成 |
 | Phase 3 | 64% | ✅ **已完成** | 全部 5 个任务完成（行业数据+AlphaCombiner+Beta中性化+DSL扩展+AlphaPool优化）|
 | Phase 4 | 74% | ✅ **已完成** | 全部 3 个任务完成（2026-07-17：Regime识别+MVO组合+Deflated Sharpe），35 项验收测试通过 |
-| Phase 5 | 82% | ❌ 未开始 | |
+| Phase 5 | 82% | ✅ **已完成** | 全部 4 个任务完成（2026-07-17：状态机+在线监控+APScheduler+6端点）+ B2 修复，31 项验收测试通过 |
 
 ---
 
@@ -28,7 +28,10 @@ Phase 1 ── 清理与一致性         ✅ 已完成
 Phase 2 ── 数据与验证升级        ✅ 已完成
 Phase 3 ── 金融核心修复          ✅ 已完成
 Phase 4 ── 风控与组合深化        ✅ 已完成（2026-07-17）
-Phase 5 ── 在线化与生命周期       ❌ 待开始
+Phase 5 ── 在线化与生命周期       ✅ 已完成（2026-07-17）
+
+═══ 本路线图（v1 审计驱动阶段）全部完成 ═══
+后续开发转入 PAPER_TRADING_ROADMAP.md（Phase 6-8：基础设施加固 → PaperBroker → PIT 数据层）
 ```
 
 ---
@@ -409,68 +412,93 @@ rank(sector_neutral) OK  shape=(80,5)
 > 见 [`PAPER_TRADING_ROADMAP.md`](PAPER_TRADING_ROADMAP.md)（2026-07-17 制定，
 > 含 Phase 6 基础设施加固 / Phase 7 PaperBroker / Phase 8 PIT 数据层与验收标准）。
 
-## Phase 5：在线化与生命周期（8-12 周）
+## Phase 5：在线化与生命周期 ✅ 已完成（2026-07-17）
+
+> 验收：`tests/test_phase5.py` 31 项测试全部通过（状态机 10 / 监控 10 / 调度 3 /
+> API 6 / B2 修复 2）；全量回归无失败；前端 94 项测试 + tsc 无错。
 
 ---
 
-### Task 5.1 🟡 因子在线监控与衰减检测
+### Task 5.2 ✅ 因子生命周期状态机（先于 5.1 实施，5.1 依赖状态定义）
 
-**涉及文件（新建）：**
-- `app/core/monitor/alpha_monitor.py`
-- `app/db/alpha_store.py` — 新增 `alpha_ic_history` 表
+**新建文件：** `app/db/alpha_lifecycle.py`
 
-```python
-class AlphaMonitor:
-    """滚动 IC/IC-IR 监控，连续负 IC → 告警/再训练/停用"""
-    
-    def update(self, alpha_id, date, realized_ic, realized_return) -> MonitorStatus: ...
-    def check_decay(self, alpha_id) -> DecayAlert | None: ...
-    def get_dashboard(self) -> pd.DataFrame: ...
-```
-
-**估时：** 5 天
+**已实现内容：**
+- `AlphaStatus` 枚举：CANDIDATE → VALIDATED → PAPER → ACTIVE → DECAYING → RETIRED | SUPERSEDED
+- `validate_transition(old, new)`：表驱动合法流转校验，非法抛 `IllegalTransition`
+  - `old == new` 幂等永远合法（重复 PATCH 不报错）
+  - 任何非终态可直接 → RETIRED（人工强制下线）；DECAYING 可恢复 → ACTIVE
+  - 终态（RETIRED / SUPERSEDED）冻结，不可再流转
+- `coerce_status()` 兼容历史数据（旧 "active"/"retired" 直接映射）
+- `allowed_next()` 返回合法下一状态列表（前端流转按钮数据源）
+- `AlphaStore.update_status(alpha_id, new_status)`：经状态机校验后落库
 
 ---
 
-### Task 5.2 🟡 因子生命周期状态机
+### Task 5.1 ✅ 因子在线监控与衰减检测
 
-**涉及文件：**
-- `app/db/alpha_store.py`、`app/db/alpha_lifecycle.py`（新建）
+**新建：** `app/core/monitor/alpha_monitor.py`；`alpha_ic_history` 表（含
+`UNIQUE(alpha_id, date)` 幂等键）
 
-```python
-class AlphaStatus(Enum):
-    CANDIDATE → VALIDATED → PAPER → ACTIVE → DECAYING → RETIRED | SUPERSEDED
-```
-
-**估时：** 3 天
-
----
-
-### Task 5.3 🟢 APScheduler 定时任务框架
-
-**涉及文件（新建）：**
-- `app/tasks/scheduler.py`
-- 集成到 `app/main.py` FastAPI startup
-
-**估时：** 3 天
+**已实现内容：**
+- `AlphaMonitor(store, rolling_window=20, consecutive_neg_limit=10, mean_ic_floor=-0.01)`
+- `update(alpha_id, date, realized_ic, realized_return)` → `MonitorStatus`
+  - **幂等**：同 (alpha_id, date) 重复调用覆盖旧值不追加（重跑当日任务安全）
+- `check_decay()` 双规则：连续 ≥10 日负 IC 或 20 日滚动均值 < -0.01 → `DecayAlert`
+  - 记录不足 rolling_window 天**不告警**（数据不足不下结论）
+- `get_dashboard()`：全部非终态因子摘要（滚动 IC-IR / 连续负天数 / 告警 / 合法流转），
+  终态因子自动排除，Sharpe 降序
+- 只读写 SQLite 无内存状态 → 进程重启无损；check_decay 只产生告警不自动流转
+  （状态变更是运营决策，保持审计清晰）
 
 ---
 
-### Task 5.4 🟢 API 端点扩展：因子管理仪表板
+### Task 5.3 ✅ APScheduler 定时任务框架
 
-**新增端点：**
+**新建：** `app/tasks/scheduler.py`；`config.py` 新增 `enable_scheduler`（默认 False）/
+`scheduler_db_url` / `scheduler_timezone`；`main.py` 改用 FastAPI lifespan 启停
+
+**已实现内容：**
+- `BackgroundScheduler` + `SQLAlchemyJobStore`（SQLite 持久化，重启恢复 next_run_time）
+- job_defaults：`coalesce=True` + `misfire_grace_time=3600`（停机错过 1h 内补跑一次）+
+  `max_instances=1`；时区显式配置（默认 UTC）
+- 内置 `daily_monitor_job`（UTC 21:00）：全部非终态因子衰减巡检，告警写日志；
+  Phase 7 的 daily_trading_loop 将挂载到同一调度器
+- `start_scheduler()` / `shutdown_scheduler()` 幂等；`get_scheduler_status()` 供 API
+- 仅当 `ENABLE_SCHEDULER=true` 时随服务启停 —— 测试与 CLI 模式不受影响
+
+---
+
+### Task 5.4 ✅ API 端点扩展：因子管理仪表板
+
+**全部端点现状：**
 ```
-GET  /api/datasets                    ✅ 已实现（2026-06-07）
-GET  /api/datasets/{name}/health      ✅ 已实现（2026-06-07）
-POST /api/backtest/walk_forward       ✅ 已实现（Phase 2）
-GET  /api/alphas/dashboard
-GET  /api/alphas/{id}/ic_history
-POST /api/alphas/{id}/retrain
-PATCH /api/alphas/{id}/status
-GET  /api/alphas/{id}/walk_forward
+GET   /api/datasets                    ✅（2026-06-07）
+GET   /api/datasets/{name}/health      ✅（2026-06-07）
+POST  /api/backtest/walk_forward       ✅（Phase 2）
+GET   /api/alphas/dashboard            ✅（2026-07-17）监控摘要 + n_alerts
+GET   /api/alphas/{id}/ic_history      ✅（2026-07-17）逐日 IC + 滚动统计
+PATCH /api/alphas/{id}/status          ✅（2026-07-17）状态机校验；非法流转 409
+POST  /api/alphas/{id}/retrain         ✅（2026-07-17）小预算 OptimizationWorkflow
+                                          重训（受全局 GP 锁保护）
+GET   /api/alphas/{id}/walk_forward    ✅（2026-07-17）复用 _walk_forward_to_response
+GET   /api/scheduler/status            ✅（2026-07-17）FE-5.3 调度状态
 ```
 
-**估时：** 3 天（剩余 5 个端点）
+---
+
+**B2 修复（随 Phase 5 完成，2026-07-17）：**
+- `_combine_pool_alphas()` 新增 `is_data` 参数：组合权重改为 **IS 段拟合**、OOS 段仅评估
+  （原实现在同一 OOS 段既拟合又打分，联合指标结构性乐观）
+- 返回值新增 `weights_fitted_on: "is" | "oos"` 字段；无 IS 数据时回退 OOS 拟合并如实标注
+- `GenerationWorkflow` 调用点已传入 is_data
+
+**前端 Phase 5 同步（2026-07-17）：**
+- FE-5.1 `AlphaDashboard.tsx`：全宽 Live 视图 —— 非终态因子卡片（状态徽章/滚动 IC-IR/
+  连续负天数/衰减告警红标）+ 状态流转按钮（数据源为后端 allowed_next，非法流转 409 显示错误）
+- FE-5.2 IC 历史折线图（ECharts，含零线参考）+ 滚动均值/IC-IR 摘要
+- FE-5.3 调度器状态条（运行状态 + 各任务下次执行时间）
+- GlobalSidebar 新增 Activity "Live" 入口；`ActiveView` 扩展 `'DASHBOARD'`
 
 ---
 
@@ -526,7 +554,7 @@ Phase 5 ── ← 4.1
 | Phase 2 | 54% | 防过拟合（38%→65%）、数据质量（65%→78%）|
 | Phase 3 | 64% | Alpha 信号质量（25%→55%）、组合完整性（28%→55%）|
 | Phase 4 | 74% | ✅ **已达成**（2026-07-17）风险模型（8%→65%）、组合完整性（55%→75%）、防过拟合（65%→80%，DSR 上线）|
-| Phase 5 | 82% | 运营系统（5%→70%）、因子生命周期（5%→72%）|
+| Phase 5 | 82% | ✅ **已达成**（2026-07-17）运营系统（5%→70%）、因子生命周期（5%→72%）|
 
 ---
 
@@ -554,12 +582,31 @@ Phase 5 ── ← 4.1
 | ~~4.1~~ | ~~Regime 识别~~ | ~~5 天~~ | ~~高~~ | ✅ 已完成（2026-07-17）|
 | ~~4.2~~ | ~~MVO 组合优化~~ | ~~5 天~~ | ~~高~~ | ✅ 已完成（2026-07-17）|
 | ~~4.3~~ | ~~Deflated Sharpe~~ | ~~2 天~~ | ~~中~~ | ✅ 已完成（2026-07-17）|
-| 5.1 | 因子在线监控 | 5 天 | 高 | ❌ |
-| 5.2 | 生命周期状态机 | 3 天 | 中 | ❌ |
-| 5.3 | APScheduler 调度 | 3 天 | 中 | ❌ |
-| 5.4 (残) | API 端点扩展（5个）| 3 天 | 低 | ⚠️ 部分 |
-| **剩余总计** | | **~14 天** | | |
+| ~~5.1~~ | ~~因子在线监控~~ | ~~5 天~~ | ~~高~~ | ✅ 已完成（2026-07-17）|
+| ~~5.2~~ | ~~生命周期状态机~~ | ~~3 天~~ | ~~中~~ | ✅ 已完成（2026-07-17）|
+| ~~5.3~~ | ~~APScheduler 调度~~ | ~~3 天~~ | ~~中~~ | ✅ 已完成（2026-07-17）|
+| ~~5.4~~ | ~~API 端点扩展（6个）~~ | ~~3 天~~ | ~~低~~ | ✅ 已完成（2026-07-17）|
+| ~~B2~~ | ~~组合权重 IS 拟合修复~~ | ~~0.5 天~~ | ~~低~~ | ✅ 已完成（2026-07-17）|
+| **剩余总计** | | **0 天 — 本路线图全部完成** | | |
 
 ---
 
-*路线图版本 v4.0 | 2026-07-17 | Phase 4 全部完成（Regime + MVO + Deflated Sharpe，35 项验收测试）| 剩余 Phase 5*
+## 收尾总结（2026-07-17）
+
+本路线图（2026-06-01 审计基线驱动）历时约 7 周全部完成：
+
+- **Phase 0-5 共 24 个任务全部实施并验收**，另完成审计外修复 9 项（IC Decay 接线、
+  并发保护补齐、超时僵尸锁、AlphaCombiner 前视 IC、B2 权重拟合泄漏等）
+- **综合评分 24% → 82%**（按审计报告第 9 节评分体系），跨过"最低可交易门槛 66%"线
+- **测试基线：后端 342 passed + 3 skipped（8 个 phase/单元/集成套件），前端 94 passed +
+  tsc 零错误**；两个 legacy 测试文件（test_alpha_discovery / test_data_engine_smoke）
+  收集即报错，属遗留问题，已列入 Phase 6.3 清理
+- **已知未解决项**（详见 PAPER_TRADING_ROADMAP 风险表）：幸存者偏差 F3（需 PIT 数据层，
+  Phase 8）、beta_neutral 数学不闭合 B6（Phase 7 前处理）、静默合成数据降级 B5
+  （Phase 6.1 首项）、行业分类非 point-in-time
+- **下一阶段**：转入 `PAPER_TRADING_ROADMAP.md` Phase 6-8，目标 Paper Trading Ready
+  （验收标准 A1-A7），Phase 5 已完成使其预计剩余工期缩短至约 23 个工作日
+
+---
+
+*路线图版本 v5.0 | 2026-07-17 | **Phase 0-5 全部完成，本路线图关闭** | 后续见 PAPER_TRADING_ROADMAP.md*

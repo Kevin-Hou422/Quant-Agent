@@ -211,9 +211,9 @@ frontend/
 | DSL 新算子高亮（ts_momentum_decay / sector_neutral）| P3 | Phase 3 Task 3.4 | ✅ 已实现 |
 | Regime 市场状态指示器 | P4 | Phase 4 Task 4.1 | ✅ 已实现（2026-07-17）|
 | Deflated Sharpe 指标行 | P4 | Phase 4 Task 4.3 | ✅ 已实现（2026-07-17）|
-| Alpha 生命周期仪表板 | P5 | Phase 5 Task 5.4 | ❌ 待后端 Phase 5 |
-| IC 衰减监控折线图 | P5 | Phase 5 Task 5.1 | ❌ 待后端 Phase 5 |
-| 任务调度状态展示 | P5 | Phase 5 Task 5.3 | ❌ 待后端 Phase 5 |
+| Alpha 生命周期仪表板 | P5 | Phase 5 Task 5.4 | ✅ 已实现（2026-07-17）|
+| IC 衰减监控折线图 | P5 | Phase 5 Task 5.1 | ✅ 已实现（2026-07-17）|
+| 任务调度状态展示 | P5 | Phase 5 Task 5.3 | ✅ 已实现（2026-07-17）|
 
 ---
 
@@ -259,7 +259,7 @@ useEffect(() => { initSessions() }, [])  // eslint-disable-line react-hooks/exha
 | **Phase 2** | ✅ 全部完成 | ✅ 全部完成 | WalkForwardChart（5折柱状图+汇总指标）、数据质量 HealthBadge、RightPane 双标签页 |
 | **Phase 3** | ✅ 全部完成 | ✅ **已同步** | Pool 标签页（AlphaPoolPanel）、Beta 暴露行、ts_momentum_decay/sector_neutral 算子 |
 | **Phase 4** | ✅ 全部完成 | ✅ **已同步**（2026-07-17）| RegimeBadge（RightPane 标签栏）+ MetricsGrid DSR 显著性区块 |
-| **Phase 5** | ❌ 未开始 | ❌ 缺仪表板 | Alpha 生命周期仪表板 + IC 历史图 |
+| **Phase 5** | ✅ 全部完成 | ✅ **已同步**（2026-07-17）| AlphaDashboard（Live 视图：卡片+状态流转+IC 历史图+调度状态条）|
 
 ---
 
@@ -435,10 +435,10 @@ Alpha 详情页展示 30/60 天滚动 IC 折线图 + 衰减阈值参考线。
 | ~~FE-3.2~~ | ~~Beta 暴露展示~~ | ~~2 天~~ | ~~🟡~~ | ✅ 已完成 |
 | ~~FE-4.1~~ | ~~Regime 状态徽章~~ | ~~1 天~~ | ~~🟢~~ | ✅ 已完成（2026-07-17）|
 | ~~FE-4.2~~ | ~~Deflated Sharpe 指标行~~ | ~~1 天~~ | ~~🟢~~ | ✅ 已完成（2026-07-17）|
-| FE-5.1 | Alpha 生命周期仪表板 | 5 天 | 🟡 | 待后端 Phase 5 |
-| FE-5.2 | IC 历史监控折线图 | 2 天 | 🟡 | 待后端 Phase 5 |
-| FE-5.3 | 调度任务状态展示 | 1 天 | 🟢 | 待后端 Phase 5 |
-| **剩余总计** | | **~9 天** | | |
+| ~~FE-5.1~~ | ~~Alpha 生命周期仪表板~~ | ~~5 天~~ | ~~🟡~~ | ✅ 已完成（2026-07-17）|
+| ~~FE-5.2~~ | ~~IC 历史监控折线图~~ | ~~2 天~~ | ~~🟡~~ | ✅ 已完成（2026-07-17）|
+| ~~FE-5.3~~ | ~~调度任务状态展示~~ | ~~1 天~~ | ~~🟢~~ | ✅ 已完成（2026-07-17）|
+| **剩余总计** | | **0 天 — 全部前端任务完成** | | |
 
 ---
 
@@ -453,9 +453,30 @@ Alpha 详情页展示 30/60 天滚动 IC 折线图 + 衰减阈值参考线。
 | 用户体验 | 8 | Dataset 视图提供直观的数据集探索和选择体验（↑ 原 7）|
 | 可扩展性 | 6 | 单页应用无路由；Phase 5 多页面需求需引入 react-router |
 | 类型安全 | 7 | 全量 TypeScript；部分 `as any` 类型断言需整理 |
-| 与后端对齐 | 9.8 | Phase 0+1+2+3 前后端完全同步；IC Decay 接线修复（↑ 原 9.5）|
-| **综合** | **8.8** | IC Decay 渲染修复，综合评分从 8.7 升至 8.8 |
+| 与后端对齐 | 10 | Phase 0-5 前后端完全同步；全部 17 项前端任务完成（↑ 原 9.8）|
+| **综合** | **8.9** | Phase 5 Dashboard 上线（新增 Live 视图），综合评分从 8.8 升至 8.9 |
 
 ---
 
-*报告版本 v7.0 | 2026-07-17 | Phase 4 前端任务完成（RegimeBadge + DSR 显著性区块）| 覆盖文件数：22 个 .tsx/.ts 文件*
+## 收尾总结（2026-07-17）
+
+本报告跟踪的全部 17 项前端任务（FE-0.1 至 FE-5.3）已完成，与后端 DEV_ROADMAP
+Phase 0-5 完全同步。最终交付的界面能力：
+
+- **四视图工作台**：Chat（SSE 流式对话）/ Compiler（Monaco DSL IDE）/ Data（数据集
+  选择器 + 健康检查）/ Live（生命周期仪表板）
+- **分析面板**：PnL 图（真实日期轴）/ MetricsGrid（含 Beta 暴露、DSR 显著性、IC Decay）/
+  WalkForward 多折图 / Alpha Pool（组合权重可视化）/ RegimeBadge
+- **运营界面**：因子卡片（滚动 IC-IR + 衰减告警）、状态机流转按钮（后端校验，非法 409
+  显示原因）、IC 历史折线图、调度器状态条
+- **健壮性**：429/408 统一处理（Axios 拦截器 + SSE fetch 错误分类）、AbortController
+  流取消、ErrorBoundary
+- **测试基线**：94 项 vitest 通过 + tsc 零错误
+
+**遗留（下一阶段）**：回测进度条仍为假动画（待后端 SSE 回测流）；单页无路由
+（Phase 7 Paper 仪表板扩展时建议引入 react-router）；Alpha 台账状态点颜色未按
+新状态机着色（小改进）。对应工作已列入 PAPER_TRADING_ROADMAP Phase 7.4。
+
+---
+
+*报告版本 v8.0 | 2026-07-17 | **Phase 0-5 全部前端任务完成，本报告关闭** | 覆盖文件数：23 个 .tsx/.ts 文件*

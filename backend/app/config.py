@@ -49,5 +49,11 @@ class Settings(BaseSettings):
     default_n_gen: int = 5
     default_n_workers: int = 1
 
+    # ── 调度器（Task 5.3）─────────────────────────────────────────────────
+    # 默认关闭：测试与 CLI 模式不启动；生产服务器设 ENABLE_SCHEDULER=true
+    enable_scheduler: bool = False
+    scheduler_db_url: str = "sqlite:///scheduler_jobs.db"
+    scheduler_timezone: str = "UTC"
+
 
 settings = Settings()

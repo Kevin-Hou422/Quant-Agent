@@ -1,6 +1,6 @@
 // ─── Shared domain types ──────────────────────────────────────────────────
 
-export type ActiveView = 'CHAT' | 'COMPILER' | 'DATASET'
+export type ActiveView = 'CHAT' | 'COMPILER' | 'DATASET' | 'DASHBOARD'
 export type Status = 'idle' | 'optimizing' | 'backtesting' | 'walkforward' | 'ready' | 'error'
 
 export interface DatasetInfo {
@@ -76,6 +76,36 @@ export interface SimMetrics {
   portfolio_beta?: number | null
   // Task 4.3: Deflated Sharpe — P(true Sharpe > 0) after multiple-testing correction
   deflated_sharpe?: number | null
+}
+
+/** Phase 5 (FE-5.1): one row of GET /api/alphas/dashboard */
+export interface AlphaDashboardRow {
+  alpha_id:        number
+  dsl:             string
+  status:          string
+  sharpe:          number
+  n_ic_days:       number
+  latest_ic:       number | null
+  latest_date:     string | null
+  rolling_mean_ic: number | null
+  rolling_ic_ir:   number | null
+  consecutive_neg: number
+  has_alert:       boolean
+  allowed_next:    string[]
+}
+
+/** Phase 5 (FE-5.2): GET /api/alphas/{id}/ic_history */
+export interface ICHistoryData {
+  alpha_id: number
+  points:   Array<{ date: string; realized_ic: number; realized_return: number }>
+  rolling_mean_ic: number | null
+  rolling_ic_ir:   number | null
+}
+
+/** Phase 5 (FE-5.3): GET /api/scheduler/status */
+export interface SchedulerStatus {
+  running: boolean
+  jobs: Array<{ id: string; name: string; next_run: string | null; trigger: string }>
 }
 
 /** Task 4.1: market regime info from GET /api/regime */

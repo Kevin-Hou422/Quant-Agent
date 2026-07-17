@@ -8,6 +8,7 @@ import ChatView from '../chat/ChatView'
 import CompilerView from '../compiler/CompilerView'
 import ConsoleOutput from '../compiler/ConsoleOutput'
 import DatasetView from '../dataset/DatasetView'
+import AlphaDashboard from '../dashboard/AlphaDashboard'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { useQuantWorkspace } from '../../hooks/useQuantWorkspace'
 
@@ -36,9 +37,10 @@ export default function WorkspaceLayout() {
   // Run once on app mount: restore or create the active session
   useEffect(() => { initSessions() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  const inDataset  = activeView === 'DATASET'
-  const inChat     = activeView === 'CHAT'
-  const inCompiler = activeView === 'COMPILER'
+  const inDataset   = activeView === 'DATASET'
+  const inDashboard = activeView === 'DASHBOARD'
+  const inChat      = activeView === 'CHAT'
+  const inCompiler  = activeView === 'COMPILER'
 
   return (
     <div
@@ -57,8 +59,15 @@ export default function WorkspaceLayout() {
         </div>
       )}
 
+      {/* ── Dashboard view (FE-5.1): full-width lifecycle monitor ─────── */}
+      {inDashboard && (
+        <div className="flex-1 min-w-0 h-full overflow-hidden">
+          <AlphaDashboard />
+        </div>
+      )}
+
       {/* ── Chat / Compiler layout ────────────────────────────────────── */}
-      {!inDataset && (
+      {!inDataset && !inDashboard && (
         <>
           {/*
            * Col 2 (conditional):
