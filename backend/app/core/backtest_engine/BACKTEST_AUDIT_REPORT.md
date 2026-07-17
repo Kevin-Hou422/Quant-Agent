@@ -1,5 +1,9 @@
 # 回测引擎审计报告
 
+> **📌 归档注记（2026-07-17）：** 25 项问题中 18 项已修复（见第七节汇总表）；
+> 遗留 7 项（F3/F9/F10/E5/E8/E9/O3）已并入 `backend/PAPER_TRADING_ROADMAP.md`
+> Phase 6-8 规划。第一阶段完结情况见 `backend/STAGE1_COMPLETION_REPORT.md`。
+
 > 审计范围：`app/core/backtest_engine/`（全部文件）、`app/core/alpha_engine/signal_processor.py`、`app/agent/_data_utils.py`
 > 审计日期：2026-05-28
 

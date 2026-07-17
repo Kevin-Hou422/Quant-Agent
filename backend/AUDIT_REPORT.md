@@ -1,5 +1,10 @@
 # Quant Agent Backend — 综合审计报告
 
+> **📌 归档注记（2026-07-17）：** 本报告是 2026-06-01 的基线快照，内容保持不变作历史参照。
+> 由其驱动的 DEV_ROADMAP Phase 0-5 已全部完成（综合评分 24%→82%），
+> 完结情况见 [`STAGE1_COMPLETION_REPORT.md`](STAGE1_COMPLETION_REPORT.md)，
+> 后续开发见 [`PAPER_TRADING_ROADMAP.md`](PAPER_TRADING_ROADMAP.md)。
+
 **审计日期：** 2026-06-01  
 **覆盖范围：** `backend/` 全部 Python 源文件（85 个 .py 文件）  
 **审计方法：** 全量代码精读 + 跨模块关联分析 + 金融业务深度评估
