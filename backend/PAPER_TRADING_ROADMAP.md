@@ -89,6 +89,27 @@ Phase 7 依赖已完成的调度器与生命周期状态机；Phase 8 依赖 Pha
 Walk-Forward/embargo（2026-06-09 修复后 OOS 不互叠、末折零浪费）；Deflated Sharpe 方差公式
 （Lo/Mertens 高阶矩修正正确）；MVO 协方差窗口无前视；AlphaCombiner B1/B2 修复确已生效。
 
+### 3.0b 外部补充审计（SUPPLEMENTARY_AUDIT_FINDINGS）逐项核实与处置（2026-07-24）
+
+> 对一份外部补充审计报告（S1-S8）逐条**运行时实测复现**后的裁决。属实项已全部
+> 修复并配 32 项回归守卫（`tests/test_supplementary_fixes.py`）。
+
+| ID | 裁决 | 处置 |
+|----|------|------|
+| S1 `_tdays` 年化系数量纲错误 | **不属实** | 报告基准选错：其复现用无节假日 `freq='B'` 日历却期望 252，而该日历真实年频率就是 365.25×5/7≈261。对照实测：真实美股历 `_tdays=252.2` ✓、加密 365 天历 ≈366 ✓——E3 的"动态推断实际交易频率"行为完全符合设计。已加三组行为固化测试防止未来被"修复"成真 bug |
+| S2 CS→CS 嵌套被禁止 | **属实，已修** | 移除 `CrossSectionalNode` 的 TypeError；`rank(winsorize(x))`、`ind_neutralize(rank(x))` 等可解析可求值；更新旧断言测试 |
+| S3 废弃 AlphaExecutor 仍导出且无保护 | **属实，已修** | 移出 `__all__` + 实例化触发 DeprecationWarning（指向 dsl_executor.Executor）|
+| S4 中文假设落 default 模板 | **属实，已修** | 新增 `_FAMILY_KEYWORDS` 中英文同义词表 + 多标签合并（"low volatility momentum" → 两族种子并集）|
+| S5 GP 输出无量纲硬约束 | **属实，已修（结构惩罚而非硬掩蔽）** | `fitness.scale_stability_penalty()` 递归量纲分析：`rank(x)*volume` 类失稳因子 fitness −0.15；`rank(x)*-1`/`ts_corr` 等稳定结构零惩罚。不用 −∞ 硬掩蔽的原因：下游 SignalWeightedPortfolio 逐日截面 z-score+clip±3 已使此类因子可交易（报告未提及此缓解），彻底禁止会误杀 |
+| S6 前端空 catch 无声吞错 | **部分属实** | 实测 12 处（报告称 7），但**全部**是有意的离线降级/乐观回滚模式而非疏忽；为 3 处会话数据路径补 console.warn，其余保留 |
+| S7 复权因子语义依赖 provider | **属实（文档缺陷）** | `CorporateActionAdjuster` docstring 增补 adj_factor 语义契约（累积因子 vs 单日比例；yfinance auto_adjust 主路径实际跳过本类）|
+| S8 (N,) groups 被验证器误拒 | **属实，已修（问题链比报告更深）** | 除 `_validate_dataset` 外，`dsl_executor` 的对齐层与 `_to_arrays` 同样不支持 ndarray——三处均修：辅助分组字段（groups/sector）豁免 DataFrame 校验、对齐透传、数组转换兼容；普通字段仍严格校验 |
+
+**对该外部报告的可靠性评价**：8 项中 6 项属实/部分属实、1 项文档级、1 项（S1）因基准
+选错而误报——其"报告自查盲区 + 运行时复现"的方法论有效，但 S1 显示**复现脚本本身
+的基准也需要对照组验证**。其核心批评（测试断言以"能跑通"为主、缺对抗性数值断言）与
+本路线图 E-N4/Task 6.4 的结论一致，进一步支持黄金基准测试的优先级。
+
 ---
 
 ### Task 6.1 🔴 消除静默降级（B5 修复）— 1 天
@@ -323,4 +344,4 @@ FastAPI 鉴权、告警升级（PagerDuty 级）、合规与税务。
 
 ---
 
-*规划版本 v1.2 | 2026-07-20 | Phase 6 前彻底体检：新增 Task 6.6（约束硬化）/6.7（前视口径修复），扩充 6.2/6.4，风险表新增 4 项 | 剩余 Phase 6-8 约 26 个工作日*
+*规划版本 v1.3 | 2026-07-24 | §3.0b 外部补充审计逐项核实：S2/S3/S4/S5/S7/S8 属实已修（32 项回归守卫），S1 不属实（基准选错），S6 部分属实 | 剩余 Phase 6-8 约 26 个工作日*

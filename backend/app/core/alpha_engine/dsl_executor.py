@@ -40,10 +40,23 @@ def _align_dataset(
     if not raw:
         raise ValueError("Dataset is empty.")
 
+    # S8 修复（2026-07-24）：辅助分组字段可为 (N,) np.ndarray（Task 3.4 文档
+    # 语义），不参与 DataFrame 对齐、原样透传（GroupNode._compute 原生支持
+    # (N,) 与 (T,N) 两种格式）。
+    _AUX_PASSTHROUGH = {"groups", "sector"}
+    frames = {
+        f: df for f, df in raw.items()
+        if not (f in _AUX_PASSTHROUGH and isinstance(df, np.ndarray))
+    }
+    passthrough = {f: v for f, v in raw.items() if f not in frames}
+
+    if not frames:
+        raise ValueError("Dataset contains no panel DataFrames.")
+
     # Build union of all indices and columns
     idx  = None
     cols = None
-    for df in raw.values():
+    for df in frames.values():
         df_idx  = pd.DatetimeIndex(df.index)
         df_cols = df.columns
         idx  = df_idx  if idx  is None else idx.union(df_idx)
@@ -51,14 +64,22 @@ def _align_dataset(
 
     aligned = {
         field: df.reindex(index=idx, columns=cols)
-        for field, df in raw.items()
+        for field, df in frames.items()
     }
+    aligned.update(passthrough)
     return idx, cols, aligned
 
 
 def _to_arrays(aligned: Dict[str, pd.DataFrame]) -> Dataset:
-    """Convert aligned DataFrames to float64 NumPy arrays."""
-    return {field: df.to_numpy(dtype=float) for field, df in aligned.items()}
+    """Convert aligned DataFrames to float64 NumPy arrays.
+
+    S8：(N,) ndarray 辅助字段（groups/sector 透传格式）原样转 float 数组。
+    """
+    return {
+        field: (np.asarray(df, dtype=float) if isinstance(df, np.ndarray)
+                else df.to_numpy(dtype=float))
+        for field, df in aligned.items()
+    }
 
 
 def _add_derived(

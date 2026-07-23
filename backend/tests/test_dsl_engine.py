@@ -224,10 +224,15 @@ def test_depth_validation():
 # ---------------------------------------------------------------------------
 
 def test_cs_type_constraint():
-    """rank(rank(close)) must raise TypeError (CS applied to CS)."""
+    """S2 修复（2026-07-24）：CS→CS 嵌套现在合法。
+
+    旧版禁止任何 CS 子节点，导致 rank(winsorize(x))、ind_neutralize(rank(x))
+    等合理因子写法无法解析。现在断言嵌套可构造且可求值。
+    """
     inner = CrossSectionalNode("rank", DataNode("close"))
-    with pytest.raises(TypeError, match="CrossSectionalNode"):
-        CrossSectionalNode("rank", inner)
+    node  = CrossSectionalNode("rank", inner)          # 不再抛 TypeError
+    assert isinstance(node.child, CrossSectionalNode)
+    assert repr(node) == "rank(rank(close))"
 
 
 # ---------------------------------------------------------------------------

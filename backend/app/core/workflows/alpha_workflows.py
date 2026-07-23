@@ -217,13 +217,42 @@ _HYPOTHESIS_TEMPLATES: Dict[str, List[str]] = {
 }
 
 
+# S4 修复（2026-07-24）：family 名之外补充中英文同义词。
+# 旧实现只用 family 英文名做子串匹配 → 中文假设（"动量"/"均值回归"/"波动率"）
+# 全部落入 default 模板，GP 从错误的种子方向开始搜索。
+_FAMILY_KEYWORDS: Dict[str, List[str]] = {
+    "momentum": [
+        "momentum", "trend", "breakout", "winner",
+        "动量", "趋势", "突破", "强者恒强", "惯性",
+    ],
+    "reversion": [
+        "reversion", "revert", "contrarian", "oversold", "overbought", "pullback",
+        "回归", "反转", "超卖", "超买", "回调", "均值",
+    ],
+    "volume": [
+        "volume", "liquidity", "turnover", "flow",
+        "成交量", "量能", "流动性", "换手", "放量", "缩量", "资金",
+    ],
+    "volatility": [
+        "volatility", "risk", "variance", "vol-", "low vol", "lowvol",
+        "波动", "低波", "风险", "方差",
+    ],
+}
+
+
 def _hypothesis_templates(hypothesis: str) -> List[str]:
-    """Select template DSLs based on keywords in the hypothesis."""
+    """
+    Select template DSLs by keyword matching (Chinese + English synonyms).
+
+    命中多个 family 时合并全部种子（如 "low volatility momentum" →
+    momentum + volatility 两族模板），无命中回退 default。
+    """
     h = hypothesis.lower()
-    for kw, dsls in _HYPOTHESIS_TEMPLATES.items():
-        if kw in h:
-            return dsls
-    return _HYPOTHESIS_TEMPLATES["default"]
+    matched: List[str] = []
+    for family, keywords in _FAMILY_KEYWORDS.items():
+        if any(kw in h for kw in keywords):
+            matched.extend(_HYPOTHESIS_TEMPLATES[family])
+    return matched if matched else _HYPOTHESIS_TEMPLATES["default"]
 
 
 def _generate_diverse_seeds(hypothesis: str, n_target: int = 12) -> List[str]:

@@ -255,11 +255,12 @@ class CrossSectionalNode(Node):
     def __init__(self, op: str, child: Node, **params) -> None:
         if op not in _CS_OPS:
             raise ValueError(f"Unknown CS operator: '{op}'")
-        if isinstance(child, CrossSectionalNode):
-            raise TypeError(
-                f"CrossSectionalNode '{op}' cannot take another CrossSectionalNode as child. "
-                "CS-in-CS nesting is not supported."
-            )
+        # S2 修复（2026-07-24）：允许 CS→CS 嵌套。
+        # 旧版禁止任何 CS 子节点，导致 rank(winsorize(x,3))、
+        # ind_neutralize(rank(x)) 等合理常见因子写法全部无法解析。
+        # CS 算子的输出仍是 (T×N) 面板，作为另一 CS 算子的输入在语义上
+        # 完全成立；纯冗余组合（如 rank(rank(x)) ≡ rank(x)）无害，
+        # 由 GP 的深度上限与简约压力自然抑制。
         self.op     = op
         self.child  = child
         self.params = params

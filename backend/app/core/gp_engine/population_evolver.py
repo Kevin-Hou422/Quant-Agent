@@ -463,6 +463,11 @@ class PopulationEvolver:
 
             fitness = compute_fitness(sharpe_is, sharpe_oos, turnover, max_drawdown)
 
+            # S5 修复（2026-07-24）：量纲失稳因子（如 rank(...)*volume）的结构惩罚。
+            # 此前仅有 wrap_rank 软奖励，GP 可产出被绝对成交量量纲主导的因子。
+            from .fitness import scale_stability_penalty
+            fitness -= scale_stability_penalty(node)
+
             return EvalResult(
                 dsl               = dsl,
                 fitness           = fitness,

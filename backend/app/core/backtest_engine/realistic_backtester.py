@@ -96,8 +96,30 @@ def _validate_dataset(data: Dict[str, pd.DataFrame], label: str = "dataset") -> 
         raise ValueError(f"[{label}].close: DataFrame 为空（0 行）")
 
     # 跨字段形状一致性
+    # S8 修复（2026-07-24）：辅助分组字段（groups/sector）豁免严格 DataFrame 校验。
+    # Task 3.4 的 sector_neutral 文档承诺接受 (N,) 一维数组或 (T,N) 面板两种格式，
+    # 但旧校验对所有字段一刀切要求 (T,N) DataFrame，导致合法 (N,) 分组被误拒。
+    _AUX_GROUP_FIELDS = {"groups", "sector"}
     for field_name, df in data.items():
         if field_name == "close":
+            continue
+        if field_name in _AUX_GROUP_FIELDS:
+            if isinstance(df, pd.DataFrame):
+                if df.shape != ref.shape:
+                    raise ValueError(
+                        f"[{label}].{field_name}: 形状 {df.shape} 与 close {ref.shape} 不一致"
+                    )
+            elif isinstance(df, np.ndarray):
+                if df.ndim != 1 or len(df) != ref.shape[1]:
+                    raise ValueError(
+                        f"[{label}].{field_name}: 一维分组数组长度 {df.shape} "
+                        f"应等于资产数 {ref.shape[1]}"
+                    )
+            else:
+                raise ValueError(
+                    f"[{label}].{field_name}: 期望 pd.DataFrame 或 (N,) np.ndarray，"
+                    f"实际类型 {type(df).__name__}"
+                )
             continue
         if not isinstance(df, pd.DataFrame):
             raise ValueError(

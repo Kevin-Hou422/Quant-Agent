@@ -33,6 +33,16 @@ class CorporateActionAdjuster:
 
     adj_factor 保留原始值不变，额外新增 adj_close 列（= close × adj_factor）。
     Volume 不做复权（股数不受复权影响）。
+
+    ⚠ adj_factor 语义契约（S7 澄清，2026-07-24）
+    ------------------------------------------------
+    本类假设 ``adj_factor`` 是 **累积前复权因子**（cumulative backward
+    adjustment factor）：任一历史日的 `price × adj_factor` 直接得到与最新
+    价格可比的复权价。若数据源提供的是**单日比例因子**（仅除权日 ≠ 1，
+    如某些 akshare 接口），直接相乘会产生错误的历史价格——接入新 provider
+    时必须先确认其 adj_factor 语义，必要时先做 cumprod 转换。
+    （yfinance 默认 auto_adjust=True 已返回复权价、无 adj_factor 列 →
+    本类经 warning 跳过，是当前主路径的实际行为。）
     """
 
     PRICE_COLS = ["open", "high", "low", "close"]

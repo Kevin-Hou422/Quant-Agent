@@ -56,10 +56,11 @@ __all__ = [
     "SimulationConfig",
     "SignalProcessor",
     # --- legacy (deprecated) ---
+    # S3 修复（2026-07-24）：AlphaExecutor/execute_alpha/batch_execute 已从
+    # __all__ 移除 —— 它们只接受旧 ast.Node，喂入 Parser 产出的 typed AST 会以
+    # 无提示的 TypeError 崩溃。符号仍可显式 import（向后兼容），但实例化时
+    # 触发 DeprecationWarning（见 executor.py）。
     "ASTNode",
     "generate_random_alpha",
     "generate_n_alphas",
-    "AlphaExecutor",
-    "execute_alpha",
-    "batch_execute",
 ]

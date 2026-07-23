@@ -113,8 +113,9 @@ export function useQuantWorkspace() {
         // No sessions at all → create one
         await _createFreshSession()
       }
-    } catch {
+    } catch (e) {
       // Network/server down — create an in-memory session so the UI works
+      console.warn('[session] init failed, falling back to fresh session:', e)
       await _createFreshSession()
     }
   }
@@ -130,8 +131,9 @@ export function useQuantWorkspace() {
       store.setSessionId(s.id)
       store.setMessages([])
       store.addSession(s)
-    } catch {
+    } catch (e) {
       // Offline fallback: keep the random id, messages stay empty
+      console.warn('[session] create failed, running in-memory only:', e)
       store.setMessages([])
     }
   }
@@ -161,7 +163,9 @@ export function useQuantWorkspace() {
       store.setSessionId(s.id)
       store.setMessages([])
       store.addSession(s)
-    } catch {
+    } catch (e) {
+      // Offline fallback: local-only session (not persisted server-side)
+      console.warn('[session] newSession failed, using local-only session:', e)
       const id = Math.random().toString(36).slice(2)
       store.setSessionId(id)
       store.setMessages([])

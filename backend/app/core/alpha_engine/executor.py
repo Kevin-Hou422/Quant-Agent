@@ -51,6 +51,17 @@ class AlphaExecutor:
         neutralize: bool = False,
         winsorize_k: Optional[float] = None,
     ) -> None:
+        # S3 修复（2026-07-24）：显式弃用警告。
+        # 本执行器只接受旧 ast.Node；Parser 产出的是 typed_nodes.Node，
+        # 喂入会以 "'method' object is not iterable" 崩溃且无任何提示。
+        import warnings
+        warnings.warn(
+            "AlphaExecutor 已弃用且与 Parser 产出的 typed AST 不兼容"
+            "（会以 TypeError 崩溃）。请改用 "
+            "app.core.alpha_engine.dsl_executor.Executor。",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.neutralize = neutralize
         self.winsorize_k = winsorize_k
 

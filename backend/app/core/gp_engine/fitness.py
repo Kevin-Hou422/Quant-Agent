@@ -48,6 +48,93 @@ def compute_fitness(
     return fitness
 
 
+# ---------------------------------------------------------------------------
+# S5 修复（2026-07-24）：量纲稳定性结构惩罚
+# ---------------------------------------------------------------------------
+
+SCALE_PENALTY: float = 0.15
+
+
+def scale_stability_penalty(node) -> float:
+    """
+    量纲失稳因子的结构惩罚（S5 修复，2026-07-24）。
+
+    背景：fitness 此前只有 wrap_rank 的**软奖励**（+0.05~0.10），无任何硬约束，
+    GP 会利用任何抬高 fitness 的结构——包括 ``rank(...) * volume`` 这类信号被
+    绝对成交量量纲主导的因子。下游 SignalWeightedPortfolio 的逐日截面 z-score +
+    clip±3 会**缓解**其交易影响，但因子本身失去可解释性且重尾在裁剪前仍
+    扭曲相对权重。
+
+    本函数对根表达式做保守的递归量纲分析：输出量纲有界/标准化 → 0.0；
+    否则 → SCALE_PENALTY（在 Sharpe 量纲的 fitness 上是一个强于软奖励的
+    显著劣势，但非 -inf 硬掩蔽——下游 z-score 使此类因子仍可交易，
+    彻底禁止会误杀部分有效结构）。
+
+    判定规则（不确定时判不稳定）：
+      稳定   : Scalar；CS 中 rank/zscore/scale/normalize；ts_rank/ts_zscore/ts_corr；
+               group_rank/group_zscore；sign/比较/逻辑输出
+      继承   : winsorize/ind_neutralize/sector_neutral（截尾/去均值不改量纲）；
+               其余 TS 统计；neg/abs/log/sqrt/pow；加减乘（全子稳定才稳定）；
+               if_else/trade_when 分支
+      不稳定 : DataNode（原始价格/成交量量纲）；除法（分母非标量时可无界）
+    """
+    return 0.0 if _is_scale_stable(node) else SCALE_PENALTY
+
+
+def _is_scale_stable(node) -> bool:
+    from ..alpha_engine.typed_nodes import (
+        ArithmeticNode, CrossSectionalNode, DataNode, GroupNode,
+        ScalarNode, StringLiteralNode, TimeSeriesNode,
+    )
+
+    if isinstance(node, (ScalarNode, StringLiteralNode)):
+        return True
+    if isinstance(node, DataNode):
+        return False
+
+    if isinstance(node, CrossSectionalNode):
+        if node.op in ("rank", "zscore", "scale", "normalize"):
+            return True
+        # winsorize / ind_neutralize / sector_neutral 保留输入量纲
+        return _is_scale_stable(node.child)
+
+    if isinstance(node, GroupNode):
+        if node.op in ("group_rank", "group_zscore"):
+            return True
+        return _is_scale_stable(node.child)
+
+    if isinstance(node, TimeSeriesNode):
+        if node.op in ("ts_rank", "ts_zscore", "ts_corr"):
+            return True                      # 输出天然有界/标准化
+        children = [node.child]
+        if node.second_child is not None:
+            children.append(node.second_child)
+        return all(_is_scale_stable(c) for c in children)
+
+    if isinstance(node, ArithmeticNode):
+        op       = node.op
+        children = node._children            # noqa: SLF001
+        if op in ("sign", "logical_not", "logical_and", "logical_or",
+                  "gt", "lt", "gte", "lte", "eq", "ne"):
+            return True                      # 0/1 或 ±1 输出
+        if op == "div":
+            # 分母为标量 → 继承分子；否则可无界
+            if len(children) == 2 and isinstance(children[1], ScalarNode):
+                return _is_scale_stable(children[0])
+            return False
+        if op in ("if_else", "where"):
+            return all(_is_scale_stable(c) for c in children[1:])   # cond 不入量纲
+        if op == "trade_when":
+            return _is_scale_stable(children[-1])
+        # neg/abs/log/sqrt/pow/signed_power/add/sub/mul/max2/min2/weighted_sum
+        return all(
+            _is_scale_stable(c) for c in children
+            if not isinstance(c, (ScalarNode, StringLiteralNode))
+        ) if children else False
+
+    return False                             # 未知节点类型：保守判不稳定
+
+
 
 # ---------------------------------------------------------------------------
 # Factor-family-specific operator biases
