@@ -43,8 +43,11 @@ class RiskReport:
     cvar_95:            float = np.nan
 
     # ---- Alpha 质量 ----
-    mean_ic:            float = np.nan
-    ic_ir:              float = np.nan
+    # 口径说明（Task 6.7 / F-N5）：mean_ic / ic_ir 基于**处理后（含 delay）信号**
+    # 与前向收益的 Spearman IC，即"策略实际交易信号"的 IC，而非原始因子的 1 日
+    # 标准因子 IC。二者在有执行延迟时不等价，**不可与外部因子库的 IC 直接比较**。
+    mean_ic:            float = np.nan   # 策略信号 IC（延迟后，非原始因子 1 日 IC）
+    ic_ir:              float = np.nan   # 同上口径的 IC 信息比率
     ann_turnover:       float = np.nan
     cost_drag_bps:      float = np.nan
 

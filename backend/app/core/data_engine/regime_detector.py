@@ -103,12 +103,17 @@ class RegimeDetector:
         trend = (1.0 + ret).rolling(self.trend_window).apply(np.prod, raw=True) - 1.0
         # 滚动已实现波动率
         vol = ret.rolling(self.vol_window).std(ddof=1)
-        vol_cut = float(vol.quantile(self.vol_quantile))
+
+        # Task 6.7（F-N4 修复）：高波动阈值改用**扩展窗口分位数**（只用 t 及之前的
+        # 波动率分布），消除旧 `vol.quantile()` 全样本分位数带来的前视——旧实现下
+        # t 日的 regime 标签依赖未来的波动率分布，一旦 regime 接入配置即成真实前视。
+        # min_periods=vol_window 保证有足够样本才给阈值；早期不足则阈值为 NaN（不判高波动）。
+        vol_cut = vol.expanding(min_periods=self.vol_window).quantile(self.vol_quantile)
 
         labels = pd.Series("sideways", index=ret.index, dtype=object)
         labels[trend >  self.trend_threshold] = "bull"
         labels[trend < -self.trend_threshold] = "bear"
-        labels[vol > vol_cut] = "high_vol"          # 高波动覆盖趋势标签
+        labels[vol > vol_cut] = "high_vol"          # 高波动覆盖趋势标签（逐日阈值，无前视）
         # 预热期（趋势/波动窗口未满）无标签
         warmup = max(self.trend_window, self.vol_window)
         labels.iloc[: warmup - 1] = np.nan

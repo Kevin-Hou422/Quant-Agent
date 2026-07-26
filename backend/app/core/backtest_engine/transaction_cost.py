@@ -97,6 +97,48 @@ class SlippageModel:
 # ADV 流动性约束
 # ---------------------------------------------------------------------------
 
+def project_to_capped_l1(
+    w:        np.ndarray,   # (T, N) 有符号权重
+    cap:      np.ndarray,   # (T, N) 每名 |权重| 上限（>=0，可为 inf）
+    target:   float = 1.0,  # 目标 L1 范数
+    max_iter: int   = 32,
+    tol:      float = 1e-12,
+) -> np.ndarray:
+    """
+    带上限的 L1 投影（Task 6.6，water-filling）。
+
+    对每一行求解：|w_i| <= cap_i 且 sum_i |w_i| == target（当预算 sum_i cap_i >= target
+    时可行）；若预算不足则**保持 sum |w_i| = 预算 < target**，绝不通过整体放大把
+    已触顶的权重推回超限（旧 "clip→整体 L1 归一化" 的缺陷 E-N1/F-N1）。
+
+    算法：迭代 water-filling —— 反复将自由名按比例放大以补足亏空，任何被放大到
+    超过 cap 的名固定在 cap 并移出自由集，直到收敛或达 max_iter。方向（符号）保留。
+    """
+    sign = np.sign(w)
+    a    = np.abs(w).astype(float)
+    cap  = np.abs(cap).astype(float)
+
+    # 每行可达的最大 L1 = min(target, 预算)
+    budget    = np.nansum(np.where(np.isfinite(cap), cap, a), axis=1, keepdims=True)
+    row_target = np.minimum(target, budget)                       # (T, 1)
+
+    a = np.minimum(a, cap)                                         # 初始截断
+    for _ in range(max_iter):
+        capped   = a >= cap - tol                                 # 已触顶（含 cap=inf 时永不触顶）
+        capped  &= np.isfinite(cap)
+        cap_mass  = np.nansum(np.where(capped, a, 0.0), axis=1, keepdims=True)
+        free_mass = np.nansum(np.where(capped, 0.0, a), axis=1, keepdims=True)
+        deficit   = row_target - (cap_mass + free_mass)           # >0 需放大自由名
+        if np.all(np.abs(deficit) < tol):
+            break
+        # 自由名按比例吸收亏空；free_mass≈0 时无法再分配 → 停
+        scale = np.where(free_mass > tol, (free_mass + deficit) / free_mass, 1.0)
+        a = np.where(capped, a, a * scale)
+        a = np.minimum(a, cap)                                    # 放大后可能触顶，再截断
+
+    return sign * a
+
+
 class LiquidityConstraint:
     """
     将权重矩阵中超过 ADV 上限的持仓截断，并重新归一化。
@@ -120,7 +162,10 @@ class LiquidityConstraint:
             window=self.p.adv_window,
             min_periods=max(1, self.p.adv_window // 2),
         ).mean()
-        return adv.bfill().fillna(0.0)                                  # 初期用后向填充
+        # Task 6.7（F-N2 修复）：改用前向填充。旧 `bfill()` 会用未来成交量回填早期
+        # ADV（喂给流动性上限与滑点分母）→ 前视。ffill 只用历史；起始首行无历史时
+        # 用当日 dollar_vol 兜底（无前视），仍无则 0（视为不可交易 → 零权重）。
+        return adv.ffill().fillna(dollar_vol).fillna(0.0)
 
     def apply(
         self,
@@ -143,15 +188,11 @@ class LiquidityConstraint:
             np.inf,
         )
 
-        # 截断（方向保留，幅度缩减）
-        clipped = np.sign(w) * np.minimum(np.abs(w), cap_w)
+        # Task 6.6：迭代投影（water-filling），保证归一化后仍不超 ADV 上限。
+        # 旧实现 "clip → 整体 L1 归一化" 会把已触顶的权重推回超限（E-N1/F-N1）。
+        projected = project_to_capped_l1(w, cap_w, target=1.0)
 
-        # 重新 L1 归一化
-        l1 = np.nansum(np.abs(clipped), axis=1, keepdims=True)
-        l1 = np.where(l1 == 0, 1.0, l1)
-        clipped = clipped / l1
-
-        return pd.DataFrame(clipped, index=weights.index, columns=weights.columns)
+        return pd.DataFrame(projected, index=weights.index, columns=weights.columns)
 
 
 # ---------------------------------------------------------------------------

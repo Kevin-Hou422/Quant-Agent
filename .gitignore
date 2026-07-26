@@ -1,3 +1,29 @@
 venv/
 .env
+
+# Python caches
 __pycache__/
+*.pyc
+*.pyo
+
+# Databases & scheduler jobstore (Task 6.2 — never commit; avoids stash/merge
+# binary conflicts and OneDrive sync corruption)
+*.db
+*.sqlite
+*.sqlite3
+scheduler_jobs.db
+
+# Data caches
+*.parquet
+**/feature_store/**/*.parquet
+
+# Node
+node_modules/
+
+# Test / build artifacts
+.pytest_cache/
+_*.log
+htmlcov/
+.coverage
+dist/
+build/

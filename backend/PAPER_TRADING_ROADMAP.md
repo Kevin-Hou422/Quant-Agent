@@ -28,13 +28,17 @@
 
 ```
 Phase 5  ── 在线化与生命周期                          ✅ 已完成（2026-07-17）
-Phase 6  ── 基础设施加固（工程严谨性 + 体检修复）      ~11 天
+Phase 6  ── 基础设施加固（工程严谨性 + 体检修复）      🔵 进行中（2026-07-26 首批 5 项完成）
 Phase 7  ── PaperBroker 与模拟交易循环（核心新增）    ~10 天
 Phase 8  ── PIT 数据层与验证运营（持续运行）           ~5 天启动 + 长期
 ─────────────────────────────────────────────────────
-剩余专注开发约 26 个工作日（5-6 周）
+剩余专注开发约 20 个工作日（4-5 周）
 之后进入 ≥ 3 个月的 paper trading 验证期（系统自动运行，人工每周复盘）
 ```
+
+**Phase 6 进度（2026-07-26 首批）**：✅ 6.1 消除静默降级 · ✅ 6.2 SQLite 加固（代码；迁目录待用户）
+· ✅ 6.6 组合约束硬化 · ✅ 6.7 前视/口径（F-N3 残留）。⏳ 待做：6.3 CI+依赖锁 · 6.4 黄金基准测试
+· 6.5 可复现性+R-N1。验收：`test_phase6.py` 15 项 + 全量回归绿。
 
 依赖关系：Phase 6 的 6.1/6.2 应**最先做**（消除静默损坏源）；
 Phase 7 依赖已完成的调度器与生命周期状态机；Phase 8 依赖 Phase 7。
@@ -133,9 +137,16 @@ Walk-Forward/embargo（2026-06-09 修复后 OOS 不互叠、末折零浪费）�
 
 ---
 
-### Task 6.1 🔴 消除静默降级（B5 修复）— 1 天
+### Task 6.1 ✅ 消除静默降级（B5 修复）— 已完成（2026-07-26）
 
-**问题**：`_resolve_dataset()` 真实数据加载失败时静默回退合成数据，研究结论可能建立在噪声上。
+**实现**：`_resolve_dataset()` 新增 `allow_synthetic_fallback=False`。dataset_name 非空
+但加载失败 → **抛 HTTP 502**（明确错误信息，绝不静默用随机游走冒充真实数据）；
+dataset_name 为空仍是显式合成契约；测试可 `allow_synthetic_fallback=True` 显式降级。
+验收：`test_phase6.py::TestNoSilentFallback` 4 项（502 / 空名合成 / 显式降级 / regime 端点）。
+
+> 剩余（未做）：响应体贯穿 `source` 标记 + 前端黄条提示——留待接入 PaperBroker 时统一做。
+
+**原方案**：`_resolve_dataset()` 真实数据加载失败时静默回退合成数据，研究结论可能建立在噪声上。
 
 **方案**：
 - 新增 `DataSourceInfo` 字段贯穿所有响应：`{"source": "registry|synthetic", "loaded_at": ..., "fallback_reason": ...}`
@@ -144,7 +155,21 @@ Walk-Forward/embargo（2026-06-09 修复后 OOS 不互叠、末折零浪费）�
 
 **验收**：断网状态下请求真实数据集 → 502 + 明确错误信息；显式开启 fallback → 响应带 synthetic 标记且前端显示警告。
 
-### Task 6.2 🔴 迁出 OneDrive + SQLite 加固 — 1 天（原 0.5 天 + 并发加固）
+### Task 6.2 🟡 迁出 OneDrive + SQLite 加固 — 代码部分已完成（2026-07-26）；迁目录待用户执行
+
+**已完成（代码）**：
+- 新建 `app/db/_sqlite_utils.py`：`harden_sqlite_engine()` 对每个 SQLite 连接开
+  **WAL + busy_timeout=5000ms + synchronous=NORMAL**；AlphaStore/ChatStore 均接入
+- **统一 DB 路径**：AlphaStore/ChatStore 无参构造改从 `settings.database_url` 取；
+  `daily_monitor_job` 显式传 `settings.database_url` → 调度线程与 API 命中同一物理库
+- `.gitignore` 补 `*.db`/`*.pyc`/`*.parquet` 等；`git rm --cached` 移除已跟踪的
+  46 个 `.pyc`/`.db`（消除 stash/merge 二进制冲突源，即上次事故根因）
+- 验收：`test_phase6.py::TestSqliteHardening` 3 项
+
+> **剩余（需用户执行，非代码）**：把项目物理迁出 OneDrive 同步目录（如 `C:\quant-agent\`）；
+> 每日 `VACUUM INTO` 滚动备份（可挂到调度器，Phase 7 一并做）。
+
+**原任务：迁出 OneDrive + SQLite 加固 — 1 天（原 0.5 天 + 并发加固）**
 
 - 项目迁移到非同步目录（如 `C:\quant-agent\`）；OneDrive 仅存代码（git remote 更佳）
 - `alphas.db` 开 WAL 模式（`PRAGMA journal_mode=WAL`）；每日调度任务内置 `VACUUM INTO` 备份（保留 7 份滚动）
@@ -204,7 +229,16 @@ Walk-Forward/embargo（2026-06-09 修复后 OOS 不互叠、末折零浪费）�
 **验收**：A4 标准——任选一条历史记录重放，指标误差为零；任选一个入池因子
 可查询其完整进化谱系。
 
-### Task 6.6 🔴 组合约束硬化 — 1 天（体检新发现 E-N1/F-N1）
+### Task 6.6 ✅ 组合约束硬化 — 已完成（2026-07-26）
+
+**实现**：新增 `transaction_cost.project_to_capped_l1()` —— 带上限的 L1 投影
+（water-filling）：反复将自由名按比例放大补足亏空、触顶名固定在 cap，直到收敛；
+**预算不足（Σcap<target）时保持 L1=Σcap 而非整体放大越限**。替换两处旧
+"clip→整体 L1 归一化"：`LiquidityConstraint.apply`（ADV 上限）与
+`_build_weights` F11（max_single_weight）。验收：`test_phase6.py::TestConstraintHardening`
+5 项 + 2000 次随机压力测试**零违例**（旧法同输入越限至 0.33 vs cap 0.15）。
+
+**原任务（体检新发现 E-N1/F-N1）**
 
 **问题（系统性）**：多处采用"clip 到上限 → 再 L1 归一化"的模式，而 L1 归一化会
 把权重整体放大回 sum=1，**撤销刚施加的硬上限**。受影响：
@@ -219,7 +253,21 @@ Walk-Forward/embargo（2026-06-09 修复后 OOS 不互叠、末折零浪费）�
 
 **验收**：黄金用例（Task 6.4）断言归一化后无一权重超上限；随机压力测试 1000 次无违例。
 
-### Task 6.7 🟡 成本与 Regime 的前视/口径修复 — 1 天（体检新发现 F-N2/F-N3/F-N4/F-N5）
+### Task 6.7 ✅ 成本与 Regime 的前视/口径修复 — 大部完成（2026-07-26）
+
+**已完成**：
+- **F-N4** Regime 前视：`RegimeDetector.fit` 的 `vol.quantile()` 全样本分位数改为
+  `vol.expanding(min_periods=vol_window).quantile()` 扩展窗口分位数——每日阈值只用
+  t 及之前数据。验收：历史某日标签不随追加未来数据改变（`test_phase6` 已断言）
+- **F-N2** ADV 前视：`compute_adv` 的 `bfill()` 改 `ffill().fillna(dollar_vol)`——
+  早期 ADV 不再被未来放量回填污染
+- **F-N5** IC 口径：`RiskReport` 的 `mean_ic`/`ic_ir` 加 docstring 标注（=延迟后策略
+  信号 IC，非标准因子 1 日 IC，不可与外部因子库直接比较）
+
+> **剩余（未做）F-N3**：ADV/冲击以 `initial_capital` 计而非当日 equity——需在日循环内
+> 用当日 equity 计算，与向量化有取舍，留待 Task 6.4 黄金测试确立成本基准后一并做。
+
+**原任务（体检新发现 F-N2/F-N3/F-N4/F-N5）**
 
 - **F-N4 Regime 全样本分位数前视**（潜在高危）：`RegimeDetector` 的
   `vol_cut = vol.quantile(0.80)` 用**整个样本**（含未来）的波动率分布定阈值 → 每日

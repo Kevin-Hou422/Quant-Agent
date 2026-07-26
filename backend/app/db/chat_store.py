@@ -97,9 +97,20 @@ class ChatStore:
     """
 
     def __init__(self, db_url: Optional[str] = None) -> None:
-        url = db_url or os.getenv("DATABASE_URL", "sqlite:///alphas.db")
+        # Task 6.2：统一默认库路径来源（与 AlphaStore 一致）
+        if db_url is None:
+            db_url = os.getenv("DATABASE_URL", "")
+            if not db_url:
+                try:
+                    from app.config import settings
+                    db_url = settings.database_url
+                except Exception:
+                    db_url = "sqlite:///alphas.db"
+        url = db_url
         connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
         self._engine  = create_engine(url, connect_args=connect_args, echo=False)
+        from ._sqlite_utils import harden_sqlite_engine
+        harden_sqlite_engine(self._engine)          # Task 6.2：WAL + busy_timeout
         _ChatBase.metadata.create_all(self._engine)
         self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
 

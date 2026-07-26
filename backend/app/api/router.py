@@ -67,13 +67,18 @@ def _resolve_dataset(
     n_days:        int,
     seed:          int,
     oos_ratio:     float,
+    allow_synthetic_fallback: bool = False,
 ):
     """
     Return (full_data, is_data, oos_data).
 
-    When ``dataset_name`` is non-empty, load from DatasetRegistry and
-    split IS/OOS.  Falls back to synthetic data on any failure or when
-    ``dataset_name`` is empty.
+    数据来源契约（Task 6.1，消除静默降级 B5）：
+      - dataset_name 为空 → 显式合成数据（"leave empty for synthetic" 契约）
+      - dataset_name 非空且加载成功 → 真实数据
+      - dataset_name 非空但加载失败：
+          · allow_synthetic_fallback=False（默认）→ **抛 HTTP 502**，绝不静默
+            用随机游走合成数据冒充真实数据（避免研究结论建立在噪声上）
+          · allow_synthetic_fallback=True → 降级合成数据（仅供测试/离线显式开启）
     """
     if dataset_name:
         try:
@@ -84,8 +89,18 @@ def _resolve_dataset(
             logger.info("Loaded real dataset '%s' [%s→%s]", dataset_name, dataset_start, dataset_end)
             return full, is_, oos
         except Exception as exc:
+            if not allow_synthetic_fallback:
+                logger.error("Real dataset '%s' load failed: %s — 返回 502（不静默降级）", dataset_name, exc)
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        f"真实数据集 '{dataset_name}' 加载失败：{exc}。"
+                        f" 为避免用合成数据冒充真实数据，本请求已终止。"
+                        f" 如需离线合成数据，请将 dataset_name 置空。"
+                    ),
+                ) from exc
             logger.warning(
-                "Real dataset '%s' load failed: %s — falling back to synthetic",
+                "Real dataset '%s' load failed: %s — 显式降级合成数据（allow_synthetic_fallback）",
                 dataset_name, exc,
             )
 

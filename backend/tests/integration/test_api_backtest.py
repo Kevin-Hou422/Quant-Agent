@@ -54,7 +54,8 @@ class TestBacktestRun:
 
     def test_run_missing_dsl_field_returns_error(self, client):
         """缺少 dsl 字段时应返回 422（FastAPI 验证）或 200 带 error 字段。"""
-        payload = {"n_tickers": 5, "n_days": 60}
+        # Task 6.1：显式离线合成（否则默认 us_tech_large 无网络会 502）
+        payload = {"n_tickers": 5, "n_days": 60, "dataset_name": ""}
         resp = client.post("/api/backtest/run", json=payload)
         assert resp.status_code in (200, 422)
 
@@ -82,6 +83,9 @@ class TestWalkForward:
             "n_tickers": 8,
             "n_days": 120,
             "seed": 0,
+            # Task 6.1：显式请求合成数据（离线测试）。省略时默认 "us_tech_large"，
+            # 无网络会正确返回 502（不再静默降级），故此处显式置空。
+            "dataset_name": "",
         }
         resp = client.post("/api/backtest/walk_forward", json=payload)
         assert resp.status_code in (200, 400, 422, 500)

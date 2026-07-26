@@ -98,9 +98,22 @@ class AlphaStore:
     """
 
     def __init__(self, db_url: Optional[str] = None) -> None:
-        url = db_url or os.getenv("DATABASE_URL", "sqlite:///alphas.db")
+        # Task 6.2：默认库路径统一从 settings.database_url 取，避免调度线程
+        # （无参 AlphaStore()）与 API（settings.database_url）解析到不同物理文件。
+        if db_url is None:
+            db_url = os.getenv("DATABASE_URL", "")
+            if not db_url:
+                try:
+                    from app.config import settings
+                    db_url = settings.database_url
+                except Exception:
+                    db_url = "sqlite:///alphas.db"
+        url = db_url
         connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
         self._engine = create_engine(url, connect_args=connect_args, echo=False)
+        # Task 6.2：WAL + busy_timeout，支持调度线程与 API 并发写（体检 E-N2）
+        from ._sqlite_utils import harden_sqlite_engine
+        harden_sqlite_engine(self._engine)
         _Base.metadata.create_all(self._engine)
         self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
 

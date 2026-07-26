@@ -35,8 +35,10 @@ def daily_monitor_job() -> None:
     """每日衰减巡检：对全部非终态因子跑 check_decay，告警写日志。"""
     from app.db.alpha_store import AlphaStore
     from app.core.monitor.alpha_monitor import AlphaMonitor
+    from app.config import settings
 
-    store   = AlphaStore()
+    # Task 6.2：显式传 settings.database_url，确保调度线程与 API 命中同一物理库
+    store   = AlphaStore(db_url=settings.database_url)
     monitor = AlphaMonitor(store)
     rows    = monitor.get_dashboard()
     alerts  = [r for r in rows if r.has_alert]

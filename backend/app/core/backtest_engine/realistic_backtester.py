@@ -456,15 +456,15 @@ class RealisticBacktester:
             )
 
         # F11: 单资产权重上限约束
+        # Task 6.6：迭代投影替代 "clip→整体 L1 归一化"，保证归一化后单票仍 ≤ cap
+        # （旧实现会把已触顶权重推回超限，E-N1）。
         cap = self.config.max_single_weight
         if cap > 0:
-            w = weights.to_numpy(dtype=float)
-            # 裁剪绝对权重，方向保留
-            clipped = np.sign(w) * np.minimum(np.abs(w), cap)
-            # 重新 L1 归一化
-            l1 = np.nansum(np.abs(clipped), axis=1, keepdims=True)
-            l1 = np.where(l1 == 0, 1.0, l1)
-            weights = pd.DataFrame(clipped / l1, index=weights.index, columns=weights.columns)
+            from .transaction_cost import project_to_capped_l1
+            w   = weights.to_numpy(dtype=float)
+            cap_mat = np.full_like(w, cap)
+            projected = project_to_capped_l1(w, cap_mat, target=1.0)
+            weights = pd.DataFrame(projected, index=weights.index, columns=weights.columns)
 
         return weights
 

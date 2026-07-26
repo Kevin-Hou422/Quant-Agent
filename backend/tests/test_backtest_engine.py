@@ -206,10 +206,17 @@ def test_adv_cap(dates, rng):
     assert (adj_share["B0"] < orig_share["B0"]).all(), \
         "截断后 B0 的权重占比应低于原始占比"
 
-    # 3. 调整后的权重矩阵与原始权重矩阵 L1 和相同（仍归一化）
+    # 3. Task 6.6 修正：约束硬化后，归一化**不得把权重推回超上限**。
+    #    本例每名 ADV 权重上限 = 0.10 × (1000×100) / 1e6 = 0.01，5 名预算 = 0.05。
+    #    正确行为：所有权重 ≤ 0.01（严守 ADV 上限），L1 = 预算 0.05（不虚假放大）。
+    #    旧实现会归一化 0.05→1.0，使每名变 0.20（超 0.01 上限 20 倍）——那是 bug。
+    cap_w = (adv.iloc[-1] * params.adv_cap_pct / 1_000_000)
+    assert (adj.abs().iloc[-1] <= cap_w + 1e-9).all(), \
+        "约束硬化后任一权重不得超过 ADV 权重上限"
     adj_l1 = adj.abs().sum(axis=1)
-    assert np.allclose(adj_l1.values, 1.0, atol=1e-8), \
-        f"调整后 L1 范数应=1，实际均值={adj_l1.mean():.6f}"
+    budget = float(cap_w.sum())
+    assert np.allclose(adj_l1.values, min(1.0, budget), atol=1e-6), \
+        f"调整后 L1 应=可行预算 min(1,{budget:.4f})，实际均值={adj_l1.mean():.6f}"
 
 
 # ===========================================================================
