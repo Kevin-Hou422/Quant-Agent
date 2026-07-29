@@ -65,7 +65,10 @@ class FallbackOrchestrator:
         from app.core.workflows.alpha_workflows import _generate_diverse_seeds
 
         # Step 1: Generate ≥10 diverse seed DSLs from hypothesis
-        seed_dsls = _generate_diverse_seeds(hypothesis, n_target=12)
+        # R-N1：传入 tools 的 seed 使 fallback 路径的种子生成也确定性
+        seed_dsls = _generate_diverse_seeds(
+            hypothesis, n_target=12, seed=getattr(self._tools, "_seed", None),
+        )
         if not seed_dsls:
             dsl_result = json.loads(self._tools.tool_generate_alpha_dsl(hypothesis))
             seed_dsls  = [dsl_result.get("dsl", "rank(ts_delta(log(close), 5))")]

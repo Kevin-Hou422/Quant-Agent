@@ -27,7 +27,7 @@ All operations:
 from __future__ import annotations
 
 import copy
-import random
+from . import _rng   # R-N1：可绑定共享随机源，替代全局 random（确定性）
 from typing import List, Optional, Tuple
 
 from ..alpha_engine.typed_nodes import (
@@ -204,7 +204,7 @@ def _tree_depth(node: Node) -> int:
 # ---------------------------------------------------------------------------
 
 def _make_data_node() -> DataNode:
-    return DataNode(random.choice(_DATA_FIELDS))
+    return DataNode(_rng.choice(_DATA_FIELDS))
 
 
 def _generate_typed_node(max_depth: int = 2) -> Node:
@@ -212,16 +212,16 @@ def _generate_typed_node(max_depth: int = 2) -> Node:
     Generate a small random typed_nodes expression tree.
     Used by replace_subtree and combine_signals when no second parent is available.
     """
-    if max_depth <= 0 or random.random() < 0.35:
+    if max_depth <= 0 or _rng.random() < 0.35:
         return _make_data_node()
 
-    roll = random.random()
+    roll = _rng.random()
 
     if roll < 0.40:
         # Time-series wrap
-        op     = random.choice(_TS_LIST)
+        op     = _rng.choice(_TS_LIST)
         child  = _generate_typed_node(max_depth - 1)
-        window = random.choice(_TS_WINDOWS)
+        window = _rng.choice(_TS_WINDOWS)
         try:
             return TimeSeriesNode(op, child, window)
         except Exception:
@@ -229,13 +229,13 @@ def _generate_typed_node(max_depth: int = 2) -> Node:
 
     if roll < 0.60:
         # Cross-sectional wrap
-        op    = random.choice(_WRAP_CS_OPS)
+        op    = _rng.choice(_WRAP_CS_OPS)
         child = _generate_typed_node(max_depth - 1)
         return CrossSectionalNode(op, child)
 
     if roll < 0.80:
         # Binary arithmetic
-        op  = random.choice(["add", "sub", "mul"])
+        op  = _rng.choice(["add", "sub", "mul"])
         l   = _generate_typed_node(max_depth - 1)
         r   = _generate_typed_node(max_depth - 1)
         return ArithmeticNode(op, [l, r])
@@ -256,31 +256,31 @@ def _generate_family_compatible_subtree(
     respect the factor's financial intent.
     """
     if factor_family == "momentum":
-        field  = random.choice(["close", "returns", "vwap"])
-        window = random.choice([3, 5, 10, 20])
-        op     = random.choice(["ts_delta", "ts_rank"])
+        field  = _rng.choice(["close", "returns", "vwap"])
+        window = _rng.choice([3, 5, 10, 20])
+        op     = _rng.choice(["ts_delta", "ts_rank"])
         child: Node = DataNode(field)
-        if field == "close" and random.random() < 0.6:
+        if field == "close" and _rng.random() < 0.6:
             child = ArithmeticNode("log", [child])
         return TimeSeriesNode(op, child, window)
 
     if factor_family == "reversion":
-        window = random.choice([1, 3, 5])
-        if random.random() < 0.55:
+        window = _rng.choice([1, 3, 5])
+        if _rng.random() < 0.55:
             inner = TimeSeriesNode("ts_delta", DataNode("close"), window)
             return ArithmeticNode("neg", [inner])
         return TimeSeriesNode("ts_zscore", DataNode("returns"), window * 2)
 
     if factor_family == "volatility":
-        window = random.choice([10, 20, 60])
-        op     = random.choice(["ts_std", "ts_var"])
+        window = _rng.choice([10, 20, 60])
+        op     = _rng.choice(["ts_std", "ts_var"])
         node   = TimeSeriesNode(op, DataNode("returns"), window)
         # Low-vol convention: negate so higher rank = lower volatility
-        return ArithmeticNode("neg", [node]) if random.random() < 0.6 else node
+        return ArithmeticNode("neg", [node]) if _rng.random() < 0.6 else node
 
     if factor_family == "liquidity":
-        window = random.choice([5, 10, 20])
-        if random.random() < 0.5:
+        window = _rng.choice([5, 10, 20])
+        if _rng.random() < 0.5:
             return TimeSeriesNode("ts_mean", DataNode("volume"), window)
         return TimeSeriesNode(
             "ts_delta",
@@ -289,22 +289,22 @@ def _generate_family_compatible_subtree(
         )
 
     if factor_family == "price_volume_corr":
-        window = random.choice([10, 20, 40])
+        window = _rng.choice([10, 20, 40])
         return TimeSeriesNode(
             "ts_corr", DataNode("close"), window, second_child=DataNode("volume")
         )
 
     if factor_family == "trend_following":
-        window = random.choice([20, 40, 60, 120])
-        field  = random.choice(["close", "returns", "vwap"])
-        op     = random.choice(["ts_mean", "ts_decay_linear"])
+        window = _rng.choice([20, 40, 60, 120])
+        field  = _rng.choice(["close", "returns", "vwap"])
+        op     = _rng.choice(["ts_mean", "ts_decay_linear"])
         return TimeSeriesNode(op, DataNode(field), window)
 
     if factor_family in ("risk_adjusted", "composite"):
         # Momentum or volatility component equally likely
         return _generate_family_compatible_subtree(
             max_depth,
-            random.choice(["momentum", "volatility"]),
+            _rng.choice(["momentum", "volatility"]),
         )
 
     # Fallback: fully generic random subtree
@@ -325,7 +325,7 @@ def _combine_op_for_families(f1: str, f2: str) -> str:
         return "div"
     if "liquidity" in pair:
         return "mul"
-    return random.choice(["add", "sub"])
+    return _rng.choice(["add", "sub"])
 
 
 def _make_momentum_condition() -> ArithmeticNode:
@@ -333,13 +333,13 @@ def _make_momentum_condition() -> ArithmeticNode:
     choices = [
         # positive recent delta
         lambda: ArithmeticNode("gt", [
-            TimeSeriesNode("ts_delta", DataNode("close"), random.choice([1, 5, 10])),
+            TimeSeriesNode("ts_delta", DataNode("close"), _rng.choice([1, 5, 10])),
             ScalarNode(0),
         ]),
         # price above rolling mean
         lambda: ArithmeticNode("gt", [
             DataNode("close"),
-            TimeSeriesNode("ts_mean", DataNode("close"), random.choice([10, 20])),
+            TimeSeriesNode("ts_mean", DataNode("close"), _rng.choice([10, 20])),
         ]),
         # positive returns
         lambda: ArithmeticNode("gt", [
@@ -348,21 +348,21 @@ def _make_momentum_condition() -> ArithmeticNode:
         ]),
         # recent mean above longer mean (golden cross)
         lambda: ArithmeticNode("gt", [
-            TimeSeriesNode("ts_mean", DataNode("close"), random.choice([5, 10])),
-            TimeSeriesNode("ts_mean", DataNode("close"), random.choice([20, 40])),
+            TimeSeriesNode("ts_mean", DataNode("close"), _rng.choice([5, 10])),
+            TimeSeriesNode("ts_mean", DataNode("close"), _rng.choice([20, 40])),
         ]),
         # high > previous high (breakout)
         lambda: ArithmeticNode("gt", [
             DataNode("high"),
-            TimeSeriesNode("ts_max", DataNode("high"), random.choice([10, 20])),
+            TimeSeriesNode("ts_max", DataNode("high"), _rng.choice([10, 20])),
         ]),
     ]
-    return random.choice(choices)()
+    return _rng.choice(choices)()
 
 
 def _make_volume_condition() -> ArithmeticNode:
     """Build a volume-above-ADV condition."""
-    adv_window = random.choice([10, 20])
+    adv_window = _rng.choice([10, 20])
     return ArithmeticNode("gt", [
         DataNode("volume"),
         TimeSeriesNode("ts_mean", DataNode("volume"), adv_window),
@@ -387,7 +387,7 @@ def point_mutation(root: Node) -> Node:
     if not candidates:
         return copy.deepcopy(root)
 
-    kind, target = random.choice(candidates)
+    kind, target = _rng.choice(candidates)
     new_root     = copy.deepcopy(root)
     all_new      = _collect_nodes(new_root)
     target_repr  = repr(target)
@@ -401,13 +401,13 @@ def point_mutation(root: Node) -> Node:
         if ts_op in _TS_OPS:
             ops = [op for op in _TS_LIST if op != ts_op]
             if ops:
-                node_to_mutate.op = random.choice(ops)
+                node_to_mutate.op = _rng.choice(ops)
     elif kind == "cs":
         cs_op = getattr(node_to_mutate, "op", None)
         if cs_op in _CS_OPS:
             ops = [op for op in _CS_LIST if op != cs_op]
             if ops:
-                node_to_mutate.op = random.choice(ops)
+                node_to_mutate.op = _rng.choice(ops)
     return new_root
 
 
@@ -422,12 +422,12 @@ def hoist_mutation(root: Node) -> Node:
     if not has_children:
         return copy.deepcopy(root)
 
-    target   = random.choice(has_children)
+    target   = _rng.choice(has_children)
     children = _get_children(target)
     if not children:
         return copy.deepcopy(root)
 
-    hoisted  = random.choice(children)
+    hoisted  = _rng.choice(children)
     new_root = _replace_node(root, target, hoisted)
 
     if _try_validate(new_root):
@@ -448,14 +448,14 @@ def param_mutation(root: Node) -> Node:
     if not ts_nodes:
         return new_root
 
-    target = random.choice(ts_nodes)
+    target = _rng.choice(ts_nodes)
     if hasattr(target, "window"):
         old_w         = target.window
-        delta         = random.uniform(-0.2, 0.2)
+        delta         = _rng.uniform(-0.2, 0.2)
         target.window = max(2, min(60, int(old_w * (1 + delta))))
     elif hasattr(target, "params") and "window" in target.params:
         old_w                   = target.params["window"]
-        delta                   = random.uniform(-0.2, 0.2)
+        delta                   = _rng.uniform(-0.2, 0.2)
         target.params["window"] = max(2, min(60, int(old_w * (1 + delta))))
     return new_root
 
@@ -482,9 +482,9 @@ def subtree_crossover(root1: Node, root2: Node) -> Tuple[Node, Node]:
     if not common_types:
         return copy.deepcopy(root1), copy.deepcopy(root2)
 
-    chosen_type = random.choice(list(common_types))
-    swap1       = random.choice(g1[chosen_type])
-    swap2       = random.choice(g2[chosen_type])
+    chosen_type = _rng.choice(list(common_types))
+    swap1       = _rng.choice(g1[chosen_type])
+    swap2       = _rng.choice(g2[chosen_type])
 
     new_root1 = _replace_node(root1, swap1, swap2)
     new_root2 = _replace_node(root2, swap2, swap1)
@@ -510,10 +510,10 @@ def wrap_rank(root: Node) -> Node:
     Before:  ts_delta(close, 5)
     After:   rank(ts_delta(close, 5))
     """
-    op = random.choice(_WRAP_CS_OPS)
+    op = _rng.choice(_WRAP_CS_OPS)
 
     # Try wrapping the whole root first (most impactful)
-    if random.random() < 0.6:
+    if _rng.random() < 0.6:
         try:
             wrapped = CrossSectionalNode(op, copy.deepcopy(root))
             if _try_validate(wrapped):
@@ -533,7 +533,7 @@ def wrap_rank(root: Node) -> Node:
     if not candidates:
         return copy.deepcopy(root)
 
-    target = random.choice(candidates)
+    target = _rng.choice(candidates)
     try:
         wrapped_target = CrossSectionalNode(op, copy.deepcopy(target))
         new_root       = _replace_node(root, target, wrapped_target)
@@ -568,9 +568,9 @@ def add_ts_smoothing(root: Node) -> Node:
     if not candidates:
         return copy.deepcopy(root)
 
-    target = random.choice(candidates)
-    op     = random.choice(_SMOOTH_OPS)
-    window = random.choice(_TS_WINDOWS)
+    target = _rng.choice(candidates)
+    op     = _rng.choice(_SMOOTH_OPS)
+    window = _rng.choice(_TS_WINDOWS)
 
     try:
         wrapped_target = TimeSeriesNode(op, copy.deepcopy(target), window)
@@ -599,7 +599,7 @@ def add_condition(root: Node) -> Node:
     cond = _make_momentum_condition()
     root_copy = copy.deepcopy(root)
 
-    variant = random.choice(["trade_when", "if_else_zero", "if_else_flip"])
+    variant = _rng.choice(["trade_when", "if_else_zero", "if_else_flip"])
 
     try:
         if variant == "trade_when":
@@ -635,14 +635,14 @@ def add_volume_filter(root: Node) -> Node:
     vol_cond  = _make_volume_condition()
     root_copy = copy.deepcopy(root)
 
-    variant = random.choice(["gate", "scale_by_vol"])
+    variant = _rng.choice(["gate", "scale_by_vol"])
 
     try:
         if variant == "gate":
             result = ArithmeticNode("trade_when", [vol_cond, root_copy])
         else:
             # Scale by relative volume (volume / ADV)
-            adv_window = random.choice([10, 20])
+            adv_window = _rng.choice([10, 20])
             rel_vol    = ArithmeticNode("div", [
                 DataNode("volume"),
                 TimeSeriesNode("ts_mean", DataNode("volume"), adv_window),
@@ -692,13 +692,13 @@ def combine_signals(
         other_depth = _tree_depth(other_root)
         if other_depth >= 4:
             leaves = [n for n in _collect_nodes(other_root) if isinstance(n, DataNode)]
-            other  = copy.deepcopy(random.choice(leaves)) if leaves else _make_data_node()
+            other  = copy.deepcopy(_rng.choice(leaves)) if leaves else _make_data_node()
         else:
             other = copy.deepcopy(other_root)
 
     elif factor_family and factor_family in _COMPLEMENTARY_FAMILIES:
         # Generate a second signal from a financially complementary family
-        complement = random.choice(_COMPLEMENTARY_FAMILIES[factor_family])
+        complement = _rng.choice(_COMPLEMENTARY_FAMILIES[factor_family])
         other = _generate_family_compatible_subtree(max_depth=2, factor_family=complement)
 
     else:
@@ -709,7 +709,7 @@ def combine_signals(
         complement = _COMPLEMENTARY_FAMILIES[factor_family][0]
         op = _combine_op_for_families(factor_family, complement)
     else:
-        op = random.choice(["add", "sub", "mul"])
+        op = _rng.choice(["add", "sub", "mul"])
 
     try:
         if op == "div":
@@ -757,11 +757,11 @@ def replace_subtree(root: Node, factor_family: str = "") -> Node:
             return new_tree
         return copy.deepcopy(root)
 
-    target    = random.choice(internals)
+    target    = _rng.choice(internals)
     target_d  = _tree_depth(target)
 
     # 70 % chance: use a family-compatible subtree; 30 %: fully random (exploration)
-    if factor_family and random.random() < 0.70:
+    if factor_family and _rng.random() < 0.70:
         new_subtree = _generate_family_compatible_subtree(
             max_depth=max(1, target_d),
             factor_family=factor_family,
@@ -800,15 +800,15 @@ def add_operator(root: Node, factor_family: str = "") -> Node:
     """
     if factor_family and factor_family in _FAMILY_OPERATOR_PREFS:
         # 75 % chance: use the preferred list; 25 %: explore freely
-        if random.random() < 0.75:
-            variant = random.choice(_FAMILY_OPERATOR_PREFS[factor_family])
+        if _rng.random() < 0.75:
+            variant = _rng.choice(_FAMILY_OPERATOR_PREFS[factor_family])
         else:
-            variant = random.choice([
+            variant = _rng.choice([
                 "unary_sign", "unary_abs", "signed_power",
                 "self_rank", "rank_deviation", "scaled",
             ])
     else:
-        variant = random.choice([
+        variant = _rng.choice([
             "unary_sign",
             "unary_abs",
             "signed_power",
@@ -826,7 +826,7 @@ def add_operator(root: Node, factor_family: str = "") -> Node:
             result = ArithmeticNode("abs", [root_copy])
 
         elif variant == "signed_power":
-            p      = ScalarNode(random.choice([0.5, 1.5, 2.0, 3.0]))
+            p      = ScalarNode(_rng.choice([0.5, 1.5, 2.0, 3.0]))
             result = ArithmeticNode("signed_power", [root_copy, p])
 
         elif variant == "self_rank":
@@ -836,7 +836,7 @@ def add_operator(root: Node, factor_family: str = "") -> Node:
 
         elif variant == "rank_deviation":
             # rank(x) - ts_mean(rank(x), w) — de-trend the rank signal
-            w        = random.choice([5, 10, 20])
+            w        = _rng.choice([5, 10, 20])
             ranked   = CrossSectionalNode("rank", root_copy)
             ma_rank  = TimeSeriesNode("ts_mean", CrossSectionalNode("rank", copy.deepcopy(root_copy)), w)
             result   = ArithmeticNode("sub", [ranked, ma_rank])

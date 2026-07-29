@@ -15,9 +15,10 @@ gp_engine.py — 种子库与随机 Alpha 生成工具。
 from __future__ import annotations
 
 import logging
-import random
 from dataclasses import dataclass
 from typing import Dict, Tuple
+
+from . import _rng   # R-N1：可绑定共享随机源，替代全局 random（确定性）
 
 import numpy as np
 import pandas as pd
@@ -185,10 +186,10 @@ def generate_random_alpha(depth: int = 4, factor_family: str = "") -> Node:
 
     for _ in range(20):
         try:
-            if family_seeds and random.random() < 0.60:
-                dsl = random.choice(family_seeds)
+            if family_seeds and _rng.random() < 0.60:
+                dsl = _rng.choice(family_seeds)
             else:
-                dsl = random.choice(_SEED_DSLS)
+                dsl = _rng.choice(_SEED_DSLS)
             return _parser_inst.parse(dsl)
         except Exception:
             continue

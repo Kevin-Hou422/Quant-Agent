@@ -224,6 +224,11 @@ class PopulationEvolver:
         """
         evolution_log: List[Dict] = []
 
+        # R-N1（2026-07-30）：把变异/随机生成的共享随机源绑定到本实例 RNG，
+        # 使 generate_random_alpha / mutations.* 全程确定性（相同 seed 可复现）。
+        from . import _rng as _shared_rng
+        _shared_rng.bind(self._rng)
+
         # ── Step 1: Initialize population ─────────────────────────────
         population = self._init_population(seed_dsl, seed_dsls)
         n_seeds = len(seed_dsls or []) + (1 if seed_dsl else 0)

@@ -26,7 +26,7 @@ STRICT RULES (enforced):
 from __future__ import annotations
 
 import logging
-import random
+from ..gp_engine import _rng  # R-N1：可绑定共享随机源
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -255,7 +255,11 @@ def _hypothesis_templates(hypothesis: str) -> List[str]:
     return matched if matched else _HYPOTHESIS_TEMPLATES["default"]
 
 
-def _generate_diverse_seeds(hypothesis: str, n_target: int = 12) -> List[str]:
+def _generate_diverse_seeds(
+    hypothesis: str,
+    n_target:   int = 12,
+    seed:       Optional[int] = None,
+) -> List[str]:
     """
     Generate ≥n_target diverse DSL seeds for Workflow A.
 
@@ -264,7 +268,14 @@ def _generate_diverse_seeds(hypothesis: str, n_target: int = 12) -> List[str]:
       2. Keyword-matched templates from _HYPOTHESIS_TEMPLATES
       3. AST mutations of valid seeds (point / hoist / param)
       4. Random alphas via generate_random_alpha() + _SEED_DSLS
+
+    R-N1：``seed`` 非空时绑定确定性随机源，使种子生成可复现（消除对全局
+    random 状态的依赖 → 修复测试顺序敏感的偶发失败）。
     """
+    if seed is not None:
+        from ..gp_engine import _rng as _shared_rng
+        _shared_rng.bind_seed(seed)
+
     valid_nodes: List[Any] = []
     valid_dsls:  List[str] = []
     seen:        set       = set()
@@ -301,8 +312,8 @@ def _generate_diverse_seeds(hypothesis: str, n_target: int = 12) -> List[str]:
     attempts = 0
     while len(valid_dsls) < n_target and attempts < n_target * 12 and valid_nodes:
         attempts += 1
-        parent = random.choice(valid_nodes)
-        op     = random.choice(mutation_ops)
+        parent = _rng.choice(valid_nodes)
+        op     = _rng.choice(mutation_ops)
         try:
             mutant = op(parent)
             _validator.validate(mutant)
@@ -319,8 +330,8 @@ def _generate_diverse_seeds(hypothesis: str, n_target: int = 12) -> List[str]:
     while len(valid_dsls) < n_target and attempts < n_target * 20:
         attempts += 1
         try:
-            if random.random() < 0.4 and _SEED_DSLS:
-                node = _parse_valid(random.choice(_SEED_DSLS))
+            if _rng.random() < 0.4 and _SEED_DSLS:
+                node = _parse_valid(_rng.choice(_SEED_DSLS))
             else:
                 node = generate_random_alpha()
             if node is not None:
@@ -359,7 +370,7 @@ def _expand_for_optimization(dsl: str, n_mutations: int = 8) -> List[str]:
     attempts = 0
     while len(results) - 1 < n_mutations and attempts < n_mutations * 15:
         attempts += 1
-        op = random.choice(mutation_ops)
+        op = _rng.choice(mutation_ops)
         try:
             mutant = op(seed_node)
             _validator.validate(mutant)
@@ -607,7 +618,8 @@ class GenerationWorkflow:
         is_data, oos_data = _partition(dataset, self._oos_ratio)
 
         # Step 2: Generate ≥10 diverse seed DSLs
-        seed_dsls = _generate_diverse_seeds(hypothesis, n_target=self._n_seeds)
+        # R-N1：传入 seed 使种子生成确定性（可复现 + 消除测试顺序敏感）
+        seed_dsls = _generate_diverse_seeds(hypothesis, n_target=self._n_seeds, seed=self._seed)
         if not seed_dsls:
             seed_dsls = [repr(generate_random_alpha())]
 

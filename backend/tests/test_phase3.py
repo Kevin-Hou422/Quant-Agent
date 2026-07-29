@@ -240,11 +240,9 @@ class TestQuantAgent:
         assert len(result["reply"]) > 0
 
     def test_chat_returns_dsl(self, agent):
-        # 确定性种子（2026-07-24）：GP 种子/变异仍用全局 random（见 roadmap §3.0c
-        # 待修项 R-N1），结果依赖前序测试消耗的全局 RNG 状态 → 本测试历史上 flaky。
-        # 在此固定全局 random，使断言可复现；根因（生成器实例级 RNG）由 R-N1 处理。
-        import random as _r
-        _r.seed(20240724)
+        # R-N1 已修复（2026-07-30）：GP 种子/变异改用可绑定共享 RNG，fallback 路径
+        # 传入 tools seed → 种子生成确定性，不再依赖全局 random 状态。原 flaky 根因消除，
+        # 此前的 random.seed() 补丁已移除。
         result = agent.chat("volume momentum alpha")
         assert result.get("dsl") is not None
         assert "(" in result["dsl"]

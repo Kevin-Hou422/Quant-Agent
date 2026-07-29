@@ -36,7 +36,7 @@ from app.core.gp_engine.mutations import (
     _collect_nodes,
 )
 from app.core.ml_engine.proxy_model import ProxyModel, extract_features, _FEATURE_SIZE
-from app.core.ml_engine.alpha_store import AlphaStore, AlphaResult
+from app.db.alpha_store import AlphaStore, AlphaResult
 from app.core.gp_engine.population_evolver import PopulationEvolver
 
 _validator = AlphaValidator()
