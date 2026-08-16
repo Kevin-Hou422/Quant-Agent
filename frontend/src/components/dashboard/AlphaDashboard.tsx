@@ -5,8 +5,9 @@ import {
 } from 'lucide-react'
 import {
   apiFetchDashboard, apiFetchICHistory, apiPatchAlphaStatus, apiFetchSchedulerStatus,
+  apiFetchPaperPnL,
 } from '../../api/client'
-import type { AlphaDashboardRow, ICHistoryData, SchedulerStatus } from '../../types'
+import type { AlphaDashboardRow, ICHistoryData, SchedulerStatus, PaperPnLData } from '../../types'
 
 /**
  * FE-5.1/5.2/5.3: Alpha lifecycle dashboard.
@@ -32,6 +33,7 @@ export default function AlphaDashboard() {
   const [nAlerts, setNAlerts]   = useState(0)
   const [selected, setSelected] = useState<number | null>(null)
   const [icData, setIcData]     = useState<ICHistoryData | null>(null)
+  const [paper, setPaper]       = useState<PaperPnLData | null>(null)
   const [sched, setSched]       = useState<SchedulerStatus | null>(null)
   const [loading, setLoading]   = useState(true)
   const [error, setError]       = useState<string | null>(null)
@@ -52,11 +54,14 @@ export default function AlphaDashboard() {
   useEffect(() => { refresh() }, [refresh])
 
   useEffect(() => {
-    if (selected == null) { setIcData(null); return }
+    if (selected == null) { setIcData(null); setPaper(null); return }
     let cancelled = false
     apiFetchICHistory(selected)
       .then((res) => { if (!cancelled) setIcData(res.data) })
       .catch(() => { if (!cancelled) setIcData(null) })
+    apiFetchPaperPnL(selected)
+      .then((res) => { if (!cancelled) setPaper(res.data) })
+      .catch(() => { if (!cancelled) setPaper(null) })
     return () => { cancelled = true }
   }, [selected])
 
@@ -93,6 +98,32 @@ export default function AlphaDashboard() {
         data: [{ yAxis: 0 }],
         lineStyle: { color: '#f43f5e', type: 'dashed', width: 1 },
         label: { show: false },
+      },
+    }],
+    tooltip: { trigger: 'axis', backgroundColor: '#0f172a', borderColor: '#334155',
+               textStyle: { color: '#e2e8f0', fontSize: 11 } },
+  } : null
+
+  // FE-7.4: paper trading equity curve
+  const equityOption = paper && paper.points.length > 0 ? {
+    grid: { left: 48, right: 16, top: 24, bottom: 28 },
+    xAxis: {
+      type: 'category', data: paper.points.map((p) => p.date),
+      axisLabel: { color: '#64748b', fontSize: 9 },
+      axisLine: { lineStyle: { color: '#1e293b' } },
+    },
+    yAxis: {
+      type: 'value', scale: true,
+      axisLabel: { color: '#64748b', fontSize: 9, formatter: (v: number) => v.toFixed(3) },
+      splitLine: { lineStyle: { color: '#1e293b' } },
+    },
+    series: [{
+      type: 'line', data: paper.points.map((p) => p.equity), showSymbol: false,
+      areaStyle: { color: 'rgba(139,92,246,0.12)' },
+      lineStyle: { color: '#a78bfa', width: 1.5 },
+      markLine: {
+        silent: true, symbol: 'none', data: [{ yAxis: 1.0 }],
+        lineStyle: { color: '#475569', type: 'dashed', width: 1 }, label: { show: false },
       },
     }],
     tooltip: { trigger: 'axis', backgroundColor: '#0f172a', borderColor: '#334155',
@@ -232,7 +263,20 @@ export default function AlphaDashboard() {
                 <span className="text-slate-600">{icData.points.length} days</span>
               </div>
               {icOption && (
-                <ReactECharts option={icOption} style={{ height: 320 }} notMerge />
+                <ReactECharts option={icOption} style={{ height: 260 }} notMerge />
+              )}
+
+              {/* FE-7.4: Paper Trading equity curve + positions */}
+              {equityOption && paper && (
+                <div className="flex flex-col gap-2 border-t border-slate-800 pt-3">
+                  <div className="flex items-center gap-4 text-xs text-slate-400">
+                    <span className="font-semibold text-violet-300">Paper Equity</span>
+                    <span>latest: <b className={`font-mono ${paper.latest_equity >= 1 ? 'text-emerald-400' : 'text-rose-400'}`}>{NUM(paper.latest_equity, 4)}</b></span>
+                    <span className="text-slate-600">{paper.n_days} days</span>
+                    <span className="text-slate-600">{Object.keys(paper.positions).length} positions</span>
+                  </div>
+                  <ReactECharts option={equityOption} style={{ height: 220 }} notMerge />
+                </div>
               )}
             </div>
           )}

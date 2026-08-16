@@ -2,7 +2,7 @@ import axios from 'axios'
 import type {
   SimulationConfig, SimResult, AlphaRecord, BacktestRunResponse,
   WorkflowResponse, DatasetInfo, WalkForwardResult, DatasetHealth,
-  RegimeInfo, AlphaDashboardRow, ICHistoryData, SchedulerStatus,
+  RegimeInfo, AlphaDashboardRow, ICHistoryData, SchedulerStatus, PaperPnLData,
 } from '../types'
 
 const http = axios.create({ baseURL: '/api', timeout: 120_000 })
@@ -45,6 +45,10 @@ export const apiPatchAlphaStatus = (alphaId: number, status: string) =>
 
 export const apiFetchSchedulerStatus = () =>
   http.get<SchedulerStatus>('/scheduler/status')
+
+// Phase 7 (FE-7.4): paper trading PnL / equity curve
+export const apiFetchPaperPnL = (alphaId: number) =>
+  http.get<PaperPnLData>(`/paper/${alphaId}/pnl`)
 
 // ── Market Regime (Task 4.1 / FE-4.1) ─────────────────────────────────────
 export const apiFetchRegime = (dataset: string, start: string, end: string) =>

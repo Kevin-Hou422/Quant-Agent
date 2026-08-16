@@ -1079,6 +1079,51 @@ def scheduler_status() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/paper/{alpha_id}/pnl  — Task 7.4 Paper Trading 净值/持仓
+# ---------------------------------------------------------------------------
+
+class PaperPnLPoint(BaseModel):
+    date:      str
+    net_ret:   float
+    gross_ret: float
+    cost_bps:  float
+    equity:    float
+
+
+class PaperPnLResponse(BaseModel):
+    alpha_id:      int
+    points:        List[PaperPnLPoint]
+    latest_equity: float
+    n_days:        int
+    positions:     Dict[str, float]     # 当前持仓权重
+
+
+@router.get("/paper/{alpha_id}/pnl", response_model=PaperPnLResponse, tags=["Paper"])
+def paper_pnl(
+    alpha_id: int,
+    limit:    int = Query(500, ge=1, le=5000),
+    store:    AlphaStore = Depends(get_store),
+) -> PaperPnLResponse:
+    """Task 7.4：某因子的 Paper Trading 逐日净值曲线 + 当前持仓（来自 PositionStore）。"""
+    if store.get_by_id(alpha_id) is None:
+        raise HTTPException(status_code=404, detail=f"Alpha id={alpha_id} 不存在")
+    from app.db.position_store import PositionStore
+    ps = PositionStore()
+    hist = ps.pnl_history(alpha_id, limit=limit)
+    return PaperPnLResponse(
+        alpha_id      = alpha_id,
+        points        = [
+            PaperPnLPoint(date=str(h.date), net_ret=h.net_ret, gross_ret=h.gross_ret,
+                          cost_bps=h.cost_bps, equity=h.equity)
+            for h in hist
+        ],
+        latest_equity = ps.latest_equity(alpha_id),
+        n_days        = len(hist),
+        positions     = ps.latest_positions(alpha_id),
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /api/report/query
 # ---------------------------------------------------------------------------
 

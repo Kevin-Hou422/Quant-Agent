@@ -132,7 +132,8 @@ def project_to_capped_l1(
         if np.all(np.abs(deficit) < tol):
             break
         # 自由名按比例吸收亏空；free_mass≈0 时无法再分配 → 停
-        scale = np.where(free_mass > tol, (free_mass + deficit) / free_mass, 1.0)
+        safe_free = np.where(free_mass > tol, free_mass, 1.0)     # 避免 0 除（分支被 where 丢弃）
+        scale = np.where(free_mass > tol, (free_mass + deficit) / safe_free, 1.0)
         a = np.where(capped, a, a * scale)
         a = np.minimum(a, cap)                                    # 放大后可能触顶，再截断
 

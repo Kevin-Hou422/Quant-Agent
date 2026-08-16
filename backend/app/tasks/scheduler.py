@@ -53,6 +53,21 @@ def daily_monitor_job() -> None:
         )
 
 
+def daily_trading_job() -> None:
+    """Task 7.1/7.3：每日数据摄取（健康门）→ 交易循环。摄取被拒则跳过循环。"""
+    from app.tasks.daily_ingest import run_daily_pipeline
+    from app.config import settings
+    out = run_daily_pipeline(settings.paper_dataset, settings.paper_start, settings.paper_end)
+    if out.get("ingest_accepted"):
+        logger.info(
+            "[daily_trading_job] 完成 | 健康=%.3f | %d 因子 | %d 告警 | %d 错误",
+            out.get("health_score", 0.0), out.get("n_alphas", 0),
+            out.get("n_alerts", 0), out.get("n_errors", 0),
+        )
+    else:
+        logger.warning("[daily_trading_job] 摄取被拒（%s）→ 已跳过交易循环", out.get("reject_reason"))
+
+
 # ---------------------------------------------------------------------------
 # Scheduler lifecycle
 # ---------------------------------------------------------------------------
@@ -88,6 +103,19 @@ def create_scheduler(
         name    = "每日因子衰减巡检",
         replace_existing = True,
     )
+    # Task 7.1/7.3：Paper Trading 每日管线（默认关闭，ENABLE_PAPER_TRADING=true 时注册）
+    try:
+        from app.config import settings
+        if settings.enable_paper_trading:
+            sched.add_job(
+                daily_trading_job,
+                trigger = CronTrigger(hour=21, minute=30),  # 巡检之后
+                id      = "daily_trading",
+                name    = "每日数据摄取 + 交易循环",
+                replace_existing = True,
+            )
+    except Exception as exc:
+        logger.warning("[scheduler] 注册 daily_trading 失败: %s", exc)
     return sched
 
 

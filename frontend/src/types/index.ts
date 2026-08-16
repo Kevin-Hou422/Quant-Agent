@@ -94,6 +94,15 @@ export interface AlphaDashboardRow {
   allowed_next:    string[]
 }
 
+/** Phase 7 (FE-7.4): GET /api/paper/{id}/pnl */
+export interface PaperPnLData {
+  alpha_id:      number
+  points:        Array<{ date: string; net_ret: number; gross_ret: number; cost_bps: number; equity: number }>
+  latest_equity: number
+  n_days:        number
+  positions:     Record<string, number>
+}
+
 /** Phase 5 (FE-5.2): GET /api/alphas/{id}/ic_history */
 export interface ICHistoryData {
   alpha_id: number

@@ -55,5 +55,12 @@ class Settings(BaseSettings):
     scheduler_db_url: str = "sqlite:///scheduler_jobs.db"
     scheduler_timezone: str = "UTC"
 
+    # ── Paper Trading 每日管线（Task 7.1/7.3）─────────────────────────────
+    # 默认关闭：设 ENABLE_PAPER_TRADING=true 后，调度器会注册每日摄取+交易循环任务
+    enable_paper_trading: bool = False
+    paper_dataset: str = "us_tech_large"
+    paper_start:   str = "2020-01-01"
+    paper_end:     str = "2024-01-01"
+
 
 settings = Settings()

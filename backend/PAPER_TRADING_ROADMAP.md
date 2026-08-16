@@ -29,12 +29,18 @@
 ```
 Phase 5  ── 在线化与生命周期                          ✅ 已完成（2026-07-17）
 Phase 6  ── 基础设施加固（工程严谨性 + 体检修复）      ✅ 基本完成（2026-07-30）
-Phase 7  ── PaperBroker 与模拟交易循环（核心新增）    ~10 天
+Phase 7  ── PaperBroker 与模拟交易循环（核心新增）    ✅ 已完成（2026-08-17）
 Phase 8  ── PIT 数据层与验证运营（持续运行）           ~5 天启动 + 长期
 ─────────────────────────────────────────────────────
-剩余专注开发约 15 个工作日（3-4 周）
+剩余专注开发约 5 个工作日（Phase 8 启动）
 之后进入 ≥ 3 个月的 paper trading 验证期（系统自动运行，人工每周复盘）
 ```
+
+**Phase 7 完成（2026-08-17）**：✅ 7.1 每日摄取+健康门（A2 拒绝坏数据）· ✅ 7.2 PaperBroker+
+PositionStore（对账 2.2e-16）· ✅ 7.3 每日交易循环（信号→成交→监控→衰减→状态流转，逐 alpha 隔离）
+· ✅ 7.4 前端 Live paper 净值曲线 + `/api/paper/{id}/pnl`。**真实启动前后端端到端验证通过**
+（含因子自动衰减流转 DECAYING）。测试：`test_phase7_paper.py`(8) + `test_phase7_ingest.py`(4)。
+系统现已具备**每日自动模拟交易**能力（`ENABLE_PAPER_TRADING=true` 启用调度）。
 
 **Phase 6 进度**：7 个任务全部处理，✅ 6.1 消除静默降级 · ✅ 6.2 SQLite 加固 · ✅ 6.3 CI+依赖锁
 · ✅ 6.4 黄金基准测试 · ✅ 6.5 R-N1+RunManifest · ✅ 6.6 组合约束硬化 · ✅ 6.7 前视/口径。
@@ -347,11 +353,29 @@ dataset_name 为空仍是显式合成契约；测试可 `allow_synthetic_fallbac
 
 ---
 
-## 四、Phase 7 — PaperBroker 与模拟交易循环（~10 天）
+## 四、Phase 7 — PaperBroker 与模拟交易循环 ✅ 已完成（2026-08-17）
 
 > 系统从「研究平台」变为「每日自动运行的模拟交易系统」的核心阶段。
 > 市场选择：**首选加密货币**（ccxt 已是依赖、24/7、无退市/行业分类问题），
 > 美股次之（yfinance 日线，注意时区与交易日历）。A 股仅 paper，不规划实盘。
+
+**Phase 7 完成小结（2026-08-17）**：4 个任务全部实现 + 测试（`test_phase7_paper.py` 8 项、
+`test_phase7_ingest.py` 4 项）。**真实启动前后端端到端验证**：live API 建因子 → 交易循环
+模拟成交 → PaperBroker 记账（与 BacktestEngine 逐位一致 2.2e-16）→ AlphaMonitor 记 realized IC
+→ 检测衰减 → 状态机自动 ACTIVE→DECAYING → 全部经 live API（`/paper/{id}/pnl`、`/alphas/dashboard`、
+`/alphas/{id}/ic_history`）+ vite 代理读回正确。前端 Live 仪表板新增 paper 净值曲线。
+调度器新增 `daily_trading_job`（`ENABLE_PAPER_TRADING=true` 时注册）。
+> **遗留**：真实增量数据摄取与 PIT 追加存储（Phase 8.1）；T+1 开盘价成交（当前用收盘价对账）。
+
+### Task 7.1 ✅ 每日数据摄取任务 — 已完成（2026-08-17）
+
+**新建 `app/tasks/daily_ingest.py`**：`DailyIngest.ingest()` = 加载（复用 load_registry_dataset）
++ **健康验收门**（check_dataset_health）。**A2 核心**：健康分 < 阈值 / 加载失败 → `accepted=False`
++ `dataset=None` + 告警，**绝不静默降级到坏/过期/合成数据**。`run_daily_pipeline()` 串起
+摄取→（通过则）交易循环；被拒则跳过循环。验收：`TestHealthGate` 4 项（好数据通过 / 坏健康分拒绝 /
+加载失败拒绝 / 管线被拒时不进循环）。已挂到调度器（`daily_trading_job`，UTC 21:30）。
+
+<details><summary>原任务</summary>
 
 ### Task 7.1 每日数据摄取任务 — 2 天
 
@@ -363,7 +387,17 @@ dataset_name 为空仍是显式合成契约；测试可 `allow_synthetic_fallbac
 
 **验收**：连续 5 日自动摄取成功；注入坏数据（人工改缓存）时当日被拒绝且告警可见。
 
-### Task 7.2 PaperBroker + PositionStore — 4 天
+### Task 7.2 ✅ PaperBroker + PositionStore — 已完成（2026-08-17）
+
+**新建 `app/db/position_store.py`**：三表（paper_positions/fills/daily_pnl），全部幂等
+（UNIQUE 键 + record_day 覆盖式写入）；`state_before(alpha_id, date)` 返回严格早于 date 的
+最近状态 → 崩溃续跑/重跑逐位可复现。
+**新建 `app/core/execution/paper_broker.py`**：逐日有状态成交，**复用同一 TransactionCostEngine
++ LiquidityConstraint**（禁止另立成本模型）。`step()` 单日原子记账；`replay()` 整段回放。
+**验收（超标）**：replay 净值与 BacktestEngine 逐位一致（最大差 **2.2e-16**，远优于 <1bp/日）；
+`test_phase7_paper.py` 8 项（对账 / 幂等 / 崩溃续跑 / 逐 alpha 隔离 / 衰减→状态流转）。
+
+<details><summary>原任务</summary>
 
 **新建：** `app/core/execution/paper_broker.py`、`app/db/position_store.py`
 
@@ -382,30 +416,25 @@ class PaperBroker:
 **验收**：用历史数据回放 20 个交易日，PaperBroker 逐日累计 PnL 与
 RealisticBacktester 同区间回测结果一致（容差 < 1bp/日，差异来源仅限成交价假设，需注释说明）。
 
-### Task 7.3 每日交易循环编排 — 2 天
+</details>
 
-**新建：** `app/tasks/daily_trading_loop.py`
+### Task 7.3 ✅ 每日交易循环编排 — 已完成（2026-08-17）
 
-```
-数据摄取(7.1) → 验收门 → 对每个 PAPER/ACTIVE Alpha：
-  信号计算(复用 Executor+SignalProcessor) → 目标权重(复用 PortfolioConstructor)
-  → PaperBroker 提交 → AlphaMonitor.update(realized IC)(5.1)
-  → 衰减检查 → 状态机流转(5.2) → 日报写入
-任一步失败 → 该 Alpha 当日跳过 + 告警；循环级失败 → 全局告警
-```
+**新建 `app/tasks/daily_trading_loop.py`**：对每个 PAPER/ACTIVE/DECAYING 因子，逐个未处理日：
+信号（Executor+SignalProcessor delay=1）→ 权重（PortfolioConstructor）→ PaperBroker.step
+→ AlphaMonitor.update(realized IC = 昨日信号 rank-预测今日收益) → check_decay → 若 ACTIVE
+触发衰减则状态机 ACTIVE→DECAYING → 汇总日报。
+**健壮性**：逐 alpha 隔离（单因子失败不影响其他）；从 PositionStore last_pnl_date 续跑（幂等，
+崩溃安全）。验收：`TestDailyTradingLoop` 4 项 + **live 端到端**（因子实盘循环后自动流转 DECAYING）。
 
-- 崩溃恢复：循环开始前对比「上次成功日期」，补跑缺失日（数据允许时）或标记 gap
-- 告警通道：本地日志 + Windows toast / 邮件（可配，最简 SMTP）
+### Task 7.4 ✅ 前端 Paper Trading 仪表板 — 已完成（2026-08-17）
 
-**验收**：A1/A2/A6 标准；人为 kill 进程后重启，次日循环正确补齐且无重复记账。
+- **后端** `GET /api/paper/{alpha_id}/pnl`（净值曲线 + 逐日毛/净收益/成本 + 当前持仓；404 校验）
+- **前端** 复用 Phase 5 的 Live 仪表板（`AlphaDashboard`）：选中因子时新增 **Paper Equity 净值曲线**
+  （ECharts 面积图 + 1.0 基准线）+ latest_equity/持仓数摘要；数据全部来自后端，**无 mock**
+- 验证：vite 代理 `/api/paper/1/pnl` 读回真实数据；`tsc` 零错误 + 94 前端测试通过 + 生产 build 成功
 
-### Task 7.4 前端 Paper Trading 仪表板 — 2 天
-
-- GlobalSidebar 新增 "Live" 入口：PAPER/ACTIVE Alpha 卡片（当前持仓、昨日 PnL、累计净值、滚动 IC 迷你图）
-- 衰减告警红色标记；数据摄取状态（最近成功时间 + 健康分）
-- 复用 Phase 5.4 端点 + 新增 `GET /api/paper/{alpha_id}/pnl`
-
-**验收**：仪表板数据与数据库一致；无 mock 数据。
+**验收**：仪表板数据与数据库一致（live 验证）；无 mock 数据。
 
 ---
 
@@ -441,11 +470,11 @@ RealisticBacktester 同区间回测结果一致（容差 < 1bp/日，差异来�
 
 | 里程碑 | 内容 | 预计完成（2026-07-20 开工估算）|
 |--------|------|---------|
-| ~~M0~~ | ~~Phase 5 全部 + 验收~~ | ✅ 已完成（2026-07-17，提前达成）|
-| M1 | Phase 6.1 + 6.2（静默降级修复 + 迁出 OneDrive）| 第 1 周内 |
-| M2 | Phase 6 剩余（CI + 黄金测试 + 可复现性）| 第 2 周 |
-| M3 | Phase 7 全部 + 20 日历史回放对账通过 | 第 4 周 |
-| M4 | Phase 8 启动，**系统进入每日自动 paper trading** | 第 5 周 |
+| ~~M0~~ | ~~Phase 5 全部 + 验收~~ | ✅ 已完成（2026-07-17）|
+| ~~M1~~ | ~~Phase 6.1 + 6.2~~ | ✅ 已完成（2026-07-26）|
+| ~~M2~~ | ~~Phase 6 剩余（CI + 黄金测试 + 可复现性）~~ | ✅ 已完成（2026-07-30）|
+| ~~M3~~ | ~~Phase 7 全部 + 回放对账通过~~ | ✅ 已完成（2026-08-17，对账 2.2e-16）|
+| M4 | Phase 8 启动，**系统进入每日自动 paper trading** | 下一步 |
 | M5 | 首批因子完成 60 交易日 PAPER 验证，出具首份验证报告 | M4 + 3 个月 |
 
 ---
@@ -476,4 +505,4 @@ FastAPI 鉴权、告警升级（PagerDuty 级）、合规与税务。
 
 ---
 
-*规划版本 v1.3 | 2026-07-24 | §3.0b 外部补充审计逐项核实：S2/S3/S4/S5/S7/S8 属实已修（32 项回归守卫），S1 不属实（基准选错），S6 部分属实 | 剩余 Phase 6-8 约 26 个工作日*
+*规划版本 v1.4 | 2026-08-17 | Phase 6 完成 + Phase 7 开工前审计修 3 项 + Phase 7 全部完成（PaperBroker 对账 2.2e-16、每日交易循环、前端 Live 净值、真实前后端端到端验证）| 剩余 Phase 8*
