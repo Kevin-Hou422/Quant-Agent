@@ -182,20 +182,19 @@ class MissingValueStrategy:
         if panel.empty:
             return panel, {}
 
-        panel = panel.copy().sort_values([ticker_col, date_col])
+        panel = panel.copy().sort_values([ticker_col, date_col]).reset_index(drop=True)
 
         numeric_cols = panel.select_dtypes(include="number").columns.tolist()
 
-        # 按 ticker 分组 ffill
-        def _ffill_group(grp: pd.DataFrame) -> pd.DataFrame:
-            grp[numeric_cols] = grp[numeric_cols].ffill(limit=ffill_limit)
-            return grp
-
-        panel = (
-            panel
-            .groupby(ticker_col, sort=False, group_keys=False)
-            .apply(_ffill_group)
-            .reset_index(drop=True)
+        # 按 ticker 分组 ffill（数值列）。
+        # 修复（2026-07-31）：旧实现用 `groupby(group_keys=False).apply(func)` 在
+        # pandas 2.2+ 下会从 apply 返回帧中丢弃分组列 'ticker' → 后续 groupby('ticker')
+        # 抛 KeyError，使整个 DataManager.get_panel 摄取管线不可用。改用惯用的
+        # `groupby[numeric_cols].ffill()` 就地赋值：只处理数值列、按 index 对齐回写，
+        # ticker 列原样保留，无 apply、无 reset_index 依赖。
+        panel[numeric_cols] = (
+            panel.groupby(ticker_col, sort=False)[numeric_cols]
+            .ffill(limit=ffill_limit)
         )
 
         # 构建 NaN 报告

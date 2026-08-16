@@ -111,6 +111,37 @@ class TestRunManifest:
 
 
 # ===========================================================================
+# RunManifest 生产写入点（A4：确有历史记录可重放）
+# ===========================================================================
+
+class TestManifestProductionHook:
+
+    def test_gp_evolve_writes_manifest(self, tmp_path, monkeypatch):
+        """/api/gp/evolve 运行后应写入一条可复现 manifest（含数据哈希+seed+摘要）。"""
+        import os
+        db = tmp_path / "run.db"
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db}")
+        # 重置 router 的 manifest store 单例，使其命中临时库
+        import app.api.router as router
+        router._run_manifest_store = None
+
+        from fastapi.testclient import TestClient
+        from app.main import app
+        with TestClient(app) as c:
+            r = c.post("/api/gp/evolve", json={
+                "pop_size": 6, "n_gen": 1, "dataset_name": "",
+                "n_tickers": 8, "n_days": 120, "seed": 7,
+            })
+            assert r.status_code == 200
+
+        from app.db.run_manifest import RunManifestStore
+        recs = RunManifestStore(db_url=f"sqlite:///{db}").query(run_type="gp")
+        assert len(recs) >= 1
+        m = recs[0]
+        assert m.seed == 7 and len(m.data_sha256) == 64
+
+
+# ===========================================================================
 # 回测确定性（RunManifest 重放的前提）
 # ===========================================================================
 

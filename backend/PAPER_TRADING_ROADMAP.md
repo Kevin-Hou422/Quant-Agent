@@ -38,9 +38,15 @@ Phase 8  ── PIT 数据层与验证运营（持续运行）           ~5 天�
 
 **Phase 6 进度**：7 个任务全部处理，✅ 6.1 消除静默降级 · ✅ 6.2 SQLite 加固 · ✅ 6.3 CI+依赖锁
 · ✅ 6.4 黄金基准测试 · ✅ 6.5 R-N1+RunManifest · ✅ 6.6 组合约束硬化 · ✅ 6.7 前视/口径。
-**遗留待办**（均非阻塞，已在各 Task 标注）：6.2 迁出 OneDrive 目录（用户操作）· 6.5 replay.py +
-gp_lineage 谱系 · 6.7 F-N3（ADV 用当日 equity）· data-engine preprocessor bug（xfail 记录）。
-验收：`test_phase6.py`(15) + `golden`(13) + `test_phase6_reproducibility.py`(9) + 全量回归。
+
+**Phase 7 开工前审计与前置清理（2026-07-31）**：自查发现并修复 3 项——
+① **Preprocessor groupby 丢列 bug**（曾使 DataManager.get_panel 摄取管线不可用，Phase 7.1 前置阻塞）
+已修，data-engine smoke 全通过；② **RunManifest 生产写入点缺失**（台账原仅单测、生产零写入 → A4 不可达）
+已接入 gp_evolve + 2 个 workflow 端点，A4 现可达；③ **WAL 边车文件被跟踪**（gitignore `*.db` 匹配不到
+`*.db-wal/-shm`）已修 + 取消跟踪。
+**剩余待办**（均非阻塞）：6.2 迁出 OneDrive 目录（用户操作）· 6.5 replay.py + gp_lineage 谱系 +
+SSE 端点 manifest · 6.7 F-N3（ADV 用当日 equity）· `datetime.utcnow()` 弃用债（3 文件）。
+验收：`test_phase6.py`(15) + `golden`(13) + `test_phase6_reproducibility.py`(10) + 全量回归。
 
 依赖关系：Phase 6 的 6.1/6.2 应**最先做**（消除静默损坏源）；
 Phase 7 依赖已完成的调度器与生命周期状态机；Phase 8 依赖 Phase 7。
@@ -198,9 +204,12 @@ dataset_name 为空仍是显式合成契约；测试可 `allow_synthetic_fallbac
 - **清理两个 legacy 坏测试**（不再需 `--ignore`）：
   - `test_alpha_discovery.py`：修正 import（`ml_engine.alpha_store`→`db.alpha_store`）
     → 6 passed（保留 mutations/ProxyModel 的**唯一**覆盖）
-  - `test_data_engine_smoke.py`：模块级脚本重构为 2 个 pytest 函数——Schema/Panel/
-    Universe 3 步正常通过；Preprocessor 及下游因 pandas 升级后 `groupby('ticker')`
-    丢列的**真实 data-engine bug** 用 xfail 记录（待 Phase 7/8 修）
+  - `test_data_engine_smoke.py`：模块级脚本重构为 2 个 pytest 函数（Schema/Panel/
+    Universe + Preprocessor 全管线），**均通过**。
+    其中 Preprocessor 的 `groupby('ticker').apply()` 在 pandas 2.2+ 丢列的
+    **真实 data-engine bug 已于 2026-07-31 修复**（改用 `groupby[numeric_cols].ffill()`
+    就地赋值）——此 bug 曾使 `DataManager.get_panel` 整条摄取管线不可用，是 Phase 7.1
+    每日数据摄取的前置阻塞，故提前修复（原计划 Phase 7/8）
 
 > mypy 严格类型检查（渐进式）暂缓——ruff 已提供基本 lint，mypy 留待代码稳定后单独排期。
 
@@ -254,11 +263,15 @@ dataset_name 为空仍是显式合成契约；测试可 `allow_synthetic_fallbac
   `random.seed()` 补丁已移除（根因消除）。
 - **RunManifest 可复现台账**：新增 `app/db/run_manifest.py`——`dataset_sha256`（字段序
   无关、值敏感的确定性哈希）+ `current_git_commit` + `RunManifestStore`（record/get/
-  query/**verify_dataset**）。验收：`TestRunManifest` 4 项 + `TestBacktestDeterminism`
-  （相同 DSL+数据两次回测指标逐位一致）。
+  query/**verify_dataset**）。
+- **生产写入点（2026-07-31 补齐）**：`gp_evolve` / `workflow_generate` / `workflow_optimize`
+  三个端点运行后 best-effort 写入 manifest（数据哈希 + seed + config + best_dsl 摘要）。
+  验收：`TestManifestProductionHook`（gp/evolve 运行后确有 manifest）+ `TestRunManifest` 4 项
+  + `TestBacktestDeterminism`（相同 DSL+数据两次回测逐位一致）。A4「历史记录可重放」现已可达。
 
 > **剩余（未做）**：`scripts/replay.py` 命令行重放工具 + `gp_lineage` 表（GP 每代每个体
-> 完整评估谱系）——留待接入 Phase 7 PaperBroker 时与 manifest 记录点一并落地。
+> 完整评估谱系）——留待接入 Phase 7 PaperBroker 时一并落地。SSE 流式 workflow 端点的
+> manifest 写入亦待补（当前仅非流式 REST 端点已接入）。
 
 <details><summary>原计划</summary>
 

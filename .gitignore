@@ -9,6 +9,8 @@ __pycache__/
 # Databases & scheduler jobstore (Task 6.2 — never commit; avoids stash/merge
 # binary conflicts and OneDrive sync corruption)
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 scheduler_jobs.db

@@ -109,6 +109,32 @@ def _resolve_dataset(
     return full, is_, oos
 
 
+# Task 6.5：可复现性台账写入点。best-effort（失败绝不影响主流程）。
+_run_manifest_store = None
+
+
+def _record_run_manifest(
+    run_type: str,
+    dataset:  Dict[str, pd.DataFrame],
+    seed:     int,
+    config:   Dict[str, Any],
+    summary:  Dict[str, Any],
+) -> Optional[int]:
+    """记录一条 RunManifest（数据哈希 + git + seed + config + summary）。"""
+    global _run_manifest_store
+    try:
+        if _run_manifest_store is None:
+            from app.db.run_manifest import RunManifestStore
+            _run_manifest_store = RunManifestStore()
+        return _run_manifest_store.record(
+            run_type=run_type, dataset=dataset, seed=seed,
+            config=config, summary=summary,
+        )
+    except Exception as exc:
+        logger.debug("RunManifest 记录失败（不影响主流程）: %s", exc)
+        return None
+
+
 def _make_synthetic_dataset(
     n_tickers: int = 20,
     n_days: int = 120,
@@ -398,6 +424,18 @@ def gp_evolve(
     finally:
         if not timed_out:
             _gp_lock.release()
+
+    # Task 6.5：记录可复现性 manifest（数据哈希 + seed + config + 结果摘要）
+    _record_run_manifest(
+        run_type="gp",
+        dataset=is_data,
+        seed=req.seed,
+        config={"pop_size": req.pop_size, "n_gen": req.n_gen,
+                "dataset_name": req.dataset_name, "oos_ratio": 0.30},
+        summary={"best_dsl": gp_result.best_dsl,
+                 "metrics": gp_result.metrics,
+                 "generations_run": gp_result.generations_run},
+    )
 
     pool_top5 = gp_result.pool_top5   # list[dict]
 
@@ -1805,6 +1843,12 @@ def workflow_generate(
         # (is_data / oos_data already resolved above)
         resp_dict = result.to_dict()
         _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
+        _record_run_manifest(
+            run_type="workflow_generate", dataset=is_data, seed=req.seed,
+            config={"pop_size": req.pop_size, "n_generations": req.n_generations,
+                    "dataset_name": req.dataset_name, "oos_ratio": req.oos_ratio},
+            summary={"best_dsl": result.best_dsl, "metrics": result.metrics},
+        )
     finally:
         _gp_lock.release()
 
@@ -1885,6 +1929,12 @@ def workflow_optimize(
         # Build response dict + inject PnL series (is_data / oos_data already resolved above)
         resp_dict = result.to_dict()
         _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
+        _record_run_manifest(
+            run_type="workflow_optimize", dataset=is_data, seed=req.seed,
+            config={"pop_size": req.pop_size, "n_generations": req.n_generations,
+                    "dataset_name": req.dataset_name, "oos_ratio": req.oos_ratio},
+            summary={"best_dsl": result.best_dsl, "metrics": result.metrics},
+        )
     finally:
         _gp_lock.release()
 

@@ -84,12 +84,9 @@ def test_schema_panel_universe():
 # 步骤 4-7：Preprocessor 及下游（已知 data-engine bug → xfail）
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    raises=KeyError, strict=False,
-    reason="Preprocessor.apply 的 groupby('ticker') 在 pandas 升级后丢列 → KeyError；"
-           "真实 data-engine bug，属 Phase 7/8 数据摄取路径，待修复后转 xpass",
-)
 def test_preprocessor_and_downstream():
+    # 修复（2026-07-31）：Preprocessor.apply 的 groupby('ticker') 丢列 bug 已修
+    # （改用 groupby[numeric_cols].ffill() 就地赋值），此测试从 xfail 转为正常通过。
     raw_df, dates = _build_raw_df()
     schema_df = SchemaEnforcer().enforce(raw_df)
     panel     = PanelFactory().reindex_to_master([schema_df])
