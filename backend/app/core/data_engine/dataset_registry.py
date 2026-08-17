@@ -1,14 +1,17 @@
 """
-dataset_registry.py — Production dataset registry with 10 market datasets.
+dataset_registry.py — Production dataset registry.
 
-10 datasets across 4 regions, 10 industries:
-  US Equities   : us_tech_large, us_financials, us_healthcare, us_energy
+系统聚焦 **美股 + 加密货币**（2026-08-17）。活跃数据集：
+  US Equities : us_broad_large（跨行业宽基，~90 只）, us_tech_large,
+                us_financials, us_healthcare, us_energy
+  Crypto      : crypto_major（~24）, crypto_alt（~30）
+
+搁置（`_SHELVED_NAMES`，定义保留供未来恢复，不注册/不加载）：
   China A-shares: china_tech, china_consumer, china_state_owned
   Hong Kong     : hk_china_tech
-  Crypto        : crypto_major, crypto_alt
 
-Each dataset maps to a provider (yfinance / akshare / ccxt_binance) and
-contains a curated universe with more tickers than the minimum spec.
+Each dataset maps to a provider (yfinance / ccxt_binance) and contains a
+curated universe.
 """
 
 from __future__ import annotations
@@ -117,6 +120,39 @@ _SPECS: Dict[str, DatasetSpec] = {
             "SLB", "HAL", "BKR", "NOV",
             # LNG / utilities-adjacent
             "LNG", "CQP",
+        ],
+    ),
+
+    # ── US Broad Large-Cap (跨行业宽基，2026-08-17 新增) ──────────────────
+    # 覆盖全部 11 个 GICS 行业的高流动性大盘股，供跨行业截面研究（行业中性化、
+    # 因子正交化在此才有意义）。是"综合美股 universe"的主力池。
+    "us_broad_large": DatasetSpec(
+        name="us_broad_large", provider="yfinance",
+        region="US", industry="Broad",
+        universe=[
+            # Information Technology
+            "AAPL", "MSFT", "NVDA", "AVGO", "AMD", "CRM", "ORCL", "ADBE", "ACN", "CSCO",
+            "QCOM", "TXN", "INTC", "IBM", "NOW", "INTU",
+            # Communication Services
+            "GOOGL", "META", "NFLX", "DIS", "CMCSA", "T", "VZ", "TMUS",
+            # Consumer Discretionary
+            "AMZN", "TSLA", "HD", "MCD", "NKE", "LOW", "SBUX", "BKNG", "TJX", "GM",
+            # Consumer Staples
+            "WMT", "PG", "KO", "PEP", "COST", "MDLZ", "CL", "MO", "PM",
+            # Financials
+            "BRK-B", "JPM", "V", "MA", "BAC", "WFC", "GS", "MS", "SPGI", "BLK", "AXP", "C",
+            # Health Care
+            "UNH", "JNJ", "LLY", "ABBV", "MRK", "PFE", "TMO", "ABT", "DHR", "BMY", "AMGN", "ISRG",
+            # Industrials
+            "CAT", "HON", "UPS", "BA", "GE", "RTX", "UNP", "DE", "LMT", "MMM",
+            # Energy
+            "XOM", "CVX", "COP", "EOG", "SLB",
+            # Utilities
+            "NEE", "DUK", "SO", "D",
+            # Materials
+            "LIN", "APD", "SHW", "FCX", "NEM",
+            # Real Estate
+            "PLD", "AMT", "EQIX", "SPG",
         ],
     ),
 
@@ -237,34 +273,57 @@ _SPECS: Dict[str, DatasetSpec] = {
         ],
     ),
 
-    # ── Crypto Major ─────────────────────────────────────────────────────
+    # ── Crypto Major (2026-08-17 扩充：主流大市值币) ──────────────────────
     "crypto_major": DatasetSpec(
         name="crypto_major", provider="ccxt_binance",
         region="Global", industry="CryptoMajor",
         universe=[
-            "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT",
-            "XRP/USDT", "ADA/USDT", "AVAX/USDT", "DOT/USDT",
-            "MATIC/USDT", "LINK/USDT", "ATOM/USDT", "LTC/USDT",
+            # 大市值 L1 / 平台币
+            "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT",
+            "AVAX/USDT", "DOT/USDT", "TRX/USDT", "TON/USDT", "NEAR/USDT",
+            # 高流动性主流
+            "LINK/USDT", "ATOM/USDT", "LTC/USDT", "BCH/USDT", "ETC/USDT", "XLM/USDT",
+            "ALGO/USDT", "HBAR/USDT", "FIL/USDT", "ICP/USDT",
+            # 稳定的 meme / 高交易量
+            "DOGE/USDT", "SHIB/USDT",
         ],
     ),
 
-    # ── Crypto Alt / L2 ──────────────────────────────────────────────────
+    # ── Crypto Alt / L2 / 主题（2026-08-17 扩充）─────────────────────────
     "crypto_alt": DatasetSpec(
         name="crypto_alt", provider="ccxt_binance",
         region="Global", industry="CryptoAlt",
         universe=[
             # L2 / rollups
-            "ARB/USDT", "OP/USDT", "MATIC/USDT",
-            # New L1
-            "APT/USDT", "SUI/USDT", "SEI/USDT", "TIA/USDT",
+            "ARB/USDT", "OP/USDT", "MATIC/USDT", "STRK/USDT", "MANTA/USDT",
+            # 新 L1
+            "APT/USDT", "SUI/USDT", "SEI/USDT", "TIA/USDT", "INJ/USDT",
             # AI / DePIN
-            "RNDR/USDT", "FET/USDT", "OCEAN/USDT", "WLD/USDT",
+            "RNDR/USDT", "FET/USDT", "OCEAN/USDT", "WLD/USDT", "AR/USDT",
             # DeFi
-            "UNI/USDT", "AAVE/USDT", "CRV/USDT",
+            "UNI/USDT", "AAVE/USDT", "CRV/USDT", "MKR/USDT", "LDO/USDT", "SNX/USDT",
+            # 交易所 / 基础设施
+            "GRT/USDT", "RUNE/USDT",
             # Gaming / NFT infra
-            "IMX/USDT", "BLUR/USDT",
+            "IMX/USDT", "BLUR/USDT", "SAND/USDT", "AXS/USDT",
         ],
     ),
+}
+
+
+# ---------------------------------------------------------------------------
+# 搁置数据集（2026-08-17）——系统聚焦美股 + 加密。
+# A 股（akshare，散户程序化实盘不可行 + 涨跌停未建模）与港股暂时搁置：
+# 定义原地保留、供未来恢复，但**从 _SPECS 弹出** → 不注册、不列举、不可加载。
+# 恢复方式：把对应名从 _SHELVED_NAMES 移除即可。
+# ---------------------------------------------------------------------------
+
+_SHELVED_NAMES = frozenset({
+    "china_tech", "china_consumer", "china_state_owned", "hk_china_tech",
+})
+
+_SHELVED_SPECS: Dict[str, DatasetSpec] = {
+    _n: _SPECS.pop(_n) for _n in _SHELVED_NAMES if _n in _SPECS
 }
 
 
@@ -297,6 +356,11 @@ def load_registry_dataset(
     Dataset with 7 standard OHLCV fields + optional 'sector' field.
     """
     if name not in _SPECS:
+        if name in _SHELVED_NAMES:
+            raise KeyError(
+                f"Dataset '{name}' 已搁置（2026-08-17，系统聚焦美股+加密）。"
+                f"如需恢复，从 dataset_registry._SHELVED_NAMES 移除该名。"
+            )
         raise KeyError(
             f"Unknown dataset '{name}'. "
             f"Available: {sorted(_SPECS.keys())}"

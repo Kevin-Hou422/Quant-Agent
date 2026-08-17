@@ -49,9 +49,8 @@ def _acquire_gp_slot() -> None:
 # Shared field description — must be defined before any Pydantic model that references it
 _DATASET_FIELD_DESC = (
     "Real dataset name — leave empty for synthetic data. "
-    "Options: us_tech_large, us_financials, us_healthcare, us_energy, "
-    "china_tech, china_consumer, china_state_owned, hk_china_tech, "
-    "crypto_major, crypto_alt"
+    "Options (US + Crypto focus): us_broad_large, us_tech_large, us_financials, "
+    "us_healthcare, us_energy, crypto_major, crypto_alt"
 )
 
 
@@ -271,9 +270,8 @@ class MultiDatasetBacktestRequest(BaseModel):
     datasets:      List[str]                   = Field(
         ["us_tech_large"],
         description=(
-            "Dataset names: us_tech_large, us_financials, us_healthcare, us_energy, "
-            "china_tech, china_consumer, china_state_owned, hk_china_tech, "
-            "crypto_major, crypto_alt"
+            "Dataset names (US + Crypto focus): us_broad_large, us_tech_large, "
+            "us_financials, us_healthcare, us_energy, crypto_major, crypto_alt"
         ),
     )
     filters:       FilterConfigSchema          = Field(default_factory=FilterConfigSchema)
@@ -696,10 +694,9 @@ def list_datasets():
         )
         for spec in _SPECS.values()
     ]
-    # stable order: US first, then China, HK, Crypto
-    order = ["us_tech_large", "us_financials", "us_healthcare", "us_energy",
-             "china_tech", "china_consumer", "china_state_owned",
-             "hk_china_tech", "crypto_major", "crypto_alt"]
+    # stable order: US broad first, then US sectors, then Crypto
+    order = ["us_broad_large", "us_tech_large", "us_financials", "us_healthcare",
+             "us_energy", "crypto_major", "crypto_alt"]
     items.sort(key=lambda x: order.index(x.name) if x.name in order else 99)
     return DatasetsListResponse(datasets=items, total=len(items))
 
@@ -1238,10 +1235,8 @@ def backtest_multi(req: MultiDatasetBacktestRequest) -> MultiDatasetBacktestResp
       3. Run IS+OOS backtest on the filtered universe
       4. Aggregate OOS Sharpe across datasets (mean or min)
 
-    Dataset options:
-      us_tech_large, us_financials, us_healthcare, us_energy
-      china_tech, china_consumer, china_state_owned
-      hk_china_tech
+    Dataset options (US + Crypto focus):
+      us_broad_large, us_tech_large, us_financials, us_healthcare, us_energy
       crypto_major, crypto_alt
 
     Filter options (any combination):

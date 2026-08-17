@@ -62,6 +62,38 @@ SECTOR_NAMES: Dict[int, str] = {v: k for k, v in SECTOR_CODES.items()}
 
 _STATIC_SECTOR_MAP: Dict[str, str] = {
 
+    # ── us_broad_large 补充（2026-08-17，覆盖宽基跨行业 universe）─────────
+    # Information Technology
+    "ACN": "Information Technology", "CSCO": "Information Technology",
+    "IBM": "Information Technology", "INTU": "Information Technology",
+    # Communication Services
+    "NFLX": "Communication Services", "DIS": "Communication Services",
+    "CMCSA": "Communication Services", "T": "Communication Services",
+    "VZ": "Communication Services", "TMUS": "Communication Services",
+    # Consumer Discretionary
+    "TSLA": "Consumer Discretionary", "HD": "Consumer Discretionary",
+    "MCD": "Consumer Discretionary", "NKE": "Consumer Discretionary",
+    "LOW": "Consumer Discretionary", "SBUX": "Consumer Discretionary",
+    "BKNG": "Consumer Discretionary", "TJX": "Consumer Discretionary",
+    "GM": "Consumer Discretionary",
+    # Consumer Staples
+    "WMT": "Consumer Staples", "PG": "Consumer Staples", "KO": "Consumer Staples",
+    "PEP": "Consumer Staples", "COST": "Consumer Staples", "MDLZ": "Consumer Staples",
+    "CL": "Consumer Staples", "MO": "Consumer Staples", "PM": "Consumer Staples",
+    # Financials
+    "BRK-B": "Financials",
+    # Industrials
+    "CAT": "Industrials", "HON": "Industrials", "UPS": "Industrials",
+    "BA": "Industrials", "GE": "Industrials", "RTX": "Industrials",
+    "UNP": "Industrials", "DE": "Industrials", "LMT": "Industrials", "MMM": "Industrials",
+    # Utilities
+    "NEE": "Utilities", "DUK": "Utilities", "SO": "Utilities", "D": "Utilities",
+    # Materials
+    "LIN": "Materials", "APD": "Materials", "SHW": "Materials",
+    "FCX": "Materials", "NEM": "Materials",
+    # Real Estate
+    "PLD": "Real Estate", "AMT": "Real Estate", "EQIX": "Real Estate", "SPG": "Real Estate",
+
     # ── us_tech_large ────────────────────────────────────────────────────
     # Mega-cap platform / hardware
     "AAPL":  "Information Technology",
