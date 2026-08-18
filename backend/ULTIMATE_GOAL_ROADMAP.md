@@ -1,0 +1,199 @@
+# 终极目标路线图：美股实盘全链路自主模拟交易
+
+> 状态：**规划（未实现）** · 依赖 PAPER_TRADING_ROADMAP.md（Phase 6–8）· 遵循 RESEARCH_OPERATING_MODEL.md
+> 生成日期：2026-08-18
+
+## 终极目标
+
+agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（Alpaca 纸交易）上全链路模拟真实交易**，
+默认模式下**用户只批准/拒绝**，paper 阶段支持全自动无人值守；建模 paper 与真实交易的差别以
+提升实验可信度。原有用户假设驱动的功能全部保留。
+
+## Context（为什么做这件事）
+
+当前系统（Phase 0–7 完成）已具备：GP 因子进化、真实感回测（PaperBroker 与回测逐位对账
+2.2e-16）、生命周期状态机、每日交易循环、Live 仪表板、可复现台账。**但要达到终极目标，
+现有代码有四个根本性缺口**（两个 Explore 代码探查确认）：
+
+1. **发现不自主**：所有发现路径都从用户假设/DSL 起步（`chat`/`GenerationWorkflow`/
+   `POST /api/workflow/generate` 都要 hypothesis 字符串）。没有"从市场观察生成假设"的引擎，
+   没有定时自动发现任务。
+2. **生命周期形同虚设**：晋级 CANDIDATE→…→ACTIVE 全靠手动 PATCH；唯一自动流转是
+   ACTIVE→DECAYING（降级）。新因子被直接写成 `status="active"`（`router.py:1906`、
+   `alpha_agent.py:121`），跳过分级。无验证门、无批准/拒绝、无红队。
+3. **数据单薄**：schema 仅 7 个 OHLCV 派生字段（+ 派生 sector），无任何另类数据；所有
+   provider 都是日频历史批量拉取，无实时/增量；无 PIT 数据版本存储。
+4. **无真实执行**：全代码库零下单代码；PaperBroker 用**当日收盘**成交（非 T+1 开盘），
+   市场冲击仅建模"我们自己交易的参与率"，无真实撮合。
+
+**已在 Phase 8 规划（本路线复用、不重复）**：8.1 PIT 追加存储、8.2 成本校准回路、
+8.3 运营规则+红队概念文档。本路线把 Phase 8 当作地基，在其上补齐 Phase 9–14。
+
+## 当前数据与因子存储现状（本路线的改造基线）
+
+- **数据库**：SQLite（SQLAlchemy ORM），已加固 WAL + busy_timeout（`_sqlite_utils.py`）。
+  - 主库 `backend/alphas.db`（`settings.database_url = sqlite:///./alphas.db`，`config.py:23`）
+    表：`alpha_records`（因子）、`alpha_ic_history`（逐日 realized IC）、`chat_sessions`、
+    `chat_messages`。paper 交易的 `paper_positions/fills/daily_pnl`、`run_manifest` 也在同库。
+  - 调度库 `scheduler_jobs.db`（APScheduler SQLAlchemyJobStore，`config.py:55`）。
+- **因子存放/管理**：全部在 `alpha_records` 表，经 `AlphaStore`（`app/db/alpha_store.py`）
+  统一读写——`save/query/export_csv/update_status`。字段：`id, dsl, hypothesis, ann_return,
+  sharpe, max_drawdown, ic_ir, ann_turnover, status, reasoning(JSON)`。生命周期状态机
+  （`alpha_lifecycle.py`）约束 `status` 流转。**append-only 台账**：新增不改写。
+- **改造影响**：Phase 8.1 的 PIT 数据存储、Phase 9 的分级生命周期修正、Phase 10 的另类数据、
+  Phase 12 的 Alpaca 执行都会在此 SQLite 上扩表（生产可平滑迁 Postgres，URL 已可配）。
+
+## 已确认的关键决策（4 个分叉）
+
+| 分叉 | 决策 | 含义 |
+|------|------|------|
+| 执行落地 | **Alpaca 纸交易账户** | 免费、美股、真实市场价撮合；需建确定性执行工作流；LLM 不进交易回路 |
+| 另类数据预算 | **先免费起步，后付费** | 先 yfinance 基本面/免费财报日历跑通 PIT+DSL 稀疏字段，验证后再付费源 |
+| 实时粒度 | **日频收盘增量** | 收盘后拉当日 bar 追加进 PIT，前向积累；不做日内/tick |
+| 自主挖掘首版 | **先用价量统计** | 用 regime/截面离散度/因子家族滚动表现自主生成假设，现在就能做 |
+
+## 贯穿全程的铁律（来自 RESEARCH_OPERATING_MODEL.md，不可违反）
+
+- **LLM 永不进交易回路**：每日信号/下单/风控是确定性代码；LLM 只在研究侧（假设生成、
+  代码、报告解读、红队审查）。
+- **状态流转永不作为 LLM 工具**：晋级走人工 approve/PATCH 端点；`tool_save_alpha` 是唯一
+  可接受的写（只增台账，无资金后果）。Phase 6 起新工具几乎全只读。
+- **另类数据必须带发布时点进 PIT**（报告期 ≠ 可见期，否则前视泄漏）。
+- **多 agent 仅按触发条件引入**（目标对立/信息隔离/时间尺度不同）；红队是最早有回报的角色。
+- 保留原有用户假设 Workflow A/B（加法，不替换）。
+
+---
+
+## Phase 8 —（已规划，立即做，作地基）PIT 数据层与验证运营
+
+**这是 Phase 9/10/11 的前置**。按现有 PAPER_TRADING_ROADMAP §5 执行：8.1 PIT 追加存储
+（`(field,date,as_of)` 只增不改 + `load_pit()`）、8.2 成本校准回路、8.3 `OPERATIONS.md`。
+关键新文件：扩展 `app/core/data_engine/feature_store.py`。验收：改今日数据不影响昨日 as_of 查询。
+
+---
+
+## Phase 9 — 自主发现引擎 + 分级生命周期门 + 人工批准（**默认模式核心**）
+
+**目标**：agent 用价量观察自主挖因子 → 走分级生命周期 → 自动验证门 → **默认由人批准/拒绝**。
+
+- **9.1 市场观察引擎** — 新建 `app/core/discovery/market_observer.py`：从 OHLCV 算市场状态
+  特征（复用 `RegimeDetector`；截面收益离散度；动量/反转广度；波动状态；`AlphaPool` 各因子
+  家族的滚动 IC/Sharpe）→ 输出**结构化的"假设方向"对象**（非用户文本）。
+- **9.2 自主发现编排器** — 新建 `app/core/discovery/discovery_engine.py` + `scheduler.py`
+  注册 `nightly_discovery_job`：观察市场 → 派生 N 个假设 → 每个跑 `GenerationWorkflow`（复用）
+  → `AlphaPool` 去重 → 赢家写为 **CANDIDATE**（修掉"直接写 ACTIVE"）。
+- **9.3 自动验证门** — 新建 `app/core/lifecycle/validation_gate.py`：规则化 CANDIDATE→VALIDATED
+  ——WalkForward 全折为正（复用 `WalkForwardBacktester`）+ DSR>0.90（复用
+  `deflated_sharpe_from_returns`）+ 真实数据 OOS。修掉 `router.py:1906`、`alpha_agent.py:121`
+  等把新因子写成 active 的创建路径 → 一律 CANDIDATE 起步。
+- **9.4 人工批准/拒绝工作流（默认）** — 新增 `POST /api/alphas/{id}/approve` +`/reject`
+  （批准 VALIDATED→PAPER；拒绝→RETIRED 带原因）+ 谱系记录；前端 Live 仪表板加"待批准队列"。
+  配置 `autonomy_mode: manual|auto`（默认 manual = 人把关；auto 见 Phase 13）。
+- **验收**：nightly job 离线跑出 CANDIDATE（零用户文本）；验证门自动升 VALIDATED；approve
+  升 PAPER；除批准点外全程无人值守。原 Workflow A/B 仍可用。
+
+---
+
+## Phase 10 — 另类数据接入（免费起步）+ DSL 稀疏字段（依赖 Phase 8.1）
+
+**目标**：用基本面/财报丰富发现，严格发布时点防前视，DSL 支持季频稀疏字段。
+
+- **10.1 DSL 稀疏字段支持** — 改 `typed_nodes.py`/`dsl_executor.py`：季频字段只在发布日后可见、
+  日频面板 ffill、发布前 NaN（新字段类别）。这是 DSL 从"技术量价语言"升到"金融结构语言"的实质台阶。
+- **10.2 基本面 provider（免费）** — yfinance `.quarterly_financials`/`.info`：E/P、盈利收益率、
+  质量（ROE/毛利率），带发布 `as_of` → PIT 存储。
+- **10.3 财报事件（免费日历）** — PEAD/SUE 特征、事件窗口标记。
+- **10.4 新 DSL 算子** — `fund_rank`、盈利超预期等；观察引擎（9.1）+ GP 消费之。
+- （付费源 FMP/Polygon 待免费验证后再上。）
+- **验收**：一个基本面因子可解析+回测且**发布日测试无前视**；发现引擎能形成基本面假设。
+
+---
+
+## Phase 11 — 前向增量数据 + PIT 追加 + 市场日历
+
+**目标**：从历史回放转为真正的前向 paper trading（日频收盘增量）。
+
+- **11.1 provider 增量拉取** — 加 `fetch_latest`/增量接口 + 追加进 PIT（8.1）带 `as_of`。
+- **11.2 美股日历 + 时区** — ET 收盘、节假日感知的调度（现有 job 用 UTC 固定时刻）。
+- **11.3 `daily_ingest` 重构** — 真增量追加（非整段重拉）；从启动日起积累无幸存者偏差的自有数据。
+- **验收**：连续 N 个真实交易日，PIT 每日增一根 bar；日循环消费增量；A1（无人值守日节奏）成立。
+
+---
+
+## Phase 12 — 真实执行层：Alpaca 纸交易 + 确定性执行工作流 + 风控 + paper-vs-real 建模
+
+**目标**：agent 在 Alpaca 纸交易上的完整**确定性**交易工作流；建模保真度差距。
+
+- **12.1 Alpaca 适配器** — 新建 `app/core/execution/alpaca_broker.py`：权重→股数订单
+  （`OrderManager`）、经 Alpaca REST 下单（**确定性代码，非 LLM**）、成交轮询、持仓对账
+  （本地 vs 券商）、幂等（client order id）。复用/扩展 `PositionStore` schema。
+- **12.2 风控门 + kill switch** — 新建 `app/core/execution/risk_gate.py`：单票/总敞口上限、
+  日亏熔断、fat-finger（订单 vs ADV）、一键全平；违规订单被拦截。
+- **12.3 paper-vs-real 保真度阶梯 + 校准（延伸 8.2）** — 对比 (a) 内部 PaperBroker 收盘成交
+  vs (b) Alpaca 纸交易真实成交 → 校准 `impact_coef`、建模 T+1 开盘成交、永久 vs 临时冲击。
+  三级保真度：内部模拟 → Alpaca 纸交易 → （未来）Alpaca 实盘。
+- **12.4 崩溃恢复** — 重启时从 Alpaca 持仓重建状态。
+- **验收**：PAPER 因子目标权重 → Alpaca 纸交易订单 → 成交对账回 PositionStore；风控门拦截
+  超限单；kill switch 全平；校准报告显示内部模拟 vs Alpaca 纸交易的成交差。
+
+---
+
+## Phase 13 — 多 agent（条件触发：红队优先）+ 全自动模式
+
+**目标**：仅在触发条件满足时引入 agent；启用全自动 paper。
+
+- **13.1 红队审计者（最早，Paper 期）** — 独立 LLM 审查步骤（`tool_red_team_review`，只读）
+  → 对每个进 PAPER 的候选出"反方报告"（泄漏/容量/拥挤度/经济逻辑）存入谱系。
+  触发条件：发现产出速度 > 人工审查带宽。
+- **13.2 数据质量哨兵** — Phase 10 数据源 ≥3 后引入。
+- **13.3 全自动 paper 模式** — `autonomy_mode=auto`：validated→paper 由规则 + 红队通过自动决定；
+  人可随时切回 manual；PAPER→ACTIVE 仍需 60 日验证 + 人工（资金决策）。
+- **验收**：每个 PAPER 候选附红队反方报告；auto 模式下全流程无人值守（红队+规则为门）。
+
+---
+
+## Phase 14 —（长期，超出本次实现）验证期运营 → 真实资金门槛
+
+60 日 paper 验证、首份验证报告、PAPER→ACTIVE 门槛（realized IC t-stat>2）、归因分析师
+（实盘 6 个月后）。**接入真实资金 = 另立规划**（执行/风控/密钥管理），明确排除在外。
+
+---
+
+## 依赖关系（执行顺序）
+
+```
+Phase 8（PIT 地基）── 必须先做
+  ├─→ Phase 9（自主发现 + 生命周期门 + 批准）── 可与 8 并行启动，9.3 依赖回测
+  ├─→ Phase 10（另类数据）── 依赖 8.1 PIT
+  └─→ Phase 11（前向增量）── 依赖 8.1 PIT
+Phase 12（Alpaca 执行）── 依赖 9（有 PAPER 因子）+ 11（前向数据更佳）
+Phase 13（多 agent + 全自动）── 依赖 9（发现产量）+ 12（执行）
+Phase 14 ── 长期验证期
+```
+
+## 关键复用点（避免重造）
+
+- 发现：`PopulationEvolver`、`GenerationWorkflow`（`alpha_workflows.py`）、`AlphaPool`、
+  `RegimeDetector`（`data_engine/regime_detector.py`）
+- 验证：`WalkForwardBacktester`、`deflated_sharpe_from_returns`（`performance_analyzer.py`）
+- 生命周期：`alpha_lifecycle.py` 状态机、`AlphaStore.update_status`、PATCH 端点
+- 执行：`PaperBroker`/`PositionStore`、`TransactionCostEngine`（同一成本模型，禁止另立）
+- 调度：`scheduler.py`（`create_scheduler` + SQLAlchemyJobStore，加新 job 即可）
+- 数据：`DataManager.get_panel`、`DataProvider` 抽象、`feature_store.py`
+
+## 验证方式（端到端）
+
+- 每个 Phase 配专属测试套件（`test_phase9.py` … `test_phase12.py`），沿用现有模式：
+  单元 + 集成 + **真实启动前后端端到端**（如 Phase 7 那样跑 uvicorn+vite 验证运行时）。
+- Phase 9：离线跑 nightly_discovery_job → 断言产出 CANDIDATE（无用户文本）→ 验证门 →
+  approve → PAPER，全链路。
+- Phase 10：发布日前视测试（季频字段在发布前为 NaN）。
+- Phase 11：连续多日增量，PIT 逐日增长，改今日不影响历史 as_of。
+- Phase 12：Alpaca **纸交易沙盒**下单→成交→对账；风控拦截超限单；kill switch 全平；
+  校准报告。（用 Alpaca paper API key，不涉真实资金。）
+- 每 Phase 完成后全量回归（当前基线 432 passed）+ 同步 PAPER_TRADING_ROADMAP。
+
+## 明确不在本路线范围（真实资金前提）
+
+接入真实资金的券商实盘、机构级风控升级、合规/税务、PagerDuty 级告警——待 Phase 14 验证
+报告为正后另立规划。
