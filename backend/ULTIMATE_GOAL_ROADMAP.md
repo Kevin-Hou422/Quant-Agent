@@ -159,6 +159,53 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（Alpac
 
 ---
 
+## Phase R — 研究可信度补强（横向层，与 Phase 9–12 并行，不属"实盘运营"轴）
+
+**来源**：外部《Quant-Agent 覆盖度地图》评估（以 López de Prado / Barra / Almgren-Chriss 为标尺）
+指出——本路线 Phase 9–14 几乎全压在"自主交易运营"轴，而对"风险模型 / 因子风险 / 容量 / 高级
+验证"这条**决定因子研究可信度**的轴几乎沉默。本 Phase 补齐其中"有必要 + 高性价比"的部分。
+（该评估另建议的 Golden Benchmark 与 R-N1 可复现性，**已完成**——见
+`tests/golden/test_golden_backtest.py`、`gp_engine/_rng.py`，此处不再列。）
+
+- **R.1 高级验证工具（最便宜，直接强化项目最强的"验证"环）**
+  - **PBO（回测过拟合概率，Bailey et al. 2015）** — 与已有 DSR 互补：DSR 校正单个夏普，PBO
+    检验"筛选流程本身是否导致过拟合"。新建 `app/core/backtest_engine/overfit_stats.py`。
+  - **Purged K-Fold CV / CPCV**（López de Prado）— 扩展现有 `WalkForwardBacktester`：训练/测试
+    间 purge + embargo（embargo 已有），CPCV 生成多条回测路径替代单路径。
+  - **Harvey-Liu-Zhu t≥3.0 门槛** — 把新因子显著性门槛从 t>2 提到 **t≥3.0**，作为 Phase 9.3
+    验证门（CANDIDATE→VALIDATED）与 Phase 14 的可配置参数。
+  - **接入点**：Phase 9.3 `validation_gate.py` 直接消费 PBO/CPCV/t 门槛。
+  - **验收**：一个已知过拟合的构造因子被 PBO 判为高过拟合概率；t 门槛可配置且默认 3.0。
+
+- **R.2 风险因子模型（Barra-lite）— 最大结构性空白，一个接口解决四件事** ⭐
+  新建 `app/core/risk_engine/`：以 **Fama-French 5 因子 + 行业哑变量**做简化版（不从零建 Barra）。
+  1. **真正的风格中性化**：对 size/value/momentum/liquidity/volatility 回归取残差
+     （替代现有截面 rank / 行业 demean）；
+  2. **因子层风险归因**：组合风险来自哪些暴露；
+  3. **结构化协方差** `Σ = BΣ_fB' + D`：供 R.4 的组合优化替代样本协方差，缓解 Markowitz 病态；
+  4. **alpha vs 风险因子区分**：判断信号是纯 alpha 还是风险溢价补偿。
+  - **依赖**：是"风格中性化增强 + 归因（Phase 14 归因分析师 / Brinson）"的前置。
+  - **复用**：`data_engine`（因子暴露构造）、现有 `signal_processor` 中性化钩子。
+  - **验收**：对已知风格暴露的构造组合，风险归因能还原其暴露来源；MVO 可切换用结构化协方差。
+
+- **R.3 容量（Capacity）曲线分析（便宜、直接把 Sharpe → "能装多少钱"）**
+  新建 `app/core/backtest_engine/capacity.py`：在不同假设 AUM 下重跑回测（复用
+  `TransactionCostEngine` 的 ADV 参与率/冲击），输出 **Sharpe/年化收益随 AUM 衰减曲线**。
+  - **验收**：给定一个因子，产出 AUM→Sharpe 衰减曲线；ADV 参与率随 AUM 单调上升。
+
+- **R.4 组合优化升级（中等价值，可后置）**
+  - **Ledoit-Wolf 最优收缩**替代现有固定 δ=0.5 对角收缩；
+  - **HRP（层次风险平价）**作为 MVO 的稳健替代（不需矩阵求逆）；
+  - **换手率惩罚进优化目标**（现在仅在 fitness 里软惩罚，未进组合优化目标）。
+  - **复用/扩展**：`portfolio_engine/portfolio_constructor.py`。
+  - **验收**：病态协方差下 HRP 不崩；Ledoit-Wolf 收缩强度由数据估计而非写死。
+
+- **暂不做（评估亦标"选择性"）**：Meta-labeling、FracDiff、唯一性加权/成交量时钟采样、
+  Black-Litterman、Kelly、多资产/多频率/多策略族广度、深度学习/RL——与"横截面日频股票"
+  定位正交，记录待未来。
+
+---
+
 ## 依赖关系（执行顺序）
 
 ```
@@ -169,13 +216,20 @@ Phase 8（PIT 地基）── 必须先做
 Phase 12（Alpaca 执行）── 依赖 9（有 PAPER 因子）+ 11（前向数据更佳）
 Phase 13（多 agent + 全自动）── 依赖 9（发现产量）+ 12（执行）
 Phase 14 ── 长期验证期
+
+Phase R（研究可信度补强，横向层，与 9–12 并行）
+  R.1 高级验证 ── 尽早，接入 Phase 9.3 验证门
+  R.2 Barra-lite 风险模型 ── 是"风格中性化增强 + 归因（Phase 14/Brinson）"的前置
+  R.3 容量曲线 ── 独立，可随时做
+  R.4 组合优化升级 ── 可后置，扩展 portfolio_engine
 ```
 
 ## 关键复用点（避免重造）
 
 - 发现：`PopulationEvolver`、`GenerationWorkflow`（`alpha_workflows.py`）、`AlphaPool`、
   `RegimeDetector`（`data_engine/regime_detector.py`）
-- 验证：`WalkForwardBacktester`、`deflated_sharpe_from_returns`（`performance_analyzer.py`）
+- 验证：`WalkForwardBacktester`、`deflated_sharpe_from_returns`（`performance_analyzer.py`）；
+  Phase R.1 在此之上加 PBO/CPCV，golden 数值基线复用 `tests/golden/`
 - 生命周期：`alpha_lifecycle.py` 状态机、`AlphaStore.update_status`、PATCH 端点
 - 执行：`PaperBroker`/`PositionStore`、`TransactionCostEngine`（同一成本模型，禁止另立）
 - 调度：`scheduler.py`（`create_scheduler` + SQLAlchemyJobStore，加新 job 即可）
@@ -191,6 +245,9 @@ Phase 14 ── 长期验证期
 - Phase 11：连续多日增量，PIT 逐日增长，改今日不影响历史 as_of。
 - Phase 12：Alpaca **纸交易沙盒**下单→成交→对账；风控拦截超限单；kill switch 全平；
   校准报告。（用 Alpaca paper API key，不涉真实资金。）
+- Phase R.1：构造一个已知过拟合因子 → PBO 判高过拟合概率；t 门槛可配置默认 3.0。
+- Phase R.2：对已知风格暴露的构造组合，风险归因还原暴露来源；MVO 可切换结构化协方差。
+- Phase R.3：给定因子产出 AUM→Sharpe 衰减曲线，ADV 参与率随 AUM 单调上升。
 - 每 Phase 完成后全量回归（当前基线 432 passed）+ 同步 PAPER_TRADING_ROADMAP。
 
 ## 明确不在本路线范围（真实资金前提）
