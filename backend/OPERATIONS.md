@@ -1,7 +1,7 @@
 # OPERATIONS.md — 验证期运营规则
 
 > 状态：制度文档（Task 8.3）· 适用阶段：Phase 8 起系统进入每日自动 paper trading 的验证期
-> 依据：PAPER_TRADING_ROADMAP.md §五、RESEARCH_OPERATING_MODEL.md §4
+> 依据：backend_retired_report/PAPER_TRADING_ROADMAP.md §五（已归档）、RESEARCH_OPERATING_MODEL.md §4
 > 生成日期：2026-08-19
 
 本文件规定**因子从发现到 paper 交易再到"激活"全过程的人工与制度门槛**。它约束的是流程与

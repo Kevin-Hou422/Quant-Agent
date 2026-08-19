@@ -1,5 +1,14 @@
 # Quant Agent — 从路线图完结到「可测试程度」完整规划
 
+> **📦 状态：已归档（开发完成 2026-08-19）。本报告不再更新。**
+> Phase 6/7/8 全部开发任务完成，全量回归 448 passed / 0 failed。
+> - **后续开发** → `ULTIMATE_GOAL_ROADMAP.md`（Phase 9–14 + 横向 Phase R）
+> - **验证期运营** → `OPERATIONS.md`（含唯一未完的运营里程碑 M5：跑满 60 交易日 + 首份验证报告）
+> - **未完成的开发遗留项**（非已规划项）已移交后续报告：
+>   - **B6（beta_neutral 数学不闭合）**：休眠项，未接入默认 paper 路径（每日循环用
+>     `SignalWeightedPortfolio`，不调用 `beta_neutral`）；真正的风格中性化补强见
+>     `ULTIMATE_GOAL_ROADMAP.md` Phase R.2。
+
 **制定日期：** 2026-07-17
 **最后更新：** 2026-07-17 v1.1 —— Phase 5 已完成（DEV_ROADMAP v5.0 关闭），本规划从 Phase 6 起算
 **前置状态：** DEV_ROADMAP Phase 0–5 **全部完成并验收**（342 后端 + 94 前端测试全绿）

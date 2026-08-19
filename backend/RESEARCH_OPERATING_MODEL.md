@@ -2,7 +2,8 @@
 
 **制定日期：** 2026-07-20
 **性质：** 长期参考文档。记录经得起时间考验的定位、原则与判据，
-不含具体实现细节（实现进度见 `PAPER_TRADING_ROADMAP.md`）。
+不含具体实现细节（实现进度见 `ULTIMATE_GOAL_ROADMAP.md`；已完成的 Phase 6–8 见
+`backend_retired_report/PAPER_TRADING_ROADMAP.md`）。
 **修订规则：** 只有当某条原则被实际运营证伪时才修改，并保留修订记录。
 
 ---
@@ -210,9 +211,10 @@ Paper 验证期        ：引入红队审计（可以是独立 prompt 的 LLM �
 
 ## 五、本文档与其他报告的关系
 
-- 实施进度与验收标准 → `PAPER_TRADING_ROADMAP.md`（活跃路线图）
-- 历史完结记录 → `STAGE1_COMPLETION_REPORT.md`
-- 运营规则（PAPER→ACTIVE 门槛等）→ 未来的 `OPERATIONS.md`（Phase 8.3）
+- 实施进度与验收标准 → `ULTIMATE_GOAL_ROADMAP.md`（活跃路线图，Phase 9–14 + R）；
+  已完成的 Phase 6–8 计划已归档于 `backend_retired_report/PAPER_TRADING_ROADMAP.md`
+- 历史完结记录 → `backend_retired_report/`（DEV_ROADMAP / STAGE1_COMPLETION_REPORT / AUDIT_REPORT）
+- 运营规则（PAPER→ACTIVE 门槛等）→ `OPERATIONS.md`（Phase 8.3，已落地）
 - 本文档回答"为什么这样做"；上述文档回答"做什么、做到没有"
 
 ---

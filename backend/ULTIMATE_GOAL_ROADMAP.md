@@ -1,6 +1,7 @@
 # 终极目标路线图：美股实盘全链路自主模拟交易
 
-> 状态：**规划（未实现）** · 依赖 PAPER_TRADING_ROADMAP.md（Phase 6–8）· 遵循 RESEARCH_OPERATING_MODEL.md
+> 状态：**规划（Phase 8 已完成，Phase 9–14 + R 未实现）** · 地基 Phase 6–8 见
+> `backend_retired_report/PAPER_TRADING_ROADMAP.md`（已归档）· 遵循 RESEARCH_OPERATING_MODEL.md
 > 生成日期：2026-08-18
 
 ## 终极目标
@@ -181,7 +182,10 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（Alpac
 - **R.2 风险因子模型（Barra-lite）— 最大结构性空白，一个接口解决四件事** ⭐
   新建 `app/core/risk_engine/`：以 **Fama-French 5 因子 + 行业哑变量**做简化版（不从零建 Barra）。
   1. **真正的风格中性化**：对 size/value/momentum/liquidity/volatility 回归取残差
-     （替代现有截面 rank / 行业 demean）；
+     （替代现有截面 rank / 行业 demean）；**并顺带闭合 B6**——现有
+     `NeutralizationLayer.beta_neutral` 对冲后再 L1 归一化，使净 beta 不严格为 0（"市场中性"
+     名不副实）。该项为 PAPER_TRADING_ROADMAP 归档时移交的休眠遗留项（未接入默认 paper 路径），
+     在此以"残差化 + 不破坏中性的归一化"一并修正，或在 UI 如实标注为"beta 缓和"；
   2. **因子层风险归因**：组合风险来自哪些暴露；
   3. **结构化协方差** `Σ = BΣ_fB' + D`：供 R.4 的组合优化替代样本协方差，缓解 Markowitz 病态；
   4. **alpha vs 风险因子区分**：判断信号是纯 alpha 还是风险溢价补偿。
@@ -249,7 +253,7 @@ Phase R（研究可信度补强，横向层，与 9–12 并行）
 - Phase R.1：构造一个已知过拟合因子 → PBO 判高过拟合概率；t 门槛可配置默认 3.0。
 - Phase R.2：对已知风格暴露的构造组合，风险归因还原暴露来源；MVO 可切换结构化协方差。
 - Phase R.3：给定因子产出 AUM→Sharpe 衰减曲线，ADV 参与率随 AUM 单调上升。
-- 每 Phase 完成后全量回归（当前基线 432 passed）+ 同步 PAPER_TRADING_ROADMAP。
+- 每 Phase 完成后全量回归（当前基线 448 passed）+ 同步本报告（PAPER_TRADING_ROADMAP 已归档，不再更新）。
 
 ## 明确不在本路线范围（真实资金前提）
 

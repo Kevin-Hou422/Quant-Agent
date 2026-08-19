@@ -7,11 +7,12 @@ deterministic no-LLM fallback), a factor **lifecycle state machine**, a **paper-
 with a daily scheduler, and a React/TypeScript OS-style UI with real-time SSE streaming.
 
 > **Scope of this README:** it documents everything that exists in the codebase **today**
-> (Phases 0–7 complete). Planned-but-not-yet-built capabilities (real-time incremental data,
+> (Phases 0–8 complete). Planned-but-not-yet-built capabilities (real-time incremental data,
 > alt-data, Alpaca broker execution, autonomous market-observation-driven discovery, red-team
-> multi-agent) are **not** described here — see the roadmaps in
-> [backend/PAPER_TRADING_ROADMAP.md](backend/PAPER_TRADING_ROADMAP.md) and
-> [backend/ULTIMATE_GOAL_ROADMAP.md](backend/ULTIMATE_GOAL_ROADMAP.md).
+> multi-agent) are **not** described here — see the active roadmap
+> [backend/ULTIMATE_GOAL_ROADMAP.md](backend/ULTIMATE_GOAL_ROADMAP.md). The completed Phase 6–8
+> plan is archived at
+> [backend/backend_retired_report/PAPER_TRADING_ROADMAP.md](backend/backend_retired_report/PAPER_TRADING_ROADMAP.md).
 
 ---
 
@@ -144,11 +145,14 @@ Quant Agent/
 │   ├── requirements.txt / requirements.lock
 │   ├── alphas.db                    # main SQLite ledger (auto-created, WAL)
 │   ├── scheduler_jobs.db            # APScheduler jobstore (auto-created)
-│   ├── PAPER_TRADING_ROADMAP.md     # active roadmap (Phase 6–8)
-│   ├── ULTIMATE_GOAL_ROADMAP.md     # long-horizon plan (Phase 9–14)
-│   ├── RESEARCH_OPERATING_MODEL.md  # long-term principles
-│   ├── AUDIT_REPORT.md / STAGE1_COMPLETION_REPORT.md  # closed reports (archived)
-│   ├── tests/                       # 14 pytest modules + conftest
+│   ├── ULTIMATE_GOAL_ROADMAP.md     # active long-horizon plan (Phase 9–14 + R)
+│   ├── OPERATIONS.md                # validation-period operating rules (Phase 8.3)
+│   ├── RESEARCH_OPERATING_MODEL.md  # long-term principles (living)
+│   ├── backend_retired_report/      # archived reports (frozen, not updated):
+│   │   ├── PAPER_TRADING_ROADMAP.md #   Phase 6–8 plan (completed 2026-08-19)
+│   │   ├── DEV_ROADMAP.md           #   Phase 0–5 plan
+│   │   └── AUDIT_REPORT.md / STAGE1_COMPLETION_REPORT.md
+│   ├── tests/                       # 16 pytest modules + conftest
 │   └── app/
 │       ├── main.py                  # FastAPI app + lifespan + CLI entry
 │       ├── config.py                # pydantic-settings (env vars)
@@ -435,13 +439,14 @@ Common flags: `--dataset --start --end --optuna-trials --oos-ratio --embargo-day
 
 ## 16. Project Status & Roadmap
 
-**Complete:** Phases 0–7 (DSL, data, backtest, GP, ML proxy, agent, lifecycle, monitoring, paper
-broker + daily loop, reproducibility, US+crypto datasets).
+**Complete:** Phases 0–8 (DSL, data, backtest, GP, ML proxy, agent, lifecycle, monitoring, paper
+broker + daily loop, reproducibility, US+crypto datasets, **PIT point-in-time store +
+cost-calibration loop + operations rules**). The Phase 6–8 plan is archived (completed) at
+[backend/backend_retired_report/PAPER_TRADING_ROADMAP.md](backend/backend_retired_report/PAPER_TRADING_ROADMAP.md);
+validation-period operating rules live in [backend/OPERATIONS.md](backend/OPERATIONS.md).
 
 **Planned (not yet built)** — documented, not described in this README:
 
-- **Phase 8** (active) — PIT append-only data store, cost-calibration loop, operations rules:
-  [backend/PAPER_TRADING_ROADMAP.md](backend/PAPER_TRADING_ROADMAP.md)
 - **Phase 9–14** (long horizon) — autonomous market-observation-driven factor discovery, graded
   validation gate + human approve/reject, alt-data (fundamentals/earnings) with PIT + DSL sparse
   fields, forward incremental data, **Alpaca paper-broker execution** with deterministic trading
