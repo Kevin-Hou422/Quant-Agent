@@ -18,6 +18,9 @@ scheduler_jobs.db
 # Data caches
 *.parquet
 **/feature_store/**/*.parquet
+# Point-in-Time store (Task 8.1 — proprietary vintage data, never commit)
+pit_store/
+backend/pit_store/
 
 # Node
 node_modules/

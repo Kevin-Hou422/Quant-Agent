@@ -62,5 +62,9 @@ class Settings(BaseSettings):
     paper_start:   str = "2020-01-01"
     paper_end:     str = "2024-01-01"
 
+    # ── Point-in-Time 数据存储（Task 8.1）────────────────────────────────
+    # 每日摄取通过健康门的数据按 (field, date, as_of) 追加进此目录，历史只追加不修改
+    pit_store_dir: str = "pit_store"
+
 
 settings = Settings()

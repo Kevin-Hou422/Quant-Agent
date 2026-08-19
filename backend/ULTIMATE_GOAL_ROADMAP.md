@@ -64,11 +64,12 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（Alpac
 
 ---
 
-## Phase 8 —（已规划，立即做，作地基）PIT 数据层与验证运营
+## Phase 8 —（✅ 已完成 2026-08-19，作地基）PIT 数据层与验证运营
 
-**这是 Phase 9/10/11 的前置**。按现有 PAPER_TRADING_ROADMAP §5 执行：8.1 PIT 追加存储
-（`(field,date,as_of)` 只增不改 + `load_pit()`）、8.2 成本校准回路、8.3 `OPERATIONS.md`。
-关键新文件：扩展 `app/core/data_engine/feature_store.py`。验收：改今日数据不影响昨日 as_of 查询。
+**这是 Phase 9/10/11 的前置，现已就绪。** 实现：`app/core/data_engine/pit_store.py`（`PITStore`
+双时点 `(field,date,as_of)` 只增不改 + `load_pit()`）、`app/tasks/cost_calibration.py`（8.2 成本
+校准回路，T+1 开盘价对账，建议不自动改 `CostParams`）、`backend/OPERATIONS.md`（8.3 运营规则）。
+已接入 `daily_ingest`（通过健康门的数据按 as_of 追加）。新增 16 项测试，全量回归绿。
 
 ---
 

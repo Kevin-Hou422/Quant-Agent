@@ -88,6 +88,13 @@ class DailyIngest:
                 reject_reason=f"health_below_threshold({score:.3f}<{self.min_health})",
             )
 
+        # Task 8.1：通过验收的数据按 as_of 追加进 PIT 存储（历史只追加不修改）。
+        # PIT 写入失败**不阻塞**当日交易循环（存储是审计/复现资产，非交易前置），仅告警。
+        try:
+            self._append_pit(dataset_name, data, as_of)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[daily_ingest] PIT 追加失败（不阻塞交易循环）: %s", exc)
+
         logger.info(
             "[daily_ingest] 摄取通过 '%s' | 健康=%.3f | %d 天 × %d 标的 | as_of=%s",
             dataset_name, score, close.shape[0], close.shape[1], as_of,
@@ -96,6 +103,15 @@ class DailyIngest:
             True, dataset_name, as_of, health_score=score,
             n_dates=close.shape[0], n_tickers=close.shape[1], dataset=data,
         )
+
+    @staticmethod
+    def _append_pit(dataset_name: str, data: Dict[str, pd.DataFrame], as_of: str) -> None:
+        """把通过验收的 wide 面板按 as_of 追加进 PIT 存储（Task 8.1）。"""
+        from app.config import settings
+        from app.core.data_engine.pit_store import PITStore
+
+        store = PITStore(settings.pit_store_dir)
+        store.append(data, as_of=as_of, name=dataset_name)
 
 
 def run_daily_pipeline(dataset_name: str, start: str, end: str) -> Dict[str, Any]:

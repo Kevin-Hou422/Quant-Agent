@@ -68,6 +68,29 @@ def daily_trading_job() -> None:
         logger.warning("[daily_trading_job] 摄取被拒（%s）→ 已跳过交易循环", out.get("reject_reason"))
 
 
+def monthly_cost_calibration_job() -> None:
+    """Task 8.2：每月对上月成交做成本模型校准，产出建议报告（**不自动改 CostParams**）。"""
+    from datetime import date, timedelta
+    from app.tasks.cost_calibration import run_monthly_calibration
+    from app.config import settings
+
+    today = date.today()
+    first_this = today.replace(day=1)
+    last_prev  = first_this - timedelta(days=1)      # 上月最后一天
+    first_prev = last_prev.replace(day=1)            # 上月第一天
+    report = run_monthly_calibration(
+        settings.paper_dataset, first_prev.isoformat(), last_prev.isoformat(),
+        write_path=f"cost_calibration_{first_prev:%Y%m}.md",
+    )
+    if report is None:
+        logger.info("[monthly_cost_calibration_job] 上月无成交或无法校准，跳过")
+    else:
+        logger.info(
+            "[monthly_cost_calibration_job] impact_coef 建议 %.4f→%.4f（×%.3f）— 仅建议，人工确认",
+            report.current_impact_coef, report.recommended_impact_coef, report.recommended_scale,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Scheduler lifecycle
 # ---------------------------------------------------------------------------
@@ -114,8 +137,16 @@ def create_scheduler(
                 name    = "每日数据摄取 + 交易循环",
                 replace_existing = True,
             )
+            # Task 8.2：每月 1 号成本模型校准（产出建议报告，不自动改 CostParams）
+            sched.add_job(
+                monthly_cost_calibration_job,
+                trigger = CronTrigger(day=1, hour=22, minute=0),
+                id      = "monthly_cost_calibration",
+                name    = "每月成本模型校准（建议报告）",
+                replace_existing = True,
+            )
     except Exception as exc:
-        logger.warning("[scheduler] 注册 daily_trading 失败: %s", exc)
+        logger.warning("[scheduler] 注册 paper trading 任务失败: %s", exc)
     return sched
 
 

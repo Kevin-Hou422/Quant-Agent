@@ -204,3 +204,12 @@ class PositionStore:
                 select(PaperFill).where(
                     PaperFill.alpha_id == alpha_id, PaperFill.date == d)
             ))
+
+    def fills_in_range(self, start, end, alpha_id: Optional[int] = None) -> List[PaperFill]:
+        """返回 [start, end] 内的成交记录（可选按 alpha 过滤）——供成本校准（Task 8.2）。"""
+        d0, d1 = _to_date(start), _to_date(end)
+        with self._Session() as s:
+            stmt = select(PaperFill).where(PaperFill.date >= d0, PaperFill.date <= d1)
+            if alpha_id is not None:
+                stmt = stmt.where(PaperFill.alpha_id == alpha_id)
+            return list(s.scalars(stmt.order_by(PaperFill.date, PaperFill.ticker)))

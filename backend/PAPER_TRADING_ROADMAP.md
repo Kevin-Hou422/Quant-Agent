@@ -459,22 +459,36 @@ RealisticBacktester 同区间回测结果一致（容差 < 1bp/日，差异来�
 
 ## 五、Phase 8 — PIT 数据层与验证运营（~5 天启动 + 长期）
 
-### Task 8.1 Point-in-Time 数据存储 — 3 天
+> **进度（2026-08-19）**：Task 8.1 / 8.2 / 8.3 **全部完成**。开工前确认无系统性 bug
+> （全量回归 432 passed；F-N1/F-N4 paper-前必修项已在 Phase 6 修复并复核）。
+> 新增测试：`test_phase8_pit.py`(10) + `test_phase8_cost_calib.py`(6)，全量回归绿。
 
-- FeatureStore 扩展：每日摄取的数据按 `(field, date, as_of)` 追加，**历史分区只追加不修改**
-- 从启动日起自然积累无幸存者偏差的自有数据（时间越久价值越大——这是 F3 的长期解法）
-- 提供 `load_pit(field, start, end, as_of)` 接口；回测默认 `as_of=None`（最新），验证时可固定 as_of 复现历史视角
+### Task 8.1 Point-in-Time 数据存储 — 3 天 ✅
 
-**验收**：修改今日数据不影响昨日 as_of 查询结果；A4 重放用 PIT 数据。
+- 新建 `app/core/data_engine/pit_store.py`（`PITStore`）：每日摄取的数据按
+  `(field, date, as_of)` 追加，**历史分区只追加不修改**；`as_of`(vintage) 与 `date`(交易日)
+  双时点分离。幂等键 `(timestamp,ticker,as_of)`。年份分区 Parquet，复用 feature_store 布局。
+- 从启动日起自然积累无幸存者偏差的自有数据（F3 的长期解法）。
+- 提供 `load_pit(fields, start, end, as_of=None, tickers, name)`：对每个 `(date,ticker)` 返回
+  `as_of ≤ 参数` 中最大 vintage；`as_of=None`=最新（回测默认）。
+- 接入 `daily_ingest`：通过健康门的数据按 `as_of` 追加进 PIT（写失败不阻塞交易循环，仅告警）。
+  配置 `settings.pit_store_dir`（默认 `pit_store/`，已 gitignore）。
 
-### Task 8.2 成本模型校准回路 — 1 天
+**验收**：✅ 修改今日数据不影响昨日 as_of 查询结果（`test_revision_does_not_change_earlier_as_of`）；
+可固定 as_of 复现历史视角。
 
-- 每月任务：对比 PaperFill 假设成交价 vs 实际 T+1 OHLC 区间，输出冲击系数校准建议报告
-- 人工确认后更新 `CostParams`（不自动改，写入变更日志）
+### Task 8.2 成本模型校准回路 — 1 天 ✅
 
-### Task 8.3 验证期运营规则（制度，非代码）— 1 天文档
+- 新建 `app/tasks/cost_calibration.py`：纯函数 `calibrate(fills, prices, spread_bps, impact_coef)`
+  用 **T+1 开盘价**量化 close-fill 假设遗漏的隔夜执行缺口，产出**有界**（[0.5×,2×]）impact_coef
+  建议报告；`run_monthly_calibration` 读区间 PaperFill + 价格 → 落 `cost_calibration_YYYYMM.md`。
+- `PositionStore.fills_in_range` 新增（区间成交查询）。
+- 调度器注册 `monthly_cost_calibration_job`（每月 1 号，`enable_paper_trading` 时）。
+- **绝不自动改 `CostParams`**：只产出建议 + 日志，人工确认后手动更新（留痕）。
 
-写入 `OPERATIONS.md`：
+### Task 8.3 验证期运营规则（制度，非代码）— 1 天文档 ✅
+
+已写入 `backend/OPERATIONS.md`：
 - 任何因子进入 PAPER 前必须：WalkForward ≥ 5 折全正 + DSR > 0.90 + 真实数据集回测
 - **红队审计**（RESEARCH_OPERATING_MODEL §4.2 落地）：每个进入 PAPER 的候选
   附一份"反方报告"（泄漏/容量/拥挤度/经济逻辑质疑）存入谱系；可用独立 prompt
@@ -493,7 +507,7 @@ RealisticBacktester 同区间回测结果一致（容差 < 1bp/日，差异来�
 | ~~M1~~ | ~~Phase 6.1 + 6.2~~ | ✅ 已完成（2026-07-26）|
 | ~~M2~~ | ~~Phase 6 剩余（CI + 黄金测试 + 可复现性）~~ | ✅ 已完成（2026-07-30）|
 | ~~M3~~ | ~~Phase 7 全部 + 回放对账通过~~ | ✅ 已完成（2026-08-17，对账 2.2e-16）|
-| M4 | Phase 8 启动，**系统进入每日自动 paper trading** | 下一步 |
+| M4 | Phase 8 启动（8.1 PIT + 8.2 成本校准 + 8.3 运营规则）| ✅ 已完成（2026-08-19）|
 | M5 | 首批因子完成 60 交易日 PAPER 验证，出具首份验证报告 | M4 + 3 个月 |
 
 ---
@@ -524,4 +538,4 @@ FastAPI 鉴权、告警升级（PagerDuty 级）、合规与税务。
 
 ---
 
-*规划版本 v1.4 | 2026-08-17 | Phase 6 完成 + Phase 7 开工前审计修 3 项 + Phase 7 全部完成（PaperBroker 对账 2.2e-16、每日交易循环、前端 Live 净值、真实前后端端到端验证）| 剩余 Phase 8*
+*规划版本 v1.5 | 2026-08-19 | Phase 6 完成 + Phase 7 全部完成（PaperBroker 对账 2.2e-16）+ **Phase 8 全部完成**（8.1 PIT 时点存储 + 8.2 成本校准回路 + 8.3 OPERATIONS.md；新增 16 项测试，全量回归绿）| Phase 8 后续演进见 ULTIMATE_GOAL_ROADMAP.md（Phase 9–14 + 横向 Phase R）*
