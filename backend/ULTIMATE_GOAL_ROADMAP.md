@@ -211,6 +211,38 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（Alpac
 
 ---
 
+## 前端交付路线（一等交付，与各 Phase 并行）
+
+**原则**：每个 Phase 凡产出用户可见产物（待办队列 / 执行状态 / 报告 / 图表），都必须配套前端，
+不再当附带项。前端沿用现有栈（React 19 + TS + Zustand + ECharts），复用 `api/client.ts` 类型化
+fetch/SSE、`components/analysis/*` 图表、`AlphaDashboard`。**前端只读 + 人工审批动作**，不承载任何
+自动交易决策（与"LLM/前端不进交易回路"一致）。
+
+- **FE-8（补现有缺口，可选）**：成本校准报告视图——展示 `monthly_cost_calibration_job` 产出的
+  impact_coef 建议与隔夜缺口分布（只读，人工据此手动改 `CostParams`）。需后端加一个只读端点
+  暴露最近校准报告。
+- **FE-9 审批与自主发现可视化**（配 Phase 9，**最关键**）：
+  - **待批准队列**：VALIDATED 候选列表 + WalkForward/DSR/t 门槛结果 + **批准/拒绝按钮**
+    （调 `POST /api/alphas/{id}/approve|reject`），这是"默认模式"的人机接口。
+  - **自主发现观测台**：nightly_discovery_job 每晚产出的候选、市场观察摘要（regime/离散度/
+    家族滚动表现）、被验证门刷掉的原因。
+  - 生命周期看板扩展：CANDIDATE→VALIDATED→PAPER 分级状态与谱系。
+- **FE-10 另类数据浏览**（配 Phase 10）：DatasetView 增加基本面/财报字段浏览 + **发布时点(as_of)**
+  标注；因子详情显示其用到的稀疏字段与可见期。
+- **FE-11 前向数据状态**（配 Phase 11）：每日增量摄取状态、PIT 逐日增长指标、美股日历/最新 bar
+  时间（区分"已收盘入库" vs "待摄取"）。
+- **FE-12 执行监控面板**（配 Phase 12，**重**）：Alpaca 纸交易的持仓/挂单/成交、**本地 vs 券商
+  对账差**、风控门状态与 **kill switch（一键全平，带二次确认的人工动作）**、三级保真度对比
+  （内部模拟 vs Alpaca 纸交易成交）。
+- **FE-13 红队报告 + 自主度开关**（配 Phase 13）：每个 PAPER 候选的"反方报告"在谱系内可查；
+  **autonomy_mode 手动/全自动切换**（人工可随时切回）；数据质量哨兵告警。
+- **FE-R 研究可信度图表**（配 Phase R）：PBO/CPCV 结果、**因子风险归因**（暴露分解）、
+  **容量-AUM 衰减曲线**——复用 `components/analysis/*`，天然图表化。
+
+> 每个 FE-* 的验收并入对应 Phase 的"真实启动前后端端到端"验证（沿用 Phase 7 做法）。
+
+---
+
 ## 依赖关系（执行顺序）
 
 ```
@@ -227,6 +259,8 @@ Phase R（研究可信度补强，横向层，与 9–12 并行）
   R.2 Barra-lite 风险模型 ── 是"风格中性化增强 + 归因（Phase 14/Brinson）"的前置
   R.3 容量曲线 ── 独立，可随时做
   R.4 组合优化升级 ── 可后置，扩展 portfolio_engine
+
+前端 FE-9…FE-R ── 与对应 Phase 同批交付（FE-9 审批队列最关键，随 Phase 9 一起）
 ```
 
 ## 关键复用点（避免重造）
