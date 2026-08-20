@@ -259,16 +259,16 @@ class TestLifecycleAPI:
         assert resp.status_code == 404
 
     def test_status_patch_valid_and_invalid(self, test_client):
-        # 建一条 candidate 记录
+        # Phase 9.3：/alpha/save 新记录默认 candidate（不再默认 active）
         save = test_client.post("/api/alpha/save", json={"dsl": "rank(close)"})
         aid = save.json()["id"]
-        # 旧 save 路径默认 active：active → decaying 合法
-        ok = test_client.patch(f"/api/alphas/{aid}/status", json={"status": "decaying"})
+        # candidate → validated 合法
+        ok = test_client.patch(f"/api/alphas/{aid}/status", json={"status": "validated"})
         assert ok.status_code == 200
-        assert ok.json()["new_status"] == "decaying"
-        assert "active" in ok.json()["allowed_next"]
-        # decaying → paper 非法 → 409
-        bad = test_client.patch(f"/api/alphas/{aid}/status", json={"status": "paper"})
+        assert ok.json()["new_status"] == "validated"
+        assert "paper" in ok.json()["allowed_next"]
+        # validated → decaying 非法 → 409
+        bad = test_client.patch(f"/api/alphas/{aid}/status", json={"status": "decaying"})
         assert bad.status_code == 409
         # 未知状态 → 422
         unk = test_client.patch(f"/api/alphas/{aid}/status", json={"status": "bogus"})

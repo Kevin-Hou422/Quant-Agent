@@ -79,7 +79,9 @@ class AlphaResult:
     max_drawdown: float = 0.0
     ic_ir:        float = 0.0
     ann_turnover: float = 0.0
-    status:       str   = "active"
+    # Phase 9.3：新因子一律 CANDIDATE 起步，经验证门（ValidationGate）+ 人工审批逐级晋级，
+    # 不再直接写 active（修复"发现即激活"绕过分级的缺口）。特殊场景可显式传 status。
+    status:       str   = "candidate"
     reasoning:    str   = ""   # JSON string (ReasoningLog.to_json())
 
 

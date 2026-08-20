@@ -653,7 +653,7 @@ def alpha_save(
         ann_return   = req.ann_return,
         ann_turnover = req.ann_turnover,
         ic_ir        = req.ic_ir,
-        status       = "active",
+        status       = "candidate",
     )
     alpha_id = store.save(ar)
     return SaveAlphaResponse(id=alpha_id, status="saved")
@@ -1066,6 +1066,62 @@ def alpha_walk_forward(
         raise HTTPException(status_code=500, detail=str(exc))
 
     return _walk_forward_to_response(record.dsl, result)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/alphas/{id}/validate — 运行验证门，通过则 CANDIDATE→VALIDATED（Phase 9.3）
+# ---------------------------------------------------------------------------
+
+class ValidateResponse(BaseModel):
+    alpha_id:   int
+    passed:     bool
+    new_status: str                       # 通过=validated；否则维持原状态
+    result:     dict                      # ValidationResult.to_dict()
+
+
+@router.post("/alphas/{alpha_id}/validate", response_model=ValidateResponse, tags=["Lifecycle"])
+def alpha_validate(
+    alpha_id:     int,
+    dataset_name: str = Query("us_tech_large", description=_DATASET_FIELD_DESC),
+    dataset_start: str = Query("2021-01-01"),
+    dataset_end:   str = Query("2024-01-01"),
+    n_trials:     int = Query(1, ge=1, description="产生该候选试过的策略总数，用于 DSR 去膨胀"),
+    store:        AlphaStore = Depends(get_store),
+) -> ValidateResponse:
+    """
+    对 CANDIDATE 因子运行自动验证门（WalkForward 全折为正 + DSR>0.90，真实数据）。
+    通过则经状态机升 VALIDATED；未通过维持 candidate 并返回原因。
+    """
+    from app.db.alpha_lifecycle import IllegalTransition
+    from app.core.lifecycle.validation_gate import ValidationGate
+    from app.core.data_engine.dataset_registry import load_registry_dataset
+
+    record = store.get_by_id(alpha_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Alpha id={alpha_id} 不存在")
+    if str(record.status) != "candidate":
+        raise HTTPException(
+            status_code=409,
+            detail=f"仅 CANDIDATE 可运行验证门，当前状态={record.status}",
+        )
+    try:
+        ds = load_registry_dataset(dataset_name, start=dataset_start, end=dataset_end)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"真实数据集加载失败：{exc}")
+
+    result = ValidationGate().evaluate(record.dsl, ds.data, n_trials=n_trials)
+    new_status = record.status
+    if result.passed:
+        try:
+            store.update_status(alpha_id, "validated")
+            new_status = "validated"
+        except IllegalTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    return ValidateResponse(
+        alpha_id=alpha_id, passed=result.passed,
+        new_status=new_status, result=result.to_dict(),
+    )
 
 
 @router.get("/scheduler/status", tags=["Lifecycle"])
@@ -1903,7 +1959,7 @@ def workflow_generate(
             ic_ir        = float(m.get("is_ic") or 0.0),
             ann_turnover = float(m.get("is_turnover") or 0.0),
             reasoning    = result.explanation,
-            status       = "active",
+            status       = "candidate",
         ))
     except Exception:
         pass
@@ -1989,7 +2045,7 @@ def workflow_optimize(
             ic_ir        = float(m.get("is_ic") or 0.0),
             ann_turnover = float(m.get("is_turnover") or 0.0),
             reasoning    = result.explanation,
-            status       = "active",
+            status       = "candidate",
         ))
     except Exception:
         pass
@@ -2119,7 +2175,7 @@ async def workflow_optimize_stream(
                 ic_ir        = float(m.get("is_ic") or 0.0),
                 ann_turnover = float(m.get("is_turnover") or 0.0),
                 reasoning    = result.explanation,
-                status       = "active",
+                status       = "candidate",
             ))
         except Exception:
             pass
@@ -2172,7 +2228,7 @@ async def workflow_generate_stream(
                 ic_ir        = float(m.get("is_ic") or 0.0),
                 ann_turnover = float(m.get("is_turnover") or 0.0),
                 reasoning    = result.explanation,
-                status       = "active",
+                status       = "candidate",
             ))
         except Exception:
             pass

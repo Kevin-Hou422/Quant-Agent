@@ -78,16 +78,19 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（Alpac
 
 **目标**：agent 用价量观察自主挖因子 → 走分级生命周期 → 自动验证门 → **默认由人批准/拒绝**。
 
+> **进度（2026-08-20）**：9.3 ✅ 完成（先行落地，作分级地基）。其余 9.1/9.2/9.4 待做。
+
 - **9.1 市场观察引擎** — 新建 `app/core/discovery/market_observer.py`：从 OHLCV 算市场状态
   特征（复用 `RegimeDetector`；截面收益离散度；动量/反转广度；波动状态；`AlphaPool` 各因子
   家族的滚动 IC/Sharpe）→ 输出**结构化的"假设方向"对象**（非用户文本）。
 - **9.2 自主发现编排器** — 新建 `app/core/discovery/discovery_engine.py` + `scheduler.py`
   注册 `nightly_discovery_job`：观察市场 → 派生 N 个假设 → 每个跑 `GenerationWorkflow`（复用）
   → `AlphaPool` 去重 → 赢家写为 **CANDIDATE**（修掉"直接写 ACTIVE"）。
-- **9.3 自动验证门** — 新建 `app/core/lifecycle/validation_gate.py`：规则化 CANDIDATE→VALIDATED
-  ——WalkForward 全折为正（复用 `WalkForwardBacktester`）+ DSR>0.90（复用
-  `deflated_sharpe_from_returns`）+ 真实数据 OOS。修掉 `router.py:1906`、`alpha_agent.py:121`
-  等把新因子写成 active 的创建路径 → 一律 CANDIDATE 起步。
+- **9.3 自动验证门 ✅（2026-08-20）** — 已建 `app/core/lifecycle/validation_gate.py`（`ValidationGate`：
+  WalkForward 全折 OOS>0 via `min_oos_sharpe` + DSR>0.90，真实数据，**fail-closed**）；
+  端点 `POST /api/alphas/{id}/validate`（通过则状态机 CANDIDATE→VALIDATED）；创建路径全部改为
+  CANDIDATE 起步（`AlphaResult` 默认 + router 5 处 + alpha_agent 1 处），并同步修 test_phase5 相应用例。
+  新增 `test_phase9_validation_gate.py`（7 项）。
 - **9.4 人工批准/拒绝工作流（默认）** — 新增 `POST /api/alphas/{id}/approve` +`/reject`
   （批准 VALIDATED→PAPER；拒绝→RETIRED 带原因）+ 谱系记录；前端 Live 仪表板加"待批准队列"。
   配置 `autonomy_mode: manual|auto`（默认 manual = 人把关；auto 见 Phase 13）。

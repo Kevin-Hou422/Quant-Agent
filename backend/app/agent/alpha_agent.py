@@ -118,7 +118,7 @@ class AlphaAgent:
                     ic_ir        = metrics.get("ic_ir", 0.0),
                     ann_turnover = metrics.get("ann_turnover", 0.0),
                     reasoning    = log.to_json(),
-                    status       = "active",
+                    status       = "candidate",
                 )
                 self._store.save(ar)
                 log.final_dsl     = result_dsl
