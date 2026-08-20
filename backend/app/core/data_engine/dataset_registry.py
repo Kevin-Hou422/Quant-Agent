@@ -63,7 +63,9 @@ _SPECS: Dict[str, DatasetSpec] = {
             # Cloud / data infra
             "DDOG", "NET", "SNOW", "MDB", "TEAM", "PLTR", "ESTC",
             # Fintech / payments infra
-            "PYPL", "SQ", "FI", "FSLR",
+            # 注：SQ（Block，已更名 XYZ）与 FI 在 yfinance 上返回空数据 → 剔除，
+            # 避免全 NaN 列污染截面因子计算（2026-08 数据体检发现）
+            "PYPL", "FSLR",
         ],
     ),
 
@@ -81,7 +83,7 @@ _SPECS: Dict[str, DatasetSpec] = {
             # Insurance
             "MET", "PRU", "AIG", "AFL", "ALL", "TRV",
             # Payments / networks
-            "V", "MA", "AXP", "DFS", "COF",
+            "V", "MA", "AXP", "COF",   # DFS(Discover) 被 Capital One 收购退市 → yfinance 空数据，剔除
             # Exchanges / data
             "CME", "ICE", "SPGI", "MCO", "CBOE",
         ],
@@ -101,7 +103,7 @@ _SPECS: Dict[str, DatasetSpec] = {
             # Med devices / diagnostics
             "ISRG", "MDT", "ABT", "TMO", "DHR", "BSX", "SYK", "BAX",
             # Pharma services / distributors
-            "MCK", "ABC", "CAH",
+            "MCK", "CAH",   # ABC(AmerisourceBergen)已更名 Cencora/COR → yfinance 空数据，剔除
         ],
     ),
 
@@ -111,7 +113,7 @@ _SPECS: Dict[str, DatasetSpec] = {
         region="US", industry="Energy",
         universe=[
             # Integrated / upstream
-            "XOM", "CVX", "COP", "EOG", "PXD", "OXY", "DVN", "FANG",
+            "XOM", "CVX", "COP", "EOG", "OXY", "DVN", "FANG",   # PXD(Pioneer)被 Exxon 收购退市 → 剔除
             # Midstream / pipelines
             "KMI", "WMB", "ET", "TRGP",
             # Refiners
@@ -295,7 +297,7 @@ _SPECS: Dict[str, DatasetSpec] = {
         region="Global", industry="CryptoAlt",
         universe=[
             # L2 / rollups
-            "ARB/USDT", "OP/USDT", "MATIC/USDT", "STRK/USDT", "MANTA/USDT",
+            "ARB/USDT", "OP/USDT", "MATIC/USDT", "STRK/USDT",   # MANTA/USDT 数据缺失 → 剔除
             # 新 L1
             "APT/USDT", "SUI/USDT", "SEI/USDT", "TIA/USDT", "INJ/USDT",
             # AI / DePIN
@@ -456,19 +458,19 @@ def _fetch_raw(spec: DatasetSpec, start: str, end: str) -> Dict:
 
 
 def _fetch_yfinance(tickers: List[str], start: str, end: str) -> Dict:
-    from ..yahoo_provider import YahooFinanceProvider
+    from .yahoo_provider import YahooFinanceProvider
     return YahooFinanceProvider(auto_adjust=True, progress=False).fetch(
         tickers, start=start, end=end
     )
 
 
 def _fetch_akshare(symbols: List[str], start: str, end: str) -> Dict:
-    from .akshare_provider import AkshareProvider
+    from .providers.akshare_provider import AkshareProvider
     return AkshareProvider(adjust="qfq").fetch(symbols, start=start, end=end)
 
 
 def _fetch_ccxt(symbols: List[str], start: str, end: str) -> Dict:
-    from .ccxt_provider import CcxtBinanceProvider
+    from .providers.ccxt_provider import CcxtBinanceProvider
     return CcxtBinanceProvider().fetch(symbols, start=start, end=end)
 
 
@@ -577,11 +579,10 @@ def check_dataset_health(
             return None
 
         # 转为 long-format：timestamp | ticker | close
-        long_df = (
-            close.stack()
-                 .reset_index()
-                 .rename(columns={"level_0": "timestamp", "level_1": "ticker", 0: "close"})
-        )
+        # 按位置命名而非 level_0/level_1：close 的行索引常带名字（如 yfinance 的 "Date"），
+        # 靠 level_* 重命名会漏改 → 下游 KeyError('timestamp') 被吞掉、健康门形同虚设。
+        long_df = close.stack().reset_index()
+        long_df.columns = ["timestamp", "ticker", "close"]
 
         checker = DataHealthChecker()
         report  = checker.check(long_df, date_col="timestamp", ticker_col="ticker")
