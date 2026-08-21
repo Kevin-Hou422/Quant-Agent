@@ -72,3 +72,15 @@
   的 timezone 生效。
 - **防护**：每个 trigger 显式 `CronTrigger(..., timezone=timezone)`；启动后断言/核对 `next_run` 的
   时区偏移是否为预期（+00:00）。
+
+## H. 部署 .env 不得泄漏进测试
+
+**2026-08-22** — 为真实运行在 `backend/.env` 里设了 `ENABLE_SCHEDULER/PAPER_TRADING/DISCOVERY=true`。
+测试也从 `backend/` 跑 → 读到同一 `.env` → **session 级 `TestClient` 的 lifespan 启动了真实调度器**
+（起后台线程 + 单例 `_scheduler` 全程 running），导致 `test_status_reflects_running_state` 的前置
+`running is False` 失败。全量跑挂、单独跑过（因为单独跑没有别的 test_client 触发 lifespan）。
+
+- **结论**：测试结果**必须与部署配置无关**；部署用的运行开关（enable_*）会经共享 `.env` 泄漏进测试。
+- **防护**：conftest 加 **autouse session fixture 强制 `settings.enable_* = False`**（已加
+  `_hermetic_run_flags`）；更广义地，开发/测试与运行实例**别共用同一工作目录/.env**（本仓库已踩过多次
+  cwd 共用坑：scheduler_jobs.db 竞争、.env 泄漏）。

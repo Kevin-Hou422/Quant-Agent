@@ -17,6 +17,28 @@ from fastapi.testclient import TestClient
 
 
 # ---------------------------------------------------------------------------
+# 测试与部署 .env 解耦：强制关掉后台运行开关
+# ---------------------------------------------------------------------------
+# 部署 .env 会设 ENABLE_SCHEDULER/PAPER_TRADING/DISCOVERY=true 以真实运行；而测试从
+# backend/ 跑会读到同一 .env → session 级 TestClient 的 lifespan 会启动真实调度器，
+# 污染 test_status_reflects_running_state 等用例（并起后台线程）。此处强制置 False，
+# 使测试结果与部署配置无关（见 DEV_LESSONS：production 配置不得泄漏进测试）。
+@pytest.fixture(scope="session", autouse=True)
+def _hermetic_run_flags(tmp_path_factory):
+    from app.config import settings
+    settings.enable_scheduler     = False
+    settings.enable_paper_trading = False
+    settings.enable_discovery     = False
+    # DB 隔离：默认 store（含 TestClient 的 get_store）走 settings.database_url。
+    # 若指向真实 alphas.db，测试里的 /alpha/save 等会污染生产账本（曾在 pending 队列
+    # 里看到 rank(close) 测试垃圾）。session 级重定向到临时库。
+    _tmp = tmp_path_factory.mktemp("hermetic_db") / "test_alphas.db"
+    settings.database_url = f"sqlite:///{_tmp}"
+    settings.pit_store_dir = str(tmp_path_factory.mktemp("hermetic_pit"))
+    yield
+
+
+# ---------------------------------------------------------------------------
 # Dataset factory
 # ---------------------------------------------------------------------------
 
