@@ -31,10 +31,12 @@ class DiscoveredCandidate:
     family:   str
     dsl:      str
     metrics:  Dict[str, Any] = field(default_factory=dict)
+    validated: bool = False                      # 验证门是否通过（→ VALIDATED）
+    gate:      Optional[dict] = None             # ValidationResult.to_dict()
 
     def to_dict(self) -> dict:
-        return {"alpha_id": self.alpha_id, "family": self.family,
-                "dsl": self.dsl, "metrics": self.metrics}
+        return {"alpha_id": self.alpha_id, "family": self.family, "dsl": self.dsl,
+                "metrics": self.metrics, "validated": self.validated, "gate": self.gate}
 
 
 @dataclass
@@ -81,7 +83,12 @@ class DiscoveryEngine:
         self.oos_ratio = oos_ratio
         self.seed = seed
 
-    def run(self, dataset: WidePanel, store=None, save: bool = True) -> DiscoveryReport:
+    def run(self, dataset: WidePanel, store=None, save: bool = True,
+            auto_validate: bool = True) -> DiscoveryReport:
+        """
+        auto_validate : True（默认）时，对每个新候选自动跑验证门；通过者升 VALIDATED
+                        并进入待批准队列——实现"除人工批准外全程无人值守"。
+        """
         from app.core.discovery.market_observer import MarketObserver
         from app.core.workflows.alpha_workflows import GenerationWorkflow
 
@@ -116,13 +123,34 @@ class DiscoveryEngine:
             aid = None
             if save:
                 aid = self._save_candidate(store, dsl, fam, obs.regime, m, wf.explanation)
-            candidates.append(DiscoveredCandidate(alpha_id=aid, family=fam, dsl=dsl, metrics=m))
 
-        logger.info("[discovery] 产出 %d 个 CANDIDATE（regime=%s）", len(candidates), obs.regime)
+            cand = DiscoveredCandidate(alpha_id=aid, family=fam, dsl=dsl, metrics=m)
+            # 自动验证门：通过者升 VALIDATED → 进入待批准队列（无人值守到审批点为止）
+            if auto_validate and save and aid is not None:
+                cand.validated, cand.gate = self._run_gate(store, aid, dsl, dataset)
+            candidates.append(cand)
+
+        n_val = sum(1 for c in candidates if c.validated)
+        logger.info("[discovery] 产出 %d 个 CANDIDATE，其中 %d 个通过验证门→VALIDATED（regime=%s）",
+                    len(candidates), n_val, obs.regime)
         return DiscoveryReport(
             regime=obs.regime, families=families,
             candidates=candidates, observation=obs.to_dict(),
         )
+
+    def _run_gate(self, store, aid, dsl, dataset) -> "tuple[bool, Optional[dict]]":
+        """对候选跑验证门；通过则 CANDIDATE→VALIDATED。fail-closed：出错视为不通过。"""
+        from app.core.lifecycle.validation_gate import ValidationGate
+        try:
+            # DSR 去膨胀的 n_trials ≈ 本轮 GP 试过的策略总数（pop × 代数）
+            n_trials = max(1, self.pop_size * self.n_generations)
+            res = ValidationGate().evaluate(dsl, dataset, n_trials=n_trials)
+            if res.passed:
+                store.update_status(aid, "validated")
+            return res.passed, res.to_dict()
+        except Exception as exc:
+            logger.warning("[discovery] 候选 %s 验证门出错（视为不通过）: %s", aid, exc)
+            return False, None
 
     @staticmethod
     def _save_candidate(store, dsl, family, regime, m, explanation) -> Optional[int]:

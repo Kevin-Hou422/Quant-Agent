@@ -144,7 +144,8 @@ def create_scheduler(
     # replace_existing=True：重启时以代码定义为准，避免 jobstore 中的旧定义漂移
     sched.add_job(
         daily_monitor_job,
-        trigger = CronTrigger(hour=21, minute=0),   # UTC 21:00 ≈ 美股收盘后
+        # 显式传 timezone：CronTrigger 默认用构造时的本地时区，会无视 scheduler 的 timezone
+        trigger = CronTrigger(hour=21, minute=0, timezone=timezone),   # 21:00 (默认 UTC) ≈ 美股收盘后
         id      = "daily_monitor",
         name    = "每日因子衰减巡检",
         replace_existing = True,
@@ -155,7 +156,7 @@ def create_scheduler(
         if settings.enable_paper_trading:
             sched.add_job(
                 daily_trading_job,
-                trigger = CronTrigger(hour=21, minute=30),  # 巡检之后
+                trigger = CronTrigger(hour=21, minute=30, timezone=timezone),  # 巡检之后
                 id      = "daily_trading",
                 name    = "每日数据摄取 + 交易循环",
                 replace_existing = True,
@@ -163,7 +164,7 @@ def create_scheduler(
             # Task 8.2：每月 1 号成本模型校准（产出建议报告，不自动改 CostParams）
             sched.add_job(
                 monthly_cost_calibration_job,
-                trigger = CronTrigger(day=1, hour=22, minute=0),
+                trigger = CronTrigger(day=1, hour=22, minute=0, timezone=timezone),
                 id      = "monthly_cost_calibration",
                 name    = "每月成本模型校准（建议报告）",
                 replace_existing = True,
@@ -177,7 +178,7 @@ def create_scheduler(
         if settings.enable_discovery:
             sched.add_job(
                 nightly_discovery_job,
-                trigger = CronTrigger(hour=23, minute=0),   # 收盘 + 交易循环之后
+                trigger = CronTrigger(hour=23, minute=0, timezone=timezone),   # 收盘 + 交易循环之后
                 id      = "nightly_discovery",
                 name    = "每晚自主因子发现",
                 replace_existing = True,

@@ -34,7 +34,7 @@ def test_discovery_runs_without_user_hypothesis_and_saves_candidates(tmp_path):
     # 小 GP 参数，1 个家族，跑得快
     eng = DiscoveryEngine(n_families=1, pop_size=8, n_generations=1,
                           n_optuna_trials=1, oos_ratio=0.3, seed=42)
-    report = eng.run(_trending_dataset(), store=store, save=True)
+    report = eng.run(_trending_dataset(), store=store, save=True, auto_validate=False)
 
     assert isinstance(report, DiscoveryReport)
     assert report.regime in ("bull", "bear", "high_vol", "sideways")
@@ -55,9 +55,25 @@ def test_discovery_dedupes_within_run(tmp_path):
     store = AlphaStore(db_url=f"sqlite:///{tmp_path/'disc2.db'}")
     eng = DiscoveryEngine(n_families=2, pop_size=8, n_generations=1,
                           n_optuna_trials=1, oos_ratio=0.3, seed=1)
-    report = eng.run(_trending_dataset(seed=3), store=store, save=True)
+    report = eng.run(_trending_dataset(seed=3), store=store, save=True, auto_validate=False)
     dsls = [c.dsl for c in report.candidates]
     assert len(dsls) == len(set(dsls))                  # 本轮无重复 DSL
+
+
+def test_discovery_auto_validate_runs_gate(tmp_path):
+    """auto_validate=True：每个候选自动跑验证门，落 gate 结果；通过者升 VALIDATED。"""
+    from app.db.alpha_store import AlphaStore
+    store = AlphaStore(db_url=f"sqlite:///{tmp_path/'disc3.db'}")
+    eng = DiscoveryEngine(n_families=1, pop_size=8, n_generations=1,
+                          n_optuna_trials=1, oos_ratio=0.3, seed=42)
+    report = eng.run(_trending_dataset(), store=store, save=True, auto_validate=True)
+    assert report.n_candidates >= 1
+    for c in report.candidates:
+        assert c.gate is not None                       # 验证门确实跑过
+        assert isinstance(c.validated, bool)
+        # 状态与门结论一致
+        st = store.get_by_id(c.alpha_id).status
+        assert st == ("validated" if c.validated else "candidate")
 
 
 def test_scheduler_registers_discovery_job(monkeypatch):

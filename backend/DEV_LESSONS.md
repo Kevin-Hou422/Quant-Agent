@@ -60,3 +60,15 @@
 
 - **结论**：号称"机器精度"的对账，往往是约束不 binding 的合成数据下才成立。
 - **防护**：容差断言要在**约束真的生效的真实数据**上验证；报告数字时标清是合成还是真实口径。
+
+## G. APScheduler 的 CronTrigger 默认用本地时区，不是 scheduler 的时区
+
+**2026-08-22** — `BackgroundScheduler(timezone="UTC")` + `CronTrigger(hour=21)`，实际 next_run 却是
+`21:00+08:00`（本地）。因为 **`CronTrigger` 在构造时就把本地时区烘进去了**，不会继承 scheduler
+的 timezone。后果：本该"美股收盘后（21:00 UTC）"跑的任务，在本地 21:00（=13:00 UTC=美股早上）就跑了，
+当天收盘数据还不存在。**只有真跑起来看 next_run 才会发现**（单测只查 job 是否注册，不查时区）。
+
+- **结论**：APScheduler 的 `CronTrigger`/`IntervalTrigger` **必须显式传 `timezone=`**，别指望 scheduler
+  的 timezone 生效。
+- **防护**：每个 trigger 显式 `CronTrigger(..., timezone=timezone)`；启动后断言/核对 `next_run` 的
+  时区偏移是否为预期（+00:00）。
