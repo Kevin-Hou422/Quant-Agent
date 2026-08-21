@@ -94,6 +94,25 @@ export interface AlphaDashboardRow {
   allowed_next:    string[]
 }
 
+/** Phase 9.4: GET /api/alphas/pending — VALIDATED awaiting human approve/reject */
+export interface PendingAlpha {
+  alpha_id:   number
+  dsl:        string
+  hypothesis: string
+  sharpe:     number
+  ic_ir:      number
+}
+
+/** Phase 9.4: GET /api/alphas/{id}/decisions — approval lineage */
+export interface AlphaDecision {
+  decision:    string
+  from_status: string
+  to_status:   string
+  reason:      string
+  actor:       string
+  decided_at:  string
+}
+
 /** Phase 7 (FE-7.4): GET /api/paper/{id}/pnl */
 export interface PaperPnLData {
   alpha_id:      number

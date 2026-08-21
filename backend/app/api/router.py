@@ -1124,6 +1124,104 @@ def alpha_validate(
     )
 
 
+# ---------------------------------------------------------------------------
+# 人工审批工作流（Phase 9.4）——默认模式：agent 走到 VALIDATED，用户只批准/拒绝
+# ---------------------------------------------------------------------------
+
+class ApprovalRequest(BaseModel):
+    reason: str = Field("", max_length=1000)
+    actor:  str = Field("human", max_length=64)
+
+
+class ApprovalResponse(BaseModel):
+    alpha_id:   int
+    decision:   str
+    new_status: str
+
+
+class PendingItem(BaseModel):
+    alpha_id:   int
+    dsl:        str
+    hypothesis: str
+    sharpe:     float
+    ic_ir:      float
+
+
+class DecisionItem(BaseModel):
+    decision:    str
+    from_status: str
+    to_status:   str
+    reason:      str
+    actor:       str
+    decided_at:  str
+
+
+@router.get("/alphas/pending", response_model=List[PendingItem], tags=["Lifecycle"])
+def alphas_pending(store: AlphaStore = Depends(get_store)) -> List[PendingItem]:
+    """待审批队列：VALIDATED 且等待人工 approve/reject 的候选（FE-9 用）。"""
+    rows = store.query(status="validated", limit=500)
+    return [PendingItem(
+        alpha_id=r.id, dsl=r.dsl, hypothesis=r.hypothesis or "",
+        sharpe=r.sharpe or 0.0, ic_ir=r.ic_ir or 0.0,
+    ) for r in rows]
+
+
+@router.post("/alphas/{alpha_id}/approve", response_model=ApprovalResponse, tags=["Lifecycle"])
+def alpha_approve(
+    alpha_id: int,
+    req:      ApprovalRequest = ApprovalRequest(),
+    store:    AlphaStore = Depends(get_store),
+) -> ApprovalResponse:
+    """批准 VALIDATED→PAPER（默认模式的人工决策点）。仅 VALIDATED 可批准。"""
+    from app.db.alpha_lifecycle import IllegalTransition
+
+    record = store.get_by_id(alpha_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Alpha id={alpha_id} 不存在")
+    if str(record.status) != "validated":
+        raise HTTPException(status_code=409, detail=f"仅 VALIDATED 可批准，当前={record.status}")
+    from_status = str(record.status)
+    try:
+        store.update_status(alpha_id, "paper")
+    except IllegalTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    store.record_decision(alpha_id, "approve", from_status, "paper", req.reason, req.actor)
+    return ApprovalResponse(alpha_id=alpha_id, decision="approve", new_status="paper")
+
+
+@router.post("/alphas/{alpha_id}/reject", response_model=ApprovalResponse, tags=["Lifecycle"])
+def alpha_reject(
+    alpha_id: int,
+    req:      ApprovalRequest = ApprovalRequest(),
+    store:    AlphaStore = Depends(get_store),
+) -> ApprovalResponse:
+    """拒绝 → RETIRED（带原因存入谱系）。可拒绝 CANDIDATE 或 VALIDATED。"""
+    from app.db.alpha_lifecycle import IllegalTransition
+
+    record = store.get_by_id(alpha_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Alpha id={alpha_id} 不存在")
+    if str(record.status) not in ("candidate", "validated"):
+        raise HTTPException(
+            status_code=409, detail=f"仅 CANDIDATE/VALIDATED 可拒绝，当前={record.status}")
+    from_status = str(record.status)
+    try:
+        store.update_status(alpha_id, "retired")
+    except IllegalTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    store.record_decision(alpha_id, "reject", from_status, "retired", req.reason, req.actor)
+    return ApprovalResponse(alpha_id=alpha_id, decision="reject", new_status="retired")
+
+
+@router.get("/alphas/{alpha_id}/decisions", response_model=List[DecisionItem], tags=["Lifecycle"])
+def alpha_decisions(alpha_id: int, store: AlphaStore = Depends(get_store)) -> List[DecisionItem]:
+    """某因子的审批谱系（append-only）。"""
+    return [DecisionItem(
+        decision=d.decision, from_status=d.from_status, to_status=d.to_status,
+        reason=d.reason or "", actor=d.actor or "", decided_at=str(d.decided_at),
+    ) for d in store.get_decisions(alpha_id)]
+
+
 @router.get("/scheduler/status", tags=["Lifecycle"])
 def scheduler_status() -> dict:
     """FE-5.3：调度器运行状态与任务列表。"""

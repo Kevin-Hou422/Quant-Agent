@@ -68,6 +68,29 @@ def daily_trading_job() -> None:
         logger.warning("[daily_trading_job] 摄取被拒（%s）→ 已跳过交易循环", out.get("reject_reason"))
 
 
+def nightly_discovery_job() -> None:
+    """Phase 9.2：收盘后自主因子发现。观察市场 → GP → 赢家存为 CANDIDATE（不依赖用户假设）。"""
+    from app.core.data_engine.dataset_registry import load_registry_dataset
+    from app.core.discovery.discovery_engine import DiscoveryEngine
+    from app.config import settings
+
+    try:
+        ds = load_registry_dataset(
+            settings.discovery_dataset,
+            start=settings.discovery_start, end=settings.discovery_end,
+            health_check=False,
+        )
+    except Exception as exc:
+        logger.error("[nightly_discovery_job] 数据加载失败，跳过本轮: %s", exc)
+        return
+
+    report = DiscoveryEngine().run(ds.data, save=True)
+    logger.info(
+        "[nightly_discovery_job] regime=%s | 家族=%s | 新增 %d 个 CANDIDATE",
+        report.regime, report.families, report.n_candidates,
+    )
+
+
 def monthly_cost_calibration_job() -> None:
     """Task 8.2：每月对上月成交做成本模型校准，产出建议报告（**不自动改 CostParams**）。"""
     from datetime import date, timedelta
@@ -147,6 +170,20 @@ def create_scheduler(
             )
     except Exception as exc:
         logger.warning("[scheduler] 注册 paper trading 任务失败: %s", exc)
+
+    # Phase 9.2：自主因子发现（默认关闭，ENABLE_DISCOVERY=true 时注册）
+    try:
+        from app.config import settings
+        if settings.enable_discovery:
+            sched.add_job(
+                nightly_discovery_job,
+                trigger = CronTrigger(hour=23, minute=0),   # 收盘 + 交易循环之后
+                id      = "nightly_discovery",
+                name    = "每晚自主因子发现",
+                replace_existing = True,
+            )
+    except Exception as exc:
+        logger.warning("[scheduler] 注册 nightly_discovery 失败: %s", exc)
     return sched
 
 

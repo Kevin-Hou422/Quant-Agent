@@ -66,5 +66,17 @@ class Settings(BaseSettings):
     # 每日摄取通过健康门的数据按 (field, date, as_of) 追加进此目录，历史只追加不修改
     pit_store_dir: str = "pit_store"
 
+    # ── 自主度（Phase 9.4）────────────────────────────────────────────────
+    # manual = 默认模式：VALIDATED→PAPER 由人工 approve/reject 把关（用户只批准或拒绝）
+    # auto   = 全自动：VALIDATED→PAPER 由规则/红队自动决定（Phase 13.3 才真正启用）
+    autonomy_mode: str = "manual"
+
+    # ── 自主发现（Phase 9.2）──────────────────────────────────────────────
+    # 默认关闭：设 ENABLE_DISCOVERY=true 后，调度器注册每晚的自主因子发现任务
+    enable_discovery: bool = False
+    discovery_dataset: str = "us_broad_large"
+    discovery_start:   str = "2021-01-01"
+    discovery_end:     str = "2024-01-01"
+
 
 settings = Settings()

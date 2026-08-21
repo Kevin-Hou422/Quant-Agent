@@ -8,6 +8,7 @@ import {
   apiFetchPaperPnL,
 } from '../../api/client'
 import type { AlphaDashboardRow, ICHistoryData, SchedulerStatus, PaperPnLData } from '../../types'
+import ApprovalQueue from './ApprovalQueue'
 
 /**
  * FE-5.1/5.2/5.3: Alpha lifecycle dashboard.
@@ -179,6 +180,8 @@ export default function AlphaDashboard() {
       <div className="flex-1 flex min-h-0">
         {/* Card list */}
         <div className="w-[420px] shrink-0 overflow-y-auto border-r border-slate-800 p-3 flex flex-col gap-2">
+          {/* FE-9: 待批准队列（默认模式的人机接口）*/}
+          <ApprovalQueue onChange={refresh} />
           {rows.length === 0 && !loading && (
             <div className="text-center text-slate-600 text-xs mt-8">
               No tracked alphas yet.<br />Run a backtest or GP optimize to populate the ledger.

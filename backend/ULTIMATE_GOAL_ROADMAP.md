@@ -78,24 +78,28 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（Alpac
 
 **目标**：agent 用价量观察自主挖因子 → 走分级生命周期 → 自动验证门 → **默认由人批准/拒绝**。
 
-> **进度（2026-08-20）**：9.3 ✅ 完成（先行落地，作分级地基）。其余 9.1/9.2/9.4 待做。
+> **进度（2026-08-22）**：Phase 9 **全部完成**（9.1/9.2/9.3/9.4 + FE-9）。新增 22 项后端测试
+> （observer 4 + discovery 4 + validation_gate 7 + approval 7），前端 tsc 干净、94 项通过。
 
-- **9.1 市场观察引擎** — 新建 `app/core/discovery/market_observer.py`：从 OHLCV 算市场状态
-  特征（复用 `RegimeDetector`；截面收益离散度；动量/反转广度；波动状态；`AlphaPool` 各因子
-  家族的滚动 IC/Sharpe）→ 输出**结构化的"假设方向"对象**（非用户文本）。
-- **9.2 自主发现编排器** — 新建 `app/core/discovery/discovery_engine.py` + `scheduler.py`
-  注册 `nightly_discovery_job`：观察市场 → 派生 N 个假设 → 每个跑 `GenerationWorkflow`（复用）
-  → `AlphaPool` 去重 → 赢家写为 **CANDIDATE**（修掉"直接写 ACTIVE"）。
+- **9.1 市场观察引擎 ✅** — 已建 `app/core/discovery/market_observer.py`（`MarketObserver`）：从 OHLCV
+  算 regime（复用 `RegimeDetector`）+ 截面离散度 + 动量/反转广度 + 短期反转自相关 + 波动水平 →
+  输出**按分数排序的结构化"假设方向"**（6 个有效 GP 家族，非用户文本）。确定性可复现。
+- **9.2 自主发现编排器 ✅** — 已建 `app/core/discovery/discovery_engine.py`（`DiscoveryEngine`）：
+  观察 → top 家族名（数据驱动）驱动 `GenerationWorkflow`（复用）→ 本轮 DSL 去重 → 赢家存为
+  **CANDIDATE**；`scheduler.py` 注册 `nightly_discovery_job`（`ENABLE_DISCOVERY=true`，每晚 23:00）。
+  LLM 不参与，可无 key 运行。
 - **9.3 自动验证门 ✅（2026-08-20）** — 已建 `app/core/lifecycle/validation_gate.py`（`ValidationGate`：
   WalkForward 全折 OOS>0 via `min_oos_sharpe` + DSR>0.90，真实数据，**fail-closed**）；
   端点 `POST /api/alphas/{id}/validate`（通过则状态机 CANDIDATE→VALIDATED）；创建路径全部改为
   CANDIDATE 起步（`AlphaResult` 默认 + router 5 处 + alpha_agent 1 处），并同步修 test_phase5 相应用例。
   新增 `test_phase9_validation_gate.py`（7 项）。
-- **9.4 人工批准/拒绝工作流（默认）** — 新增 `POST /api/alphas/{id}/approve` +`/reject`
-  （批准 VALIDATED→PAPER；拒绝→RETIRED 带原因）+ 谱系记录；前端 Live 仪表板加"待批准队列"。
-  配置 `autonomy_mode: manual|auto`（默认 manual = 人把关；auto 见 Phase 13）。
-- **验收**：nightly job 离线跑出 CANDIDATE（零用户文本）；验证门自动升 VALIDATED；approve
-  升 PAPER；除批准点外全程无人值守。原 Workflow A/B 仍可用。
+- **9.4 人工批准/拒绝工作流（默认）✅** — 已加 `POST /api/alphas/{id}/approve`（VALIDATED→PAPER）
+  + `/reject`（CANDIDATE/VALIDATED→RETIRED 带原因）+ `GET /alphas/pending`（待批准队列）+
+  `GET /alphas/{id}/decisions`（审批谱系）；新增 `alpha_decisions` append-only 表；配置
+  `autonomy_mode: manual|auto`（默认 manual；auto 见 Phase 13）。**FE-9**：`ApprovalQueue.tsx`
+  挂到 `AlphaDashboard`，批准/拒绝按钮 + 谱系；`client.ts` 加 pending/approve/reject/decisions/validate。
+- **验收 ✅**：`DiscoveryEngine.run(dataset)` 零用户文本产出 CANDIDATE；验证门端点升 VALIDATED；
+  approve 升 PAPER；除批准点外全程无人值守。原 Workflow A/B 仍可用。
 
 ---
 
@@ -224,12 +228,10 @@ fetch/SSE、`components/analysis/*` 图表、`AlphaDashboard`。**前端只读 +
 - **FE-8（补现有缺口，可选）**：成本校准报告视图——展示 `monthly_cost_calibration_job` 产出的
   impact_coef 建议与隔夜缺口分布（只读，人工据此手动改 `CostParams`）。需后端加一个只读端点
   暴露最近校准报告。
-- **FE-9 审批与自主发现可视化**（配 Phase 9，**最关键**）：
-  - **待批准队列**：VALIDATED 候选列表 + WalkForward/DSR/t 门槛结果 + **批准/拒绝按钮**
-    （调 `POST /api/alphas/{id}/approve|reject`），这是"默认模式"的人机接口。
-  - **自主发现观测台**：nightly_discovery_job 每晚产出的候选、市场观察摘要（regime/离散度/
-    家族滚动表现）、被验证门刷掉的原因。
-  - 生命周期看板扩展：CANDIDATE→VALIDATED→PAPER 分级状态与谱系。
+- **FE-9 审批队列 ✅（2026-08-22，配 Phase 9.4）**：`ApprovalQueue.tsx` 挂到 `AlphaDashboard`——
+  待批准队列（VALIDATED 列表 + Sharpe/IC-IR）+ **批准/拒绝按钮**（`approve|reject`，拒绝填原因），
+  这是"默认模式"的人机接口。**待补（后续）**：自主发现观测台（每晚候选 + 市场观察摘要 +
+  被验证门刷掉的原因）、谱系时间线可视化。
 - **FE-10 另类数据浏览**（配 Phase 10）：DatasetView 增加基本面/财报字段浏览 + **发布时点(as_of)**
   标注；因子详情显示其用到的稀疏字段与可见期。
 - **FE-11 前向数据状态**（配 Phase 11）：每日增量摄取状态、PIT 逐日增长指标、美股日历/最新 bar

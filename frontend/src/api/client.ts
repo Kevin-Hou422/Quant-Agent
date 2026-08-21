@@ -3,6 +3,7 @@ import type {
   SimulationConfig, SimResult, AlphaRecord, BacktestRunResponse,
   WorkflowResponse, DatasetInfo, WalkForwardResult, DatasetHealth,
   RegimeInfo, AlphaDashboardRow, ICHistoryData, SchedulerStatus, PaperPnLData,
+  PendingAlpha, AlphaDecision,
 } from '../types'
 
 const http = axios.create({ baseURL: '/api', timeout: 120_000 })
@@ -45,6 +46,31 @@ export const apiPatchAlphaStatus = (alphaId: number, status: string) =>
 
 export const apiFetchSchedulerStatus = () =>
   http.get<SchedulerStatus>('/scheduler/status')
+
+// ── Phase 9.4: 人工审批工作流（待批准队列 + approve/reject + 谱系）──────────
+export const apiFetchPending = () =>
+  http.get<PendingAlpha[]>('/alphas/pending')
+
+export const apiApproveAlpha = (alphaId: number, reason = '') =>
+  http.post<{ alpha_id: number; decision: string; new_status: string }>(
+    `/alphas/${alphaId}/approve`, { reason },
+  )
+
+export const apiRejectAlpha = (alphaId: number, reason = '') =>
+  http.post<{ alpha_id: number; decision: string; new_status: string }>(
+    `/alphas/${alphaId}/reject`, { reason },
+  )
+
+export const apiFetchDecisions = (alphaId: number) =>
+  http.get<AlphaDecision[]>(`/alphas/${alphaId}/decisions`)
+
+// Phase 9.3: run the validation gate on a CANDIDATE (may take a while — real backtest)
+export const apiValidateAlpha = (alphaId: number, datasetName?: string) =>
+  http.post<{ alpha_id: number; passed: boolean; new_status: string; result: Record<string, unknown> }>(
+    `/alphas/${alphaId}/validate`,
+    null,
+    { params: datasetName ? { dataset_name: datasetName } : {}, timeout: 300_000 },
+  )
 
 // Phase 7 (FE-7.4): paper trading PnL / equity curve
 export const apiFetchPaperPnL = (alphaId: number) =>

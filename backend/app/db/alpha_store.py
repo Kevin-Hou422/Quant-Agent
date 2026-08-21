@@ -65,6 +65,20 @@ class AlphaICRecord(_Base):
     recorded_at:     datetime = Column(DateTime, default=datetime.utcnow)
 
 
+class AlphaDecision(_Base):
+    """Phase 9.4：审批/拒绝决策谱系（append-only，可审计）。"""
+    __tablename__ = "alpha_decisions"
+
+    id:          int      = Column(Integer, primary_key=True, autoincrement=True)
+    alpha_id:    int      = Column(Integer, nullable=False, index=True)
+    decision:    str      = Column(String(16), nullable=False)   # approve | reject | auto_approve
+    from_status: str      = Column(String(32), default="")
+    to_status:   str      = Column(String(32), default="")
+    reason:      str      = Column(Text, default="")
+    actor:       str      = Column(String(64), default="human")  # human | system(auto)
+    decided_at:  datetime = Column(DateTime, default=datetime.utcnow)
+
+
 # ---------------------------------------------------------------------------
 # Input dataclass
 # ---------------------------------------------------------------------------
@@ -175,6 +189,36 @@ class AlphaStore:
             record.status = new_status.strip().lower()
             session.commit()
             return record
+
+    # ------------------------------------------------------------------
+    # Phase 9.4：审批/拒绝决策谱系（append-only）
+    # ------------------------------------------------------------------
+
+    def record_decision(
+        self,
+        alpha_id:    int,
+        decision:    str,               # approve | reject | auto_approve
+        from_status: str,
+        to_status:   str,
+        reason:      str = "",
+        actor:       str = "human",
+    ) -> None:
+        with self._Session() as session:
+            session.add(AlphaDecision(
+                alpha_id=alpha_id, decision=decision,
+                from_status=from_status, to_status=to_status,
+                reason=reason, actor=actor,
+            ))
+            session.commit()
+
+    def get_decisions(self, alpha_id: int) -> List[AlphaDecision]:
+        """按时间升序返回某因子的审批谱系。"""
+        with self._Session() as session:
+            return list(session.scalars(
+                select(AlphaDecision)
+                .where(AlphaDecision.alpha_id == alpha_id)
+                .order_by(AlphaDecision.decided_at)
+            ))
 
     # ------------------------------------------------------------------
     # Task 5.1：IC 历史（AlphaMonitor 写入/读取）
