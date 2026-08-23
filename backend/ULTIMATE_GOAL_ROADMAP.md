@@ -63,6 +63,37 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（Alpac
 - **多 agent 仅按触发条件引入**（目标对立/信息隔离/时间尺度不同）；红队是最早有回报的角色。
 - 保留原有用户假设 Workflow A/B（加法，不替换）。
 
+> **⚠️ 方法论警示（外部评估 2026-08-22 核实）**：当前所有回测数字**不是"偏乐观"，而是"方向不明"**——
+> 幸存者偏差 + OOS 被选择性挖掘的联合效应，符号与大小都无法估计（可能把 Sharpe −0.2 显示成 1.5）。
+> **在完成下面的 Phase S 前，不应对任何回测数字做任何决策解读**（含 paper 期的历史回放段）。
+
+---
+
+## Phase S — 数据与统计地基修正（**P0 · 阻塞项 · 最高优先级，先于除 PM 外一切**）
+
+**为什么**：外部评估（逐行核实无误）指出三个致命问题，使目前**所有回测数字失去决策意义**。这些不是
+"补强"，是"不修则一切数字无效"。工程和治理已达机构级，短板在**数据真实性 + 统计诚实性**。
+
+- **S.1 去掉 fitness 的 OOS 选择**（成本极低、影响最大）—— 现状 `gp_engine/fitness.py`
+  `fitness = sharpe_oos − 0.2·turnover − 0.3·dd − 0.5·max(0, is−oos)`，**直接按 OOS 择优 → OOS 退化为
+  第二个样本内**，后面的 WalkForward/DSR 沦为循环论证。改：适应度只用 **IS 内部 purged K-fold CV** 均值；
+  **OOS 只汇报、绝不参与选择**。验收：GP 选择过程不接触 OOS/test 段（代码断言）。
+- **S.2 全路径强制真 holdout**（修文档-代码不符，且不符方向是高估）—— 现状真三段切割只在 `agent/_tools.py`；
+  `GenerationWorkflow._partition`、`/api/backtest/*`、`ValidationGate` 全是两段 IS/OOS，**无冻结 test**。
+  改：三段切割**全路径强制**；test 段取**最近 2–3 年冻结**、一次性使用；`RunManifest` 记录"该 test 段
+  已被使用 N 次"，超阈值告警。验收：发现/验证任一路径都无法在未记账的情况下触碰 test 段。
+- **S.3 全局多重检验计数器**（跨会话持久化）—— 现状 `ValidationGate` 的 `n_trials` 默认 1（最宽松），
+  DSR 系统性低估膨胀。改：持久化**跨会话/跨 GP run/跨 Optuna** 的累计 trial 数，DSR 用真实累计数；
+  补 **PBO（回测过拟合概率）+ CPCV**，新因子门槛 **t≥3.0**（Harvey-Liu-Zhu）。（吸收原 Phase R.1。）
+- **S.4 换含退市收益的价格数据源**（根治幸存者偏差）—— 现状硬编码存活股池、且为"数据干净"**主动剔除**
+  退市/被并购股（SQ/FI/DFS/ABC/PXD），使回测系统性偏乐观；"PIT 从启动日前向积累"需 5–10 年、对当下
+  结论无帮助。改：接**含 delisting return + PIT 复权因子**的源（Sharadar SEP+SF1 ~$50/月 / CRSP），
+  universe 用**逐日历史成分**（动态、含退市）。这比 Phase 10（另类数据）更基础，是价格层的地基。
+  验收：同一因子在"含退市"universe 上重跑，结论与幸存者池显著不同即证明偏差被消除。
+
+**依赖/次序**：S 是**所有回测结论的前置**；与 Phase PM（组合层）并列为两大最高优先级——PM 补"操作"轴，
+S 补"数字可信"轴。S.4 数据成本 ~35% 工作量占比，是本层重头。
+
 ---
 
 ## Phase 8 —（✅ 已完成 2026-08-19，作地基）PIT 数据层与验证运营
@@ -224,7 +255,9 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（Alpac
 （该评估另建议的 Golden Benchmark 与 R-N1 可复现性，**已完成**——见
 `tests/golden/test_golden_backtest.py`、`gp_engine/_rng.py`，此处不再列。）
 
-- **R.1 高级验证工具（最便宜，直接强化项目最强的"验证"环）**
+- **R.1 高级验证工具 → 已升级为 Phase S.3（P0）**：外部评估指出这些不是"补强"而是"地基"（缺则
+  DSR 被系统性低估、验证门循环论证），故整体提级到 Phase S.3，并追加**全局跨会话 trial 计数器**。
+  下列内容即 S.3 明细：
   - **PBO（回测过拟合概率，Bailey et al. 2015）** — 与已有 DSR 互补：DSR 校正单个夏普，PBO
     检验"筛选流程本身是否导致过拟合"。新建 `app/core/backtest_engine/overfit_stats.py`。
   - **Purged K-Fold CV / CPCV**（López de Prado）— 扩展现有 `WalkForwardBacktester`：训练/测试
@@ -302,17 +335,19 @@ fetch/SSE、`components/analysis/*` 图表、`AlphaDashboard`。**前端只读 +
 ## 依赖关系（执行顺序）
 
 ```
-Phase 8（PIT 地基）── 必须先做
-  ├─→ Phase 9（自主发现 + 生命周期门 + 批准）── 可与 8 并行启动，9.3 依赖回测
-  ├─→ Phase 10（另类数据）── 依赖 8.1 PIT
+Phase S（数据与统计地基）★★ P0 阻塞 ── 所有回测结论的前置；未完成前任何数字不可解读
+  S.1 去 OOS 选择 · S.2 全路径 holdout · S.3 全局 trial 计数+PBO(吸收R.1) · S.4 换含退市数据源
+Phase 8（PIT 地基，✅）
+  ├─→ Phase 9（自主发现 + 生命周期门 + 批准，✅）
+  ├─→ Phase 10（另类数据）── 依赖 8.1 PIT（价格层地基见 S.4，先于 10）
   └─→ Phase 11（前向增量）── 依赖 8.1 PIT
-Phase PM（组合与资金管理层）★ ── 依赖 9（有 PAPER 因子），**优先于 10/11**；收拢 R.2/R.3/R.4 进 live
+Phase PM（组合与资金管理层）★ ── 依赖 9（有 PAPER 因子）；与 S 并列最高优先级；收拢 R.2/R.3/R.4 进 live
 Phase 12（Alpaca 执行）── 依赖 PM（消费其美元账本下单）+ 11（前向数据更佳）
 Phase 13（多 agent + 全自动）── 依赖 9（发现产量）+ 12（执行）
 Phase 14 ── 长期验证期
 
 Phase R（研究可信度补强，横向层，与 9–12 并行；R.2/R.3/R.4 由 Phase PM 收拢进 live 路径）
-  R.1 高级验证 ── 尽早，接入 Phase 9.3 验证门
+  R.1 高级验证 ── **已升级并入 Phase S.3（全局 trial 计数 + PBO/CPCV + t≥3.0），提为 P0**
   R.2 Barra-lite 风险模型 ── 是"风格中性化增强 + 归因（Phase 14/Brinson）"的前置；beta 闭合并入 PM.5
   R.3 容量曲线 ── 落地为 PM.2（容量建模）
   R.4 组合优化升级 ── 并入 PM.1/PM.3（合成 + 配资的优化）
