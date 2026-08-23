@@ -74,14 +74,14 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（Alpac
 **为什么**：外部评估（逐行核实无误）指出三个致命问题，使目前**所有回测数字失去决策意义**。这些不是
 "补强"，是"不修则一切数字无效"。工程和治理已达机构级，短板在**数据真实性 + 统计诚实性**。
 
-- **S.1 去掉 fitness 的 OOS 选择**（成本极低、影响最大）—— 现状 `gp_engine/fitness.py`
-  `fitness = sharpe_oos − 0.2·turnover − 0.3·dd − 0.5·max(0, is−oos)`，**直接按 OOS 择优 → OOS 退化为
-  第二个样本内**，后面的 WalkForward/DSR 沦为循环论证。改：适应度只用 **IS 内部 purged K-fold CV** 均值；
-  **OOS 只汇报、绝不参与选择**。验收：GP 选择过程不接触 OOS/test 段（代码断言）。
-- **S.2 全路径强制真 holdout**（修文档-代码不符，且不符方向是高估）—— 现状真三段切割只在 `agent/_tools.py`；
-  `GenerationWorkflow._partition`、`/api/backtest/*`、`ValidationGate` 全是两段 IS/OOS，**无冻结 test**。
-  改：三段切割**全路径强制**；test 段取**最近 2–3 年冻结**、一次性使用；`RunManifest` 记录"该 test 段
-  已被使用 N 次"，超阈值告警。验收：发现/验证任一路径都无法在未记账的情况下触碰 test 段。
+- **S.1 去掉 fitness 的 OOS 选择 ✅（发现路径，2026-08-24）** —— 现状 `gp_engine/fitness.py`
+  `fitness = sharpe_oos − …` **直接按 OOS 择优 → OOS 退化为第二个样本内**。已改：`GenerationWorkflow`
+  用三段切割，GP 只在 **Validate** 段做适应度选择，**Test 段全程不可见**（`_partition_three_way` +
+  赢家在 Test 上汇报 `test_sharpe`/`held_out_test`）。**待补**：`/api/backtest/*` 直接回测路径、
+  以及把适应度换成 IS 内部 purged K-fold CV（当前 Validate 是单段内部验证，已足以去除循环论证）。
+- **S.2 全路径强制真 holdout ◑（发现路径已做，2026-08-24）** —— 已给 `GenerationWorkflow` 加真
+  held-out Test（GP 不可见、仅汇报）。**待补**：`/api/backtest/*`、`ValidationGate` 也走三段；test 段
+  改**最近 2–3 年冻结、一次性使用**；`RunManifest` 记"该 test 段已用 N 次"超阈值告警。
 - **S.3 全局多重检验计数器**（跨会话持久化）—— 现状 `ValidationGate` 的 `n_trials` 默认 1（最宽松），
   DSR 系统性低估膨胀。改：持久化**跨会话/跨 GP run/跨 Optuna** 的累计 trial 数，DSR 用真实累计数；
   补 **PBO（回测过拟合概率）+ CPCV**，新因子门槛 **t≥3.0**（Harvey-Liu-Zhu）。（吸收原 Phase R.1。）

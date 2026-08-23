@@ -84,3 +84,17 @@
 - **防护**：conftest 加 **autouse session fixture 强制 `settings.enable_* = False`**（已加
   `_hermetic_run_flags`）；更广义地，开发/测试与运行实例**别共用同一工作目录/.env**（本仓库已踩过多次
   cwd 共用坑：scheduler_jobs.db 竞争、.env 泄漏）。
+
+## I. 把 held-out 集喂进选择目标 = 它就不再是样本外了
+
+**2026-08-24**（外部评估指出，Phase S.1 修）— GP 适应度是
+`fitness = sharpe_oos − …`，即**直接按 OOS Sharpe 择优**。跑 100+ 候选全按 OOS 排序 →
+**OOS 段被彻底挖掘，退化为第二个样本内**；后面的 WalkForward/DSR 在被挖过的同一段上"验证"，
+沦为**循环论证**。看起来很严，实际零信息。而且 README 声称"immutable 三段切割"，代码里发现/验证
+路径其实是两段——**文档-代码不符，且不符方向是高估**。
+
+- **结论**：**任何进入选择/优化目标的数据段，都不再是样本外。** 真 held-out 必须对**整个搜索过程
+  不可见**，只在最后汇报一次。
+- **防护**：三段切割 IS/Validate/Test——GP 只在 **Validate** 上选择，**Test 全程不可见**（已加
+  `_partition_three_way` 到发现路径 + 赢家在 Test 上汇报 `test_sharpe`）；更进一步，持久化**跨会话
+  累计 trial 数**喂给 DSR/PBO（Phase S.3），否则多重检验膨胀被系统性低估。

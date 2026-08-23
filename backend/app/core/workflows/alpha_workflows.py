@@ -116,6 +116,44 @@ def _partition(
     return part.train(), part.test()
 
 
+def _fmt(v: Any) -> str:
+    """None-safe 浮点格式化（用于 Test Sharpe 等可能缺失的指标）。"""
+    try:
+        return f"{float(v):.4f}"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
+def _partition_three_way(
+    dataset:    Dict[str, Any],
+    oos_ratio:  float = 0.30,
+    test_ratio: float = 0.15,
+) -> Tuple[Dict, Dict, Dict]:
+    """
+    三段式时间切割 IS / Validate / Test（Phase S.1+S.2）。
+
+    时序无洗牌、无泄漏：
+        IS       [0, n_is)             — GP 结构搜索 + Optuna 参数调优
+        Validate [n_is, n_is+n_val)    — **GP 适应度评估的"OOS"（内部验证）**
+        Test     [n_is+n_val, n)       — **真实样本外，GP 全程不可见，仅最终汇报**
+
+    这修复了旧两段切割下"GP 直接按真实 OOS 择优 → OOS 退化为第二个样本内"的循环论证：
+    现在 GP 只在 Validate 上选择，Test 从不参与选择。数据不足以三段时抛 ValueError。
+    """
+    ref  = next(iter(dataset.values()))
+    n    = len(ref)
+    n_test = max(1, int(n * test_ratio))
+    n_val  = max(1, int(n * oos_ratio) - n_test)
+    n_is   = n - n_val - n_test
+    if n_is < 20:
+        raise ValueError(f"数据不足以三段切割: n={n}, n_is={n_is}, n_val={n_val}, n_test={n_test}")
+
+    def _slice(a: int, b: int) -> Dict[str, Any]:
+        return {field: df.iloc[a:b] for field, df in dataset.items()}
+
+    return _slice(0, n_is), _slice(n_is, n_is + n_val), _slice(n_is + n_val, n)
+
+
 def _quick_metrics(
     dsl:      str,
     is_data:  Dict,
@@ -588,6 +626,7 @@ class GenerationWorkflow:
         n_seed_dsls:     int   = 12,
         oos_ratio:       float = 0.30,
         seed:            int   = 42,
+        test_ratio:      float = 0.15,
     ) -> None:
         self._pop_size    = pop_size
         self._n_gen       = n_generations
@@ -595,6 +634,8 @@ class GenerationWorkflow:
         self._n_seeds     = n_seed_dsls
         self._oos_ratio   = oos_ratio
         self._seed        = seed
+        # Phase S.2：Test 段占比（held-out，GP 全程不可见，仅最终汇报诚实数字）
+        self._test_ratio  = test_ratio
 
     def run(
         self,
@@ -614,8 +655,15 @@ class GenerationWorkflow:
         _emit(f'[Workflow A] Hypothesis: "{hypothesis[:80]}"')
         _emit(f"[Workflow A] Generating {self._n_seeds} diverse seed DSLs...")
 
-        # Step 1: IS/OOS partition
-        is_data, oos_data = _partition(dataset, self._oos_ratio)
+        # Step 1: 三段切割 IS / Validate / Test（Phase S.1+S.2）
+        # GP 只在 Validate 上做适应度选择；Test 为 held-out，GP 全程不可见，仅最终汇报。
+        try:
+            is_data, oos_data, test_data = _partition_three_way(
+                dataset, self._oos_ratio, self._test_ratio)
+        except ValueError:
+            # 数据太短无法三段 → 退回两段（无 held-out test；仅在极小数据集/测试中发生）
+            is_data, oos_data = _partition(dataset, self._oos_ratio)
+            test_data = {}
 
         # Step 2: Generate ≥10 diverse seed DSLs
         # R-N1：传入 seed 使种子生成确定性（可复现 + 消除测试顺序敏感）
@@ -659,13 +707,26 @@ class GenerationWorkflow:
 
         m = gp_result.metrics
         oos_s = m.get("oos_sharpe")
+
+        # Phase S.2：在 held-out Test 上评估赢家（GP 全程未见）→ 唯一诚实的样本外数字。
+        # 仅汇报、绝不参与选择（选择已在上面的 Validate 段完成）。
+        if test_data:
+            tm = _quick_metrics(gp_result.best_dsl, test_data, None)
+            m["test_sharpe"]   = tm.get("is_sharpe")     # test_data 作为单段传入 → is_sharpe 即 Test Sharpe
+            m["test_turnover"] = tm.get("turnover")
+            m["held_out_test"] = True
+            _emit(f"[Held-out Test] Sharpe={_fmt(m['test_sharpe'])}（GP 未见，唯一诚实 OOS 数字）")
+        else:
+            m["held_out_test"] = False
+
         _emit(
             f"[Optuna] Fine-tuning complete | "
             f"config: {gp_result.best_config or 'default'}"
         )
         _emit(
             f"[Result] IS Sharpe={m.get('is_sharpe', 0):.4f} | "
-            f"OOS Sharpe={f'{oos_s:.4f}' if oos_s is not None else 'N/A'}"
+            f"Validate Sharpe={f'{oos_s:.4f}' if oos_s is not None else 'N/A'} | "
+            f"Test Sharpe={_fmt(m.get('test_sharpe'))}"
         )
         _emit(
             f"[Result] "
@@ -676,10 +737,10 @@ class GenerationWorkflow:
         explanation = self._explain(hypothesis, gp_result, seed_dsls)
         logger.info("[Workflow A] DONE  best_dsl='%.80s'", gp_result.best_dsl)
 
-        # Task 3.2: combine top-5 pool alphas into a joint signal and evaluate on OOS
-        # (B2 修复：权重在 IS 上拟合，OOS 只用于评估)
+        # Task 3.2: 组合 top-5 池因子并评估。权重在 IS 拟合（B2），评估集用 **held-out Test**
+        # （Phase S.2；无 test 时退回 Validate），使组合指标也是诚实样本外。
         combined_metrics = _combine_pool_alphas(
-            gp_result.pool_top5, oos_data, _emit, is_data=is_data,
+            gp_result.pool_top5, (test_data or oos_data), _emit, is_data=is_data,
         )
 
         return WorkflowResult(
