@@ -114,6 +114,13 @@ class DiscoveryEngine:
                 logger.warning("[discovery] 家族 '%s' GP 失败，跳过: %s", fam, exc)
                 continue
 
+            # S.3：把本轮 GP 试过的策略数累加进全局 trial 计数器（喂给验证门的 DSR 去膨胀）
+            try:
+                from app.db.trial_ledger import TrialLedger
+                TrialLedger().add(self.pop_size * self.n_generations + self.n_optuna_trials)
+            except Exception as exc:  # 计数失败不阻断发现
+                logger.debug("[discovery] trial 计数失败: %s", exc)
+
             dsl = (wf.best_dsl or "").strip()
             if not dsl or dsl in seen:                   # 本轮去重
                 continue
@@ -142,9 +149,8 @@ class DiscoveryEngine:
         """对候选跑验证门；通过则 CANDIDATE→VALIDATED。fail-closed：出错视为不通过。"""
         from app.core.lifecycle.validation_gate import ValidationGate
         try:
-            # DSR 去膨胀的 n_trials ≈ 本轮 GP 试过的策略总数（pop × 代数）
-            n_trials = max(1, self.pop_size * self.n_generations)
-            res = ValidationGate().evaluate(dsl, dataset, n_trials=n_trials)
+            # S.3：不传 n_trials → 验证门用**全局累计** trial 数去膨胀（含本轮，已在上面累加）
+            res = ValidationGate().evaluate(dsl, dataset)
             if res.passed:
                 store.update_status(aid, "validated")
             return res.passed, res.to_dict()

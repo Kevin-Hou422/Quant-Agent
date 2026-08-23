@@ -82,9 +82,11 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（Alpac
 - **S.2 全路径强制真 holdout ◑（发现路径已做，2026-08-24）** —— 已给 `GenerationWorkflow` 加真
   held-out Test（GP 不可见、仅汇报）。**待补**：`/api/backtest/*`、`ValidationGate` 也走三段；test 段
   改**最近 2–3 年冻结、一次性使用**；`RunManifest` 记"该 test 段已用 N 次"超阈值告警。
-- **S.3 全局多重检验计数器**（跨会话持久化）—— 现状 `ValidationGate` 的 `n_trials` 默认 1（最宽松），
-  DSR 系统性低估膨胀。改：持久化**跨会话/跨 GP run/跨 Optuna** 的累计 trial 数，DSR 用真实累计数；
-  补 **PBO（回测过拟合概率）+ CPCV**，新因子门槛 **t≥3.0**（Harvey-Liu-Zhu）。（吸收原 Phase R.1。）
+- **S.3 全局多重检验计数器 ◑（2026-08-24）**—— 已建 `db/trial_ledger.py`（`TrialLedger`：跨会话持久
+  累计 trial 数）；发现每轮 GP 把 `pop×gen+optuna` 累加进去；`ValidationGate` 默认用**全局累计数**做
+  DSR 去膨胀（不再默认 1）+ 新增 **t≥3.0**（Harvey-Liu-Zhu，Lo 2002 t 统计量）门槛。已建 PBO 函数
+  `backtest_engine/overfit_stats.py`（CSCV，Bailey 2015）+ 测试。**待补**：把 PBO 接进发现门（需暴露
+  GP 种群的收益序列矩阵）+ CPCV。（吸收原 Phase R.1。）
 - **S.4 换含退市收益的价格数据源**（根治幸存者偏差）—— 现状硬编码存活股池、且为"数据干净"**主动剔除**
   退市/被并购股（SQ/FI/DFS/ABC/PXD），使回测系统性偏乐观；"PIT 从启动日前向积累"需 5–10 年、对当下
   结论无帮助。改：接**含 delisting return + PIT 复权因子**的源（Sharadar SEP+SF1 ~$50/月 / CRSP），

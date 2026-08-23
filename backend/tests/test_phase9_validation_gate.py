@@ -57,8 +57,8 @@ _MOMENTUM = "rank(ts_mean(returns,20))"
 
 
 def test_strong_signal_passes_walkforward():
-    # 隔离 DSR（阈值设为 0）→ 只考验 WalkForward 全折为正逻辑
-    gate = ValidationGate(n_splits=3, embargo_days=5, dsr_threshold=0.0)
+    # 隔离 DSR（阈值 0）+ t 门槛（0）→ 只考验 WalkForward 全折为正逻辑
+    gate = ValidationGate(n_splits=3, embargo_days=5, dsr_threshold=0.0, min_tstat=0.0)
     res = gate.evaluate(_MOMENTUM, _signal_dataset(), n_trials=1)
     assert isinstance(res, ValidationResult)
     assert res.n_folds >= 3
@@ -93,7 +93,7 @@ def test_result_to_dict_complete():
     gate = ValidationGate(n_splits=3, embargo_days=5, dsr_threshold=0.0)
     d = gate.evaluate(_MOMENTUM, _signal_dataset()).to_dict()
     for k in ("passed", "dsl", "reasons", "n_folds", "min_oos_sharpe",
-              "deflated_sharpe", "n_trials"):
+              "deflated_sharpe", "t_stat", "n_trials"):
         assert k in d
 
 

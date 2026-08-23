@@ -43,7 +43,8 @@ class ValidationResult:
     mean_oos_sharpe: float = 0.0
     pct_folds_positive: float = 0.0
     deflated_sharpe: float = 0.0
-    n_trials:        int = 1
+    t_stat:          float = 0.0        # 夏普 t 统计量（Harvey-Liu-Zhu 门槛用）
+    n_trials:        int = 1            # DSR 去膨胀用的累计 trial 数（S.3：全局）
 
     def to_dict(self) -> dict:
         return {
@@ -53,6 +54,7 @@ class ValidationResult:
             "mean_oos_sharpe": round(self.mean_oos_sharpe, 4),
             "pct_folds_positive": round(self.pct_folds_positive, 4),
             "deflated_sharpe": round(self.deflated_sharpe, 4),
+            "t_stat": round(self.t_stat, 4),
             "n_trials": self.n_trials,
         }
 
@@ -66,6 +68,8 @@ class ValidationGate:
     n_splits      : WalkForward 折数（默认 5，roadmap 要求 ≥5）。
     embargo_days  : IS/OOS 间隔离带（默认 20）。
     dsr_threshold : DSR 阈值（默认 0.90）。
+    min_tstat     : 夏普 t 统计量门槛（Harvey-Liu-Zhu，默认 **3.0**，Phase S.3）。
+    use_global_trials : True 时 DSR 用**全局跨会话累计 trial 数**（S.3），否则用传入 n_trials。
     """
 
     def __init__(
@@ -73,20 +77,35 @@ class ValidationGate:
         n_splits: int = 5,
         embargo_days: int = 20,
         dsr_threshold: float = 0.90,
+        min_tstat: float = 3.0,
+        use_global_trials: bool = True,
     ) -> None:
         self.n_splits = n_splits
         self.embargo_days = embargo_days
         self.dsr_threshold = dsr_threshold
+        self.min_tstat = min_tstat
+        self.use_global_trials = use_global_trials
 
-    def evaluate(self, dsl: str, dataset: WidePanel, n_trials: int = 1) -> ValidationResult:
+    def evaluate(self, dsl: str, dataset: WidePanel, n_trials: Optional[int] = None) -> ValidationResult:
         """
         对 `dsl` 在**真实** `dataset` 上运行验证门。
 
-        n_trials : 产生该候选所试过的策略总数（GP: Σ 各代 pop_size）。用于 DSR 去膨胀——
-                   越大越严格。默认 1（最宽松）；自主发现调用方应传真实计数。
+        n_trials : 显式传入的多重检验计数。None 且 use_global_trials 时，用**全局累计 trial 数**
+                   （S.3：跨会话/GP run/Optuna 的诚实计数，防"上千次里最幸运一次"）。
 
         任一环节抛错 → 判为**不通过**（fail-closed，不静默放行——见 DEV_LESSONS.md §B）。
         """
+        # S.3：DSR 的 n_trials 用全局累计，除非调用方显式指定
+        if n_trials is None:
+            if self.use_global_trials:
+                try:
+                    from app.db.trial_ledger import TrialLedger
+                    n_trials = max(1, TrialLedger().total())
+                except Exception:
+                    n_trials = 1
+            else:
+                n_trials = 1
+
         reasons: List[str] = []
         res = ValidationResult(passed=False, dsl=dsl, n_trials=n_trials)
 
@@ -108,15 +127,18 @@ class ValidationGate:
             logger.warning("[validation_gate] WalkForward 失败 → 判不通过: %s", exc)
             reasons.append(f"WalkForward 执行失败: {exc}")
 
-        # ---- 2. Deflated Sharpe > 阈值 ----
+        # ---- 2. Deflated Sharpe > 阈值（用全局 trial 数去膨胀）+ 夏普 t ≥ 门槛 ----
         try:
-            dsr = self._deflated_sharpe(dsl, dataset, n_trials)
+            dsr, tstat = self._deflated_sharpe_and_tstat(dsl, dataset, n_trials)
             res.deflated_sharpe = float(dsr)
+            res.t_stat = float(tstat)
             if dsr <= self.dsr_threshold:
-                reasons.append(f"DSR {dsr:.3f} ≤ 阈值 {self.dsr_threshold}")
+                reasons.append(f"DSR {dsr:.3f} ≤ 阈值 {self.dsr_threshold}（n_trials={n_trials}）")
+            if tstat < self.min_tstat:
+                reasons.append(f"夏普 t={tstat:.2f} < 门槛 {self.min_tstat}（Harvey-Liu-Zhu）")
         except Exception as exc:  # fail-closed
-            logger.warning("[validation_gate] DSR 计算失败 → 判不通过: %s", exc)
-            reasons.append(f"DSR 计算失败: {exc}")
+            logger.warning("[validation_gate] DSR/t 计算失败 → 判不通过: %s", exc)
+            reasons.append(f"DSR/t 计算失败: {exc}")
 
         res.reasons = reasons
         res.passed = len(reasons) == 0
@@ -142,7 +164,8 @@ class ValidationGate:
         )
         return wf_bt.run(dsl, dataset)
 
-    def _deflated_sharpe(self, dsl: str, dataset: WidePanel, n_trials: int) -> float:
+    def _deflated_sharpe_and_tstat(self, dsl: str, dataset: WidePanel, n_trials: int):
+        """返回 (DSR, 夏普 t 统计量)。t = mean/std·√T（Lo 2002 标准误，忽略自相关）。"""
         from app.core.alpha_engine.dsl_executor import Executor
         from app.core.alpha_engine.signal_processor import SignalProcessor, SimulationConfig
         from app.core.backtest_engine.portfolio_constructor import SignalWeightedPortfolio
@@ -165,4 +188,7 @@ class ValidationGate:
         rets = pd.Series(result.net_returns).dropna()
         if len(rets) < 30 or float(np.nanstd(rets.values)) == 0.0:
             raise ValueError("净收益样本不足或方差为 0，无法计算 DSR")
-        return deflated_sharpe_from_returns(rets, n_trials=n_trials)
+        dsr = deflated_sharpe_from_returns(rets, n_trials=n_trials)
+        mu, sd = float(np.mean(rets.values)), float(np.std(rets.values, ddof=1))
+        t_stat = (mu / sd) * np.sqrt(len(rets)) if sd > 1e-12 else 0.0
+        return dsr, float(t_stat)
