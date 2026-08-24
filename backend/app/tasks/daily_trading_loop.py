@@ -31,6 +31,9 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# Phase PM.4：组合账本用的保留 book id（真实 alpha 的 id 为正自增，0 不冲突）
+PORTFOLIO_BOOK_ID = 0
+
 
 @dataclass
 class AlphaDayResult:
@@ -113,6 +116,93 @@ class DailyTradingLoop:
             report.date_range, report.n_alphas, report.n_alerts, report.n_errors,
         )
         return report
+
+    # ------------------------------------------------------------------
+    # Phase PM.4：组合账本（把全部 paper 因子合成一个真实 AUM 的美元账本来交易）
+    # ------------------------------------------------------------------
+
+    def run_portfolio(self, dataset: Dict[str, pd.DataFrame], aum: Optional[float] = None) -> dict:
+        """
+        把全部 PAPER/ACTIVE/DECAYING 因子经 PortfolioManager 合成**一个组合账本**
+        （多因子净持仓 + 容量约束 + 真实 AUM），在保留 book id=PORTFOLIO_BOOK_ID 下交易。
+        这是"真实交易员账本"侧；per-factor 的 realized IC 监控仍由 run() 负责。
+        """
+        from app.config import settings
+        from app.core.alpha_engine.dsl_executor import Executor
+        from app.core.alpha_engine.signal_processor import SignalProcessor, SimulationConfig
+        from app.core.portfolio_manager.manager import PortfolioManager
+        from app.db.alpha_lifecycle import AlphaStatus, coerce_status
+
+        aum = float(aum) if aum is not None else float(getattr(settings, "paper_aum", 1_000_000.0))
+        prices = dataset.get("close")
+        if prices is None or prices.empty:
+            raise ValueError("dataset 缺少 close")
+        volume = dataset.get("volume")
+        if volume is None:
+            volume = pd.DataFrame(1e6, index=prices.index, columns=prices.columns)
+
+        # 组合成分 = 活跃因子
+        recs = []
+        for rec in self.store.query(limit=500):
+            try:
+                if coerce_status(rec.status) in (AlphaStatus.PAPER, AlphaStatus.ACTIVE, AlphaStatus.DECAYING):
+                    recs.append(rec)
+            except ValueError:
+                continue
+        if not recs:
+            return {"n_factors": 0, "days_processed": 0, "reason": "no active factors"}
+
+        cfg = SimulationConfig(delay=1, decay_window=0, truncation_min_q=0.05, truncation_max_q=0.95)
+        signals: Dict[str, pd.DataFrame] = {}
+        for rec in recs:
+            try:
+                raw = Executor(validate=False).run_expr(rec.dsl, dataset)
+                signals[str(rec.id)] = SignalProcessor(cfg).process(raw)
+            except Exception as exc:
+                logger.warning("[portfolio] 因子 %s 信号失败，剔除组合: %s", rec.id, exc)
+        if not signals:
+            return {"n_factors": 0, "days_processed": 0, "reason": "no valid signals"}
+
+        res = PortfolioManager(aum=aum, method="ic_weighted").build_book(signals, prices, volume)
+        weights, composite = res.weights, res.composite
+
+        # 市场上下文（与 _run_one_alpha 同口径）
+        cols = weights.columns
+        prices_f = prices.reindex(columns=cols).ffill(limit=5).fillna(0.0)
+        volume_f = volume.reindex(columns=cols).ffill(limit=5).fillna(0.0)
+        adv_df = self.broker._liq.compute_adv(volume_f, prices_f)          # noqa: SLF001
+        vol_df = prices_f.pct_change().rolling(20, min_periods=2).std().fillna(0.02)
+        ret_df = prices_f.pct_change()
+        dates  = weights.index
+        cal_years = max((dates[-1] - dates[0]).days / 365.25, 1 / 365.25)
+        tdays = len(dates) / cal_years
+        comp_arr = composite.reindex(columns=cols).to_numpy(dtype=float)
+
+        last = self.broker.store.last_pnl_date(PORTFOLIO_BOOK_ID)
+        n_days = 0
+        equity = self.broker.store.latest_equity(PORTFOLIO_BOOK_ID)
+        for t in range(len(dates)):
+            d = dates[t]
+            if last is not None and d.date() <= last:
+                continue                                  # 幂等续跑
+            pnl = self.broker.step(
+                PORTFOLIO_BOOK_ID, d,
+                target_w=weights.iloc[t], prices_t=prices_f.iloc[t],
+                prices_prev=prices_f.iloc[t - 1] if t > 0 else prices_f.iloc[t],
+                adv_usd=adv_df.iloc[t], daily_vol=vol_df.iloc[t], tdays_per_year=tdays,
+            )
+            if t > 0:
+                ic = _cs_spearman(comp_arr[t - 1], ret_df.iloc[t].to_numpy(dtype=float))
+                if not np.isnan(ic):
+                    self.store.record_ic(PORTFOLIO_BOOK_ID, d, float(ic),
+                                         realized_return=float(pnl.net_ret))
+            equity = pnl.equity
+            n_days += 1
+
+        logger.info("[portfolio] 组合账本 | AUM=%.0f | %d 因子 | %d 交易日 | 末净值=%.4f",
+                    aum, len(signals), n_days, equity)
+        return {"n_factors": len(signals), "days_processed": n_days,
+                "equity": equity, "aum": aum, "combo_weights": res.combo_weights}
 
     # ------------------------------------------------------------------
     # 单因子（隔离）

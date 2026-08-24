@@ -146,7 +146,12 @@ S 补"数字可信"轴。S.4 数据成本 ~35% 工作量占比，是本层重头
 **目标**：在"validated/paper 因子"与"paper 执行"之间插入一个独立的 **PM 层**——把 N 个 alpha 合成一个
 **真实、美元计价、容量感知、风险管理的组合账本**；**审批对象从"因子"升级为"组合级持仓配置"**。
 
-### 第一批（PM 核心：把孤立因子变成一个配资的美元账本）
+### 第一批（PM 核心：把孤立因子变成一个配资的美元账本）✅（2026-08-24）
+
+> 已建 `app/core/portfolio_manager/manager.py`（`PortfolioManager`）：PM.1 合成+净持仓、PM.2 容量
+> （AUM 越大越 binding，water-filling）、PM.3 AUM→具体美元/股数账本；PM.4 `DailyTradingLoop.run_portfolio`
+> 把全部 paper 因子合成**一个组合账本**（book id=0）交易，接入 `run_daily_pipeline`；配置 `paper_aum`。
+> 新增 `test_phase_pm.py`(5)。全免费、不含执行侧（留 Phase 12）。
 
 - **PM.1 多因子合成** — 新建 `app/core/portfolio_manager/combiner.py`（**接入 live 路径**，复用现有
   `AlphaCombiner`：IC-IR 加权 / 等权 / 最小方差）：把多个 paper 因子的信号合成**一个**组合信号，

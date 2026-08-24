@@ -125,8 +125,16 @@ def run_daily_pipeline(dataset_name: str, start: str, end: str) -> Dict[str, Any
         return {"ingest_accepted": False, "reject_reason": ing.reject_reason, "as_of": ing.as_of}
 
     from app.tasks.daily_trading_loop import DailyTradingLoop
-    report = DailyTradingLoop().run(ing.dataset)
+    loop = DailyTradingLoop()
+    report = loop.run(ing.dataset)                       # per-factor：realized IC 监控 + 衰减
+    # Phase PM.4：组合账本（真实 AUM 的美元账本，多因子净持仓 + 容量）
+    try:
+        pf = loop.run_portfolio(ing.dataset)
+    except Exception as exc:                             # 组合账本失败不拖垮 per-factor 监控
+        logger.warning("[daily_pipeline] 组合账本失败（不阻断）: %s", exc)
+        pf = {"n_factors": 0, "days_processed": 0, "error": str(exc)}
     return {
         "ingest_accepted": True, "as_of": ing.as_of, "health_score": ing.health_score,
         "n_alphas": report.n_alphas, "n_alerts": report.n_alerts, "n_errors": report.n_errors,
+        "portfolio": pf,
     }

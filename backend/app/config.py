@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     paper_dataset: str = "us_tech_large"
     paper_start:   str = "2020-01-01"
     paper_end:     str = "2024-01-01"
+    # Phase PM.4：组合账本的真实资金量（容量约束依赖它）
+    paper_aum:     float = 1_000_000.0
 
     # ── Point-in-Time 数据存储（Task 8.1）────────────────────────────────
     # 每日摄取通过健康门的数据按 (field, date, as_of) 追加进此目录，历史只追加不修改
