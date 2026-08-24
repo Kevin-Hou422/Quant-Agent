@@ -34,6 +34,7 @@ with a daily scheduler, and a React/TypeScript OS-style UI with real-time SSE st
 14. [CLI Modes](#14-cli-modes)
 15. [Testing](#15-testing)
 16. [Project Status & Roadmap](#16-project-status--roadmap)
+17. [License, Data & Disclaimer](#17-license-data--disclaimer)
 
 ---
 
@@ -455,3 +456,42 @@ validation-period operating rules live in [backend/OPERATIONS.md](backend/OPERAT
 - **Governing principles** — LLM never in the trading loop, state transitions never as LLM tools,
   alt-data PIT ordering, and when multi-agent is justified:
   [backend/RESEARCH_OPERATING_MODEL.md](backend/RESEARCH_OPERATING_MODEL.md)
+
+---
+
+## 17. License, Data & Disclaimer
+
+> Not legal advice. Consult a professional before commercial use.
+
+### Code license
+This **framework/code** is licensed under the **Apache License 2.0** — permissive
+(free to use, modify, redistribute) with an explicit patent grant. Add a top-level `LICENSE` file
+with the Apache-2.0 text to make it binding. (MIT is a simpler permissive alternative; AGPL-3.0 if
+you specifically want to prevent others from running a closed-source hosted service off it.)
+
+The **edge is separate from the code** and is **never** part of this repository: actual profitable
+factors/alphas, tuned parameters/configs, live position sizing, API keys, and broker credentials
+stay private (see `.gitignore`). Open-sourcing the framework costs nothing; open-sourcing a working
+strategy would crowd it out of existence. If a real edge or a commercial product emerges later,
+move to an **open-core** model (framework open, strategies + "pro" service proprietary) or a
+**source-available** license (e.g., BSL) — narrowing from permissive is easy, the reverse is not.
+
+### Data — bring your own
+This repo ships **no market data**. Data providers carry their own terms:
+- **yfinance / Yahoo** data is for personal research; Yahoo's ToS restricts commercial use and
+  redistribution — **do not** bundle or redistribute it, and do not build a commercial product on it.
+- Paid/academic sources (Sharadar, CRSP, Compustat, …) have strict redistribution limits — **never**
+  commit or ship their data with the code.
+
+Point-in-time / proprietary data you accumulate (`pit_store/`) and all databases (`*.db`) are
+gitignored and stay local. Users must supply their own data and API keys via `backend/.env`.
+
+### Disclaimer
+For **research and educational purposes only**. Nothing here is financial or investment advice.
+Provided **"as is", without warranty of any kind**; backtest and paper-trading results are not
+indicative of future performance and, per the roadmap, are currently research-grade estimates,
+not validated P&L. You are solely responsible for any use, including any real capital at risk.
+
+### Dependencies
+Third-party libraries retain their own licenses (FastAPI, NumPy, pandas, LangChain, React, etc. —
+predominantly MIT / Apache-2.0 / BSD). Verify compatibility before redistribution.
