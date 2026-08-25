@@ -65,8 +65,14 @@ class DailyTradingLoop:
         from app.db.alpha_store import AlphaStore
         from app.core.execution.paper_broker import PaperBroker
         from app.core.monitor.alpha_monitor import AlphaMonitor
+        from app.config import settings
         self.store   = store or AlphaStore()
-        self.broker  = broker or PaperBroker(store=self._shared_position_store())
+        # 单一真实 AUM 来源：PaperBroker 的 initial_capital = settings.paper_aum。
+        # 成本(含固定/最小手续费)与容量都以此计——修掉"PM 用 paper_aum、broker 用自带 1M"的不一致。
+        self.broker  = broker or PaperBroker(
+            store=self._shared_position_store(),
+            initial_capital=float(settings.paper_aum),
+        )
         self.monitor = monitor or AlphaMonitor(self.store)
 
     @staticmethod
@@ -126,14 +132,16 @@ class DailyTradingLoop:
         把全部 PAPER/ACTIVE/DECAYING 因子经 PortfolioManager 合成**一个组合账本**
         （多因子净持仓 + 容量约束 + 真实 AUM），在保留 book id=PORTFOLIO_BOOK_ID 下交易。
         这是"真实交易员账本"侧；per-factor 的 realized IC 监控仍由 run() 负责。
+        **AUM 单一来源** = self.broker.initial_capital(= settings.paper_aum)，PM 容量与 broker
+        成本/容量同口径；未显式传 aum 时默认用它，杜绝口径分叉。
         """
-        from app.config import settings
         from app.core.alpha_engine.dsl_executor import Executor
         from app.core.alpha_engine.signal_processor import SignalProcessor, SimulationConfig
         from app.core.portfolio_manager.manager import PortfolioManager
         from app.db.alpha_lifecycle import AlphaStatus, coerce_status
 
-        aum = float(aum) if aum is not None else float(getattr(settings, "paper_aum", 1_000_000.0))
+        # 单一真实 AUM：默认取 broker 的 initial_capital，保证 PM 容量与 broker 成本/容量同口径
+        aum = float(aum) if aum is not None else float(self.broker.initial_capital)
         prices = dataset.get("close")
         if prices is None or prices.empty:
             raise ValueError("dataset 缺少 close")
