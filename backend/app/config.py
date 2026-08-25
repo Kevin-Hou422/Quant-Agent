@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     # Phase PM.4：组合账本的真实资金量（容量约束依赖它）
     paper_aum:     float = 1_000_000.0
 
+    # ── 交易现实（Phase TR，显式声明的现实事实 T1，非隐藏默认）────────────
+    trading_account_type: str  = "margin"     # cash | margin
+    trading_allow_short:  bool = False        # 暂 long-only（即使 margin 也先不做空）
+    trading_broker:       str  = "moomoo_us"  # 决定佣金/规费档（moomoo 美股佣金免费）
+
     # ── Point-in-Time 数据存储（Task 8.1）────────────────────────────────
     # 每日摄取通过健康门的数据按 (field, date, as_of) 追加进此目录，历史只追加不修改
     pit_store_dir: str = "pit_store"

@@ -189,6 +189,31 @@ S 补"数字可信"轴。S.4 数据成本 ~35% 工作量占比，是本层重头
 
 ---
 
+## Phase TR — 交易现实引擎（Trading Reality）**★ 让"能否赚钱"的答案对散户真实**
+
+**为什么**：财务关键参数(AUM/成本/做空/调仓/数据源)此前是**代码里的机构默认**，悄悄假设"能自由做空 +
+机构级低成本 + 研究/执行同源"，会**扭曲"$10k 散户能否赚钱"的答案**（DEV_LESSONS §J）。本层让系统
+**自己从真实情景 + 免费数据推导**这些，并把"只有交易当时才知道的"永不写死。
+
+**三层纪律**：T1 现实事实（显式配置）· T2 数据推导估计（系统重算）· T3 交易当时才知道（走 provider）。
+
+- **TR.1 TradingContext（T2 推导）✅（2026-08-25）** — 已建 `app/core/trading_context/`：
+  Corwin-Schultz/Abdi-Ranaldi 从免费 H/L **估每名真实价差**；可做空性（long-only/账户/流动性启发式）；
+  单边成本 = 半价差 + 券商费（`BrokerProfile`，moomoo 佣金免费）；无交易带（成本挂钩）；可交易池过滤。
+  配置 `trading_account_type/allow_short/broker`（T1，显式）。新增 `test_phase_tr.py`(6)。
+- **TR.2 单一权威数据源 = moomoo（消除 train/serve skew）⬜** — 新建 `MoomooProvider`（OpenD 网关，
+  历史 K 线给研究 + 实时给执行）；**全链路 discovery/validation/paper/实盘只读这一个源**。核实：moomoo
+  美股实时免费（推广）、历史约到 2015、佣金免费；**退市股无（幸存者仍在，但前向 paper 不受影响）**。
+- **TR.3 T3 provider 化 ⬜** — `QuoteProvider/BorrowProvider/AccountProvider` 接口，代码零字面值；
+  仿真背 TR.1 估计、实盘背 moomoo 实时；**把 live 路径的硬编码 `CostParams`(spread=2/fixed=5) 换成
+  TradingContext 推导值**。
+- **TR.4 门分级 + 阈值配置化 ⬜** — 进 PAPER 用较松/分级门（收集前向证据），PAPER→ACTIVE 用最严门
+  （60 天前向 realized IC t>2）；所有阈值提为配置（不写死），加"实验模式"。
+- **依赖**：TR.3 落地后，PM 的成本/容量、PaperBroker 都吃 TradingContext 的真实估计；TR.2 是 Phase 12
+  执行的前置（同源）。
+
+---
+
 ## Phase 10 — 另类数据接入（免费起步）+ DSL 稀疏字段（依赖 Phase 8.1）
 
 **目标**：用基本面/财报丰富发现，严格发布时点防前视，DSL 支持季频稀疏字段。
