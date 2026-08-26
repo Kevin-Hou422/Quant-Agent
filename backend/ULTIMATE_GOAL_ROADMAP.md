@@ -182,9 +182,12 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
 - **PM.S2 因子按边际贡献准入** — 贪心：候选加入策略后若**策略 OOS（扣成本）指标提升**（边际 Sharpe/降
   方差）就纳入，否则不纳入——**单独弱但分散化好的因子能进**。顺带解决"没因子过→无可交易"（一堆平庸
   因子的组合能过策略门）。
-- **PM.S3 经典基准策略库** — 新建 `app/core/strategies/baselines.py`：截面动量(12-1)、短期反转、
-  低波异象、52 周高(George-Hwang)、时序动量、非流动性(Amihud)、特异偏度等**纯价量经典 DSL**。用途：
-  ①基准（发现出的能否打赢经典动量）②起始池（paper 一开始就有历史有效信号可交易）③sanity check。
+- **PM.S3 经典基准策略库 ✅**（2026-08-27）— `app/core/strategies/baselines.py`：8 个经 DSL 解析/执行
+  验证的经典异象——截面动量 12-1(J&T 1993)、12M、短期反转(Jegadeesh 1990)、低波(Ang 2006)、
+  52 周高(George-Hwang 2004)、时序趋势(MOP 2012)、流动性(Amihud 2002)、特异偏度(Boyer 2010)。
+  `baseline_signals()` 可直接喂 PortfolioManager；`seed_baselines()` 幂等种成 CANDIDATE 走正常门控。
+  **交易兜底已接线**：`daily_trading_loop.run_portfolio` 在无 PAPER/ACTIVE 自研因子时**回退基准库**
+  照常组账本交易（`used_baseline=True`）→ 回答"门控下没因子怎么 trade"。测试 `test_phase_pm_s3.py`(7)。
   （价值因子需基本面 → Phase 10；纯价量只能用长期反转作代理。）
 - **联动 Phase 9**：Phase 9.3 的因子级验证门降级为"候选入池的低门槛滤泄漏"；晋级/审批的对象从"因子"
   升为"**策略/组合配置**"（呼应 PM.7）。**联动 Phase TR**：策略级验证用 TradingContext 的真实成本估计。

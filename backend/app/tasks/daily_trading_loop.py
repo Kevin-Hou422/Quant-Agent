@@ -157,19 +157,33 @@ class DailyTradingLoop:
                     recs.append(rec)
             except ValueError:
                 continue
-        if not recs:
-            return {"n_factors": 0, "days_processed": 0, "reason": "no active factors"}
 
         cfg = SimulationConfig(delay=1, decay_window=0, truncation_min_q=0.05, truncation_max_q=0.95)
         signals: Dict[str, pd.DataFrame] = {}
-        for rec in recs:
-            try:
-                raw = Executor(validate=False).run_expr(rec.dsl, dataset)
-                signals[str(rec.id)] = SignalProcessor(cfg).process(raw)
-            except Exception as exc:
-                logger.warning("[portfolio] 因子 %s 信号失败，剔除组合: %s", rec.id, exc)
+        used_baseline = False
+        if recs:
+            for rec in recs:
+                try:
+                    raw = Executor(validate=False).run_expr(rec.dsl, dataset)
+                    signals[str(rec.id)] = SignalProcessor(cfg).process(raw)
+                except Exception as exc:
+                    logger.warning("[portfolio] 因子 %s 信号失败，剔除组合: %s", rec.id, exc)
+        else:
+            # PM.S3：门控下暂无 PAPER/ACTIVE 自研因子 → 回退到经典基准策略库，
+            # 保证"没有自研因子时交易环节仍能运转"（用户明确关切）。用 baseline: 前缀标记来源。
+            from app.core.strategies import baseline_signals
+            used_baseline = True
+            for name, raw in baseline_signals(dataset).items():
+                try:
+                    signals[f"baseline:{name}"] = SignalProcessor(cfg).process(raw)
+                except Exception as exc:
+                    logger.warning("[portfolio] 基准 %s 信号失败，剔除组合: %s", name, exc)
+            if signals:
+                logger.info("[portfolio] 无自研 PAPER/ACTIVE 因子，回退经典基准策略库（%d 个）交易", len(signals))
         if not signals:
-            return {"n_factors": 0, "days_processed": 0, "reason": "no valid signals"}
+            return {"n_factors": 0, "days_processed": 0,
+                    "reason": "no active factors" if not recs else "no valid signals",
+                    "used_baseline": used_baseline}
 
         res = PortfolioManager(aum=aum, method="ic_weighted").build_book(signals, prices, volume)
         weights, composite = res.weights, res.composite
@@ -224,7 +238,8 @@ class DailyTradingLoop:
         logger.info("[portfolio] 组合账本 | AUM=%.0f | %d 因子 | %d 交易日 | 末净值=%.4f",
                     aum, len(signals), n_days, equity)
         return {"n_factors": len(signals), "days_processed": n_days,
-                "equity": equity, "aum": aum, "combo_weights": res.combo_weights}
+                "equity": equity, "aum": aum, "combo_weights": res.combo_weights,
+                "used_baseline": used_baseline}
 
     # ------------------------------------------------------------------
     # 单因子（隔离）
