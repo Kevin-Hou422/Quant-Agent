@@ -87,3 +87,17 @@ def test_small_aum_insight_and_band():
     assert any("极小" in n or "AUM" in n for n in res.notes)
     d = res.to_dict()
     assert d["aum"] == 10_000 and d["allow_short"] is False
+
+
+# --------------------------------------------------------------------------
+# TR.3：grounded 成本（真实/推导，取代硬编码机构默认）
+# --------------------------------------------------------------------------
+
+def test_grounded_cost_params_commission_free_and_data_spread():
+    from app.core.trading_context.context import grounded_cost_params, MOOMOO_US
+    cp = grounded_cost_params(_dataset(), broker=MOOMOO_US, aum=10_000)
+    assert cp.fixed_bps == 0.0            # moomoo 佣金免费（原硬编码 5）
+    assert cp.min_ticket_fee == 0.0       # 原硬编码 $1
+    assert cp.spread_bps > 0.0            # 来自 Corwin-Schultz 数据估计
+    # 与硬编码 spread=2 相比，数据估计应不同（反映真实 universe）
+    assert abs(cp.spread_bps - 2.0) > 1e-9

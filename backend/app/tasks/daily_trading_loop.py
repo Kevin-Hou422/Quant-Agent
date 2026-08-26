@@ -174,11 +174,25 @@ class DailyTradingLoop:
         res = PortfolioManager(aum=aum, method="ic_weighted").build_book(signals, prices, volume)
         weights, composite = res.weights, res.composite
 
+        # TR.3：组合账本用**真实/推导成本**（moomoo 佣金免费 + Corwin-Schultz 数据估价差），
+        # 而非硬编码机构默认。为组合账本单建一个用 grounded 成本的 broker（同一 PositionStore）。
+        from app.config import settings
+        from app.core.execution.paper_broker import PaperBroker
+        from app.core.trading_context.context import grounded_cost_params, get_broker_profile
+        profile = get_broker_profile(getattr(settings, "trading_broker", "moomoo_us"))
+        try:
+            gp = grounded_cost_params(dataset, broker=profile, aum=aum)
+        except Exception as exc:                          # 估计失败退回原成本，不阻断
+            logger.warning("[portfolio] grounded 成本估计失败，用默认: %s", exc)
+            gp = None
+        pf_broker = PaperBroker(store=self.broker.store, cost_params=gp, initial_capital=aum) \
+            if gp is not None else self.broker
+
         # 市场上下文（与 _run_one_alpha 同口径）
         cols = weights.columns
         prices_f = prices.reindex(columns=cols).ffill(limit=5).fillna(0.0)
         volume_f = volume.reindex(columns=cols).ffill(limit=5).fillna(0.0)
-        adv_df = self.broker._liq.compute_adv(volume_f, prices_f)          # noqa: SLF001
+        adv_df = pf_broker._liq.compute_adv(volume_f, prices_f)            # noqa: SLF001
         vol_df = prices_f.pct_change().rolling(20, min_periods=2).std().fillna(0.02)
         ret_df = prices_f.pct_change()
         dates  = weights.index
@@ -186,14 +200,14 @@ class DailyTradingLoop:
         tdays = len(dates) / cal_years
         comp_arr = composite.reindex(columns=cols).to_numpy(dtype=float)
 
-        last = self.broker.store.last_pnl_date(PORTFOLIO_BOOK_ID)
+        last = pf_broker.store.last_pnl_date(PORTFOLIO_BOOK_ID)
         n_days = 0
-        equity = self.broker.store.latest_equity(PORTFOLIO_BOOK_ID)
+        equity = pf_broker.store.latest_equity(PORTFOLIO_BOOK_ID)
         for t in range(len(dates)):
             d = dates[t]
             if last is not None and d.date() <= last:
                 continue                                  # 幂等续跑
-            pnl = self.broker.step(
+            pnl = pf_broker.step(
                 PORTFOLIO_BOOK_ID, d,
                 target_w=weights.iloc[t], prices_t=prices_f.iloc[t],
                 prices_prev=prices_f.iloc[t - 1] if t > 0 else prices_f.iloc[t],

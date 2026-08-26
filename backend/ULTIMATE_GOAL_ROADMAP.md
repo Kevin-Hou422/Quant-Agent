@@ -166,6 +166,26 @@ S 补"数字可信"轴。S.4 数据成本 ~35% 工作量占比，是本层重头
 - **验收**：给定 AUM + 几个 paper 因子，PM 产出一份**具体美元持仓**（AAPL 多 $X、XYZ 空 $Y…）；
   单因子超容量时被封顶；组合 book 的 paper PnL 与逐因子加权一致对账。
 
+### ★ 核心重构：策略级门控 + 边际准入 + 经典基准库（**要"交易策略"，不要"回测漂亮的因子"**）
+
+**问题**：现状因子**独立过门**（每个因子单独 DSR>0.9/t≥3），幸存者才进 PM 合成。这是错的——因子的
+价值是它对**策略**的**边际贡献**（边际 IR ∝ √(1−ρ²)），**独立高门槛恰恰筛掉最有用的低相关分散化因子**，
+选出的是"单独漂亮的因子"而非"好策略"，且常常"没有因子能过 → 无可交易"。**验证单位应是策略，不是因子。**
+
+- **PM.S1 门控搬到策略层** — 候选先进**池**（只滤泄漏/明显垃圾，低门槛）→ PM 组合成**策略账本** →
+  **对组合收益跑 `ValidationGate`（DSR/t≥3/WalkForward）**（gate 已支持传收益序列，把单因子收益换成
+  策略收益即可）。严门只加在**你真正交易的那个策略**上。
+- **PM.S2 因子按边际贡献准入** — 贪心：候选加入策略后若**策略 OOS（扣成本）指标提升**（边际 Sharpe/降
+  方差）就纳入，否则不纳入——**单独弱但分散化好的因子能进**。顺带解决"没因子过→无可交易"（一堆平庸
+  因子的组合能过策略门）。
+- **PM.S3 经典基准策略库** — 新建 `app/core/strategies/baselines.py`：截面动量(12-1)、短期反转、
+  低波异象、52 周高(George-Hwang)、时序动量、非流动性(Amihud)、特异偏度等**纯价量经典 DSL**。用途：
+  ①基准（发现出的能否打赢经典动量）②起始池（paper 一开始就有历史有效信号可交易）③sanity check。
+  （价值因子需基本面 → Phase 10；纯价量只能用长期反转作代理。）
+- **联动 Phase 9**：Phase 9.3 的因子级验证门降级为"候选入池的低门槛滤泄漏"；晋级/审批的对象从"因子"
+  升为"**策略/组合配置**"（呼应 PM.7）。**联动 Phase TR**：策略级验证用 TradingContext 的真实成本估计。
+- **验收**：一个单独过不了门的因子，加入策略后能提升策略 OOS → 被纳入；经典动量 baseline 可作基准跑通。
+
 ### 第二批（PM 增强：风控 + horizon + 配置审批）
 
 - **PM.5 组合级风控** — 新建 `app/core/portfolio_manager/risk_gate.py`：gross/net 敞口上限、单票/行业
@@ -204,9 +224,11 @@ S 补"数字可信"轴。S.4 数据成本 ~35% 工作量占比，是本层重头
 - **TR.2 单一权威数据源 = moomoo（消除 train/serve skew）⬜** — 新建 `MoomooProvider`（OpenD 网关，
   历史 K 线给研究 + 实时给执行）；**全链路 discovery/validation/paper/实盘只读这一个源**。核实：moomoo
   美股实时免费（推广）、历史约到 2015、佣金免费；**退市股无（幸存者仍在，但前向 paper 不受影响）**。
-- **TR.3 T3 provider 化 ⬜** — `QuoteProvider/BorrowProvider/AccountProvider` 接口，代码零字面值；
-  仿真背 TR.1 估计、实盘背 moomoo 实时；**把 live 路径的硬编码 `CostParams`(spread=2/fixed=5) 换成
-  TradingContext 推导值**。
+- **TR.3 成本落地推导值 ◑（2026-08-26）** — 已建 `grounded_cost_params(dataset, broker, aum)`：
+  moomoo 佣金免费 → `fixed_bps=0/min_ticket=0`，`spread_bps`=**Corwin-Schultz 数据估计中位**（取代硬编码
+  5/1/2）；`run_portfolio` 组合账本改用 grounded 成本 broker（配置 `trading_broker`）。**待补**：
+  `QuoteProvider/BorrowProvider/AccountProvider` 接口（T3 实时，仿真背 TR.1 估计、实盘背 moomoo）——
+  待 TR.2 moomoo 接入一并落。
 - **TR.4 门分级 + 阈值配置化 ⬜** — 进 PAPER 用较松/分级门（收集前向证据），PAPER→ACTIVE 用最严门
   （60 天前向 realized IC t>2）；所有阈值提为配置（不写死），加"实验模式"。
 - **依赖**：TR.3 落地后，PM 的成本/容量、PaperBroker 都吃 TradingContext 的真实估计；TR.2 是 Phase 12

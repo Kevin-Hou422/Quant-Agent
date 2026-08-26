@@ -41,6 +41,37 @@ class BrokerProfile:
 MOOMOO_US = BrokerProfile(name="moomoo_us", commission_bps=0.0, commission_per_share=0.0,
                           commission_min=0.0, reg_fee_bps=0.15)
 
+# 券商档位注册表（T1：现实事实，显式；配置 trading_broker 选一个）
+_BROKER_REGISTRY = {"moomoo_us": MOOMOO_US}
+
+
+def get_broker_profile(name: str) -> BrokerProfile:
+    return _BROKER_REGISTRY.get(name, MOOMOO_US)
+
+
+def grounded_cost_params(dataset: WidePanel, broker: BrokerProfile = MOOMOO_US,
+                         aum: float = 1_000_000.0):
+    """
+    TR.3：把硬编码机构成本换成**真实/推导成本**的 `CostParams`。
+    覆盖 3 个对散户/moomoo 错的项：
+      fixed_bps=佣金bps（moomoo→0，原 5）· min_ticket_fee=最低佣金（moomoo→0，原 $1）
+      · spread_bps=**Corwin-Schultz 数据估计的中位价差**（原写死 2）。
+    其余（impact_coef 参与率驱动、adv_cap_pct、borrow）保留默认——它们已是数据/结构驱动。
+    """
+    import dataclasses
+    from app.core.backtest_engine.transaction_cost import CostParams
+
+    res = TradingContext(aum=aum, broker=broker).analyze(dataset)
+    median_spread_bps = float(res.spread_bps.replace(0.0, np.nan).median())
+    if not np.isfinite(median_spread_bps):
+        median_spread_bps = 2.0
+    return dataclasses.replace(
+        CostParams(),
+        fixed_bps=broker.commission_bps,
+        min_ticket_fee=broker.commission_min,
+        spread_bps=median_spread_bps,
+    )
+
 
 @dataclass
 class TradingContextResult:
