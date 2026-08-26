@@ -6,7 +6,7 @@
 
 ## 终极目标
 
-agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（Alpaca 纸交易）上全链路模拟真实交易**，
+agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（moomoo 纸交易）上全链路模拟真实交易**，
 默认模式下**用户只批准/拒绝**，paper 阶段支持全自动无人值守；建模 paper 与真实交易的差别以
 提升实验可信度。原有用户假设驱动的功能全部保留。
 
@@ -42,13 +42,13 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（Alpac
   sharpe, max_drawdown, ic_ir, ann_turnover, status, reasoning(JSON)`。生命周期状态机
   （`alpha_lifecycle.py`）约束 `status` 流转。**append-only 台账**：新增不改写。
 - **改造影响**：Phase 8.1 的 PIT 数据存储、Phase 9 的分级生命周期修正、Phase 10 的另类数据、
-  Phase 12 的 Alpaca 执行都会在此 SQLite 上扩表（生产可平滑迁 Postgres，URL 已可配）。
+  Phase 12 的 moomoo 执行都会在此 SQLite 上扩表（生产可平滑迁 Postgres，URL 已可配）。
 
 ## 已确认的关键决策（4 个分叉）
 
 | 分叉 | 决策 | 含义 |
 |------|------|------|
-| 执行落地 | **Alpaca 纸交易账户** | 免费、美股、真实市场价撮合；需建确定性执行工作流；LLM 不进交易回路 |
+| 执行落地 | **moomoo 纸交易账户**（2026-08 更新，原定 Alpaca）| 免费、美股、真实市场价撮合；**与研究数据同源(TR.2)消除 skew**；需建确定性执行工作流；LLM 不进交易回路 |
 | 另类数据预算 | **先免费起步，后付费** | 先 yfinance 基本面/免费财报日历跑通 PIT+DSL 稀疏字段，验证后再付费源 |
 | 实时粒度 | **日频收盘增量** | 收盘后拉当日 bar 追加进 PIT，前向积累；不做日内/tick |
 | 自主挖掘首版 | **先用价量统计** | 用 regime/截面离散度/因子家族滚动表现自主生成假设，现在就能做 |
@@ -87,14 +87,13 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（Alpac
   DSR 去膨胀（不再默认 1）+ 新增 **t≥3.0**（Harvey-Liu-Zhu，Lo 2002 t 统计量）门槛。已建 PBO 函数
   `backtest_engine/overfit_stats.py`（CSCV，Bailey 2015）+ 测试。**待补**：把 PBO 接进发现门（需暴露
   GP 种群的收益序列矩阵）+ CPCV。（吸收原 Phase R.1。）
-- **S.4 换含退市收益的价格数据源**（根治幸存者偏差）—— 现状硬编码存活股池、且为"数据干净"**主动剔除**
-  退市/被并购股（SQ/FI/DFS/ABC/PXD），使回测系统性偏乐观；"PIT 从启动日前向积累"需 5–10 年、对当下
-  结论无帮助。改：接**含 delisting return + PIT 复权因子**的源（Sharadar SEP+SF1 ~$50/月 / CRSP），
-  universe 用**逐日历史成分**（动态、含退市）。这比 Phase 10（另类数据）更基础，是价格层的地基。
-  验收：同一因子在"含退市"universe 上重跑，结论与幸存者池显著不同即证明偏差被消除。
+- **S.4 换含退市收益的价格数据源**（根治历史幸存者偏差）—— **🚫 已搁置（2026-08-25，被 TR.2 取代）**。
+  原计划接付费源（Sharadar/CRSP）修历史幸存者偏差，但用户目标是**零预算的前向 paper 模拟**：
+  ① 幸存者偏差只影响**历史回测**，**前向 paper 天生无此偏差且免费**（前向 paper 会自纠幸存者伪因子）；
+  ② 单一权威源统一到 **moomoo（TR.2）**，退市股虽仍无，但不在"免费前向"的关键路径上。**故不做 S.4。**
 
-**依赖/次序**：S 是**所有回测结论的前置**；与 Phase PM（组合层）并列为两大最高优先级——PM 补"操作"轴，
-S 补"数字可信"轴。S.4 数据成本 ~35% 工作量占比，是本层重头。
+**依赖/次序**：S 是**所有回测结论的前置**；与 Phase PM（组合层）并列为最高优先级——PM 补"操作"轴，
+S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。）
 
 ---
 
@@ -133,6 +132,11 @@ S 补"数字可信"轴。S.4 数据成本 ~35% 工作量占比，是本层重头
   挂到 `AlphaDashboard`，批准/拒绝按钮 + 谱系；`client.ts` 加 pending/approve/reject/decisions/validate。
 - **验收 ✅**：`DiscoveryEngine.run(dataset)` 零用户文本产出 CANDIDATE；验证门端点升 VALIDATED；
   approve 升 PAPER；除批准点外全程无人值守。原 Workflow A/B 仍可用。
+
+> **⚠️ 门控设计已演进（见 Phase PM「核心重构」，为最新设计）**：9.3/9.4 已实现的是**因子级**门/审批；
+> 按"要交易策略、不要漂亮因子"的最新判断，**因子级门降级为"候选入池的低门槛滤泄漏"，严门 + 审批
+> 上移到策略层**（PM.S1/S2/PM.7）。已建的 `ValidationGate`/approve 端点**复用**，只是评估/审批对象
+> 从"单因子"换成"组合策略"。**统一门控政策见 Phase PM 核心重构块。**
 
 ---
 
@@ -186,6 +190,21 @@ S 补"数字可信"轴。S.4 数据成本 ~35% 工作量占比，是本层重头
   升为"**策略/组合配置**"（呼应 PM.7）。**联动 Phase TR**：策略级验证用 TradingContext 的真实成本估计。
 - **验收**：一个单独过不了门的因子，加入策略后能提升策略 OOS → 被纳入；经典动量 baseline 可作基准跑通。
 
+#### ★ 统一门控政策（收敛 S.3 / Phase 9 / PM.S / TR.4 的重复与层级不一致）
+
+**唯一的门控链**（严门只加在"你真正交易的策略"上，不加在单因子上）：
+
+| 阶段 | 门槛 | 加在 |
+|------|------|------|
+| **1. 入池** | 低门槛：仅滤**泄漏/明显垃圾**（不看 Sharpe 高低） | 因子 |
+| **2. 策略验证** | **严门**：WalkForward 全折 OOS>0 + **DSR>0.90（S.3 全局 trial 去膨胀）+ t≥3.0** + PBO | **组合策略**（PM.S1）|
+| **3. 因子准入** | 边际贡献：加入后策略 OOS（扣真实成本 TR.3）提升才纳入 | 因子→策略（PM.S2）|
+| **4. 进 PAPER** | **较松/分级**（收集前向证据，TR.4 实验模式；阈值配置化） | 策略 |
+| **5. → ACTIVE（逼近真钱）** | **最严**：≥60 交易日**前向** realized IC 均值>0 且 **t>2** | 策略 |
+
+- S.3 的 DSR/t≥3、原 Phase 9.3 的 WalkForward → 全部归到**第 2 步（策略级）**，不再加在单因子。
+- TR.4 的"进 paper 松、真钱严 + 阈值配置化" = 第 4/5 步。审批对象 = **策略配置**（PM.7）。
+
 ### 第二批（PM 增强：风控 + horizon + 配置审批）
 
 - **PM.5 组合级风控** — 新建 `app/core/portfolio_manager/risk_gate.py`：gross/net 敞口上限、单票/行业
@@ -202,7 +221,7 @@ S 补"数字可信"轴。S.4 数据成本 ~35% 工作量占比，是本层重头
 ### 依赖与收拢
 - **吸收/前置**：Phase R.3（容量）、R.4（组合优化 Ledoit-Wolf/HRP/换手率进目标）、R.2 的 beta 闭合
   都被本层收拢进 **live 路径**（此前只是离线研究组件）。
-- **下游**：Phase 12（Alpaca 执行）改为消费 PM 产出的**美元账本**下单，而非单因子权重——PM 是"因子→
+- **下游**：Phase 12（**moomoo** 执行）消费 PM 产出的**美元账本**下单，而非单因子权重——PM 是"因子→
   真实下单"之间必需的一层。
 - **复用**：`AlphaCombiner`、`TransactionCostEngine`/`LiquidityConstraint`、`portfolio_constructor`
   的 `beta_neutral`、`AlphaMonitor`（turnover/decay）、`PositionStore`。
@@ -219,7 +238,8 @@ S 补"数字可信"轴。S.4 数据成本 ~35% 工作量占比，是本层重头
 
 - **TR.1 TradingContext（T2 推导）✅（2026-08-25）** — 已建 `app/core/trading_context/`：
   Corwin-Schultz/Abdi-Ranaldi 从免费 H/L **估每名真实价差**；可做空性（long-only/账户/流动性启发式）；
-  单边成本 = 半价差 + 券商费（`BrokerProfile`，moomoo 佣金免费）；无交易带（成本挂钩）；可交易池过滤。
+  单边成本 = 半价差 + 券商费（`BrokerProfile`，moomoo 佣金免费）；**无交易带**（成本挂钩，**统一调仓策略：
+  应驱动 PM 调仓、取代"每日全额调仓"，与 PM.6 horizon 合并**）；可交易池过滤。
   配置 `trading_account_type/allow_short/broker`（T1，显式）。新增 `test_phase_tr.py`(6)。
 - **TR.2 单一权威数据源 = moomoo（消除 train/serve skew）⬜** — 新建 `MoomooProvider`（OpenD 网关，
   历史 K 线给研究 + 实时给执行）；**全链路 discovery/validation/paper/实盘只读这一个源**。核实：moomoo
@@ -229,8 +249,9 @@ S 补"数字可信"轴。S.4 数据成本 ~35% 工作量占比，是本层重头
   5/1/2）；`run_portfolio` 组合账本改用 grounded 成本 broker（配置 `trading_broker`）。**待补**：
   `QuoteProvider/BorrowProvider/AccountProvider` 接口（T3 实时，仿真背 TR.1 估计、实盘背 moomoo）——
   待 TR.2 moomoo 接入一并落。
-- **TR.4 门分级 + 阈值配置化 ⬜** — 进 PAPER 用较松/分级门（收集前向证据），PAPER→ACTIVE 用最严门
-  （60 天前向 realized IC t>2）；所有阈值提为配置（不写死），加"实验模式"。
+- **TR.4 门分级 + 阈值配置化 ⬜** — 实现 **Phase PM「统一门控政策」的第 4/5 步**：进 PAPER 较松/分级
+  （收集前向证据，"实验模式"），→ACTIVE 最严（≥60 交易日前向 realized IC t>2）；所有阈值提为配置
+  （不写死）。（严门主体在策略级验证=第 2 步，见 PM.S1。）
 - **依赖**：TR.3 落地后，PM 的成本/容量、PaperBroker 都吃 TradingContext 的真实估计；TR.2 是 Phase 12
   执行的前置（同源）。
 
@@ -239,6 +260,9 @@ S 补"数字可信"轴。S.4 数据成本 ~35% 工作量占比，是本层重头
 ## Phase 10 — 另类数据接入（免费起步）+ DSL 稀疏字段（依赖 Phase 8.1）
 
 **目标**：用基本面/财报丰富发现，严格发布时点防前视，DSL 支持季频稀疏字段。
+**数据源边界（与 TR.2 一致）**：**价格只来自 moomoo**（单一权威源）；基本面/财报是**另一类数据**，
+可用另一免费源（yfinance `.quarterly_financials` / SEC EDGAR），**不造成价格 train/serve skew**，
+但必须带发布 `as_of` 进 PIT（8.1）防前视。
 
 - **10.1 DSL 稀疏字段支持** — 改 `typed_nodes.py`/`dsl_executor.py`：季频字段只在发布日后可见、
   日频面板 ffill、发布前 NaN（新字段类别）。这是 DSL 从"技术量价语言"升到"金融结构语言"的实质台阶。
@@ -253,30 +277,32 @@ S 补"数字可信"轴。S.4 数据成本 ~35% 工作量占比，是本层重头
 
 ## Phase 11 — 前向增量数据 + PIT 追加 + 市场日历
 
-**目标**：从历史回放转为真正的前向 paper trading（日频收盘增量）。
+**目标**：从历史回放转为真正的前向 paper trading（日频收盘增量）。**价格源 = moomoo（TR.2）**，与执行同源。
 
-- **11.1 provider 增量拉取** — 加 `fetch_latest`/增量接口 + 追加进 PIT（8.1）带 `as_of`。
+- **11.1 provider 增量拉取** — **`MoomooProvider`（TR.2）**加 `fetch_latest`/增量接口 + 追加进 PIT（8.1）带 `as_of`。
 - **11.2 美股日历 + 时区** — ET 收盘、节假日感知的调度（现有 job 用 UTC 固定时刻）。
 - **11.3 `daily_ingest` 重构** — 真增量追加（非整段重拉）；从启动日起积累无幸存者偏差的自有数据。
 - **验收**：连续 N 个真实交易日，PIT 每日增一根 bar；日循环消费增量；A1（无人值守日节奏）成立。
 
 ---
 
-## Phase 12 — 真实执行层：Alpaca 纸交易 + 确定性执行工作流 + 风控 + paper-vs-real 建模
+## Phase 12 — 真实执行层：**moomoo** 纸交易 + 确定性执行工作流 + 风控 + paper-vs-real 建模
 
-**目标**：agent 在 Alpaca 纸交易上的完整**确定性**交易工作流；建模保真度差距。
+**目标**：在 **moomoo**（= TR.2 的单一权威源/执行券商）纸交易上的完整**确定性**交易工作流；建模保真度差距。
+**与 TR.2 同源**：moomoo 既是研究数据源也是执行券商，消除 train/serve skew。
 
-- **12.1 Alpaca 适配器** — 新建 `app/core/execution/alpaca_broker.py`：权重→股数订单
-  （`OrderManager`）、经 Alpaca REST 下单（**确定性代码，非 LLM**）、成交轮询、持仓对账
-  （本地 vs 券商）、幂等（client order id）。复用/扩展 `PositionStore` schema。
+- **12.1 moomoo 执行适配器** — 新建 `app/core/execution/moomoo_broker.py`：PM 美元账本→股数订单
+  （`OrderManager`），经 **moomoo OpenAPI（OpenD 网关）**下单（**确定性代码，非 LLM**）、成交轮询、
+  持仓对账（本地 vs 券商）、幂等（client order id）。复用/扩展 `PositionStore` schema。
 - **12.2 风控门 + kill switch** — 新建 `app/core/execution/risk_gate.py`：单票/总敞口上限、
   日亏熔断、fat-finger（订单 vs ADV）、一键全平；违规订单被拦截。
 - **12.3 paper-vs-real 保真度阶梯 + 校准（延伸 8.2）** — 对比 (a) 内部 PaperBroker 收盘成交
-  vs (b) Alpaca 纸交易真实成交 → 校准 `impact_coef`、建模 T+1 开盘成交、永久 vs 临时冲击。
-  三级保真度：内部模拟 → Alpaca 纸交易 → （未来）Alpaca 实盘。
-- **12.4 崩溃恢复** — 重启时从 Alpaca 持仓重建状态。
-- **验收**：PAPER 因子目标权重 → Alpaca 纸交易订单 → 成交对账回 PositionStore；风控门拦截
-  超限单；kill switch 全平；校准报告显示内部模拟 vs Alpaca 纸交易的成交差。
+  vs (b) **moomoo 纸交易**真实成交 → 校准 `impact_coef`、建模 T+1 开盘成交、永久 vs 临时冲击。
+  三级保真度：内部模拟 → **moomoo 纸交易** → （未来）**moomoo 实盘**。
+- **12.4 崩溃恢复** — 重启时从 moomoo 持仓重建状态。
+- **消费 PM 账本**：下单对象是 PM 产出的**美元账本**（策略级），而非单因子权重。
+- **验收**：策略美元账本 → moomoo 纸交易订单 → 成交对账回 PositionStore；风控门拦截超限单；
+  kill switch 全平；校准报告显示内部模拟 vs moomoo 纸交易的成交差。
 
 ---
 
@@ -301,7 +327,12 @@ S 补"数字可信"轴。S.4 数据成本 ~35% 工作量占比，是本层重头
 
 ---
 
-## Phase R — 研究可信度补强（横向层，与 Phase 9–12 并行，不属"实盘运营"轴）
+## Phase R — 研究可信度补强（横向层）**⚠️ 已大部分被 S/PM 吸收，此处仅留指针**
+
+> **收拢说明（最新）**：R.1 高级验证 → **已并入 Phase S.3**（全局 trial + PBO + t≥3.0，已部分完成）；
+> R.2 Barra-lite 风险模型 + beta 闭合 → **并入 PM.5**；R.3 容量曲线 → **并入 PM.2（TradingContext 也算容量）**；
+> R.4 组合优化（Ledoit-Wolf/HRP/换手率进目标）→ **并入 PM.1/PM.3**。**本节不再是独立待办**，下列内容
+> 为各项的方法细节参考。
 
 **来源**：外部《Quant-Agent 覆盖度地图》评估（以 López de Prado / Barra / Almgren-Chriss 为标尺）
 指出——本路线 Phase 9–14 几乎全压在"自主交易运营"轴，而对"风险模型 / 因子风险 / 容量 / 高级
@@ -374,9 +405,9 @@ fetch/SSE、`components/analysis/*` 图表、`AlphaDashboard`。**前端只读 +
 - **FE-PM 组合与配置视图**（配 Phase PM，**重**）：当前组合的**具体美元持仓表**（每只股票多少股/多少钱）、
   各因子配额与**容量占用**、组合 gross/net 敞口与风险仪表、快/慢因子分组；以及**"批准这份持仓配置"**
   的界面（替代/叠加原因子审批）。
-- **FE-12 执行监控面板**（配 Phase 12，**重**）：Alpaca 纸交易的持仓/挂单/成交、**本地 vs 券商
+- **FE-12 执行监控面板**（配 Phase 12，**重**）：moomoo 纸交易的持仓/挂单/成交、**本地 vs 券商
   对账差**、风控门状态与 **kill switch（一键全平，带二次确认的人工动作）**、三级保真度对比
-  （内部模拟 vs Alpaca 纸交易成交）。
+  （内部模拟 vs moomoo 纸交易成交）。
 - **FE-13 红队报告 + 自主度开关**（配 Phase 13）：每个 PAPER 候选的"反方报告"在谱系内可查；
   **autonomy_mode 手动/全自动切换**（人工可随时切回）；数据质量哨兵告警。
 - **FE-R 研究可信度图表**（配 Phase R）：PBO/CPCV 结果、**因子风险归因**（暴露分解）、
@@ -389,24 +420,22 @@ fetch/SSE、`components/analysis/*` 图表、`AlphaDashboard`。**前端只读 +
 ## 依赖关系（执行顺序）
 
 ```
-Phase S（数据与统计地基）★★ P0 阻塞 ── 所有回测结论的前置；未完成前任何数字不可解读
-  S.1 去 OOS 选择 · S.2 全路径 holdout · S.3 全局 trial 计数+PBO(吸收R.1) · S.4 换含退市数据源
+Phase S（统计地基）★★ P0 ── 所有回测结论的前置；未完成前任何数字不可解读
+  S.1 去 OOS 选择(✅) · S.2 全路径 holdout(✅) · S.3 全局 trial+PBO+t≥3(◑吸收R.1) · ~~S.4 换退市源~~(🚫搁置,被 TR.2 取代)
 Phase 8（PIT 地基，✅）
-  ├─→ Phase 9（自主发现 + 生命周期门 + 批准，✅）
-  ├─→ Phase 10（另类数据）── 依赖 8.1 PIT（价格层地基见 S.4，先于 10）
-  └─→ Phase 11（前向增量）── 依赖 8.1 PIT
-Phase PM（组合与资金管理层）★ ── 依赖 9（有 PAPER 因子）；与 S 并列最高优先级；收拢 R.2/R.3/R.4 进 live
-Phase 12（Alpaca 执行）── 依赖 PM（消费其美元账本下单）+ 11（前向数据更佳）
-Phase 13（多 agent + 全自动）── 依赖 9（发现产量）+ 12（执行）
+Phase 9（自主发现 + 生命周期门 + 批准，✅）── 门控设计已演进为「策略级」，见 PM.S
+Phase TR（交易现实：moomoo 单一源 + 真实成本/可做空 + 门分级）
+  TR.1 TradingContext(✅) · TR.2 moomoo 单一权威源(⬜,需 OpenD) · TR.3 成本落地(◑) · TR.4 门分级(⬜)
+Phase PM（组合与资金管理层）★ ── 依赖 9；与 S 并列最高优先级
+  第一批(✅) · ★核心重构:策略级门+边际准入+经典基准库 · 第二批(风控/horizon/审批) · 收拢 R.2/R.3/R.4
+Phase 10（另类数据：基本面，价格仍走 moomoo）·  Phase 11（前向增量，价格源=moomoo/TR.2）
+Phase 12（**moomoo** 执行，同 TR.2 源）── 依赖 PM（消费美元账本）+ TR.2 + 11
+Phase 13（多 agent + 全自动）── 依赖 9 + 12
 Phase 14 ── 长期验证期
 
-Phase R（研究可信度补强，横向层，与 9–12 并行；R.2/R.3/R.4 由 Phase PM 收拢进 live 路径）
-  R.1 高级验证 ── **已升级并入 Phase S.3（全局 trial 计数 + PBO/CPCV + t≥3.0），提为 P0**
-  R.2 Barra-lite 风险模型 ── 是"风格中性化增强 + 归因（Phase 14/Brinson）"的前置；beta 闭合并入 PM.5
-  R.3 容量曲线 ── 落地为 PM.2（容量建模）
-  R.4 组合优化升级 ── 并入 PM.1/PM.3（合成 + 配资的优化）
+Phase R ── ⚠️ 已被 S/PM 吸收（R.1→S.3、R.2→PM.5、R.3→PM.2、R.4→PM.1/3），仅留方法参考，非独立待办
 
-前端 FE-9…FE-R + FE-PM ── 与对应 Phase 同批交付（FE-9 审批队列已交付；FE-PM 组合/配置视图随 Phase PM）
+前端 FE-9(✅)…FE-PM(组合/配置视图，随 PM) …FE-R
 ```
 
 ## 关键复用点（避免重造）
@@ -428,8 +457,8 @@ Phase R（研究可信度补强，横向层，与 9–12 并行；R.2/R.3/R.4 �
   approve → PAPER，全链路。
 - Phase 10：发布日前视测试（季频字段在发布前为 NaN）。
 - Phase 11：连续多日增量，PIT 逐日增长，改今日不影响历史 as_of。
-- Phase 12：Alpaca **纸交易沙盒**下单→成交→对账；风控拦截超限单；kill switch 全平；
-  校准报告。（用 Alpaca paper API key，不涉真实资金。）
+- Phase 12：moomoo **纸交易**下单→成交→对账；风控拦截超限单；kill switch 全平；
+  校准报告。（用 moomoo OpenAPI 纸交易，不涉真实资金。）
 - Phase R.1：构造一个已知过拟合因子 → PBO 判高过拟合概率；t 门槛可配置默认 3.0。
 - Phase R.2：对已知风格暴露的构造组合，风险归因还原暴露来源；MVO 可切换结构化协方差。
 - Phase R.3：给定因子产出 AUM→Sharpe 衰减曲线，ADV 参与率随 AUM 单调上升。
