@@ -176,12 +176,14 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
 价值是它对**策略**的**边际贡献**（边际 IR ∝ √(1−ρ²)），**独立高门槛恰恰筛掉最有用的低相关分散化因子**，
 选出的是"单独漂亮的因子"而非"好策略"，且常常"没有因子能过 → 无可交易"。**验证单位应是策略，不是因子。**
 
-- **PM.S1 门控搬到策略层** — 候选先进**池**（只滤泄漏/明显垃圾，低门槛）→ PM 组合成**策略账本** →
-  **对组合收益跑 `ValidationGate`（DSR/t≥3/WalkForward）**（gate 已支持传收益序列，把单因子收益换成
-  策略收益即可）。严门只加在**你真正交易的那个策略**上。
-- **PM.S2 因子按边际贡献准入** — 贪心：候选加入策略后若**策略 OOS（扣成本）指标提升**（边际 Sharpe/降
-  方差）就纳入，否则不纳入——**单独弱但分散化好的因子能进**。顺带解决"没因子过→无可交易"（一堆平庸
-  因子的组合能过策略门）。
+- **PM.S1 门控搬到策略层 ✅**（2026-08-27）— 新建 `app/core/portfolio_manager/strategy_gate.py`
+  的 `StrategyGate`：把 N 因子经 PortfolioManager 合成**一个组合策略** → 对**策略净收益**（复用
+  BacktestEngine 同一成本引擎）跑严门——**分段 OOS 全为正 + DSR>0.90（S.3 全局 trial 去膨胀）+
+  夏普 t≥3.0**，fail-closed。严门只加在真正交易的策略上，不加在单因子。`strategy_net_returns()` 复用。
+- **PM.S2 因子按边际贡献准入 ✅**（2026-08-27）— `marginal_factor_selection()`：贪心前向选择，候选
+  加入策略后**OOS-尾段 Sharpe 提升 ≥ min_improve** 才纳入，否则拒。**与已选高相关的冗余因子被拒
+  （边际≈0）、单独弱但分散化好的因子能进**；每步决策留可审计轨迹。测试 `test_phase_pm_s.py`(7)。
+  **待接线**：把策略门/边际准入接进发现→审批路径（呼应 PM.7），当前为可复用模块。
 - **PM.S3 经典基准策略库 ✅**（2026-08-27）— `app/core/strategies/baselines.py`：8 个经 DSL 解析/执行
   验证的经典异象——截面动量 12-1(J&T 1993)、12M、短期反转(Jegadeesh 1990)、低波(Ang 2006)、
   52 周高(George-Hwang 2004)、时序趋势(MOP 2012)、流动性(Amihud 2002)、特异偏度(Boyer 2010)。
@@ -343,17 +345,8 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
 （该评估另建议的 Golden Benchmark 与 R-N1 可复现性，**已完成**——见
 `tests/golden/test_golden_backtest.py`、`gp_engine/_rng.py`，此处不再列。）
 
-- **R.1 高级验证工具 → 已升级为 Phase S.3（P0）**：外部评估指出这些不是"补强"而是"地基"（缺则
-  DSR 被系统性低估、验证门循环论证），故整体提级到 Phase S.3，并追加**全局跨会话 trial 计数器**。
-  下列内容即 S.3 明细：
-  - **PBO（回测过拟合概率，Bailey et al. 2015）** — 与已有 DSR 互补：DSR 校正单个夏普，PBO
-    检验"筛选流程本身是否导致过拟合"。新建 `app/core/backtest_engine/overfit_stats.py`。
-  - **Purged K-Fold CV / CPCV**（López de Prado）— 扩展现有 `WalkForwardBacktester`：训练/测试
-    间 purge + embargo（embargo 已有），CPCV 生成多条回测路径替代单路径。
-  - **Harvey-Liu-Zhu t≥3.0 门槛** — 把新因子显著性门槛从 t>2 提到 **t≥3.0**，作为 Phase 9.3
-    验证门（CANDIDATE→VALIDATED）与 Phase 14 的可配置参数。
-  - **接入点**：Phase 9.3 `validation_gate.py` 直接消费 PBO/CPCV/t 门槛。
-  - **验收**：一个已知过拟合的构造因子被 PBO 判为高过拟合概率；t 门槛可配置且默认 3.0。
+- **R.1 高级验证 → 全部并入 Phase S.3（已大部分完成）**：DSR + Harvey-Liu-Zhu **t≥3.0** 门、PBO
+  函数 `backtest_engine/overfit_stats.py` **已建**；剩 CPCV + 把 PBO 接进门，见 Phase S.3 待补。此处不再展开。
 
 - **R.2 风险因子模型（Barra-lite）— 最大结构性空白，一个接口解决四件事** ⭐
   新建 `app/core/risk_engine/`：以 **Fama-French 5 因子 + 行业哑变量**做简化版（不从零建 Barra）。
@@ -369,10 +362,8 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
   - **复用**：`data_engine`（因子暴露构造）、现有 `signal_processor` 中性化钩子。
   - **验收**：对已知风格暴露的构造组合，风险归因能还原其暴露来源；MVO 可切换用结构化协方差。
 
-- **R.3 容量（Capacity）曲线分析（便宜、直接把 Sharpe → "能装多少钱"）**
-  新建 `app/core/backtest_engine/capacity.py`：在不同假设 AUM 下重跑回测（复用
-  `TransactionCostEngine` 的 ADV 参与率/冲击），输出 **Sharpe/年化收益随 AUM 衰减曲线**。
-  - **验收**：给定一个因子，产出 AUM→Sharpe 衰减曲线；ADV 参与率随 AUM 单调上升。
+- **R.3 容量 → 已落地为 PM.2（容量建模）+ TradingContext 容量**：AUM→容量上限已在 live 路径实现
+  （water-filling），Sharpe-AUM 衰减曲线为其自然可视化（FE-R）。此处不再展开。
 
 - **R.4 组合优化升级（中等价值，可后置）**
   - **Ledoit-Wolf 最优收缩**替代现有固定 δ=0.5 对角收缩；
@@ -430,7 +421,7 @@ Phase 9（自主发现 + 生命周期门 + 批准，✅）── 门控设计已
 Phase TR（交易现实：moomoo 单一源 + 真实成本/可做空 + 门分级）
   TR.1 TradingContext(✅) · TR.2 moomoo 单一权威源(⬜,需 OpenD) · TR.3 成本落地(◑) · TR.4 门分级(⬜)
 Phase PM（组合与资金管理层）★ ── 依赖 9；与 S 并列最高优先级
-  第一批(✅) · ★核心重构:策略级门+边际准入+经典基准库 · 第二批(风控/horizon/审批) · 收拢 R.2/R.3/R.4
+  第一批(✅) · ★核心重构:策略级门 PM.S1(✅)+边际准入 PM.S2(✅)+经典基准库 PM.S3(✅) · 第二批 PM.5/6/7(⬜) · 收拢 R.2/R.4
 Phase 10（另类数据：基本面，价格仍走 moomoo）·  Phase 11（前向增量，价格源=moomoo/TR.2）
 Phase 12（**moomoo** 执行，同 TR.2 源）── 依赖 PM（消费美元账本）+ TR.2 + 11
 Phase 13（多 agent + 全自动）── 依赖 9 + 12
@@ -446,7 +437,7 @@ Phase R ── ⚠️ 已被 S/PM 吸收（R.1→S.3、R.2→PM.5、R.3→PM.2�
 - 发现：`PopulationEvolver`、`GenerationWorkflow`（`alpha_workflows.py`）、`AlphaPool`、
   `RegimeDetector`（`data_engine/regime_detector.py`）
 - 验证：`WalkForwardBacktester`、`deflated_sharpe_from_returns`（`performance_analyzer.py`）；
-  Phase R.1 在此之上加 PBO/CPCV，golden 数值基线复用 `tests/golden/`
+  Phase S.3 在此之上加 PBO/CPCV，golden 数值基线复用 `tests/golden/`
 - 生命周期：`alpha_lifecycle.py` 状态机、`AlphaStore.update_status`、PATCH 端点
 - 执行：`PaperBroker`/`PositionStore`、`TransactionCostEngine`（同一成本模型，禁止另立）
 - 调度：`scheduler.py`（`create_scheduler` + SQLAlchemyJobStore，加新 job 即可）
@@ -462,9 +453,8 @@ Phase R ── ⚠️ 已被 S/PM 吸收（R.1→S.3、R.2→PM.5、R.3→PM.2�
 - Phase 11：连续多日增量，PIT 逐日增长，改今日不影响历史 as_of。
 - Phase 12：moomoo **纸交易**下单→成交→对账；风控拦截超限单；kill switch 全平；
   校准报告。（用 moomoo OpenAPI 纸交易，不涉真实资金。）
-- Phase R.1：构造一个已知过拟合因子 → PBO 判高过拟合概率；t 门槛可配置默认 3.0。
 - Phase R.2：对已知风格暴露的构造组合，风险归因还原暴露来源；MVO 可切换结构化协方差。
-- Phase R.3：给定因子产出 AUM→Sharpe 衰减曲线，ADV 参与率随 AUM 单调上升。
+  （R.1 验收并入 S.3、R.3 验收并入 PM.2，此处不重列。）
 - 每 Phase 完成后全量回归（当前基线 448 passed）+ 同步本报告（PAPER_TRADING_ROADMAP 已归档，不再更新）。
 
 ## 明确不在本路线范围（真实资金前提）
