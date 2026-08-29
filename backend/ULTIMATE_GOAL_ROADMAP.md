@@ -212,8 +212,12 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
 
 ### 第二批（PM 增强：风控 + horizon + 配置审批）
 
-- **PM.5 组合级风控** — 新建 `app/core/portfolio_manager/risk_gate.py`：gross/net 敞口上限、单票/行业
-  集中度上限、**目标波动**缩放、组合回撤熔断；**接入 beta 中性**（顺带闭合 B6，见 Phase R.2）。
+- **PM.5 组合级风控 ✅**（2026-08-30）— 已建 `app/core/portfolio_manager/risk_gate.py`
+  （`PortfolioRiskGate`/`RiskLimits`）：gross/net 敞口上限、**单票/行业集中度**（NAV 比例绝对上限，
+  只减不增）、**目标波动缩放**（按估计年化波动缩放整体仓位）、**回撤熔断**（`should_halt`）。
+  `apply()` 产出合规账本、`check()` 只报违规（供 PM.7 审批一份配置）。测试 `test_phase_pm5_risk.py`(7)。
+  **beta 中性**（顺带闭合 B6，见 Phase R.2）**留待开启做空后**——当前 long-only，net=gross，beta 对冲不适用。
+  **待接线**：把 risk_gate 接进 `run_portfolio`（在容量后、下单前施加）。
 - **PM.6 horizon 感知配置** — 按因子换手/持有期/衰减 horizon 把因子分**快/慢**两类，差异化仓位、
   成本处理与资本占用（快因子高换手→更严成本/更小容量占用；慢因子→更大配额）。数据来自 `AlphaMonitor`
   的 turnover/decay。
@@ -442,7 +446,7 @@ Phase 9（自主发现 + 生命周期门 + 批准，✅）── 门控设计已
 Phase TR（交易现实：moomoo 单一源 + 真实成本/可做空 + 门分级）
   TR.1 TradingContext(✅) · TR.2 moomoo 单一权威源(✅,provider+接线+真连实测) · TR.3 成本落地(◑) · TR.4 门分级(⬜)
 Phase PM（组合与资金管理层）★ ── 依赖 9；与 S 并列最高优先级
-  第一批(✅) · ★核心重构:策略级门 PM.S1(✅)+边际准入 PM.S2(✅)+经典基准库 PM.S3(✅) · 第二批 PM.5/6/7(⬜) · 收拢 R.2/R.4
+  第一批(✅) · ★核心重构:策略级门 PM.S1(✅)+边际准入 PM.S2(✅)+经典基准库 PM.S3(✅) · 第二批 PM.5(✅)/6/7(⬜) · 收拢 R.2/R.4
 Phase 10（另类数据：基本面，价格仍走 moomoo）·  Phase 11（前向增量，价格源=moomoo/TR.2）
 Phase 12（**moomoo** 执行，同 TR.2 源）── 依赖 PM（消费美元账本）+ TR.2 + 11
 Phase 13（多 agent + 全自动）── 依赖 9 + 12
