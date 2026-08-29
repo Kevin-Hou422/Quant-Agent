@@ -69,6 +69,13 @@ class Settings(BaseSettings):
     trading_allow_short:  bool = False        # 暂 long-only（即使 margin 也先不做空）
     trading_broker:       str  = "moomoo_us"  # 决定佣金/规费档（moomoo 美股佣金免费）
 
+    # ── 价格数据源（Phase TR.2，单一权威源）───────────────────────────────
+    # yahoo = 默认（yfinance）；moomoo = 经本地 OpenD 网关（研究/执行同源，消除 skew）。
+    # 设 moomoo 后，US 数据集价格改从 MoomooProvider 取；非美（akshare/ccxt）不受影响。
+    price_source: str = "yahoo"               # yahoo | moomoo
+    moomoo_host:  str = "127.0.0.1"           # OpenD 网关地址
+    moomoo_port:  int = 11111                 # OpenD API 端口
+
     # ── Point-in-Time 数据存储（Task 8.1）────────────────────────────────
     # 每日摄取通过健康门的数据按 (field, date, as_of) 追加进此目录，历史只追加不修改
     pit_store_dir: str = "pit_store"

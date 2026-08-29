@@ -447,6 +447,16 @@ def _default_end() -> str:
 
 
 def _fetch_raw(spec: DatasetSpec, start: str, end: str) -> Dict:
+    # Phase TR.2：单一权威源。price_source=moomoo 时，US 价格改走 MoomooProvider（研究/执行同源，
+    # 消除 train/serve skew）；非美（akshare/ccxt）moomoo 无覆盖，保持原 provider 不变。
+    try:
+        from app.config import settings
+        use_moomoo = getattr(settings, "price_source", "yahoo") == "moomoo"
+    except Exception:
+        use_moomoo = False
+    if use_moomoo and spec.region == "US":
+        return _fetch_moomoo(spec.universe, start, end)
+
     if spec.provider == "yfinance":
         return _fetch_yfinance(spec.universe, start, end)
     elif spec.provider == "akshare":
@@ -455,6 +465,15 @@ def _fetch_raw(spec: DatasetSpec, start: str, end: str) -> Dict:
         return _fetch_ccxt(spec.universe, start, end)
     else:
         raise ValueError(f"Unknown provider: '{spec.provider}'")
+
+
+def _fetch_moomoo(tickers: List[str], start: str, end: str) -> Dict:
+    from .providers.moomoo_provider import MoomooProvider
+    from app.config import settings
+    return MoomooProvider(
+        host=getattr(settings, "moomoo_host", "127.0.0.1"),
+        port=getattr(settings, "moomoo_port", 11111),
+    ).fetch(tickers, start=start, end=end)
 
 
 def _fetch_yfinance(tickers: List[str], start: str, end: str) -> Dict:

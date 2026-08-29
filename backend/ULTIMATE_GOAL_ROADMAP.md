@@ -246,9 +246,14 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
   单边成本 = 半价差 + 券商费（`BrokerProfile`，moomoo 佣金免费）；**无交易带**（成本挂钩，**统一调仓策略：
   应驱动 PM 调仓、取代"每日全额调仓"，与 PM.6 horizon 合并**）；可交易池过滤。
   配置 `trading_account_type/allow_short/broker`（T1，显式）。新增 `test_phase_tr.py`(6)。
-- **TR.2 单一权威数据源 = moomoo（消除 train/serve skew）⬜** — 新建 `MoomooProvider`（OpenD 网关，
-  历史 K 线给研究 + 实时给执行）；**全链路 discovery/validation/paper/实盘只读这一个源**。核实：moomoo
-  美股实时免费（推广）、历史约到 2015、佣金免费；**退市股无（幸存者仍在，但前向 paper 不受影响）**。
+- **TR.2 单一权威数据源 = moomoo（消除 train/serve skew）✅**（2026-08-30）— 已建
+  `app/core/data_engine/providers/moomoo_provider.py`（`MoomooProvider`）：经本地 **OpenD 网关**
+  拉日 K（分页+节流+复权），产出与 Yahoo **逐字段一致**的 RawDataset；`fetch_latest` 供前向增量。
+  接线：`config.price_source: yahoo|moomoo`（默认 yahoo，切 moomoo 后 **US 数据集价格改走 moomoo**，
+  非美不受影响）+ `dataset_registry._fetch_moomoo`。**实测通**：真连 OpenD 拉 AAPL/MSFT 日K，价格与真实
+  市场一致（含 WWDC 跳空）。测试 `test_phase_tr2_moomoo.py`(6，含真连冒烟；OpenD 未起自动 skip)。
+  已核实用户账户：**美股 LV3 实时**、历史 K 线额度 100、端口 11111。**待用户就绪后**切 `price_source=moomoo`
+  即全链路 discovery/validation/paper 同源。
 - **TR.3 成本落地推导值 ◑（2026-08-26）** — 已建 `grounded_cost_params(dataset, broker, aum)`：
   moomoo 佣金免费 → `fixed_bps=0/min_ticket=0`，`spread_bps`=**Corwin-Schultz 数据估计中位**（取代硬编码
   5/1/2）；`run_portfolio` 组合账本改用 grounded 成本 broker（配置 `trading_broker`）。**待补**：
@@ -419,7 +424,7 @@ Phase S（统计地基）★★ P0 ── 所有回测结论的前置；未完�
 Phase 8（PIT 地基，✅）
 Phase 9（自主发现 + 生命周期门 + 批准，✅）── 门控设计已演进为「策略级」，见 PM.S
 Phase TR（交易现实：moomoo 单一源 + 真实成本/可做空 + 门分级）
-  TR.1 TradingContext(✅) · TR.2 moomoo 单一权威源(⬜,需 OpenD) · TR.3 成本落地(◑) · TR.4 门分级(⬜)
+  TR.1 TradingContext(✅) · TR.2 moomoo 单一权威源(✅,provider+接线+真连实测) · TR.3 成本落地(◑) · TR.4 门分级(⬜)
 Phase PM（组合与资金管理层）★ ── 依赖 9；与 S 并列最高优先级
   第一批(✅) · ★核心重构:策略级门 PM.S1(✅)+边际准入 PM.S2(✅)+经典基准库 PM.S3(✅) · 第二批 PM.5/6/7(⬜) · 收拢 R.2/R.4
 Phase 10（另类数据：基本面，价格仍走 moomoo）·  Phase 11（前向增量，价格源=moomoo/TR.2）
