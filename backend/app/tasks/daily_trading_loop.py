@@ -185,12 +185,31 @@ class DailyTradingLoop:
                     "reason": "no active factors" if not recs else "no valid signals",
                     "used_baseline": used_baseline}
 
+        from app.config import settings
+
+        # ── PM.S2：多因子（自研）时按**边际贡献**准入（策略级），而非"全纳入"。
+        #    冗余/无边际的因子被拒，单独弱但分散化好的能进（要"好策略"而非"漂亮因子"）。
+        selection_info = None
+        if (not used_baseline and len(signals) > 1
+                and getattr(settings, "pm_marginal_selection", True)):
+            from app.core.portfolio_manager import marginal_factor_selection
+            try:
+                sel = marginal_factor_selection(
+                    signals, dataset, aum=aum,
+                    min_improve=getattr(settings, "pm_marginal_min_improve", 0.05))
+                if sel.selected:
+                    signals = {k: signals[k] for k in sel.selected}
+                    selection_info = sel.to_dict()
+                    logger.info("[portfolio] PM.S2 边际准入：%d 候选 → 选中 %d | %s",
+                                len(sel.steps), len(signals), sel.selected)
+            except Exception as exc:                       # 选择失败不阻断，退回全纳入
+                logger.warning("[portfolio] PM.S2 边际准入失败（退回全纳入）: %s", exc)
+
         res = PortfolioManager(aum=aum, method="ic_weighted").build_book(signals, prices, volume)
         weights, composite = res.weights, res.composite
 
         # TR.3：组合账本用**真实/推导成本**（moomoo 佣金免费 + Corwin-Schultz 数据估价差），
         # 而非硬编码机构默认。为组合账本单建一个用 grounded 成本的 broker（同一 PositionStore）。
-        from app.config import settings
         from app.core.execution.paper_broker import PaperBroker
         from app.core.trading_context.context import grounded_cost_params, get_broker_profile
         profile = get_broker_profile(getattr(settings, "trading_broker", "moomoo_us"))
@@ -201,6 +220,59 @@ class DailyTradingLoop:
             gp = None
         pf_broker = PaperBroker(store=self.broker.store, cost_params=gp, initial_capital=aum) \
             if gp is not None else self.broker
+
+        # ── PM.S1：对**组合策略**跑策略级验证门（分段 OOS + DSR 去膨胀 + 夏普 t），记录 verdict。
+        #    严门加在真正交易的策略上、不加单因子。默认只记录不阻断（paper 期先收前向证据）。
+        strategy_verdict = None
+        if getattr(settings, "pm_strategy_gate_eval", True) and not used_baseline:
+            from app.core.portfolio_manager import StrategyGate
+            try:
+                sv = StrategyGate(aum=aum).evaluate(signals, dataset, cost_params=gp)
+                strategy_verdict = sv.to_dict()
+                logger.info("[portfolio] PM.S1 策略门：passed=%s Sharpe=%.3f DSR=%.3f t=%.2f | %s",
+                            sv.passed, sv.sharpe, sv.deflated_sharpe, sv.t_stat,
+                            "OK" if sv.passed else "; ".join(sv.reasons))
+                if not sv.passed and getattr(settings, "pm_strategy_gate_block", False):
+                    logger.warning("[portfolio] 策略门未过且 block=True → 本轮不交易")
+                    return {"n_factors": len(signals), "days_processed": 0,
+                            "reason": "strategy_gate_failed", "strategy_verdict": strategy_verdict,
+                            "selection": selection_info, "used_baseline": used_baseline}
+            except Exception as exc:
+                logger.warning("[portfolio] PM.S1 策略门评估失败（不阻断）: %s", exc)
+
+        # ── PM.5：组合级风控（敞口/集中度/目标波动）——在容量后、下单前施加到权重面板。
+        from app.core.portfolio_manager import PortfolioRiskGate, RiskLimits
+        limits = RiskLimits(
+            max_gross=float(getattr(settings, "risk_max_gross", 1.0)),
+            max_name_weight=float(getattr(settings, "risk_max_name_weight", 0.10)),
+            max_sector_weight=float(getattr(settings, "risk_max_sector_weight", 0.30)),
+            target_vol_ann=(float(getattr(settings, "risk_target_vol_ann", 0.0)) or None),
+            max_drawdown=float(getattr(settings, "risk_max_drawdown", 0.20)),
+            long_only=(not getattr(settings, "trading_allow_short", False)),
+        )
+        sectors = None
+        if "sector" in dataset:
+            try:
+                sectors = dataset["sector"].iloc[-1]
+            except Exception:
+                sectors = None
+        weights, risk_report = PortfolioRiskGate(limits).apply(weights, sectors=sectors)
+        composite = composite.reindex(columns=weights.columns)
+        logger.info("[portfolio] PM.5 风控：%s", risk_report.to_dict())
+
+        # ── PM.5 回撤熔断：按组合已有净值序列判定；触发且 halt=True → 本轮清仓（全 0）de-risk。
+        halt_info = None
+        try:
+            hist = self.broker.store.pnl_history(PORTFOLIO_BOOK_ID, limit=1000)
+            if hist:
+                eq_series = pd.Series([h.equity for h in hist])
+                halt, dd = PortfolioRiskGate(limits).should_halt(eq_series)
+                halt_info = {"halt": bool(halt), "drawdown": round(float(dd), 4)}
+                if halt and getattr(settings, "risk_halt_on_drawdown", False):
+                    logger.warning("[portfolio] 回撤熔断 dd=%.3f → 本轮清仓 de-risk", dd)
+                    weights = weights * 0.0
+        except Exception as exc:
+            logger.warning("[portfolio] 回撤熔断检查失败（不阻断）: %s", exc)
 
         # 市场上下文（与 _run_one_alpha 同口径）
         cols = weights.columns
@@ -239,7 +311,11 @@ class DailyTradingLoop:
                     aum, len(signals), n_days, equity)
         return {"n_factors": len(signals), "days_processed": n_days,
                 "equity": equity, "aum": aum, "combo_weights": res.combo_weights,
-                "used_baseline": used_baseline}
+                "used_baseline": used_baseline,
+                "selection": selection_info,          # PM.S2 边际准入轨迹
+                "strategy_verdict": strategy_verdict,  # PM.S1 策略门 verdict
+                "risk_report": risk_report.to_dict(),  # PM.5 风控施加情况
+                "drawdown": halt_info}                 # PM.5 回撤熔断状态
 
     # ------------------------------------------------------------------
     # 单因子（隔离）

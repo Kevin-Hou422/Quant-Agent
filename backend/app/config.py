@@ -69,6 +69,21 @@ class Settings(BaseSettings):
     trading_allow_short:  bool = False        # 暂 long-only（即使 margin 也先不做空）
     trading_broker:       str  = "moomoo_us"  # 决定佣金/规费档（moomoo 美股佣金免费）
 
+    # ── 组合层门控与风控（Phase PM 接线，2026-08-30）─────────────────────
+    # 以下均为「行为/风险偏好」选择（T1，用户显式设定）；默认值是**合理起点、非自然定律**，
+    # 请按你的实际风险偏好确认/修改。全部配置化，不在代码里硬编码。
+    pm_marginal_selection:   bool  = True    # PM.S2：多因子时按边际贡献贪心选，而非全纳入
+    pm_marginal_min_improve: float = 0.05    # 边际 OOS-Sharpe 提升阈值（低于则不纳入）
+    pm_strategy_gate_eval:   bool  = True    # PM.S1：每次组合评估策略级验证门并记录 verdict
+    pm_strategy_gate_block:  bool  = False   # 策略门不过是否停交易（默认否：paper 期先收集前向证据）
+    # 组合风控（PM.5）—— 风险偏好，务必按你的意愿设定
+    risk_max_gross:          float = 1.0     # 总敞口上限（Σ|w|）
+    risk_max_name_weight:    float = 0.10    # 单票 ≤ 10% NAV
+    risk_max_sector_weight:  float = 0.30    # 单行业 ≤ 30% NAV
+    risk_target_vol_ann:     float = 0.0     # 目标年化波动（0=关闭 vol targeting）
+    risk_max_drawdown:       float = 0.20    # 回撤熔断阈值
+    risk_halt_on_drawdown:   bool  = False   # 熔断触发是否停交易（默认否：先记录告警）
+
     # ── 价格数据源（Phase TR.2，单一权威源）───────────────────────────────
     # yahoo = 默认（yfinance）；moomoo = 经本地 OpenD 网关（研究/执行同源，消除 skew）。
     # 设 moomoo 后，US 数据集价格改从 MoomooProvider 取；非美（akshare/ccxt）不受影响。

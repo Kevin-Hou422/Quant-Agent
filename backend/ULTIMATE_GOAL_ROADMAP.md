@@ -183,7 +183,10 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
 - **PM.S2 因子按边际贡献准入 ✅**（2026-08-27）— `marginal_factor_selection()`：贪心前向选择，候选
   加入策略后**OOS-尾段 Sharpe 提升 ≥ min_improve** 才纳入，否则拒。**与已选高相关的冗余因子被拒
   （边际≈0）、单独弱但分散化好的因子能进**；每步决策留可审计轨迹。测试 `test_phase_pm_s.py`(7)。
-  **待接线**：把策略门/边际准入接进发现→审批路径（呼应 PM.7），当前为可复用模块。
+  **已接线（2026-08-30）**：`run_portfolio` 组合前用 `marginal_factor_selection` 选因子（PM.S2）、
+  组合后 `StrategyGate.evaluate` 出策略 verdict（PM.S1，配置 `pm_strategy_gate_eval/block`）；
+  `selection/strategy_verdict` 落进返回值。测试 `test_phase_pm_wiring.py`(3)。发现→审批路径的
+  策略级晋级仍属 PM.7。
 - **PM.S3 经典基准策略库 ✅**（2026-08-27）— `app/core/strategies/baselines.py`：8 个经 DSL 解析/执行
   验证的经典异象——截面动量 12-1(J&T 1993)、12M、短期反转(Jegadeesh 1990)、低波(Ang 2006)、
   52 周高(George-Hwang 2004)、时序趋势(MOP 2012)、流动性(Amihud 2002)、特异偏度(Boyer 2010)。
@@ -217,7 +220,10 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
   只减不增）、**目标波动缩放**（按估计年化波动缩放整体仓位）、**回撤熔断**（`should_halt`）。
   `apply()` 产出合规账本、`check()` 只报违规（供 PM.7 审批一份配置）。测试 `test_phase_pm5_risk.py`(7)。
   **beta 中性**（顺带闭合 B6，见 Phase R.2）**留待开启做空后**——当前 long-only，net=gross，beta 对冲不适用。
-  **待接线**：把 risk_gate 接进 `run_portfolio`（在容量后、下单前施加）。
+  **已接线（2026-08-30）**：`run_portfolio` 在容量后、下单前用 `PortfolioRiskGate(RiskLimits(...))`
+  施加到权重面板（配置 `risk_max_gross/name/sector/target_vol/max_drawdown`，long_only 随 `trading_allow_short`）；
+  回撤熔断 `should_halt` 接入（配置 `risk_halt_on_drawdown`）；`risk_report/drawdown` 落进返回值。
+  **实测生效**（集中持仓下单票被削）。测试 `test_phase_pm_wiring.py`。
 - **PM.6 horizon 感知配置** — 按因子换手/持有期/衰减 horizon 把因子分**快/慢**两类，差异化仓位、
   成本处理与资本占用（快因子高换手→更严成本/更小容量占用；慢因子→更大配额）。数据来自 `AlphaMonitor`
   的 turnover/decay。
