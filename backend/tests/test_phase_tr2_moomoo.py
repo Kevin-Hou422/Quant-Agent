@@ -44,6 +44,10 @@ def test_ticker_mapping():
     assert _to_moomoo_code("aapl") == "US.AAPL"
     assert _to_moomoo_code("HK.700") == "HK.700"          # 已有前缀不动
     assert _from_moomoo_code("US.AAPL") == "AAPL"
+    # 股类符号归一化：yfinance 'BRK-B' → moomoo 'US.BRK.B'（实测 moomoo 用点号）
+    assert _to_moomoo_code("BRK-B") == "US.BRK.B"
+    assert _to_moomoo_code("BF-B") == "US.BF.B"
+    assert _from_moomoo_code("US.BRK.B") == "BRK-B"        # 往返一致
 
 
 # --------------------------------------------------------------------------

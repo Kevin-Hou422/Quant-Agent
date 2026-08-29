@@ -372,7 +372,13 @@ def load_registry_dataset(
     start_dt = start or spec.start
     end_dt   = end   or _default_end()
 
-    cache_key = f"{name}|{start_dt}|{end_dt}"
+    # 缓存键含 price_source：切换数据源（yahoo↔moomoo）后不会返回旧源的缓存（换源收尾适配）。
+    try:
+        from app.config import settings
+        _src = getattr(settings, "price_source", "yahoo")
+    except Exception:
+        _src = "yahoo"
+    cache_key = f"{name}|{start_dt}|{end_dt}|{_src}"
     if use_cache and cache_key in _CACHE:
         return _CACHE[cache_key]
 

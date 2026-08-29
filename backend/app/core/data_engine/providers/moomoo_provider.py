@@ -40,17 +40,29 @@ logger = logging.getLogger(__name__)
 
 _SUPPORTED_FIELDS = ["open", "high", "low", "close", "volume", "vwap", "returns"]
 _DEFAULT_MARKET = "US"
+_MARKET_PREFIXES = ("US.", "HK.", "SH.", "SZ.", "SG.", "JP.")
 
 
 def _to_moomoo_code(ticker: str, market: str = _DEFAULT_MARKET) -> str:
-    """'AAPL' → 'US.AAPL'；已含市场前缀（含 '.'）则原样。"""
+    """
+    'AAPL' → 'US.AAPL'；已含市场前缀（US./HK./…）则原样。
+
+    **股类代码归一化**：yfinance 用横杠（'BRK-B'、'BF-B'），moomoo 用点号（'US.BRK.B'）——
+    实测确认（见 test）。裸符号里的 '-' 一律转 '.' 后再加市场前缀，否则这些标的会拉不到。
+    """
     t = ticker.strip().upper()
-    return t if "." in t else f"{market}.{t}"
+    if any(t.startswith(p) for p in _MARKET_PREFIXES):
+        return t
+    return f"{market}.{t.replace('-', '.')}"
 
 
 def _from_moomoo_code(code: str) -> str:
-    """'US.AAPL' → 'AAPL'。"""
-    return code.split(".", 1)[1] if "." in code else code
+    """'US.AAPL' → 'AAPL'；'US.BRK.B' → 'BRK-B'（还原 yfinance 风格股类符号）。"""
+    if any(code.startswith(p) for p in _MARKET_PREFIXES):
+        sym = code.split(".", 1)[1]
+    else:
+        sym = code
+    return sym.replace(".", "-")
 
 
 def assemble_panel(kline_by_ticker: Dict[str, pd.DataFrame],

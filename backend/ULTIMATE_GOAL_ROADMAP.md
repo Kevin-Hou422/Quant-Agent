@@ -252,8 +252,24 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
   接线：`config.price_source: yahoo|moomoo`（默认 yahoo，切 moomoo 后 **US 数据集价格改走 moomoo**，
   非美不受影响）+ `dataset_registry._fetch_moomoo`。**实测通**：真连 OpenD 拉 AAPL/MSFT 日K，价格与真实
   市场一致（含 WWDC 跳空）。测试 `test_phase_tr2_moomoo.py`(6，含真连冒烟；OpenD 未起自动 skip)。
-  已核实用户账户：**美股 LV3 实时**、历史 K 线额度 100、端口 11111。**待用户就绪后**切 `price_source=moomoo`
+  已核实用户账户：**美股 LV3 实时**、历史 K 线额度 100、端口 11111。**已切** `PRICE_SOURCE=moomoo`
   即全链路 discovery/validation/paper 同源。
+  - **换源收尾适配（2026-08-30）**：① 股类符号归一化 `BRK-B → US.BRK.B`（实测 moomoo 用点号，
+    yfinance 用横杠）；② registry 缓存键加 `price_source`（换源不返旧缓存）；③ `MoomooProvider`
+    对单标的失败**跳过+记日志**，健康门兜底空列。
+
+> **★ Universe 与额度说明（当前 $10k 阶段的显式选择，非永久上限）** — paper/discovery 固定用
+> `us_broad_large`（**~95 只、覆盖 11 板块的流动大盘，≤100**），因为 moomoo 免费账户**月度历史K线额度=100 只**。
+> **这是当前资金规模下的合理选择，不是架构上限**：① $10k 下实际可持仓仅 10~30 只，**约束来自 AUM 而非 universe**；
+> ② 100 只流动大盘（≈标普100）足够表达/验证横截面策略，宽度对 IR 的边际在此已递减；③ 额度**每月重置、随资产增长**，
+> 且**前向 paper 自积累数据、初始回填后不再依赖该额度**。
+> **未来扩大资金规模时，需相应调整的模块**：
+> - **universe 定义**（本 registry：换更大的可交易池，或分月/多源轮换）——直接决定宽度；
+> - **数据源额度策略**（TR.2）：或研究用免费广源(yfinance)拉宽截面、moomoo 只管可交易子集+执行（代价：重新引入
+>   一点 train/serve skew，需权衡）；或随入金提升 moomoo 额度；
+> - **PM 容量模型**（PM.2/TradingContext）：AUM 变大后 ADV 容量约束开始 binding，须重估每名上限；
+> - **成本口径**（TR.3）：更大 AUM 的市场冲击不再≈0，`grounded_cost_params` 的参与率/冲击项要重新生效；
+> - **持仓名数/集中度门**（PM.5）：随可持仓名数上升放宽单票/行业集中度上限。
 - **TR.3 成本落地推导值 ◑（2026-08-26）** — 已建 `grounded_cost_params(dataset, broker, aum)`：
   moomoo 佣金免费 → `fixed_bps=0/min_ticket=0`，`spread_bps`=**Corwin-Schultz 数据估计中位**（取代硬编码
   5/1/2）；`run_portfolio` 组合账本改用 grounded 成本 broker（配置 `trading_broker`）。**待补**：

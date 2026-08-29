@@ -29,6 +29,9 @@ def _hermetic_run_flags(tmp_path_factory):
     settings.enable_scheduler     = False
     settings.enable_paper_trading = False
     settings.enable_discovery     = False
+    # 部署 .env 可能设 PRICE_SOURCE=moomoo（真实运行用）；测试强制回 yahoo，
+    # 否则加载 US 数据集会去打 OpenD 网关（依赖运行时 + 烧历史K线额度）。见 DEV_LESSONS §H。
+    settings.price_source = "yahoo"
     # DB 隔离：默认 store（含 TestClient 的 get_store）走 settings.database_url。
     # 若指向真实 alphas.db，测试里的 /alpha/save 等会污染生产账本（曾在 pending 队列
     # 里看到 rank(close) 测试垃圾）。session 级重定向到临时库。
