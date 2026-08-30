@@ -20,7 +20,7 @@ from .transaction_cost import (
 from .backtest_engine import BacktestEngine, BacktestResult
 from .performance_analyzer import PerformanceAnalyzer
 from .risk_report import RiskReport
-from .visualizer import BacktestVisualizer
+from .visualizer import BacktestVisualizer, plot_backtest
 
 __all__ = [
     # Portfolio Construction
@@ -41,7 +41,7 @@ __all__ = [
     "PerformanceAnalyzer",
     "RiskReport",
     # Visualization
-    "BacktestVisualizer",
+    "BacktestVisualizer", "plot_backtest",
     # Realistic Backtester
     "RealisticBacktester",
     "RealisticBacktestResult",

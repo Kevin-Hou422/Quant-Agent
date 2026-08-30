@@ -4,7 +4,7 @@ import type { ECharts } from 'echarts'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import ErrorBoundary from '../ErrorBoundary'
 import type { WalkForwardFoldReport } from '../../types'
-import { TrendingUp, AlertTriangle, CheckCircle2, Activity } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Activity } from 'lucide-react'
 
 // ── Summary metric chip ───────────────────────────────────────────────────────
 
@@ -151,7 +151,6 @@ function WalkForwardChartInner() {
   const pctP = wf.pct_positive * 100
   const isStable   = wf.mean_oos_sharpe > 0.3 && pctP >= 60
   const isWarn     = wf.mean_oos_sharpe > 0 && (wf.mean_oos_sharpe <= 0.3 || pctP < 60)
-  const isBad      = wf.mean_oos_sharpe <= 0
 
   const overallIcon = isStable
     ? <CheckCircle2 size={13} className="text-emerald-400" />

@@ -66,6 +66,21 @@ def test_strategy_gate_result_is_consistent_and_serializable():
     assert set(d) >= {"passed", "sharpe", "deflated_sharpe", "t_stat", "pct_seg_positive"}
 
 
+def test_strategy_gate_computes_pbo_for_multi_factor():
+    # ≥2 因子 → PBO(CSCV,S.3)被算出且落在 [0,1]；接进策略门
+    ds, f = _predictive_dataset()
+    _, g = _predictive_dataset(seed=321)
+    res = StrategyGate(aum=10_000.0).evaluate({"f": f, "g": g.reindex_like(f)}, ds)
+    assert res.pbo is not None and 0.0 <= res.pbo <= 1.0
+    assert "pbo" in res.to_dict()
+
+
+def test_strategy_gate_pbo_none_for_single_factor():
+    ds, f = _predictive_dataset()
+    res = StrategyGate(aum=10_000.0).evaluate({"f": f}, ds)
+    assert res.pbo is None            # 单因子无法算 PBO → 不作为门
+
+
 def test_strategy_gate_noise_strategy_rejected():
     # 纯噪声因子（无边际预测力）→ 分段 OOS/DSR 应判不通过（fail-closed 语义）
     rng = np.random.default_rng(7)

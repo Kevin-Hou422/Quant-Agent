@@ -273,3 +273,21 @@ class BacktestVisualizer:
             f"IC-IR: {f(report.ic_ir)}  "
             f"成本: {report.cost_drag_bps:.1f}bps"
         )
+
+
+# ---------------------------------------------------------------------------
+# 便捷入口：从一次真实回测直接出"真实回测曲线"（研究用；调 alpha 时看表现）
+# ---------------------------------------------------------------------------
+
+def plot_backtest(result, prices, **kwargs):
+    """
+    BacktestResult + 价格 → 真实回测曲线 4 面板图（净值/回撤/滚动夏普/滚动 IC）。
+
+    曲线取自 `result.equity_curve` 等**真实回测输出**，逐点即回测净值，非装饰性动画
+    （见 test_phase_visualizer 的逐点匹配断言）。用法：
+        result = BacktestEngine().run(weights, prices, volume, signal)
+        fig = plot_backtest(result, prices); fig.show()
+    """
+    from .risk_report import RiskReport
+    report = RiskReport.from_result(result, prices, **kwargs)
+    return BacktestVisualizer().plot(report)

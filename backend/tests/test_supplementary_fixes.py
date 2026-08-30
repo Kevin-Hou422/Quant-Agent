@@ -90,21 +90,9 @@ class TestS2CsNesting:
 
 
 # ===========================================================================
-# S3 — AlphaExecutor 弃用保护（属实已修）
+# S3 — 旧 AlphaExecutor 已于 2026-08-30 连同 ast/executor/generator/operators 删除
+#      （被 dsl_executor 取代）。原弃用保护测试随之移除。
 # ===========================================================================
-
-class TestS3LegacyExecutor:
-
-    def test_not_in_public_all(self):
-        import app.core.alpha_engine as ae
-        assert "AlphaExecutor" not in ae.__all__
-        assert "execute_alpha" not in ae.__all__
-        assert "batch_execute" not in ae.__all__
-
-    def test_instantiation_warns(self):
-        from app.core.alpha_engine.executor import AlphaExecutor
-        with pytest.warns(DeprecationWarning, match="dsl_executor"):
-            AlphaExecutor()
 
 
 # ===========================================================================

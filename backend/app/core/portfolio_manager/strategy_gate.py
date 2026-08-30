@@ -97,6 +97,7 @@ class StrategyValidationResult:
     deflated_sharpe:    float = 0.0
     t_stat:             float = 0.0
     n_trials:           int = 1
+    pbo:                Optional[float] = None   # 回测过拟合概率（CSCV，Bailey 2015）；None=候选<2 未算
 
     def to_dict(self) -> dict:
         return {
@@ -107,6 +108,7 @@ class StrategyValidationResult:
             "pct_seg_positive": round(self.pct_seg_positive, 4),
             "deflated_sharpe": round(self.deflated_sharpe, 4),
             "t_stat": round(self.t_stat, 4), "n_trials": self.n_trials,
+            "pbo": (round(self.pbo, 4) if self.pbo is not None else None),
         }
 
 
@@ -125,13 +127,16 @@ class StrategyGate:
 
     def __init__(self, n_segments: int = 5, dsr_threshold: float = 0.90,
                  min_tstat: float = 3.0, use_global_trials: bool = True,
-                 aum: float = 1_000_000.0, method: str = "ic_weighted") -> None:
+                 aum: float = 1_000_000.0, method: str = "ic_weighted",
+                 pbo_threshold: float = 0.5, pbo_n_splits: int = 8) -> None:
         self.n_segments = n_segments
         self.dsr_threshold = dsr_threshold
         self.min_tstat = min_tstat
         self.use_global_trials = use_global_trials
         self.aum = aum
         self.method = method
+        self.pbo_threshold = pbo_threshold   # PBO>阈值(默认0.5)判"选择流程过拟合"
+        self.pbo_n_splits = pbo_n_splits
 
     def evaluate(self, factor_signals: Signals, dataset: WidePanel,
                  cost_params=None, n_trials: Optional[int] = None) -> StrategyValidationResult:
@@ -199,11 +204,33 @@ class StrategyGate:
             logger.warning("[strategy_gate] DSR/t 失败 → 不通过: %s", exc)
             reasons.append(f"DSR/t 计算失败: {exc}")
 
+        # ---- 3. PBO：候选各因子单因子策略收益构成矩阵 → CSCV 过拟合概率（S.3）----
+        #    量化"从这些因子里挑最优"是否过拟合；单因子(<2)无法算 → 跳过、不作为门。
+        if len(factor_signals) >= 2:
+            try:
+                from app.core.backtest_engine.overfit_stats import probability_of_backtest_overfitting
+                cols = []
+                for name, sig in factor_signals.items():
+                    r, _ = strategy_net_returns({name: sig}, dataset, aum=self.aum,
+                                                method="equal_weight", cost_params=cost_params)
+                    cols.append(r.rename(name))
+                mat = pd.concat(cols, axis=1).dropna()
+                if mat.shape[0] >= 2 * self.pbo_n_splits and mat.shape[1] >= 2:
+                    pbo = float(probability_of_backtest_overfitting(
+                        mat.to_numpy(dtype=float), n_splits=self.pbo_n_splits))
+                    res.pbo = pbo
+                    if pbo > self.pbo_threshold:
+                        reasons.append(f"PBO {pbo:.2f} > {self.pbo_threshold}（选择流程过拟合）")
+            except Exception as exc:
+                logger.warning("[strategy_gate] PBO 计算失败（不作为门）: %s", exc)
+
         res.reasons = reasons
         res.passed = len(reasons) == 0
-        logger.info("[strategy_gate] %d 因子 | passed=%s | Sharpe=%.3f 段正比=%.0f%% DSR=%.3f t=%.2f | %s",
+        logger.info("[strategy_gate] %d 因子 | passed=%s | Sharpe=%.3f 段正比=%.0f%% DSR=%.3f t=%.2f PBO=%s | %s",
                     len(factors), res.passed, res.sharpe, res.pct_seg_positive * 100,
-                    res.deflated_sharpe, res.t_stat, "OK" if res.passed else "; ".join(reasons))
+                    res.deflated_sharpe, res.t_stat,
+                    ("%.2f" % res.pbo) if res.pbo is not None else "NA",
+                    "OK" if res.passed else "; ".join(reasons))
         return res
 
 

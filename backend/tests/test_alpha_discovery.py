@@ -28,7 +28,7 @@ if _BACKEND not in sys.path:
 from app.core.alpha_engine.typed_nodes import (
     DataNode, TimeSeriesNode, CrossSectionalNode, ArithmeticNode, NodeType,
 )
-from app.core.alpha_engine.generator import generate_random_alpha
+from app.core.gp_engine.gp_engine import generate_random_alpha  # 旧 alpha_engine.generator 已删，用活的 gp_engine 版
 from app.core.alpha_engine.validator import AlphaValidator
 
 from app.core.gp_engine.mutations import (
@@ -158,7 +158,7 @@ def test_proxy_features():
         _make_ts_node(),
         _make_cs_node(),
         _make_complex_node(),
-        generate_random_alpha(depth=4, seed=7),
+        generate_random_alpha(depth=4),
     ]
     for node in nodes:
         feat = extract_features(node)

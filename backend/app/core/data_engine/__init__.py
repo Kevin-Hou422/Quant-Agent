@@ -1,18 +1,19 @@
 """
 Data Engine 包 — 统一导出入口
 
-包含原有 API（向后兼容）和新增的多源生产级数据管道 API。
+活的数据路径：providers（yahoo/moomoo/akshare/ccxt）+ schema + dataset_registry + pit_store。
+旧的多源管道（data_manager/feature_store/dataset_loader/panel_factory/preprocessor/
+alpha_vantage_provider）已于 2026-08-30 删除——被 dataset_registry + pit_store 完全取代。
 """
 
 # ============================================================
-# 原有 API（保留，向后兼容）
+# Provider 基类 + 主力 provider
 # ============================================================
 from .base import DataProvider, RawDataset
 from .yahoo_provider import YahooFinanceProvider
-from .dataset_loader import DatasetLoader, load_dataset, get_provider, register_provider
 
 # ============================================================
-# 新增：标准 Schema 层
+# 标准 Schema 层
 # ============================================================
 from .schema import (
     SchemaEnforcer,
@@ -24,28 +25,12 @@ from .schema import (
 )
 
 # ============================================================
-# 新增：多源 Provider
+# 本地 Parquet provider
 # ============================================================
-from .alpha_vantage_provider import AlphaVantageProvider
 from .local_parquet_provider import LocalParquetProvider
 
 # ============================================================
-# 新增：面板工厂 + PIT Universe 过滤
-# ============================================================
-from .panel_factory import PanelFactory, UniverseFilter
-
-# ============================================================
-# 新增：预处理管道
-# ============================================================
-from .preprocessor import (
-    Preprocessor,
-    CorporateActionAdjuster,
-    SyntheticFieldBuilder,
-    MissingValueStrategy,
-)
-
-# ============================================================
-# 新增：数据健康检查
+# 数据健康检查
 # ============================================================
 from .health_report import (
     DataHealthChecker,
@@ -56,47 +41,7 @@ from .health_report import (
 )
 
 # ============================================================
-# 新增：Parquet 特征库 + 分块加载
-# ============================================================
-from .feature_store import ParquetFeatureStore, DataChunker
-
-# ============================================================
-# 新增：顶层 DataManager 门面
-# ============================================================
-from .data_manager import DataManager
-
-
-__all__ = [
-    # 原有
-    "DataProvider", "RawDataset",
-    "YahooFinanceProvider",
-    "DatasetLoader", "load_dataset", "get_provider", "register_provider",
-    # Schema
-    "SchemaEnforcer", "SchemaError",
-    "STANDARD_COLUMNS", "PRICE_FIELDS", "NUMERIC_FIELDS",
-    "wide_to_long",
-    # Providers
-    "AlphaVantageProvider",
-    "LocalParquetProvider",
-    # Panel
-    "PanelFactory", "UniverseFilter",
-    # Preprocessor
-    "Preprocessor", "CorporateActionAdjuster",
-    "SyntheticFieldBuilder", "MissingValueStrategy",
-    # Health
-    "DataHealthChecker", "HealthReport",
-    "GapDetector", "SpikeDetector", "ZeroVolumeDetector",
-    # Storage
-    "ParquetFeatureStore", "DataChunker",
-    # Manager
-    "DataManager",
-    # Partitioner
-    "DataPartitioner",
-    "PartitionedDataset",
-]
-
-# ============================================================
-# 新增：数据分区器（IS/OOS 严格隔离）
+# 数据分区器（IS/OOS 严格隔离）
 # ============================================================
 from .data_partitioner import DataPartitioner, PartitionedDataset
 
@@ -112,7 +57,7 @@ from .multi_dataset import (
 )
 
 # ============================================================
-# 生产数据集注册表 (10 datasets, 3 providers)
+# 生产数据集注册表
 # ============================================================
 from .dataset_registry import (
     load_registry_dataset,
@@ -138,3 +83,21 @@ from .dataset_filters import (
 # ============================================================
 from .providers.akshare_provider import AkshareProvider
 from .providers.ccxt_provider import CcxtBinanceProvider
+
+
+__all__ = [
+    "DataProvider", "RawDataset",
+    "YahooFinanceProvider",
+    "SchemaEnforcer", "SchemaError",
+    "STANDARD_COLUMNS", "PRICE_FIELDS", "NUMERIC_FIELDS",
+    "wide_to_long",
+    "LocalParquetProvider",
+    "DataHealthChecker", "HealthReport",
+    "GapDetector", "SpikeDetector", "ZeroVolumeDetector",
+    "DataPartitioner", "PartitionedDataset",
+    "Dataset", "DatasetRegistry", "load_named_dataset", "get_registry", "STANDARD_FIELDS",
+    "load_registry_dataset", "registry_names", "registry_spec", "DatasetSpec",
+    "FilterConfig", "FilterResult", "DatasetFilterEngine",
+    "apply_filters", "validate_filter_config", "VALID_FILTER_VALUES",
+    "AkshareProvider", "CcxtBinanceProvider",
+]

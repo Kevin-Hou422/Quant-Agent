@@ -3,7 +3,7 @@ import {
   apiSimulate, apiFetchAlphaHistory, apiSaveAlpha,
   apiCreateSession, apiListSessions, apiGetSession,
   apiRenameSession, apiDeleteSession,
-  streamWorkflowOptimize, streamWorkflowGenerate, streamChat,
+  streamWorkflowOptimize, streamChat,
   apiWalkForwardBacktest,
 } from '../api/client'
 import type { ChatSession } from '../types'

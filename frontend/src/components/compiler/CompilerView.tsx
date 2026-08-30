@@ -242,7 +242,7 @@ export default function CompilerView() {
         </button>
 
         <button
-          onClick={runWalkForward}
+          onClick={() => runWalkForward()}
           disabled={isRunning}
           title="Walk-Forward validation (5 folds)"
           className="flex items-center gap-1.5 text-xs bg-sky-700 hover:bg-sky-600 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg transition-colors"

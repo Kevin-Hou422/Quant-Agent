@@ -84,9 +84,10 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（moomo
   改**最近 2–3 年冻结、一次性使用**；`RunManifest` 记"该 test 段已用 N 次"超阈值告警。
 - **S.3 全局多重检验计数器 ◑（2026-08-24）**—— 已建 `db/trial_ledger.py`（`TrialLedger`：跨会话持久
   累计 trial 数）；发现每轮 GP 把 `pop×gen+optuna` 累加进去；`ValidationGate` 默认用**全局累计数**做
-  DSR 去膨胀（不再默认 1）+ 新增 **t≥3.0**（Harvey-Liu-Zhu，Lo 2002 t 统计量）门槛。已建 PBO 函数
-  `backtest_engine/overfit_stats.py`（CSCV，Bailey 2015）+ 测试。**待补**：把 PBO 接进发现门（需暴露
-  GP 种群的收益序列矩阵）+ CPCV。（吸收原 Phase R.1。）
+  DSR 去膨胀（不再默认 1）+ 新增 **t≥3.0**（Harvey-Liu-Zhu，Lo 2002 t 统计量）门槛。PBO 函数
+  `backtest_engine/overfit_stats.py`（CSCV，Bailey 2015）**已接进 StrategyGate（2026-08-30）**：候选各
+  因子单因子策略收益构成矩阵 → PBO；`PBO>阈值(默认0.5)` 判"选择流程过拟合"，落进策略 verdict（配置
+  `pbo_threshold/pbo_n_splits`）。**待补**：CPCV。（吸收原 Phase R.1。）
 - **S.4 换含退市收益的价格数据源**（根治历史幸存者偏差）—— **🚫 已搁置（2026-08-25，被 TR.2 取代）**。
   原计划接付费源（Sharadar/CRSP）修历史幸存者偏差，但用户目标是**零预算的前向 paper 模拟**：
   ① 幸存者偏差只影响**历史回测**，**前向 paper 天生无此偏差且免费**（前向 paper 会自纠幸存者伪因子）；
@@ -472,7 +473,8 @@ Phase R ── ⚠️ 已被 S/PM 吸收（R.1→S.3、R.2→PM.5、R.3→PM.2�
 - 生命周期：`alpha_lifecycle.py` 状态机、`AlphaStore.update_status`、PATCH 端点
 - 执行：`PaperBroker`/`PositionStore`、`TransactionCostEngine`（同一成本模型，禁止另立）
 - 调度：`scheduler.py`（`create_scheduler` + SQLAlchemyJobStore，加新 job 即可）
-- 数据：`DataManager.get_panel`、`DataProvider` 抽象、`feature_store.py`
+- 数据：`load_registry_dataset`（`dataset_registry.py`）、`DataProvider` 抽象、`pit_store.py`
+  （注：旧 `DataManager`/`feature_store.py` 多源管道已于 2026-08-30 删除，被 registry + PIT 取代）
 
 ## 验证方式（端到端）
 

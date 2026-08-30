@@ -28,41 +28,10 @@ import pytest
 # ===========================================================================
 
 class TestModuleReorg:
-    def test_optimization_engine_imports(self):
-        from app.core.optimization_engine import (
-            AlphaOptimizer, SearchSpace, StudySummary,
-            AlphaEvaluator, AlphaEvaluatorResult, EvalMetrics,
-            DataPartitioner, PartitionedDataset,
-        )
-        assert AlphaOptimizer is not None
-        assert DataPartitioner is not None
-
-    def test_portfolio_engine_imports(self):
-        from app.core.portfolio_engine import (
-            SimulationConfig, SignalProcessor,
-            DecilePortfolio, SignalWeightedPortfolio, NeutralizationLayer,
-            RealisticBacktester, RealisticBacktestResult,
-        )
-        assert RealisticBacktester is not None
-
-    def test_utils_imports(self):
-        from app.core.utils import (
-            ts_mean, ts_std, ts_delta, ts_rank,
-            ts_decay_linear, ind_neutralize,
-        )
-        import numpy as np
-        arr = np.random.rand(50, 10)
-        result = ts_mean(arr, 5)
-        assert result.shape == arr.shape
-
-    def test_cross_module_identity(self):
-        """新路径和旧路径应解析到同一个类对象。"""
-        from app.core.optimization_engine import AlphaOptimizer as A
-        from app.core.ml_engine.alpha_optimizer import AlphaOptimizer as B
-        assert A is B
-
-    def test_phase1_phase2_tests_still_pass(self):
-        """模块重组后，Phase 1-2 现有导入不应报错。"""
+    # 注：optimization_engine/portfolio_engine/utils 三个 re-export 壳包已于 2026-08-30
+    # 删除（活模块在 ml_engine/backtest_engine/alpha_engine），原测壳导入的用例随之移除。
+    def test_live_module_imports_ok(self):
+        """核心活模块导入不应报错。"""
         from app.core.alpha_engine.signal_processor import SimulationConfig, SignalProcessor
         from app.core.data_engine.data_partitioner import DataPartitioner
         from app.core.backtest_engine.realistic_backtester import RealisticBacktester
