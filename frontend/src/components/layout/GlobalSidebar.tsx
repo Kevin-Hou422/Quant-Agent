@@ -1,4 +1,4 @@
-import { MessageSquare, Code2, BookOpen, Play, Zap, Database, Activity } from 'lucide-react'
+import { MessageSquare, Code2, BookOpen, Play, Zap, Database, Activity, Layers } from 'lucide-react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { useQuantWorkspace } from '../../hooks/useQuantWorkspace'
 
@@ -44,6 +44,7 @@ export default function GlobalSidebar() {
   const inCompiler  = activeView === 'COMPILER'
   const inDataset   = activeView === 'DATASET'
   const inDashboard = activeView === 'DASHBOARD'
+  const inPortfolio = activeView === 'PORTFOLIO'
 
   // Chat button: toggle between CHAT ↔ COMPILER
   const handleChat = () => {
@@ -118,6 +119,12 @@ export default function GlobalSidebar() {
           label="Live"
           active={inDashboard}
           onClick={() => setActiveView(inDashboard ? 'COMPILER' : 'DASHBOARD')}
+        />
+        <NavBtn
+          icon={Layers}
+          label="Portf"
+          active={inPortfolio}
+          onClick={() => setActiveView(inPortfolio ? 'COMPILER' : 'PORTFOLIO')}
         />
       </nav>
 

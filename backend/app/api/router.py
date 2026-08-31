@@ -1242,6 +1242,7 @@ def strategy_propose(store: AlphaStore = Depends(get_store),
     from app.core.portfolio_manager import propose_from_paper_factors
     from app.core.data_engine.dataset_registry import load_registry_dataset
     from app.db.strategy_store import StrategyStore
+    from app.config import settings
     ds = load_registry_dataset(settings.paper_dataset,
                                start=settings.paper_start, end=settings.paper_end).data
     cfg = propose_from_paper_factors(store, ds, aum=float(settings.paper_aum))
@@ -1256,6 +1257,14 @@ def strategy_pending(sstore=Depends(get_strategy_store)) -> List[dict]:
     """待审批（proposed）的策略配置队列。"""
     from app.db.strategy_store import StrategyStore
     return [StrategyStore.to_dict(r) for r in sstore.query(status="proposed", limit=200)]
+
+
+@router.get("/strategies", tags=["Strategy"])
+def strategy_list(status: Optional[str] = Query(None), limit: int = Query(100),
+                  sstore=Depends(get_strategy_store)) -> List[dict]:
+    """列出策略配置（可按 status 过滤：proposed/approved/active/retired/rejected）。"""
+    from app.db.strategy_store import StrategyStore
+    return [StrategyStore.to_dict(r) for r in sstore.query(status=status, limit=limit)]
 
 
 @router.get("/strategies/{sid}", tags=["Strategy"])

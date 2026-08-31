@@ -24,6 +24,7 @@ vi.mock('lucide-react', () => ({
   Play:          () => <span data-testid="icon-play" />,
   Zap:           () => <span data-testid="icon-zap" />,
   Activity:      () => <span data-testid="icon-live" />,
+  Layers:        () => <span data-testid="icon-portfolio" />,
 }))
 
 import GlobalSidebar from '../../../components/layout/GlobalSidebar'

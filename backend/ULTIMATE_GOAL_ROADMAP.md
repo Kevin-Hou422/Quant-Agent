@@ -437,9 +437,10 @@ fetch/SSE、`components/analysis/*` 图表、`AlphaDashboard`。**前端只读 +
   标注；因子详情显示其用到的稀疏字段与可见期。
 - **FE-11 前向数据状态**（配 Phase 11）：每日增量摄取状态、PIT 逐日增长指标、美股日历/最新 bar
   时间（区分"已收盘入库" vs "待摄取"）。
-- **FE-PM 组合与配置视图**（配 Phase PM，**重**）：当前组合的**具体美元持仓表**（每只股票多少股/多少钱）、
-  各因子配额与**容量占用**、组合 gross/net 敞口与风险仪表、快/慢因子分组；以及**"批准这份持仓配置"**
-  的界面（替代/叠加原因子审批）。
+- **FE-PM 组合与配置视图 ✅**（2026-08-31，配 Phase PM）：新建 `frontend/src/components/portfolio/PortfolioView.tsx`
+  （侧栏 Portf 入口）——**策略配置控制台**：成分+每因子配额条、策略门 verdict(Sharpe/DSR/t/PBO)、风控
+  (单票削/行业缩/gross缩/vol缩放)、换手/无交易带、状态徽章、审批谱系;**"提出新策略配置""批准/批准并启用/拒绝"**
+  按钮,消费 `/strategies/{propose,pending,list,{id},approve,reject}`。前端构建绿 + 94 测试过。
 - **FE-12 执行监控面板**（配 Phase 12，**重**）：moomoo 纸交易的持仓/挂单/成交、**本地 vs 券商
   对账差**、风控门状态与 **kill switch（一键全平，带二次确认的人工动作）**、三级保真度对比
   （内部模拟 vs moomoo 纸交易成交）。
@@ -462,7 +463,7 @@ Phase 9（自主发现 + 生命周期门 + 批准，✅）── 门控设计已
 Phase TR（交易现实：moomoo 单一源 + 真实成本/可做空 + 门分级）
   TR.1 TradingContext(✅) · TR.2 moomoo 单一权威源(✅,provider+接线+真连实测) · TR.3 成本落地(◑) · TR.4 门分级(⬜)
 Phase PM（组合与资金管理层）★ ── 依赖 9；与 S 并列最高优先级
-  第一批(✅) · ★核心重构:策略级门 PM.S1(✅)+边际准入 PM.S2(✅)+经典基准库 PM.S3(✅) · 第二批 PM.5(✅)/PM.6(✅)/PM.7(✅) · FE-PM(⬜) · 收拢 R.2/R.4
+  第一批(✅) · ★核心重构:策略级门 PM.S1(✅)+边际准入 PM.S2(✅)+经典基准库 PM.S3(✅) · 第二批 PM.5/6/7(✅) · FE-PM(✅) · 收拢 R.2/R.4
 Phase 10（另类数据：基本面，价格仍走 moomoo）·  Phase 11（前向增量，价格源=moomoo/TR.2）
 Phase 12（**moomoo** 执行，同 TR.2 源）── 依赖 PM（消费美元账本）+ TR.2 + 11
 Phase 13（多 agent + 全自动）── 依赖 9 + 12

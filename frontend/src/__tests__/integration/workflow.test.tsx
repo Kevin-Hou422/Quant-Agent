@@ -5,7 +5,8 @@
  * Mock 所有 API 调用避免真实网络请求。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import type { ReactElement } from 'react'
+import { act } from '@testing-library/react'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 
 // Mock all external dependencies
@@ -24,7 +25,7 @@ vi.mock('lucide-react', () => {
     'ChevronDown', 'ChevronRight', 'X', 'Plus', 'Send', 'Settings', 'RefreshCw',
     'CheckCircle', 'AlertCircle', 'Clock', 'TrendingUp', 'BarChart2', 'Layers',
     'ExternalLink', 'Download', 'Filter', 'Info']
-  const mocked: Record<string, () => JSX.Element> = {}
+  const mocked: Record<string, () => ReactElement> = {}
   icons.forEach(name => { mocked[name] = () => <span data-testid={`icon-${name}`} /> })
   return mocked
 })

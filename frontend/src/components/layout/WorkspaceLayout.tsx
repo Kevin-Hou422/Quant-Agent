@@ -9,6 +9,7 @@ import CompilerView from '../compiler/CompilerView'
 import ConsoleOutput from '../compiler/ConsoleOutput'
 import DatasetView from '../dataset/DatasetView'
 import AlphaDashboard from '../dashboard/AlphaDashboard'
+import PortfolioView from '../portfolio/PortfolioView'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { useQuantWorkspace } from '../../hooks/useQuantWorkspace'
 
@@ -39,6 +40,7 @@ export default function WorkspaceLayout() {
 
   const inDataset   = activeView === 'DATASET'
   const inDashboard = activeView === 'DASHBOARD'
+  const inPortfolio = activeView === 'PORTFOLIO'
   const inChat      = activeView === 'CHAT'
   const inCompiler  = activeView === 'COMPILER'
 
@@ -66,8 +68,15 @@ export default function WorkspaceLayout() {
         </div>
       )}
 
+      {/* ── Portfolio view (FE-PM): 组合策略配置控制台 ─────────────────── */}
+      {inPortfolio && (
+        <div className="flex-1 min-w-0 h-full overflow-hidden">
+          <PortfolioView />
+        </div>
+      )}
+
       {/* ── Chat / Compiler layout ────────────────────────────────────── */}
-      {!inDataset && !inDashboard && (
+      {!inDataset && !inDashboard && !inPortfolio && (
         <>
           {/*
            * Col 2 (conditional):

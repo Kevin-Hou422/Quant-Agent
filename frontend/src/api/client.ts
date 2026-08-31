@@ -3,7 +3,7 @@ import type {
   SimulationConfig, SimResult, AlphaRecord, BacktestRunResponse,
   WorkflowResponse, DatasetInfo, WalkForwardResult, DatasetHealth,
   RegimeInfo, AlphaDashboardRow, ICHistoryData, SchedulerStatus, PaperPnLData,
-  PendingAlpha, AlphaDecision,
+  PendingAlpha, AlphaDecision, StrategyConfigItem,
 } from '../types'
 
 const http = axios.create({ baseURL: '/api', timeout: 120_000 })
@@ -60,6 +60,25 @@ export const apiRejectAlpha = (alphaId: number, reason = '') =>
   http.post<{ alpha_id: number; decision: string; new_status: string }>(
     `/alphas/${alphaId}/reject`, { reason },
   )
+
+// ── Phase PM.7: 策略配置（审批对象 = 组合策略，不是单因子）─────────────────
+export const apiProposeStrategy = () =>
+  http.post<StrategyConfigItem>('/strategies/propose', {}, { timeout: 180_000 })
+
+export const apiFetchStrategiesPending = () =>
+  http.get<StrategyConfigItem[]>('/strategies/pending')
+
+export const apiFetchStrategies = (status?: string, limit = 100) =>
+  http.get<StrategyConfigItem[]>('/strategies', { params: { status, limit } })
+
+export const apiFetchStrategy = (sid: number) =>
+  http.get<StrategyConfigItem>(`/strategies/${sid}`)
+
+export const apiApproveStrategy = (sid: number, activate = false, reason = '') =>
+  http.post<StrategyConfigItem>(`/strategies/${sid}/approve`, { activate, reason })
+
+export const apiRejectStrategy = (sid: number, reason = '') =>
+  http.post<StrategyConfigItem>(`/strategies/${sid}/reject`, { reason })
 
 export const apiFetchDecisions = (alphaId: number) =>
   http.get<AlphaDecision[]>(`/alphas/${alphaId}/decisions`)

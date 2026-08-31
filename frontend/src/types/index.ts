@@ -1,6 +1,34 @@
 // ─── Shared domain types ──────────────────────────────────────────────────
 
-export type ActiveView = 'CHAT' | 'COMPILER' | 'DATASET' | 'DASHBOARD'
+export type ActiveView = 'CHAT' | 'COMPILER' | 'DATASET' | 'DASHBOARD' | 'PORTFOLIO'
+
+// ── Phase PM.7: 策略配置（一等实体）───────────────────────────────────────
+export interface StrategyDecisionItem {
+  decision:    string
+  from_status: string
+  to_status:   string
+  reason:      string
+  actor:       string
+  decided_at:  string
+}
+
+export interface StrategyConfigItem {
+  id:            number
+  name:          string
+  status:        string        // proposed | approved | active | retired | rejected
+  version:       number
+  factors:       string[]
+  combo_weights: Record<string, number>
+  aum:           number
+  method:        string
+  passed:        boolean
+  verdict:       Record<string, unknown>   // StrategyGate: passed/sharpe/deflated_sharpe/t_stat/pbo/...
+  risk_report:   Record<string, unknown>   // n_name_clipped/n_sector_scaled/n_gross_scaled/vol_scalar
+  turnover_ann:  number
+  no_trade_band: number
+  created_at:    string | null
+  decisions?:    StrategyDecisionItem[]
+}
 export type Status = 'idle' | 'optimizing' | 'backtesting' | 'walkforward' | 'ready' | 'error'
 
 export interface DatasetInfo {
