@@ -225,9 +225,11 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
   施加到权重面板（配置 `risk_max_gross/name/sector/target_vol/max_drawdown`，long_only 随 `trading_allow_short`）；
   回撤熔断 `should_halt` 接入（配置 `risk_halt_on_drawdown`）；`risk_report/drawdown` 落进返回值。
   **实测生效**（集中持仓下单票被削）。测试 `test_phase_pm_wiring.py`。
-- **PM.6 horizon 感知配置** — 按因子换手/持有期/衰减 horizon 把因子分**快/慢**两类，差异化仓位、
-  成本处理与资本占用（快因子高换手→更严成本/更小容量占用；慢因子→更大配额）。数据来自 `AlphaMonitor`
-  的 turnover/decay。
+- **PM.6 horizon 感知配置 ✅**（2026-08-31）— 已建 `app/core/portfolio_manager/horizon.py`：
+  ①**无交易带调仓 `apply_no_trade_band`（合并 TR.1 band，减换手省成本）已接进 `run_portfolio`**
+  （band 由 TradingContext 数据推导或配置 `pm_no_trade_band`）；②因子按年化换手分 fast/slow
+  （`horizon_profile`，阈值 `pm_horizon_fast_thresh`）落进返回值 `horizon/no_trade_band/turnover_ann`。
+  测试 `test_phase_pm6_horizon.py`(6+接线)。**实测生效**（小漂移被无交易带吸收、换手下降）。
 - **PM.7 审批对象升级** — 待批准队列从"批准因子"升级为**"批准一份组合级持仓配置"**（组合成分 + 每因子
   配额 + 目标敞口 + 风险预算）；保留因子级审批为其上游。谱系记录配置版本。
 - **FE-PM** — 前端组合视图：当前组合的**具体美元持仓表**、各因子配额/容量占用、组合敞口/风险仪表、
@@ -453,7 +455,7 @@ Phase 9（自主发现 + 生命周期门 + 批准，✅）── 门控设计已
 Phase TR（交易现实：moomoo 单一源 + 真实成本/可做空 + 门分级）
   TR.1 TradingContext(✅) · TR.2 moomoo 单一权威源(✅,provider+接线+真连实测) · TR.3 成本落地(◑) · TR.4 门分级(⬜)
 Phase PM（组合与资金管理层）★ ── 依赖 9；与 S 并列最高优先级
-  第一批(✅) · ★核心重构:策略级门 PM.S1(✅)+边际准入 PM.S2(✅)+经典基准库 PM.S3(✅) · 第二批 PM.5(✅)/6/7(⬜) · 收拢 R.2/R.4
+  第一批(✅) · ★核心重构:策略级门 PM.S1(✅)+边际准入 PM.S2(✅)+经典基准库 PM.S3(✅) · 第二批 PM.5(✅)/PM.6(✅)/PM.7(⬜) · 收拢 R.2/R.4
 Phase 10（另类数据：基本面，价格仍走 moomoo）·  Phase 11（前向增量，价格源=moomoo/TR.2）
 Phase 12（**moomoo** 执行，同 TR.2 源）── 依赖 PM（消费美元账本）+ TR.2 + 11
 Phase 13（多 agent + 全自动）── 依赖 9 + 12

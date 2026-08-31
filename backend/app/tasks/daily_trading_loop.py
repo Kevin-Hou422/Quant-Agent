@@ -274,6 +274,25 @@ class DailyTradingLoop:
         except Exception as exc:
             logger.warning("[portfolio] 回撤熔断检查失败（不阻断）: %s", exc)
 
+        # ── PM.6：无交易带调仓（合并 TR.1 band，减换手省成本）+ 因子快慢分类 ──
+        from app.core.portfolio_manager import (apply_no_trade_band, annualized_turnover,
+                                                horizon_profile)
+        band = float(getattr(settings, "pm_no_trade_band", 0.0))
+        if band <= 0.0:                                   # 由 TradingContext 数据推导（T2）
+            try:
+                from app.core.trading_context.context import TradingContext
+                band = float(TradingContext(aum=aum).analyze(dataset).rebalance_band)
+            except Exception:
+                band = 0.0
+        to_before = annualized_turnover(weights)
+        weights = apply_no_trade_band(weights, band)
+        to_after = annualized_turnover(weights)
+        horizon_info = [h.to_dict() for h in horizon_profile(
+            signals, fast_threshold=float(getattr(settings, "pm_horizon_fast_thresh", 4.0)))]
+        logger.info("[portfolio] PM.6 无交易带=%.4f 换手 %.2f→%.2f/年 | 快慢=%s",
+                    band, to_before, to_after,
+                    {h["factor"]: h["horizon"] for h in horizon_info})
+
         # 市场上下文（与 _run_one_alpha 同口径）
         cols = weights.columns
         prices_f = prices.reindex(columns=cols).ffill(limit=5).fillna(0.0)
@@ -315,7 +334,10 @@ class DailyTradingLoop:
                 "selection": selection_info,          # PM.S2 边际准入轨迹
                 "strategy_verdict": strategy_verdict,  # PM.S1 策略门 verdict
                 "risk_report": risk_report.to_dict(),  # PM.5 风控施加情况
-                "drawdown": halt_info}                 # PM.5 回撤熔断状态
+                "drawdown": halt_info,                 # PM.5 回撤熔断状态
+                "no_trade_band": round(band, 5),       # PM.6 无交易带宽
+                "turnover_ann": round(to_after, 3),    # PM.6 带后年化换手
+                "horizon": horizon_info}               # PM.6 因子快慢分类
 
     # ------------------------------------------------------------------
     # 单因子（隔离）

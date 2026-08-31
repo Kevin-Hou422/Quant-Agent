@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     pm_marginal_min_improve: float = 0.05    # 边际 OOS-Sharpe 提升阈值（低于则不纳入）
     pm_strategy_gate_eval:   bool  = True    # PM.S1：每次组合评估策略级验证门并记录 verdict
     pm_strategy_gate_block:  bool  = False   # 策略门不过是否停交易（默认否：paper 期先收集前向证据）
+    pm_no_trade_band:        float = 0.0     # PM.6：无交易带宽（0=由 TradingContext 数据推导；>0=显式覆盖）
+    pm_horizon_fast_thresh:  float = 4.0     # 年化换手 > 此值 → fast 因子（快慢分类阈值）
     # 组合风控（PM.5）—— 风险偏好，务必按你的意愿设定
     risk_max_gross:          float = 1.0     # 总敞口上限（Σ|w|）
     risk_max_name_weight:    float = 0.10    # 单票 ≤ 10% NAV
