@@ -230,8 +230,15 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
   （band 由 TradingContext 数据推导或配置 `pm_no_trade_band`）；②因子按年化换手分 fast/slow
   （`horizon_profile`，阈值 `pm_horizon_fast_thresh`）落进返回值 `horizon/no_trade_band/turnover_ann`。
   测试 `test_phase_pm6_horizon.py`(6+接线)。**实测生效**（小漂移被无交易带吸收、换手下降）。
-- **PM.7 审批对象升级** — 待批准队列从"批准因子"升级为**"批准一份组合级持仓配置"**（组合成分 + 每因子
-  配额 + 目标敞口 + 风险预算）；保留因子级审批为其上游。谱系记录配置版本。
+- **PM.7 审批对象升级 ✅**（2026-08-31）— 策略配置升为**一等实体**：新建 `db/strategy_store.py`
+  （`StrategyStore`/`StrategyConfig` + `strategy_configs`/`strategy_decisions` 表，状态机
+  proposed→approved→active→retired/rejected）、`portfolio_manager/strategy_builder.py`
+  （`build_strategy_config`：边际准入+合成+策略门+风控+换手 → 一份配置；`propose_from_paper_factors`）。
+  端点 `POST /strategies/propose`、`GET /strategies/pending`、`/{id}`、`POST /{id}/approve(activate)`、
+  `/{id}/reject`。**接线**：`run_portfolio` 有 active 配置时**只交易该配置成分**（`active_config` 落返回值）。
+  **修错配**：① 因子入池门降级为**低门槛泄漏过滤** `lifecycle/leak_filter.py`（严门在策略层，配置
+  `factor_gate_mode=leak|strict`）；② 新增**策略级衰减监控**（组合账本 `check_decay`，`strategy_decay` 落返回值）。
+  测试 `test_phase_pm7_strategy.py`(3)+`test_phase_pm7_endpoints.py`(3)。
 - **FE-PM** — 前端组合视图：当前组合的**具体美元持仓表**、各因子配额/容量占用、组合敞口/风险仪表、
   以及"批准这份配置"的界面（替代/叠加原因子审批）。
 - **验收**：一份组合配置可被审阅+批准；风控门拦截超 gross/集中度的配置；快慢因子配额随其 turnover 区别。
@@ -455,7 +462,7 @@ Phase 9（自主发现 + 生命周期门 + 批准，✅）── 门控设计已
 Phase TR（交易现实：moomoo 单一源 + 真实成本/可做空 + 门分级）
   TR.1 TradingContext(✅) · TR.2 moomoo 单一权威源(✅,provider+接线+真连实测) · TR.3 成本落地(◑) · TR.4 门分级(⬜)
 Phase PM（组合与资金管理层）★ ── 依赖 9；与 S 并列最高优先级
-  第一批(✅) · ★核心重构:策略级门 PM.S1(✅)+边际准入 PM.S2(✅)+经典基准库 PM.S3(✅) · 第二批 PM.5(✅)/PM.6(✅)/PM.7(⬜) · 收拢 R.2/R.4
+  第一批(✅) · ★核心重构:策略级门 PM.S1(✅)+边际准入 PM.S2(✅)+经典基准库 PM.S3(✅) · 第二批 PM.5(✅)/PM.6(✅)/PM.7(✅) · FE-PM(⬜) · 收拢 R.2/R.4
 Phase 10（另类数据：基本面，价格仍走 moomoo）·  Phase 11（前向增量，价格源=moomoo/TR.2）
 Phase 12（**moomoo** 执行，同 TR.2 源）── 依赖 PM（消费美元账本）+ TR.2 + 11
 Phase 13（多 agent + 全自动）── 依赖 9 + 12

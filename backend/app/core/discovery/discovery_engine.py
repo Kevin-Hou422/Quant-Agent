@@ -146,16 +146,29 @@ class DiscoveryEngine:
         )
 
     def _run_gate(self, store, aid, dsl, dataset) -> "tuple[bool, Optional[dict]]":
-        """对候选跑验证门；通过则 CANDIDATE→VALIDATED。fail-closed：出错视为不通过。"""
-        from app.core.lifecycle.validation_gate import ValidationGate
+        """
+        因子入池门：**默认低门槛泄漏过滤**（PM.7 修正错配——严门在策略层 StrategyGate，不加单因子）。
+        通过则 CANDIDATE→VALIDATED（= 进池）。配置 `factor_gate_mode="strict"` 可切回旧的因子级严门。
+        fail-closed：出错视为不通过。
+        """
         try:
-            # S.3：不传 n_trials → 验证门用**全局累计** trial 数去膨胀（含本轮，已在上面累加）
-            res = ValidationGate().evaluate(dsl, dataset)
-            if res.passed:
+            from app.config import settings
+            mode = getattr(settings, "factor_gate_mode", "leak")
+        except Exception:
+            mode = "leak"
+        try:
+            if mode == "strict":
+                from app.core.lifecycle.validation_gate import ValidationGate
+                res = ValidationGate().evaluate(dsl, dataset)
+                passed, detail = res.passed, res.to_dict()
+            else:
+                from app.core.lifecycle.leak_filter import leak_filter
+                passed, detail = leak_filter(dsl, dataset)
+            if passed:
                 store.update_status(aid, "validated")
-            return res.passed, res.to_dict()
+            return passed, detail
         except Exception as exc:
-            logger.warning("[discovery] 候选 %s 验证门出错（视为不通过）: %s", aid, exc)
+            logger.warning("[discovery] 候选 %s 入池门出错（视为不通过）: %s", aid, exc)
             return False, None
 
     @staticmethod

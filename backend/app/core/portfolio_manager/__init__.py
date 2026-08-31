@@ -13,6 +13,7 @@ from .horizon import (
     apply_no_trade_band, annualized_turnover, classify_horizon,
     horizon_profile, FactorHorizon,
 )
+from .strategy_builder import build_strategy_config, propose_from_paper_factors
 
 __all__ = [
     "PortfolioManager", "PortfolioResult",
@@ -21,4 +22,5 @@ __all__ = [
     "PortfolioRiskGate", "RiskLimits", "RiskReport",
     "apply_no_trade_band", "annualized_turnover", "classify_horizon",
     "horizon_profile", "FactorHorizon",
+    "build_strategy_config", "propose_from_paper_factors",
 ]

@@ -31,3 +31,14 @@ def _get_chat_store_singleton() -> ChatStore:
 def get_chat_store() -> ChatStore:
     """FastAPI Depends 注入 ChatStore 单例（与 AlphaStore 共用同一 SQLite 文件）。"""
     return _get_chat_store_singleton()
+
+
+@lru_cache(maxsize=1)
+def _get_strategy_store_singleton():
+    from app.db.strategy_store import StrategyStore
+    return StrategyStore(db_url=settings.database_url)
+
+
+def get_strategy_store():
+    """FastAPI Depends 注入 StrategyStore 单例（Phase PM.7，与 AlphaStore 同库）。"""
+    return _get_strategy_store_singleton()

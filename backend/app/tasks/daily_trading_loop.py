@@ -187,10 +187,29 @@ class DailyTradingLoop:
 
         from app.config import settings
 
+        # ── PM.7：若已有 **active 策略配置**，只交易它已批准的成分（配置=资金决策单位）。
+        using_active_config = None
+        if not used_baseline:
+            try:
+                import json as _json
+                from app.db.strategy_store import StrategyStore
+                active = StrategyStore().latest_active()
+                if active is not None:
+                    cfg_factors = set(_json.loads(active.factors or "[]"))
+                    filtered = {k: v for k, v in signals.items() if k in cfg_factors}
+                    if filtered:
+                        signals = filtered
+                        using_active_config = active.id
+                        logger.info("[portfolio] PM.7 按 active 策略配置 #%d 交易，成分 %d 因子",
+                                    active.id, len(signals))
+            except Exception as exc:
+                logger.warning("[portfolio] PM.7 读取 active 配置失败（忽略）: %s", exc)
+
         # ── PM.S2：多因子（自研）时按**边际贡献**准入（策略级），而非"全纳入"。
         #    冗余/无边际的因子被拒，单独弱但分散化好的能进（要"好策略"而非"漂亮因子"）。
+        #    已按 active 配置交易时跳过（配置提出时已选定成分）。
         selection_info = None
-        if (not used_baseline and len(signals) > 1
+        if (not used_baseline and using_active_config is None and len(signals) > 1
                 and getattr(settings, "pm_marginal_selection", True)):
             from app.core.portfolio_manager import marginal_factor_selection
             try:
@@ -326,18 +345,32 @@ class DailyTradingLoop:
             equity = pnl.equity
             n_days += 1
 
+        # ── PM.7 gap 修复：**策略级衰减监控**（交易的组合账本，不只因子级）。
+        strategy_decay = None
+        try:
+            alert = self.monitor.check_decay(PORTFOLIO_BOOK_ID)
+            if alert is not None:
+                strategy_decay = {"reason": alert.reason,
+                                  "rolling_mean_ic": round(float(alert.rolling_mean_ic), 5)}
+                logger.warning("[portfolio] 策略级衰减告警：%s（组合 rolling_mean_ic=%.4f）",
+                               alert.reason, alert.rolling_mean_ic)
+        except Exception as exc:
+            logger.warning("[portfolio] 策略衰减检查失败（不阻断）: %s", exc)
+
         logger.info("[portfolio] 组合账本 | AUM=%.0f | %d 因子 | %d 交易日 | 末净值=%.4f",
                     aum, len(signals), n_days, equity)
         return {"n_factors": len(signals), "days_processed": n_days,
                 "equity": equity, "aum": aum, "combo_weights": res.combo_weights,
                 "used_baseline": used_baseline,
+                "active_config": using_active_config,  # PM.7 交易的 active 策略配置 id
                 "selection": selection_info,          # PM.S2 边际准入轨迹
                 "strategy_verdict": strategy_verdict,  # PM.S1 策略门 verdict
                 "risk_report": risk_report.to_dict(),  # PM.5 风控施加情况
                 "drawdown": halt_info,                 # PM.5 回撤熔断状态
                 "no_trade_band": round(band, 5),       # PM.6 无交易带宽
                 "turnover_ann": round(to_after, 3),    # PM.6 带后年化换手
-                "horizon": horizon_info}               # PM.6 因子快慢分类
+                "horizon": horizon_info,               # PM.6 因子快慢分类
+                "strategy_decay": strategy_decay}      # PM.7 策略级衰减告警
 
     # ------------------------------------------------------------------
     # 单因子（隔离）

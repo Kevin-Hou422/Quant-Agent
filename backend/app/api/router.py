@@ -25,7 +25,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.dependencies import get_store
+from app.dependencies import get_store, get_strategy_store
 from app.db.alpha_store import AlphaStore
 
 logger = logging.getLogger(__name__)
@@ -1220,6 +1220,94 @@ def alpha_decisions(alpha_id: int, store: AlphaStore = Depends(get_store)) -> Li
         decision=d.decision, from_status=d.from_status, to_status=d.to_status,
         reason=d.reason or "", actor=d.actor or "", decided_at=str(d.decided_at),
     ) for d in store.get_decisions(alpha_id)]
+
+
+# ---------------------------------------------------------------------------
+# Phase PM.7：策略配置一等实体（审批对象从"因子"升为"组合策略配置"）
+# ---------------------------------------------------------------------------
+
+class StrategyDecisionRequest(BaseModel):
+    reason: str = ""
+    actor:  str = "human"
+    activate: bool = False          # approve 时是否同时置 active（开始交易该配置）
+
+
+@router.post("/strategies/propose", tags=["Strategy"])
+def strategy_propose(store: AlphaStore = Depends(get_store),
+                     sstore=Depends(get_strategy_store)) -> dict:
+    """
+    从当前 PAPER/ACTIVE 因子构建一份**策略配置**（边际准入+合成+策略门+风控+换手），
+    存为 proposed，返回配置。无可用因子 → 400。
+    """
+    from app.core.portfolio_manager import propose_from_paper_factors
+    from app.core.data_engine.dataset_registry import load_registry_dataset
+    from app.db.strategy_store import StrategyStore
+    ds = load_registry_dataset(settings.paper_dataset,
+                               start=settings.paper_start, end=settings.paper_end).data
+    cfg = propose_from_paper_factors(store, ds, aum=float(settings.paper_aum))
+    if cfg is None:
+        raise HTTPException(status_code=400, detail="无 PAPER/ACTIVE 因子，无法构建策略配置")
+    sid = sstore.save(cfg)
+    return StrategyStore.to_dict(sstore.get(sid))
+
+
+@router.get("/strategies/pending", tags=["Strategy"])
+def strategy_pending(sstore=Depends(get_strategy_store)) -> List[dict]:
+    """待审批（proposed）的策略配置队列。"""
+    from app.db.strategy_store import StrategyStore
+    return [StrategyStore.to_dict(r) for r in sstore.query(status="proposed", limit=200)]
+
+
+@router.get("/strategies/{sid}", tags=["Strategy"])
+def strategy_get(sid: int, sstore=Depends(get_strategy_store)) -> dict:
+    """某策略配置详情 + 审批谱系。"""
+    from app.db.strategy_store import StrategyStore
+    rec = sstore.get(sid)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"Strategy id={sid} 不存在")
+    d = StrategyStore.to_dict(rec)
+    d["decisions"] = [{"decision": x.decision, "from_status": x.from_status,
+                       "to_status": x.to_status, "reason": x.reason or "",
+                       "actor": x.actor or "", "decided_at": str(x.decided_at)}
+                      for x in sstore.get_decisions(sid)]
+    return d
+
+
+@router.post("/strategies/{sid}/approve", tags=["Strategy"])
+def strategy_approve(sid: int, req: StrategyDecisionRequest = StrategyDecisionRequest(),
+                     sstore=Depends(get_strategy_store)) -> dict:
+    """批准一份策略配置 proposed→approved（可选 activate→active，成为在交易的策略）。"""
+    from app.db.strategy_store import StrategyStore, IllegalStrategyTransition
+    rec = sstore.get(sid)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"Strategy id={sid} 不存在")
+    if str(rec.status) != "proposed":
+        raise HTTPException(status_code=409, detail=f"仅 proposed 可批准，当前={rec.status}")
+    try:
+        sstore.update_status(sid, "approved")
+        sstore.record_decision(sid, "approve", "proposed", "approved", req.reason, req.actor)
+        if req.activate:
+            sstore.update_status(sid, "active")
+            sstore.record_decision(sid, "activate", "approved", "active", req.reason, req.actor)
+    except IllegalStrategyTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return StrategyStore.to_dict(sstore.get(sid))
+
+
+@router.post("/strategies/{sid}/reject", tags=["Strategy"])
+def strategy_reject(sid: int, req: StrategyDecisionRequest = StrategyDecisionRequest(),
+                    sstore=Depends(get_strategy_store)) -> dict:
+    """拒绝一份策略配置 proposed→rejected（带原因存谱系）。"""
+    from app.db.strategy_store import StrategyStore, IllegalStrategyTransition
+    rec = sstore.get(sid)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"Strategy id={sid} 不存在")
+    try:
+        sstore.update_status(sid, "rejected")
+        sstore.record_decision(sid, "reject", str(rec.status), "rejected", req.reason, req.actor)
+    except IllegalStrategyTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return StrategyStore.to_dict(sstore.get(sid))
 
 
 @router.get("/scheduler/status", tags=["Lifecycle"])
