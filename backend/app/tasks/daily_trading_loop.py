@@ -345,6 +345,21 @@ class DailyTradingLoop:
             equity = pnl.equity
             n_days += 1
 
+        # ── TR.3：T3 providers（盘口/借券/账户）——仿真背 TR.1 估计、实盘背 moomoo，同接口切换。
+        #    这里取账户真实记账状态（买入力/持仓），避免任何"交易当时才知道的量"被写死。
+        t3_state = None
+        try:
+            from app.core.trading_context import get_trade_providers
+            tp = get_trade_providers(
+                "sim", dataset=dataset, aum=aum, broker=pf_broker, book_id=PORTFOLIO_BOOK_ID,
+                account_type=getattr(settings, "trading_account_type", "margin"),
+                allow_short=getattr(settings, "trading_allow_short", False))
+            t3_state = tp.to_dict()
+            logger.info("[portfolio] TR.3 T3 providers(%s)：买入力=$%.2f 持仓=%d 名",
+                        tp.mode, tp.account.buying_power(), len(tp.account.positions()))
+        except Exception as exc:
+            logger.warning("[portfolio] TR.3 providers 获取失败（不阻断）: %s", exc)
+
         # ── PM.7 gap 修复：**策略级衰减监控**（交易的组合账本，不只因子级）。
         strategy_decay = None
         try:
@@ -370,7 +385,8 @@ class DailyTradingLoop:
                 "no_trade_band": round(band, 5),       # PM.6 无交易带宽
                 "turnover_ann": round(to_after, 3),    # PM.6 带后年化换手
                 "horizon": horizon_info,               # PM.6 因子快慢分类
-                "strategy_decay": strategy_decay}      # PM.7 策略级衰减告警
+                "strategy_decay": strategy_decay,      # PM.7 策略级衰减告警
+                "t3": t3_state}                        # TR.3 T3 providers(模式/买入力/持仓数)
 
     # ------------------------------------------------------------------
     # 单因子（隔离）

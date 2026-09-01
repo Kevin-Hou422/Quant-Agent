@@ -80,6 +80,16 @@ class Settings(BaseSettings):
     pm_horizon_fast_thresh:  float = 4.0     # 年化换手 > 此值 → fast 因子（快慢分类阈值）
     # PM.7 修正错配：因子入池门。leak=低门槛泄漏过滤（默认，严门在策略层）；strict=旧因子级严门。
     factor_gate_mode:        str   = "leak"  # leak | strict
+
+    # ── Phase TR.4：分级晋级门（阈值全配置化，不写死）─────────────────────
+    tr_experiment_mode:       bool  = True   # 实验模式：策略门未过也可进 paper（分级标注）收前向证据
+    tr_paper_min_sharpe:      float = -99.0  # 非实验模式下进 paper 的 Sharpe 下限
+    tr_min_forward_days:      int   = 60     # →ACTIVE 需要的前向观测交易日
+    tr_min_ic_tstat:          float = 2.0    # →ACTIVE 的 realized IC t 门槛
+    tr_min_ic_mean:           float = 0.0    # →ACTIVE 的 realized IC 均值下限
+    # 是否**阻断**未过 →ACTIVE 门的激活。默认 False：因 ic_history 尚未分离回放/前向
+    # （Phase 11 修），此门暂作参考；Phase 11 完成 + 逼近真钱时应设 True。
+    tr_enforce_active_gate:   bool  = False
     # 组合风控（PM.5）—— 风险偏好，务必按你的意愿设定
     risk_max_gross:          float = 1.0     # 总敞口上限（Σ|w|）
     risk_max_name_weight:    float = 0.10    # 单票 ≤ 10% NAV

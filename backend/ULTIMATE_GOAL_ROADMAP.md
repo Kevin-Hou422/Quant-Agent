@@ -292,12 +292,20 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
 > - **持仓名数/集中度门**（PM.5）：随可持仓名数上升放宽单票/行业集中度上限。
 - **TR.3 成本落地推导值 ◑（2026-08-26）** — 已建 `grounded_cost_params(dataset, broker, aum)`：
   moomoo 佣金免费 → `fixed_bps=0/min_ticket=0`，`spread_bps`=**Corwin-Schultz 数据估计中位**（取代硬编码
-  5/1/2）；`run_portfolio` 组合账本改用 grounded 成本 broker（配置 `trading_broker`）。**待补**：
-  `QuoteProvider/BorrowProvider/AccountProvider` 接口（T3 实时，仿真背 TR.1 估计、实盘背 moomoo）——
-  待 TR.2 moomoo 接入一并落。
-- **TR.4 门分级 + 阈值配置化 ⬜** — 实现 **Phase PM「统一门控政策」的第 4/5 步**：进 PAPER 较松/分级
-  （收集前向证据，"实验模式"），→ACTIVE 最严（≥60 交易日前向 realized IC t>2）；所有阈值提为配置
-  （不写死）。（严门主体在策略级验证=第 2 步，见 PM.S1。）
+  5/1/2）；`run_portfolio` 组合账本改用 grounded 成本 broker（配置 `trading_broker`）。
+  **T3 接口已补齐 ✅（2026-09-02）**：`trading_context/providers.py`——`QuoteProvider`(盘口价差/中间价)、
+  `BorrowProvider`(可做空/借券费)、`AccountProvider`(买入力/现金/持仓) 抽象 + **Sim 实现**（背 TR.1
+  Corwin-Schultz 估计 + 纸账户真实记账）+ 工厂 `get_trade_providers(mode)`。**`mode="live"` 显式抛错**
+  （绝不用估计冒充实时——T3 纪律），moomoo 实时实现待 Phase 12。已接进 `run_portfolio`（`t3` 落返回值）。
+  测试 `test_phase_tr3_providers.py`(6)。
+- **TR.4 门分级 + 阈值配置化 ✅**（2026-09-02）— 已建 `lifecycle/promotion_gate.py`：
+  **第 4 步 进 PAPER** `grade_paper_entry` **A/B/C 分级**（A=严门全过、B=未过但 Sharpe>0、C=不合格），
+  **实验模式**（`tr_experiment_mode`，默认开）放行 B/C 以收前向证据但**如实标注等级**；
+  **第 5 步 →ACTIVE** `check_active_promotion` **最严**（≥`tr_min_forward_days`=60 交易日、
+  realized IC 均值>0 且 **t>`tr_min_ic_tstat`**=2）。**阈值全配置化**（`tr_*`，不写死）。
+  **已接线**：`POST /strategies/{id}/approve?activate` 跑 →ACTIVE 门并把结论写进审批谱系；
+  是否阻断由 `tr_enforce_active_gate` 控制（**默认 False**——因 ic_history 尚未分离回放/前向，
+  见 Phase 11；分离完成且逼近真钱时应设 True）。测试 `test_phase_tr4_promotion.py`(7)。
 - **依赖**：TR.3 落地后，PM 的成本/容量、PaperBroker 都吃 TradingContext 的真实估计；TR.2 是 Phase 12
   执行的前置（同源）。
 
@@ -461,7 +469,7 @@ Phase S（统计地基）★★ P0 ── 所有回测结论的前置；未完�
 Phase 8（PIT 地基，✅）
 Phase 9（自主发现 + 生命周期门 + 批准，✅）── 门控设计已演进为「策略级」，见 PM.S
 Phase TR（交易现实：moomoo 单一源 + 真实成本/可做空 + 门分级）
-  TR.1 TradingContext(✅) · TR.2 moomoo 单一权威源(✅,provider+接线+真连实测) · TR.3 成本落地(◑) · TR.4 门分级(⬜)
+  TR.1 TradingContext(✅) · TR.2 moomoo 单一权威源(✅) · TR.3 成本落地+T3 providers(✅) · TR.4 门分级+阈值配置化(✅) ── **Phase TR 全部完成**
 Phase PM（组合与资金管理层）★ ── 依赖 9；与 S 并列最高优先级
   第一批(✅) · ★核心重构:策略级门 PM.S1(✅)+边际准入 PM.S2(✅)+经典基准库 PM.S3(✅) · 第二批 PM.5/6/7(✅) · FE-PM(✅) · 收拢 R.2/R.4
 Phase 10（另类数据：基本面，价格仍走 moomoo）·  Phase 11（前向增量，价格源=moomoo/TR.2）

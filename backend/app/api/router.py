@@ -1284,7 +1284,8 @@ def strategy_get(sid: int, sstore=Depends(get_strategy_store)) -> dict:
 
 @router.post("/strategies/{sid}/approve", tags=["Strategy"])
 def strategy_approve(sid: int, req: StrategyDecisionRequest = StrategyDecisionRequest(),
-                     sstore=Depends(get_strategy_store)) -> dict:
+                     sstore=Depends(get_strategy_store),
+                     store: AlphaStore = Depends(get_store)) -> dict:
     """批准一份策略配置 proposed→approved（可选 activate→active，成为在交易的策略）。"""
     from app.db.strategy_store import StrategyStore, IllegalStrategyTransition
     rec = sstore.get(sid)
@@ -1292,12 +1293,25 @@ def strategy_approve(sid: int, req: StrategyDecisionRequest = StrategyDecisionRe
         raise HTTPException(status_code=404, detail=f"Strategy id={sid} 不存在")
     if str(rec.status) != "proposed":
         raise HTTPException(status_code=409, detail=f"仅 proposed 可批准，当前={rec.status}")
+    from app.config import settings
     try:
         sstore.update_status(sid, "approved")
         sstore.record_decision(sid, "approve", "proposed", "approved", req.reason, req.actor)
         if req.activate:
+            # TR.4 第 5 步：→ACTIVE 是"逼近真钱"的最严门 —— 需 ≥N 交易日前向 realized IC 且 t>阈值。
+            # 阈值全配置化；默认只**记录不阻断**（因 ic_history 尚未分离回放/前向，见 Phase 11）。
+            from app.core.lifecycle.promotion_gate import check_active_promotion
+            from app.tasks.daily_trading_loop import PORTFOLIO_BOOK_ID
+            ics = [h.realized_ic for h in store.get_ic_history(PORTFOLIO_BOOK_ID, limit=5000)]
+            ok, detail = check_active_promotion(ics)
+            if not ok and getattr(settings, "tr_enforce_active_gate", False):
+                raise HTTPException(status_code=409,
+                                    detail=f"→ACTIVE 门未过：{'; '.join(detail.get('reasons', []))}")
             sstore.update_status(sid, "active")
-            sstore.record_decision(sid, "activate", "approved", "active", req.reason, req.actor)
+            sstore.record_decision(
+                sid, "activate", "approved", "active",
+                (req.reason + f" | TR.4 门: {'过' if ok else '未过(仅记录)'} "
+                 f"n={detail.get('n_days')} t={detail.get('ic_tstat')}"), req.actor)
     except IllegalStrategyTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return StrategyStore.to_dict(sstore.get(sid))
