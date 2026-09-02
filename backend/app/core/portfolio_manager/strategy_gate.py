@@ -38,12 +38,77 @@ Signals = Dict[str, pd.DataFrame]
 # 策略净收益（复用 PortfolioManager + BacktestEngine，与单因子门同一成本口径）
 # ---------------------------------------------------------------------------
 
+# 昂贵推导（Corwin-Schultz 跑全 panel）的记忆化。
+# 必须缓存：`marginal_factor_selection` 是 O(n²) 次调用、PBO 又按因子循环，
+# 若每次重算会把全量回归从 ~5 分钟拖到 100 分钟（实测踩过，见 DEV_LESSONS）。
+_DERIVE_CACHE: Dict[tuple, object] = {}
+_CACHE_MAX = 64
+
+
+def _cache_key(kind: str, dataset: WidePanel, aum: float) -> tuple:
+    c = dataset["close"]
+    return (kind, id(c), c.shape, float(aum))
+
+
+def _cache_put(key: tuple, val):
+    if len(_DERIVE_CACHE) > _CACHE_MAX:
+        _DERIVE_CACHE.clear()
+    _DERIVE_CACHE[key] = val
+    return val
+
+
+def resolve_band(dataset: WidePanel, aum: float) -> float:
+    """无交易带：配置优先，否则由 TradingContext 推导（结果缓存）。"""
+    try:
+        from app.config import settings
+        band = float(getattr(settings, "pm_no_trade_band", 0.0))
+        if band > 0.0:
+            return band
+        key = _cache_key("band", dataset, aum)
+        if key in _DERIVE_CACHE:
+            return float(_DERIVE_CACHE[key])       # type: ignore[arg-type]
+        from app.core.trading_context import TradingContext
+        return float(_cache_put(
+            key, float(TradingContext(aum=aum).analyze(dataset).rebalance_band)))  # type: ignore[arg-type]
+    except Exception:
+        return 0.0
+
+
+def resolve_cost_params(dataset: WidePanel, aum: float, cost_params=None):
+    """
+    成本参数解析（修 DEV_LESSONS §J 在策略层的复发）：
+    `None` **绝不退回机构默认** `CostParams()`（min_ticket=$1 / fixed=5bps）——那在 $10k 散户账户上
+    是每天 ~0.2% 的假性流失，会把任何策略碾成 Sharpe −15，让系统永远选不出可交易策略。
+    改为按**数据 + 配置券商 + 真实 AUM** 推导（TR.3 `grounded_cost_params`，moomoo 佣金=0）。结果缓存。
+    """
+    if cost_params is not None:
+        return cost_params
+    key = _cache_key("cost", dataset, aum)
+    if key in _DERIVE_CACHE:
+        return _DERIVE_CACHE[key]
+    try:
+        from app.config import settings
+        from app.core.trading_context import grounded_cost_params, get_broker_profile
+        return _cache_put(key, grounded_cost_params(
+            dataset,
+            broker=get_broker_profile(getattr(settings, "trading_broker", "moomoo_us")),
+            aum=aum,
+        ))
+    except Exception as exc:
+        logger.warning("[strategy_gate] grounded 成本推导失败，退回引擎默认（注意：机构口径）: %s", exc)
+        return None
+
+
 def strategy_net_returns(factor_signals: Signals, dataset: WidePanel,
                          aum: float = 1_000_000.0, method: str = "ic_weighted",
-                         cost_params=None) -> Tuple[pd.Series, pd.DataFrame]:
+                         cost_params=None, apply_risk: bool = True) -> Tuple[pd.Series, pd.DataFrame]:
     """
     把多因子信号经 PortfolioManager 合成组合权重，再经 BacktestEngine 得**策略净收益序列**。
-    返回 (net_returns, composite_signal)。与 ValidationGate 单因子路径同一回测/成本引擎。
+    返回 (net_returns, composite_signal)。
+
+    `apply_risk=True`（默认）：对权重施加**与实盘同一套**风控(PM.5)与无交易带(PM.6)，
+    使**门评估的账本 == 实际交易的账本**（修"验证的和交易的不是同一个组合"）。
+    成本参数 None → grounded（见 `resolve_cost_params`）。
     """
     from app.core.portfolio_manager.manager import PortfolioManager
     from app.core.backtest_engine.backtest_engine import BacktestEngine
@@ -53,10 +118,32 @@ def strategy_net_returns(factor_signals: Signals, dataset: WidePanel,
     if volume is None:
         volume = pd.DataFrame(1e6, index=prices.index, columns=prices.columns)
 
-    pm = PortfolioManager(aum=aum, method=method, cost_params=cost_params)
+    cp = resolve_cost_params(dataset, aum, cost_params)
+    pm = PortfolioManager(aum=aum, method=method, cost_params=cp)
     book = pm.build_book(factor_signals, prices, volume)
-    engine = BacktestEngine(cost_params=cost_params, initial_capital=aum)
-    result = engine.run(book.weights, prices, volume, book.composite)
+    weights = book.weights
+
+    if apply_risk:
+        try:
+            from app.config import settings
+            from app.core.portfolio_manager.risk_gate import PortfolioRiskGate, RiskLimits
+            from app.core.portfolio_manager.horizon import apply_no_trade_band
+
+            limits = RiskLimits(
+                max_gross=float(getattr(settings, "risk_max_gross", 1.0)),
+                max_name_weight=float(getattr(settings, "risk_max_name_weight", 0.10)),
+                max_sector_weight=float(getattr(settings, "risk_max_sector_weight", 0.30)),
+                target_vol_ann=(float(getattr(settings, "risk_target_vol_ann", 0.0)) or None),
+                long_only=(not getattr(settings, "trading_allow_short", False)),
+            )
+            sectors = dataset["sector"].iloc[-1] if "sector" in dataset else None
+            weights, _ = PortfolioRiskGate(limits).apply(weights, sectors=sectors)
+            weights = apply_no_trade_band(weights, resolve_band(dataset, aum))
+        except Exception as exc:
+            logger.warning("[strategy_gate] 风控/调仓对齐失败，用原始权重: %s", exc)
+
+    engine = BacktestEngine(cost_params=cp, initial_capital=aum)
+    result = engine.run(weights, prices, volume, book.composite)
     rets = pd.Series(result.net_returns).dropna()
     return rets, book.composite
 

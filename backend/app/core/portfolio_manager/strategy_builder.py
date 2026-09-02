@@ -42,6 +42,10 @@ def build_strategy_config(
     if volume is None:
         volume = pd.DataFrame(1e6, index=prices.index, columns=prices.columns)
 
+    # 成本口径：None → **grounded 真实成本**（绝不用机构默认，见 §J / strategy_gate.resolve_cost_params）
+    from app.core.portfolio_manager.strategy_gate import resolve_cost_params
+    cost_params = resolve_cost_params(dataset, aum, cost_params)
+
     # PM.S2 边际准入
     signals = dict(factor_signals)
     if len(signals) > 1:

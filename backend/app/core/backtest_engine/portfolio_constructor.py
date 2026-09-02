@@ -94,11 +94,17 @@ class SignalWeightedPortfolio(PortfolioConstructor):
 
     Parameters
     ----------
-    clip_z : float  将 z-score 裁剪到 [-clip_z, +clip_z]（默认 3.0）
+    clip_z    : float  将 z-score 裁剪到 [-clip_z, +clip_z]（默认 3.0）
+    long_only : bool   **只做多**时（默认 False，保持原多空行为）：只保留 z>0 的名，
+                       并按 **Σw=1** 归一化 —— 即**满仓做多**。
+                       修复要点：此前 long-only 是"先建多空 L1=1，再由风控把空头腿清零"，
+                       结果 gross 只剩 ~0.5，**一半资金永久闲置**（$10k 里只有 $5k 在工作）。
+                       正确做法是从一开始就构造用满预算的多头账本。
     """
 
-    def __init__(self, clip_z: float = 3.0) -> None:
+    def __init__(self, clip_z: float = 3.0, long_only: bool = False) -> None:
         self.clip_z = clip_z
+        self.long_only = long_only
 
     def construct(self, signal: pd.DataFrame, **kwargs) -> pd.DataFrame:
         sig = signal.to_numpy(dtype=float)
@@ -124,10 +130,17 @@ class SignalWeightedPortfolio(PortfolioConstructor):
         z = np.nan_to_num(z, nan=0.0)
         z = np.clip(z, -self.clip_z, self.clip_z)
 
-        # L1 归一化（逐行）
-        l1 = np.abs(z).sum(axis=1, keepdims=True)
-        l1 = np.where(l1 == 0, 1.0, l1)
-        w  = z / l1
+        if self.long_only:
+            # 只做多：弃负 z，按 Σw=1 归一化 → **满仓做多**（不再有一半资金闲置）
+            zp = np.where(z > 0.0, z, 0.0)
+            s  = zp.sum(axis=1, keepdims=True)
+            s  = np.where(s == 0, 1.0, s)
+            w  = zp / s
+        else:
+            # 多空：L1 归一化（逐行）→ |w|.sum()=1，美元中性
+            l1 = np.abs(z).sum(axis=1, keepdims=True)
+            l1 = np.where(l1 == 0, 1.0, l1)
+            w  = z / l1
 
         return pd.DataFrame(w, index=signal.index, columns=signal.columns)
 

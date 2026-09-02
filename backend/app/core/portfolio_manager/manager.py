@@ -73,6 +73,7 @@ class PortfolioManager:
         method: str = "ic_weighted",
         clip_z: float = 3.0,
         cost_params=None,
+        long_only: bool = None,
     ) -> None:
         from app.core.backtest_engine.transaction_cost import CostParams, LiquidityConstraint
         self.aum = float(aum)
@@ -80,6 +81,14 @@ class PortfolioManager:
         self.clip_z = clip_z
         self.params = cost_params or CostParams()
         self._liq = LiquidityConstraint(self.params)
+        # long_only 默认随交易现实配置（allow_short=False → 只做多，满仓做多而非半仓）
+        if long_only is None:
+            try:
+                from app.config import settings
+                long_only = not bool(getattr(settings, "trading_allow_short", False))
+            except Exception:
+                long_only = False
+        self.long_only = bool(long_only)
 
     # ------------------------------------------------------------------ PM.1
     def combined_weights(self, factor_signals: Dict[str, pd.DataFrame],
@@ -94,7 +103,9 @@ class PortfolioManager:
         returns = prices.pct_change()
         combo_w = combiner.optimize_weights(factor_signals, returns=returns, method=self.method)
         composite = combiner.combine(factor_signals, weights=combo_w)      # 合成信号（含跨因子净化）
-        weights = SignalWeightedPortfolio(clip_z=self.clip_z).construct(composite)  # 净持仓，L1≈1
+        # 净持仓：多空 L1≈1；long_only 时 Σw≈1（满仓做多，不留一半闲置现金）
+        weights = SignalWeightedPortfolio(clip_z=self.clip_z,
+                                          long_only=self.long_only).construct(composite)
         return weights, combo_w, composite
 
     # ------------------------------------------------------------------ PM.2

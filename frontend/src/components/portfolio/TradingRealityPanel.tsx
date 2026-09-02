@@ -80,6 +80,23 @@ export default function TradingRealityPanel() {
       </div>
 
       {error && <div className="mb-3 px-3 py-2 rounded bg-rose-950/40 text-[11px] text-rose-400">{error}</div>}
+
+      {/* 致命组合：价格源=moomoo 但 OpenD 未连通 → 系统当前**根本拿不到数据** */}
+      {status && status.price_source === 'moomoo' && !status.moomoo.opend_reachable && (
+        <div className="mb-3 px-3 py-2 rounded-lg border border-rose-700 bg-rose-950/50 flex items-start gap-2">
+          <AlertTriangle size={15} className="text-rose-400 mt-0.5 shrink-0" />
+          <div className="text-[11px] leading-relaxed">
+            <div className="font-bold text-rose-300">系统当前拿不到行情数据</div>
+            <div className="text-rose-400/90">
+              价格源为 <span className="font-mono">moomoo</span>，但 OpenD 网关
+              (<span className="font-mono">{status.moomoo.host}:{status.moomoo.port}</span>) <b>未连通</b>。
+              数据摄取与每日交易循环都会失败 —— 请启动 OpenD 并登录，或临时把
+              <span className="font-mono"> PRICE_SOURCE </span>切回 yahoo。
+            </div>
+          </div>
+        </div>
+      )}
+
       {loading && <div className="text-[11px] text-slate-500">加载中…</div>}
 
       {!loading && (

@@ -29,7 +29,10 @@ def _predictive_dataset(T=400, N=8, seed=0, edge=0.06):
     ret_df = pd.DataFrame(ret, index=idx, columns=cols)
     close = 100 * (1 + ret_df).cumprod()
     vol = pd.DataFrame(rng.uniform(1e6, 5e6, (T, N)), index=idx, columns=cols)
-    ds = {"open": close, "high": close * 1.01, "low": close * 0.99,
+    # H/L 用**真实感随机振幅**（~0.6%）：固定 ±1% 会让 Corwin-Schultz 估出 ~54bps 荒谬价差，
+    # 成本足以把有真实 alpha 的策略压成负 Sharpe → 边际准入误拒。见 DEV_LESSONS。
+    amp = np.abs(rng.normal(0, 0.006, (T, N)))
+    ds = {"open": close, "high": close * (1 + amp), "low": close * (1 - amp),
           "close": close, "vwap": close, "volume": vol, "returns": ret_df}
     return ds, f
 

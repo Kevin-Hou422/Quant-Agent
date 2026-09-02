@@ -171,9 +171,19 @@ class PortfolioRiskGate:
         if lim.long_only:
             a = np.where(a < 0.0, 0.0, a)
         # 2. 单票上限（NAV 比例：cap = max_name_weight × max_gross 的绝对权重）
+        #    用 **water-filling 投影**而非硬截断：被削掉的敞口**再分配**给未触顶的名，
+        #    否则单票上限会把资金白白留成现金（小 universe 下尤其严重）。
         cap = lim.max_name_weight * lim.max_gross
         nclip = int(np.sum(np.abs(a) > cap + 1e-12))
-        a = np.clip(a, -cap, cap)
+        if nclip:
+            g_now = float(np.abs(a).sum())
+            target = min(g_now, lim.max_gross)
+            try:
+                from app.core.backtest_engine.transaction_cost import project_to_capped_l1
+                cap_vec = np.full(a.shape[0], cap, dtype=float)
+                a = project_to_capped_l1(a.reshape(1, -1), cap_vec, target=target).reshape(-1)
+            except Exception:
+                a = np.clip(a, -cap, cap)          # 兜底：退回硬截断
         # 3. 行业集中度（NAV 比例上限，绝对权重 = max_sector_weight × max_gross）。
         #    只把超限行业缩到上限、不再把 gross 拉回——因为多行业同时 ≤ 上限时 gross 可能达不到满仓
         #    （如 2 个行业各 ≤30%），真人 PM 也会宁可欠配也不违反集中度。

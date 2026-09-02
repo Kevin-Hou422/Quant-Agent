@@ -105,11 +105,16 @@ def test_run_portfolio_trades_one_combined_book(tmp_path):
                             monitor=AlphaMonitor(astore))
 
     close, volume, idx, cols = _panel(T=160, N=8, seed=5)
-    ds = {"close": close, "volume": volume, "open": close, "high": close * 1.01,
-          "low": close * 0.99, "vwap": close, "returns": close.pct_change().fillna(0.0)}
+    # H/L 必须用**真实感的随机日内振幅**：固定 ±1% 会让 Corwin-Schultz 估出 ~54bps 的荒谬价差
+    # （真实大盘 2~10bps），成本把任何策略碾死 → 边际准入误拒因子。见 DEV_LESSONS。
+    _amp = np.abs(np.random.default_rng(5).normal(0, 0.006, close.shape))
+    ds = {"close": close, "volume": volume, "open": close, "high": close * (1 + _amp),
+          "low": close * (1 - _amp), "vwap": close, "returns": close.pct_change().fillna(0.0)}
 
     out = loop.run_portfolio(ds, aum=2_000_000)
-    assert out["n_factors"] == 2
+    # PM.S2 边际准入接线后，合并账本**合法地只含通过边际贡献的子集**（不再必然等于全部 paper 因子）。
+    # 本用例的不变量是"交易的是一个合并账本"，不是"用满 2 个因子"。
+    assert 1 <= out["n_factors"] <= 2
     assert out["days_processed"] > 50
 
     # 组合账本记在保留 book id 下（一个账本，不是每因子一份）

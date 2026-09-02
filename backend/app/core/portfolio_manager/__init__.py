@@ -5,6 +5,7 @@ from .strategy_gate import (
     StrategyGate,
     StrategyValidationResult,
     strategy_net_returns,
+    resolve_cost_params,
     marginal_factor_selection,
     MarginalSelectionResult,
 )
@@ -17,7 +18,7 @@ from .strategy_builder import build_strategy_config, propose_from_paper_factors
 
 __all__ = [
     "PortfolioManager", "PortfolioResult",
-    "StrategyGate", "StrategyValidationResult", "strategy_net_returns",
+    "StrategyGate", "StrategyValidationResult", "strategy_net_returns", "resolve_cost_params",
     "marginal_factor_selection", "MarginalSelectionResult",
     "PortfolioRiskGate", "RiskLimits", "RiskReport",
     "apply_no_trade_band", "annualized_turnover", "classify_horizon",
