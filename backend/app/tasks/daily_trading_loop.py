@@ -248,6 +248,16 @@ class DailyTradingLoop:
             try:
                 sv = StrategyGate(aum=aum).evaluate(signals, dataset, cost_params=gp)
                 strategy_verdict = sv.to_dict()
+                # TR.4 第 4 步：进 PAPER 的 A/B/C 分级（实验模式放行 B/C 但如实标注等级）
+                try:
+                    from app.core.lifecycle.promotion_gate import grade_paper_entry
+                    _allowed, _g = grade_paper_entry(strategy_verdict)
+                    strategy_verdict["paper_grade"] = _g["grade"]
+                    strategy_verdict["paper_entry"] = _g
+                    logger.info("[portfolio] TR.4 进 PAPER 分级=%s（allowed=%s, 实验模式=%s）",
+                                _g["grade"], _allowed, _g["experiment_mode"])
+                except Exception as exc:
+                    logger.warning("[portfolio] TR.4 分级失败（不阻断）: %s", exc)
                 logger.info("[portfolio] PM.S1 策略门：passed=%s Sharpe=%.3f DSR=%.3f t=%.2f | %s",
                             sv.passed, sv.sharpe, sv.deflated_sharpe, sv.t_stat,
                             "OK" if sv.passed else "; ".join(sv.reasons))

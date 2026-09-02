@@ -67,6 +67,18 @@ function StrategyCard({ cfg, onDecision }: {
             ? <><ShieldCheck size={12} className="text-emerald-400" /><span className="text-emerald-400">策略门通过</span></>
             : <><ShieldAlert size={12} className="text-amber-400" /><span className="text-amber-400">策略门未过</span></>}
         </span>
+        {/* TR.4 进 PAPER 分级：A=严门全过 B=未过但Sharpe>0 C=不合格 */}
+        {typeof v['paper_grade'] === 'string' && (
+          <span
+            title="TR.4 进 PAPER 分级：A=严门全过 · B=未过但 Sharpe>0 · C=不合格（实验模式下仍放行以收前向证据）"
+            className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+              v['paper_grade'] === 'A' ? 'bg-emerald-900/60 text-emerald-300'
+              : v['paper_grade'] === 'B' ? 'bg-amber-900/60 text-amber-300'
+              : 'bg-rose-900/60 text-rose-300'}`}
+          >
+            {String(v['paper_grade'])} 级
+          </span>
+        )}
         <span className="ml-auto text-[10px] text-slate-500">{cfg.factors.length} 因子 · ${cfg.aum.toLocaleString()}</span>
       </div>
 

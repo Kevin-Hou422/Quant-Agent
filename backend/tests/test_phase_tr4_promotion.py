@@ -73,6 +73,43 @@ def test_thresholds_come_from_config():
 
 # ── 接线：approve(activate) 跑 →ACTIVE 门并写谱系 ────────────────────────
 
+def test_paper_grade_is_wired_into_strategy_config():
+    """§K：分级必须真的接进主线 —— build_strategy_config 产出的 verdict 带 paper_grade。"""
+    import pandas as pd
+    from app.core.portfolio_manager import build_strategy_config
+    rng = np.random.default_rng(0)
+    idx = pd.bdate_range("2022-01-03", periods=200); cols = [f"S{i}" for i in range(8)]
+    close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0.0004, 0.015, (200, 8)), 0), idx, cols)
+    ds = {"open": close, "high": close * 1.01, "low": close * 0.99, "close": close,
+          "vwap": close, "volume": pd.DataFrame(1e6, idx, cols),
+          "returns": close.pct_change().fillna(0.0)}
+    cfg = build_strategy_config({"f1": close.pct_change().rank(axis=1)}, ds, aum=10_000)
+    assert cfg.verdict.get("paper_grade") in ("A", "B", "C")
+    assert "paper_entry" in cfg.verdict
+
+
+def test_paper_grade_is_wired_into_run_portfolio(tmp_path):
+    """§K：run_portfolio 的 strategy_verdict 必须带 paper_grade（分级真正生效）。"""
+    import pandas as pd
+    from app.db.alpha_store import AlphaStore, AlphaResult
+    from app.db.position_store import PositionStore
+    from app.core.execution.paper_broker import PaperBroker
+    from app.tasks.daily_trading_loop import DailyTradingLoop
+    store = AlphaStore(db_url=f"sqlite:///{tmp_path/'a.db'}")
+    aid = store.save(AlphaResult(dsl="rank(ts_delta(close,5))", status="candidate"))
+    store.update_status(aid, "validated"); store.update_status(aid, "paper")
+    broker = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp_path/'p.db'}"),
+                         initial_capital=10_000.0)
+    rng = np.random.default_rng(0)
+    idx = pd.bdate_range("2022-01-03", periods=150); cols = [f"S{i}" for i in range(8)]
+    close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0.0003, 0.015, (150, 8)), 0), idx, cols)
+    ds = {"open": close, "high": close * 1.01, "low": close * 0.99, "close": close,
+          "vwap": close, "volume": pd.DataFrame(1e6, idx, cols),
+          "returns": close.pct_change().fillna(0.0)}
+    out = DailyTradingLoop(store=store, broker=broker).run_portfolio(ds, aum=10_000.0)
+    assert (out["strategy_verdict"] or {}).get("paper_grade") in ("A", "B", "C")
+
+
 def test_activate_records_tr4_gate_in_lineage(test_client):
     from app.dependencies import get_strategy_store
     from app.db.strategy_store import StrategyConfig

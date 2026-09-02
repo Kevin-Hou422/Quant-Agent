@@ -67,6 +67,18 @@ def build_strategy_config(
     except Exception:
         pass
 
+    # TR.4 第 4 步：进 PAPER 的 **A/B/C 分级**（实验模式下 B/C 也放行，但等级如实标注）。
+    # 存进 verdict JSON（免 schema 迁移），前端与审批据此看清"这份策略证据有多强"。
+    try:
+        from app.core.lifecycle.promotion_gate import grade_paper_entry
+        allowed, gdetail = grade_paper_entry(verdict)
+        verdict["paper_grade"] = gdetail["grade"]
+        verdict["paper_entry"] = gdetail
+        if not allowed:
+            verdict["paper_entry_blocked"] = True      # 非实验模式且非 A 级
+    except Exception:
+        pass
+
     # PM.5 风控（快照，不改配置权重——配置记录的是合成后的目标）
     risk_report = {}
     limits = risk_limits or RiskLimits()

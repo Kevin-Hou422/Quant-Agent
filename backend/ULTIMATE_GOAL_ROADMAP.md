@@ -303,7 +303,10 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
   **实验模式**（`tr_experiment_mode`，默认开）放行 B/C 以收前向证据但**如实标注等级**；
   **第 5 步 →ACTIVE** `check_active_promotion` **最严**（≥`tr_min_forward_days`=60 交易日、
   realized IC 均值>0 且 **t>`tr_min_ic_tstat`**=2）。**阈值全配置化**（`tr_*`，不写死）。
-  **已接线**：`POST /strategies/{id}/approve?activate` 跑 →ACTIVE 门并把结论写进审批谱系；
+  **已接线（两步都接，2026-09-02 补齐）**：第 4 步分级接进 `build_strategy_config` 与 `run_portfolio`
+  （`paper_grade`/`paper_entry` 落进 strategy verdict，前端策略卡显示等级徽章）——
+  *注：首次交付时第 4 步只写了库未接线，违反 DEV_LESSONS §K，已补*；
+  第 5 步 `POST /strategies/{id}/approve?activate` 跑 →ACTIVE 门并把结论写进审批谱系；
   是否阻断由 `tr_enforce_active_gate` 控制（**默认 False**——因 ic_history 尚未分离回放/前向，
   见 Phase 11；分离完成且逼近真钱时应设 True）。测试 `test_phase_tr4_promotion.py`(7)。
 - **依赖**：TR.3 落地后，PM 的成本/容量、PaperBroker 都吃 TradingContext 的真实估计；TR.2 是 Phase 12
@@ -449,6 +452,28 @@ fetch/SSE、`components/analysis/*` 图表、`AlphaDashboard`。**前端只读 +
   （侧栏 Portf 入口）——**策略配置控制台**：成分+每因子配额条、策略门 verdict(Sharpe/DSR/t/PBO)、风控
   (单票削/行业缩/gross缩/vol缩放)、换手/无交易带、状态徽章、审批谱系;**"提出新策略配置""批准/批准并启用/拒绝"**
   按钮,消费 `/strategies/{propose,pending,list,{id},approve,reject}`。前端构建绿 + 94 测试过。
+  **补充（2026-09-02）**：策略卡已显示 TR.4 的**进 PAPER A/B/C 等级徽章**。
+
+- **FE-TR 交易现实面板 ⬜**（配 Phase TR；**本轮新增规划**——原前端路线漏了 TR，TR 一直是纯后端）
+  **为什么要**：TR 决定"这笔交易在散户 $10k 下到底什么成本、能不能做空、买入力多少、证据够不够"，
+  这些**直接决定能否赚钱**，却只存在于日志里，用户看不见 → 无法核对、无法发现问题。
+  **⚠️ 前置（必须先做，否则前端无源）**：`run_portfolio` 的运行诊断（`t3 / risk_report / horizon /
+  no_trade_band / turnover_ann / strategy_verdict(含 paper_grade) / strategy_decay`）目前**只进日志与
+  调度器返回值，没有任何 API 端点**。需先补：①把每次 run 的诊断持久化（新表或复用 run_manifest），
+  ②开只读端点 `GET /api/portfolio/diagnostics`（最近 N 次）。
+  **面板四块**：
+  1. **数据源状态（TR.2）**：OpenD 连通、行情权限（美股 LV3）、**历史K线额度用量 x/100**、
+     当前 `price_source`（yahoo/moomoo 醒目标识——研究/执行是否同源）。
+  2. **交易现实（TR.1）**：每名**估计价差**（Corwin-Schultz）分布、**可交易池**（哪些被价格/流动性
+     过滤及原因）、**可做空性**（long-only 明确标注）、单边成本估计、**无交易带**。
+  3. **T3 账户（TR.3）**：**provider 模式 sim/live 必须醒目区分**（防止把估计当实时——T3 纪律的
+     可视化兜底）、买入力、现金、持仓数。
+  4. **门分级（TR.4）**：当前策略 **A/B/C 等级**、**→ACTIVE 门状态**（已积累前向天数/需要天数、
+     realized IC t/阈值）、**实验模式**与 `tr_enforce_active_gate` 开关状态（让人一眼看出"门是否在真拦"）。
+  **入口**：Portf 视图加 "交易现实" 标签页（与策略配置并列），避免再加一个顶层导航。
+  **验收**：真启动前后端，面板显示的价差/成本/买入力与后端返回一致；`sim/live` 标识正确；
+  额度用量与 moomoo 实际一致。
+
 - **FE-12 执行监控面板**（配 Phase 12，**重**）：moomoo 纸交易的持仓/挂单/成交、**本地 vs 券商
   对账差**、风控门状态与 **kill switch（一键全平，带二次确认的人工动作）**、三级保真度对比
   （内部模拟 vs moomoo 纸交易成交）。
@@ -479,7 +504,7 @@ Phase 14 ── 长期验证期
 
 Phase R ── ⚠️ 已被 S/PM 吸收（R.1→S.3、R.2→PM.5、R.3→PM.2、R.4→PM.1/3），仅留方法参考，非独立待办
 
-前端 FE-9(✅)…FE-PM(组合/配置视图，随 PM) …FE-R
+前端 FE-9(✅) · FE-PM(✅) · **FE-TR 交易现实面板(⬜,需先补 run_portfolio 诊断端点)** · FE-8/10/11/12/13/R(⬜)
 ```
 
 ## 关键复用点（避免重造）
