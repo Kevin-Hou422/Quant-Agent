@@ -237,6 +237,18 @@ class DailyTradingLoop:
         except Exception as exc:                          # 估计失败退回原成本，不阻断
             logger.warning("[portfolio] grounded 成本估计失败，用默认: %s", exc)
             gp = None
+
+        # TR.1：交易现实摘要（估计价差/可交易池/可做空性/单边成本/无交易带）—— 供 FE-TR 展示
+        tc_summary = None
+        try:
+            from app.core.trading_context import TradingContext
+            tc_summary = TradingContext(
+                aum=aum, broker=profile,
+                account_type=getattr(settings, "trading_account_type", "margin"),
+                allow_short=getattr(settings, "trading_allow_short", False),
+            ).analyze(dataset).to_dict()
+        except Exception as exc:
+            logger.warning("[portfolio] TradingContext 摘要失败（不阻断）: %s", exc)
         pf_broker = PaperBroker(store=self.broker.store, cost_params=gp, initial_capital=aum) \
             if gp is not None else self.broker
 
@@ -384,7 +396,7 @@ class DailyTradingLoop:
 
         logger.info("[portfolio] 组合账本 | AUM=%.0f | %d 因子 | %d 交易日 | 末净值=%.4f",
                     aum, len(signals), n_days, equity)
-        return {"n_factors": len(signals), "days_processed": n_days,
+        result = {"n_factors": len(signals), "days_processed": n_days,
                 "equity": equity, "aum": aum, "combo_weights": res.combo_weights,
                 "used_baseline": used_baseline,
                 "active_config": using_active_config,  # PM.7 交易的 active 策略配置 id
@@ -396,7 +408,17 @@ class DailyTradingLoop:
                 "turnover_ann": round(to_after, 3),    # PM.6 带后年化换手
                 "horizon": horizon_info,               # PM.6 因子快慢分类
                 "strategy_decay": strategy_decay,      # PM.7 策略级衰减告警
-                "t3": t3_state}                        # TR.3 T3 providers(模式/买入力/持仓数)
+                "t3": t3_state,                        # TR.3 T3 providers(模式/买入力/持仓数)
+                "trading_context": tc_summary}         # TR.1 交易现实(价差/可交易/可做空/带)
+
+        # FE-TR 前置：把本轮诊断只增不改地存下来（失败绝不影响交易）
+        try:
+            from app.db.diagnostics_store import DiagnosticsStore
+            DiagnosticsStore().save(result)
+        except Exception as exc:
+            logger.warning("[portfolio] 诊断持久化失败（不阻断）: %s", exc)
+
+        return result
 
     # ------------------------------------------------------------------
     # 单因子（隔离）

@@ -454,7 +454,18 @@ fetch/SSE、`components/analysis/*` 图表、`AlphaDashboard`。**前端只读 +
   按钮,消费 `/strategies/{propose,pending,list,{id},approve,reject}`。前端构建绿 + 94 测试过。
   **补充（2026-09-02）**：策略卡已显示 TR.4 的**进 PAPER A/B/C 等级徽章**。
 
-- **FE-TR 交易现实面板 ⬜**（配 Phase TR；**本轮新增规划**——原前端路线漏了 TR，TR 一直是纯后端）
+- **FE-TR 交易现实面板 ✅**（2026-09-02，配 Phase TR；原前端路线漏了 TR，本轮补齐）
+  **已实现**：`components/portfolio/TradingRealityPanel.tsx`，挂在 Portf 视图的 **"交易现实" 标签页**
+  （与"策略配置"并列）。**前置也已补**：新建 `db/diagnostics_store.py`（`portfolio_diagnostics` 表，
+  每轮 run_portfolio 诊断只增不改地持久化）+ 端点 `GET /api/portfolio/diagnostics`、`GET /api/trading/status`；
+  `run_portfolio` 新增 `trading_context` 摘要（TR.1 价差/可交易/可做空/带）并落库。
+  面板四块：①数据源(价格源/同源告警/OpenD 连通/券商/账户·做空/AUM) ②成本与可交易性(中位价差·单边成本·
+  可交易·可做空·无交易带+notes) ③**T3 账户(SIM 估计 vs LIVE 实时醒目区分)** ④门分级(A/B/C 等级·实验模式·
+  →ACTIVE 是否真拦·阈值·因子入池门) + **最近运行表**。测试 `test_phase_fetr_endpoints.py`(3)；
+  前端 tsc/build 绿 + 94 测试过。
+  *（下方为原规划，保留备查）*
+
+- ~~**FE-TR 交易现实面板（原规划）**~~（配 Phase TR）
   **为什么要**：TR 决定"这笔交易在散户 $10k 下到底什么成本、能不能做空、买入力多少、证据够不够"，
   这些**直接决定能否赚钱**，却只存在于日志里，用户看不见 → 无法核对、无法发现问题。
   **⚠️ 前置（必须先做，否则前端无源）**：`run_portfolio` 的运行诊断（`t3 / risk_report / horizon /
@@ -504,7 +515,7 @@ Phase 14 ── 长期验证期
 
 Phase R ── ⚠️ 已被 S/PM 吸收（R.1→S.3、R.2→PM.5、R.3→PM.2、R.4→PM.1/3），仅留方法参考，非独立待办
 
-前端 FE-9(✅) · FE-PM(✅) · **FE-TR 交易现实面板(⬜,需先补 run_portfolio 诊断端点)** · FE-8/10/11/12/13/R(⬜)
+前端 FE-9(✅) · FE-PM(✅) · FE-TR 交易现实面板(✅,含诊断持久化+两端点) · FE-8/10/11/12/13/R(⬜)
 ```
 
 ## 关键复用点（避免重造）

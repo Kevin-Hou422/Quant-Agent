@@ -3,7 +3,7 @@ import type {
   SimulationConfig, SimResult, AlphaRecord, BacktestRunResponse,
   WorkflowResponse, DatasetInfo, WalkForwardResult, DatasetHealth,
   RegimeInfo, AlphaDashboardRow, ICHistoryData, SchedulerStatus, PaperPnLData,
-  PendingAlpha, AlphaDecision, StrategyConfigItem,
+  PendingAlpha, AlphaDecision, StrategyConfigItem, TradingStatus, PortfolioDiagnostic,
 } from '../types'
 
 const http = axios.create({ baseURL: '/api', timeout: 120_000 })
@@ -354,3 +354,10 @@ export function streamWorkflowGenerate(
     }
   })
 }
+
+// ── FE-TR: 交易现实面板数据源 ─────────────────────────────────────────────
+export const apiFetchTradingStatus = () =>
+  http.get<TradingStatus>('/trading/status')
+
+export const apiFetchPortfolioDiagnostics = (limit = 20) =>
+  http.get<PortfolioDiagnostic[]>('/portfolio/diagnostics', { params: { limit } })

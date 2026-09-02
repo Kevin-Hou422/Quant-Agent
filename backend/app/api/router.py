@@ -1333,6 +1333,60 @@ def strategy_reject(sid: int, req: StrategyDecisionRequest = StrategyDecisionReq
     return StrategyStore.to_dict(sstore.get(sid))
 
 
+# ---------------------------------------------------------------------------
+# FE-TR：交易现实面板数据源（Phase TR 可视化前置）
+# ---------------------------------------------------------------------------
+
+@router.get("/portfolio/diagnostics", tags=["Strategy"])
+def portfolio_diagnostics(limit: int = Query(20)) -> List[dict]:
+    """
+    最近 N 轮 `run_portfolio` 的运行诊断（交易现实/T3账户/门分级/风控/换手/衰减）。
+    此前这些只进日志、前端看不见——FE-TR 的数据源。
+    """
+    from app.db.diagnostics_store import DiagnosticsStore
+    return DiagnosticsStore().recent(limit=limit)
+
+
+@router.get("/trading/status", tags=["Strategy"])
+def trading_status() -> dict:
+    """
+    交易现实的**配置与连通性**快照（轻量，不加载数据集）：价格源、券商档、账户口径、
+    OpenD 是否可连、TR.4 门开关。供 FE-TR 顶部状态条。
+    """
+    import socket
+    from app.config import settings
+
+    host = getattr(settings, "moomoo_host", "127.0.0.1")
+    port = int(getattr(settings, "moomoo_port", 11111))
+    opend_up = False
+    s = socket.socket(); s.settimeout(1.0)
+    try:
+        s.connect((host, port)); opend_up = True
+    except Exception:
+        opend_up = False
+    finally:
+        try: s.close()
+        except Exception: pass
+
+    return {
+        "price_source":   getattr(settings, "price_source", "yahoo"),
+        "same_source":    getattr(settings, "price_source", "yahoo") == "moomoo",  # 研究/执行同源?
+        "moomoo":         {"host": host, "port": port, "opend_reachable": opend_up},
+        "broker":         getattr(settings, "trading_broker", "moomoo_us"),
+        "account_type":   getattr(settings, "trading_account_type", "margin"),
+        "allow_short":    bool(getattr(settings, "trading_allow_short", False)),
+        "paper_aum":      float(getattr(settings, "paper_aum", 0.0)),
+        "paper_dataset":  getattr(settings, "paper_dataset", ""),
+        "gates": {                       # TR.4 门开关——让人一眼看出门是否在真拦
+            "experiment_mode":     bool(getattr(settings, "tr_experiment_mode", True)),
+            "enforce_active_gate": bool(getattr(settings, "tr_enforce_active_gate", False)),
+            "min_forward_days":    int(getattr(settings, "tr_min_forward_days", 60)),
+            "min_ic_tstat":        float(getattr(settings, "tr_min_ic_tstat", 2.0)),
+            "factor_gate_mode":    getattr(settings, "factor_gate_mode", "leak"),
+        },
+    }
+
+
 @router.get("/scheduler/status", tags=["Lifecycle"])
 def scheduler_status() -> dict:
     """FE-5.3：调度器运行状态与任务列表。"""

@@ -8,6 +8,7 @@ import {
   apiApproveStrategy, apiRejectStrategy,
 } from '../../api/client'
 import type { StrategyConfigItem } from '../../types'
+import TradingRealityPanel from './TradingRealityPanel'
 
 /**
  * FE-PM (Phase PM.7): 组合策略配置控制台。
@@ -158,7 +159,31 @@ function StrategyCard({ cfg, onDecision }: {
   )
 }
 
+type PMTab = 'configs' | 'reality'
+
+function TabBar({ tab, setTab }: { tab: PMTab; setTab: (t: PMTab) => void }) {
+  const item = (t: PMTab, label: string) => (
+    <button
+      key={t}
+      onClick={() => setTab(t)}
+      className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
+        tab === t
+          ? 'text-violet-300 border-violet-500'
+          : 'text-slate-400 border-transparent hover:text-slate-200'}`}
+    >
+      {label}
+    </button>
+  )
+  return (
+    <div className="flex items-center gap-1 px-4 border-b border-slate-800 bg-slate-950 shrink-0">
+      {item('configs', '策略配置')}
+      {item('reality', '交易现实')}
+    </div>
+  )
+}
+
 export default function PortfolioView() {
+  const [tab, setTab]         = useState<PMTab>('configs')
   const [pending, setPending] = useState<StrategyConfigItem[]>([])
   const [others, setOthers]   = useState<StrategyConfigItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -213,8 +238,20 @@ export default function PortfolioView() {
 
   const active = useMemo(() => others.filter(c => c.status === 'active'), [others])
 
+  // FE-TR：交易现实作为并列标签页（不再加顶层导航）
+  if (tab === 'reality') {
+    return (
+      <div className="h-full flex flex-col bg-slate-950">
+        <TabBar tab={tab} setTab={setTab} />
+        <div className="flex-1 min-h-0"><TradingRealityPanel /></div>
+      </div>
+    )
+  }
+
   return (
-    <div className="h-full overflow-y-auto bg-slate-950 p-4">
+    <div className="h-full overflow-y-auto bg-slate-950">
+      <TabBar tab={tab} setTab={setTab} />
+      <div className="p-4">
       {/* header */}
       <div className="flex items-center gap-3 mb-4">
         <Layers size={18} className="text-violet-400" />
@@ -270,6 +307,7 @@ export default function PortfolioView() {
           )}
         </>
       )}
+      </div>
     </div>
   )
 }

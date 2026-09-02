@@ -12,6 +12,55 @@ export interface StrategyDecisionItem {
   decided_at:  string
 }
 
+// ── FE-TR: 交易现实面板 ───────────────────────────────────────────────────
+export interface TradingStatus {
+  price_source: string
+  same_source:  boolean          // 研究/执行是否同源（moomoo）
+  moomoo:       { host: string; port: number; opend_reachable: boolean }
+  broker:       string
+  account_type: string
+  allow_short:  boolean
+  paper_aum:    number
+  paper_dataset: string
+  gates: {
+    experiment_mode:     boolean
+    enforce_active_gate: boolean
+    min_forward_days:    number
+    min_ic_tstat:        number
+    factor_gate_mode:    string
+  }
+}
+
+export interface TradingContextSummary {
+  median_spread_bps?:      number
+  median_cost_oneway_bps?: number
+  n_tradable?:             number
+  n_shortable?:            number
+  rebalance_band?:         number
+  aum?:                    number
+  allow_short?:            boolean
+  notes?:                  string[]
+}
+
+export interface PortfolioDiagnostic {
+  id:               number
+  run_at:           string | null
+  n_factors?:       number
+  days_processed?:  number
+  equity?:          number
+  aum?:             number
+  used_baseline?:   boolean
+  active_config?:   number | null
+  no_trade_band?:   number
+  turnover_ann?:    number
+  strategy_verdict?: Record<string, unknown> | null
+  risk_report?:     Record<string, unknown> | null
+  horizon?:         Array<{ factor: string; turnover_ann: number; horizon: string }>
+  strategy_decay?:  { reason: string; rolling_mean_ic: number } | null
+  t3?:              { mode: string; buying_power: number; n_positions: number } | null
+  trading_context?: TradingContextSummary | null
+}
+
 export interface StrategyConfigItem {
   id:            number
   name:          string
