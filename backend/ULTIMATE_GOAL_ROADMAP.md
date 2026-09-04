@@ -336,10 +336,29 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
 
 **目标**：从历史回放转为真正的前向 paper trading（日频收盘增量）。**价格源 = moomoo（TR.2）**，与执行同源。
 
-- **11.1 provider 增量拉取** — **`MoomooProvider`（TR.2）**加 `fetch_latest`/增量接口 + 追加进 PIT（8.1）带 `as_of`。
-- **11.2 美股日历 + 时区** — ET 收盘、节假日感知的调度（现有 job 用 UTC 固定时刻）。
-- **11.3 `daily_ingest` 重构** — 真增量追加（非整段重拉）；从启动日起积累无幸存者偏差的自有数据。
-- **验收**：连续 N 个真实交易日，PIT 每日增一根 bar；日循环消费增量；A1（无人值守日节奏）成立。
+- **11.1 provider 增量拉取 ✅**（2026-09-03）— `MoomooProvider.fetch_latest` 已有；新增
+  `PITStore.latest_timestamp(name)`（只读末年分区取最新 bar 日期，不加载全量）。
+- **11.2 美股日历 + 时区 ✅**（2026-09-03）— 新建 `data_engine/market_calendar.py`（依赖
+  `pandas_market_calendars`）：`is_trading_day` / `last_/next_trading_day` /
+  **`session_close_utc`（DST 感知：夏令时 20:00 UTC、冬令时 21:00 UTC、半日市 18:00 UTC）** /
+  `minutes_after_close_utc` / **`cross_check`（数据↔日历双向校验，不静默）**。
+  **双权威**：数据是权威（有没有新 bar 以 provider 为准），日历用于提前调度与交叉校验告警。
+  调度器 `daily_trading_job` **非交易日直接跳过**，不空转。
+  *（顺带修：原写死 21:00 UTC 只在冬令时才是收盘后，夏令时/半日市都会错。）*
+- **11.3 `daily_ingest` 重构 ✅**（2026-09-03）— `DailyIngest.ingest_incremental()`：
+  PIT 空 → 一次性历史回填（`mode=full`，计为**回放**）；非空 → 只拉 `last+1..今天`
+  （`mode=incremental`）；无新 bar → `no_new_bar` 不写库不交易。**只追加增量**进 PIT。
+  `run_daily_pipeline(..., incremental=True)` 为默认。
+  *量化收益*：旧实现每天整段重写、去重键含 `as_of` 故不去重 → **单次 665,000 行、一年 1.68 亿行**；
+  真增量为 **665 行/日**，**膨胀 1000× 已消除**。
+- **★ 回放/前向分离 ✅**（2026-09-03，本 Phase 关键补充）— `alpha_ic_history` 新增 **`is_forward`** 列
+  （SQLite `ADD COLUMN` 安全幂等迁移，旧库自动补列）；`record_ic(..., is_forward=)` **只升不降**
+  （回放重跑不会抹掉已积累的前向证据）；`get_forward_ic()` 只取前向样本；
+  `run_portfolio(..., forward_from=)` 按摄取到的首根新 bar 标记。
+  **TR.4 的 →ACTIVE 门改为只吃前向样本** —— 这解除了它此前"只能仅记录不拦"的根本限制。
+- 测试：`test_phase11_forward.py`(8) + `test_phase11_incremental.py`(4)。
+- **验收（待真实运行）**：连续 N 个真实交易日，PIT 每日增一根 bar；日循环消费增量；A1 成立。
+  **前提：OpenD 需长期在线**（每个交易日收盘后拉）。
 
 ---
 

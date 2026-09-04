@@ -12,16 +12,19 @@ DATABASE_URL 环境变量配置，默认 sqlite:///alphas.db。
 from __future__ import annotations
 
 import csv
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import (
-    Column, Date, DateTime, Float, Integer, String, Text, UniqueConstraint,
+    Boolean, Column, Date, DateTime, Float, Integer, String, Text, UniqueConstraint,
     create_engine, select,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +66,10 @@ class AlphaICRecord(_Base):
     realized_ic:     float    = Column(Float, default=0.0)
     realized_return: float    = Column(Float, default=0.0)
     recorded_at:     datetime = Column(DateTime, default=datetime.utcnow)
+    # Phase 11：**回放 vs 真前向**。首次运行会把整段历史逐日"回放"记进来，那不是前向证据；
+    # 只有摄取到**新 bar 之后**产生的 IC 才算前向。TR.4 的 →ACTIVE 门只能用 is_forward=True 的样本，
+    # 否则会把历史回放当成前向战绩（这正是该门此前只能"仅记录不拦"的原因）。
+    is_forward:      bool     = Column(Boolean, default=False, index=True)
 
 
 class AlphaDecision(_Base):
@@ -131,7 +138,25 @@ class AlphaStore:
         from ._sqlite_utils import harden_sqlite_engine
         harden_sqlite_engine(self._engine)
         _Base.metadata.create_all(self._engine)
+        self._migrate_add_columns()
         self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
+
+    def _migrate_add_columns(self) -> None:
+        """
+        轻量迁移：给已存在的表补新列（`create_all` 不会 ALTER 既有表）。
+        目前只有 Phase 11 的 `alpha_ic_history.is_forward`。SQLite 的
+        ADD COLUMN 是 O(1) 元数据操作，安全且幂等。
+        """
+        try:
+            with self._engine.begin() as conn:
+                cols = {r[1] for r in conn.exec_driver_sql(
+                    "PRAGMA table_info(alpha_ic_history)").fetchall()}
+                if cols and "is_forward" not in cols:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE alpha_ic_history ADD COLUMN is_forward BOOLEAN DEFAULT 0")
+                    logger.info("[alpha_store] 迁移：alpha_ic_history 增列 is_forward")
+        except Exception as exc:      # 迁移失败不应让系统起不来，但要看得见
+            logger.warning("[alpha_store] 迁移 is_forward 失败（旧库将缺该列）: %s", exc)
 
     def save(self, result: AlphaResult) -> int:
         """持久化一条 Alpha，返回自增 id。"""
@@ -230,10 +255,15 @@ class AlphaStore:
         date,                          # datetime.date | str "YYYY-MM-DD"
         realized_ic:     float,
         realized_return: float = 0.0,
+        is_forward:      bool = False,
     ) -> None:
         """
         写入某因子某日的 realized IC。幂等：同 (alpha_id, date) 重复调用
         覆盖旧值而非追加（重跑当日任务不会重复记账）。
+
+        is_forward : 该日是否为**真前向**（摄取到新 bar 之后产生），而非历史回放。
+                     只有前向样本才可用于 TR.4 的 →ACTIVE 门。**一旦标为前向就不再降级**
+                     （重跑回放不会把已积累的前向证据抹掉）。
         """
         from datetime import date as _date
         if isinstance(date, str):
@@ -250,14 +280,29 @@ class AlphaStore:
                 existing.realized_ic     = float(realized_ic)
                 existing.realized_return = float(realized_return)
                 existing.recorded_at     = datetime.utcnow()
+                # 前向标记只升不降：已确认的前向证据不会被后续回放重跑覆盖掉
+                if is_forward:
+                    existing.is_forward = True
             else:
                 session.add(AlphaICRecord(
                     alpha_id        = alpha_id,
                     date            = date,
                     realized_ic     = float(realized_ic),
                     realized_return = float(realized_return),
+                    is_forward      = bool(is_forward),
                 ))
             session.commit()
+
+    def get_forward_ic(self, alpha_id: int, limit: int = 5000) -> List[AlphaICRecord]:
+        """只取**真前向**的 IC 记录（TR.4 →ACTIVE 门专用；回放样本一律排除）。"""
+        with self._Session() as session:
+            return list(session.scalars(
+                select(AlphaICRecord)
+                .where(AlphaICRecord.alpha_id == alpha_id,
+                       AlphaICRecord.is_forward.is_(True))
+                .order_by(AlphaICRecord.date)
+                .limit(limit)
+            ))
 
     def get_ic_history(self, alpha_id: int, limit: int = 250) -> List[AlphaICRecord]:
         """按日期升序返回某因子最近 limit 条 IC 记录。"""

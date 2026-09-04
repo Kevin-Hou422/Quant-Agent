@@ -87,8 +87,10 @@ class Settings(BaseSettings):
     tr_min_forward_days:      int   = 60     # →ACTIVE 需要的前向观测交易日
     tr_min_ic_tstat:          float = 2.0    # →ACTIVE 的 realized IC t 门槛
     tr_min_ic_mean:           float = 0.0    # →ACTIVE 的 realized IC 均值下限
-    # 是否**阻断**未过 →ACTIVE 门的激活。默认 False：因 ic_history 尚未分离回放/前向
-    # （Phase 11 修），此门暂作参考；Phase 11 完成 + 逼近真钱时应设 True。
+    # 是否**阻断**未过 →ACTIVE 门的激活。
+    # Phase 11 已完成回放/前向分离（is_forward），该门现在**只吃真前向样本**，技术上已可启用。
+    # 仍默认 False：此刻前向样本为 0（尚未开始真实前向积累）；等累计满
+    # tr_min_forward_days 个交易日、准备逼近真钱时，把它设为 True 让门真正拦。
     tr_enforce_active_gate:   bool  = False
     # 组合风控（PM.5）—— 风险偏好，务必按你的意愿设定
     risk_max_gross:          float = 1.0     # 总敞口上限（Σ|w|）

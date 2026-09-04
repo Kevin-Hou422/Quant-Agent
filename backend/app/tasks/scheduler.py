@@ -54,10 +54,22 @@ def daily_monitor_job() -> None:
 
 
 def daily_trading_job() -> None:
-    """Task 7.1/7.3：每日数据摄取（健康门）→ 交易循环。摄取被拒则跳过循环。"""
+    """
+    Task 7.1/7.3 + Phase 11：每日**前向增量**摄取（健康门）→ 交易循环。
+
+    - 非交易日直接跳过（美股日历，节假日/周末）——不空转、不产生噪声日志。
+    - 摄取走增量：PIT 空则回填，之后每天只拉新 bar；无新 bar 就不交易。
+    """
     from app.tasks.daily_ingest import run_daily_pipeline
+    from app.core.data_engine.market_calendar import is_trading_day
     from app.config import settings
-    out = run_daily_pipeline(settings.paper_dataset, settings.paper_start, settings.paper_end)
+    import pandas as _pd
+
+    today = _pd.Timestamp.utcnow().tz_localize(None).normalize()
+    if not is_trading_day(today):
+        logger.info("[scheduler] %s 非美股交易日 → 跳过每日摄取/交易", today.date())
+        return
+    out = run_daily_pipeline(settings.paper_dataset, settings.paper_start, incremental=True)
     if out.get("ingest_accepted"):
         logger.info(
             "[daily_trading_job] 完成 | 健康=%.3f | %d 因子 | %d 告警 | %d 错误",

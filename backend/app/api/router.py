@@ -1302,7 +1302,9 @@ def strategy_approve(sid: int, req: StrategyDecisionRequest = StrategyDecisionRe
             # 阈值全配置化；默认只**记录不阻断**（因 ic_history 尚未分离回放/前向，见 Phase 11）。
             from app.core.lifecycle.promotion_gate import check_active_promotion
             from app.tasks.daily_trading_loop import PORTFOLIO_BOOK_ID
-            ics = [h.realized_ic for h in store.get_ic_history(PORTFOLIO_BOOK_ID, limit=5000)]
+            # Phase 11：**只用真前向样本**（is_forward=True），历史回放一律排除——
+            # 否则会把回放段当成前向战绩，这正是该门此前只能"仅记录"的原因。
+            ics = [h.realized_ic for h in store.get_forward_ic(PORTFOLIO_BOOK_ID)]
             ok, detail = check_active_promotion(ics)
             if not ok and getattr(settings, "tr_enforce_active_gate", False):
                 raise HTTPException(status_code=409,

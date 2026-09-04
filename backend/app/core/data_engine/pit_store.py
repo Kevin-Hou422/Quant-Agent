@@ -135,6 +135,26 @@ class PITStore:
             out[f] = wide.sort_index()
         return out
 
+    def latest_timestamp(self, name: str = "pit") -> Optional[pd.Timestamp]:
+        """
+        库中该数据集**最新一根 bar 的日期**（Phase 11 增量摄取用：只拉这天之后的数据）。
+        只读最后一个 year 分区，不加载全量。空库返回 None。
+        """
+        dataset_dir = self.store_dir / name
+        if not dataset_dir.exists():
+            return None
+        parts = sorted(dataset_dir.glob("year=*/data.parquet"))
+        if not parts:
+            return None
+        try:
+            df = pd.read_parquet(parts[-1], columns=["timestamp"])
+            if df.empty:
+                return None
+            return pd.to_datetime(df["timestamp"]).max().normalize()
+        except Exception as exc:
+            logger.warning("[pit_store] 读取最新 bar 日期失败 %s: %s", parts[-1], exc)
+            return None
+
     def available_as_of(self, name: str = "pit") -> List[pd.Timestamp]:
         """返回该数据集中出现过的所有 as_of vintage（升序去重）。"""
         long_df = self._load_long(name)

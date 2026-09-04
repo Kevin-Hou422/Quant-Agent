@@ -31,6 +31,15 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+
+def _as_date(v) -> _date:
+    """把 str / datetime / Timestamp / date 统一成 date（Phase 11 前向起始日比较用）。"""
+    if isinstance(v, _date) and not hasattr(v, "date"):
+        return v
+    ts = pd.Timestamp(v)
+    return ts.date()
+
+
 # Phase PM.4：组合账本用的保留 book id（真实 alpha 的 id 为正自增，0 不冲突）
 PORTFOLIO_BOOK_ID = 0
 
@@ -127,7 +136,8 @@ class DailyTradingLoop:
     # Phase PM.4：组合账本（把全部 paper 因子合成一个真实 AUM 的美元账本来交易）
     # ------------------------------------------------------------------
 
-    def run_portfolio(self, dataset: Dict[str, pd.DataFrame], aum: Optional[float] = None) -> dict:
+    def run_portfolio(self, dataset: Dict[str, pd.DataFrame], aum: Optional[float] = None,
+                      forward_from=None) -> dict:
         """
         把全部 PAPER/ACTIVE/DECAYING 因子经 PortfolioManager 合成**一个组合账本**
         （多因子净持仓 + 容量约束 + 真实 AUM），在保留 book id=PORTFOLIO_BOOK_ID 下交易。
@@ -362,8 +372,11 @@ class DailyTradingLoop:
             if t > 0:
                 ic = _cs_spearman(comp_arr[t - 1], ret_df.iloc[t].to_numpy(dtype=float))
                 if not np.isnan(ic):
+                    # Phase 11：只有 forward_from 之后（摄取到新 bar 才有的日子）算真前向
+                    fwd = bool(forward_from is not None and d.date() >= _as_date(forward_from))
                     self.store.record_ic(PORTFOLIO_BOOK_ID, d, float(ic),
-                                         realized_return=float(pnl.net_ret))
+                                         realized_return=float(pnl.net_ret),
+                                         is_forward=fwd)
             equity = pnl.equity
             n_days += 1
 
