@@ -20,7 +20,17 @@ class Settings(BaseSettings):
     )
 
     # ── 数据库 ────────────────────────────────────────────────────────────
+    # ⚠️ 活库**绝不能放在云同步目录**（OneDrive/Dropbox…）：WAL 模式下
+    # .db/.db-wal/.db-shm 三件套必须互相一致，云盘会分别异步上传 → 可能同步出损坏副本，
+    # 上传时占用文件还会引发 database is locked。活数据放本地非同步盘，
+    # 备份用 backup.py 的**一致性快照**（静态文件，放云盘才安全）。
     database_url: str = "sqlite:///./alphas.db"
+
+    # ── 备份（每日一致性快照）──────────────────────────────────────────────
+    # backup_dir 建议指向**云同步目录**（快照是静态文件，同步安全，等于异地副本）。
+    enable_backup:  bool = True
+    backup_dir:     str  = "backups"   # 建议设为 OneDrive 下的某个目录
+    backup_keep_n:  int  = 14          # 保留最近 N 份快照
 
     # ── LLM ──────────────────────────────────────────────────────────────
     openai_api_key: str = Field("", validation_alias="OPENAI_API_KEY")

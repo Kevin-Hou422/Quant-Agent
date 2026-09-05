@@ -103,6 +103,17 @@ def nightly_discovery_job() -> None:
     )
 
 
+def daily_backup_job() -> None:
+    """每日一致性快照备份：主库 + 调度库 + PIT（前向数据不可再生，丢了买不回来）。"""
+    from app.tasks.backup import run_daily_backup
+    res = run_daily_backup()
+    if res.ok:
+        logger.info("[scheduler] 备份完成 %s | %s | %.1f KB",
+                    res.snapshot_dir, res.items, res.bytes_written / 1024)
+    else:
+        logger.error("[scheduler] 备份**失败** %s: %s", res.snapshot_dir, res.errors)
+
+
 def monthly_cost_calibration_job() -> None:
     """Task 8.2：每月对上月成交做成本模型校准，产出建议报告（**不自动改 CostParams**）。"""
     from datetime import date, timedelta
@@ -197,6 +208,20 @@ def create_scheduler(
             )
     except Exception as exc:
         logger.warning("[scheduler] 注册 nightly_discovery 失败: %s", exc)
+
+    # 每日一致性快照备份（前向数据不可再生 —— 丢了买不回来）
+    try:
+        from app.config import settings
+        if getattr(settings, "enable_backup", True):
+            sched.add_job(
+                daily_backup_job,
+                trigger = CronTrigger(hour=23, minute=45, timezone=timezone),  # 当日全部任务之后
+                id      = "daily_backup",
+                name    = "每日一致性快照备份",
+                replace_existing = True,
+            )
+    except Exception as exc:
+        logger.warning("[scheduler] 注册 daily_backup 失败: %s", exc)
     return sched
 
 
