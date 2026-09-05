@@ -83,7 +83,8 @@ class TestConversationMemory:
 @pytest.fixture(scope="module")
 def tools():
     from app.agent.quant_agent import QuantTools
-    return QuantTools(n_tickers=15, n_days=150, oos_ratio=0.3, n_trials=4, seed=7)
+    return QuantTools(n_tickers=15, n_days=150, oos_ratio=0.3, n_trials=4, seed=7,
+                      allow_synthetic=True)
 
 
 class TestQuantTools:
@@ -164,7 +165,8 @@ class TestOverfitCritic:
 @pytest.fixture(scope="module")
 def orchestrator():
     from app.agent.quant_agent import QuantTools, FallbackOrchestrator
-    t = QuantTools(n_tickers=15, n_days=150, oos_ratio=0.3, n_trials=4, seed=9)
+    t = QuantTools(n_tickers=15, n_days=150, oos_ratio=0.3, n_trials=4, seed=9,
+                   allow_synthetic=True)
     return FallbackOrchestrator(t)
 
 
@@ -198,6 +200,7 @@ def agent():
     return QuantAgent(
         n_tickers = 15, n_days = 150, oos_ratio = 0.3,
         n_trials  = 4,  seed   = 11,  api_key = "",
+        allow_synthetic = True,   # 离线单测显式 opt-in 合成数据（默认 fail-closed）
     )
 
 

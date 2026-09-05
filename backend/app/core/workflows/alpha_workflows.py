@@ -724,7 +724,7 @@ class GenerationWorkflow:
             f"config: {gp_result.best_config or 'default'}"
         )
         _emit(
-            f"[Result] IS Sharpe={m.get('is_sharpe', 0):.4f} | "
+            f"[Result] IS Sharpe={(m.get('is_sharpe') or 0.0):.4f} | "
             f"Validate Sharpe={f'{oos_s:.4f}' if oos_s is not None else 'N/A'} | "
             f"Test Sharpe={_fmt(m.get('test_sharpe'))}"
         )
@@ -916,7 +916,7 @@ class OptimizationWorkflow:
             f"config: {gp_result.best_config or 'default'}"
         )
         _emit(
-            f"[Result] IS Sharpe={m.get('is_sharpe', 0):.4f} | "
+            f"[Result] IS Sharpe={(m.get('is_sharpe') or 0.0):.4f} | "
             f"OOS Sharpe={f'{oos_s:.4f}' if oos_s is not None else 'N/A'} "
             + (f"({'↑' if (oos_s or 0) > init_oos else '↓'}{abs((oos_s or 0) - init_oos):.4f} vs input)"
                if oos_s is not None else "")

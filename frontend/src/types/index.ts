@@ -110,6 +110,8 @@ export interface ChatMessage {
   content: string
   dsl?: string | null
   metrics?: SimMetrics | null
+  /** 数据来源："real:<dataset>" 或 "synthetic" —— 用户必须能分辨指标是否为随机数 */
+  dataSource?: string | null
   type?: 'message' | 'thought' | 'tool_output'
   timestamp: number
   isStreaming?: boolean

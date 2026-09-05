@@ -73,6 +73,7 @@ class QuantTools:
         dataset_start: str   = "2021-01-01",
         dataset_end:   str   = "2024-01-01",
         test_ratio:    float = 0.10,
+        allow_synthetic: bool = False,
     ) -> None:
         self._n_tickers = n_tickers
         self._n_days    = n_days
@@ -80,6 +81,9 @@ class QuantTools:
         self._n_trials  = n_trials
         self._seed      = seed
         self._llm       = llm
+        # 数据来源标识（"real:<name>" / "synthetic"）——必须能被上层与前端看到，
+        # 否则用户无法分辨屏幕上的 Sharpe/OOS 是不是随机数（外部审计打中的正是这点）。
+        self._data_source = "unknown"
 
         if dataset_name:
             try:
@@ -87,14 +91,32 @@ class QuantTools:
                 from app.core.data_engine.dataset_registry import load_registry_dataset
                 ds = load_registry_dataset(dataset_name, start=dataset_start, end=dataset_end, use_cache=True).data
                 self._full_dataset = ds
+                self._data_source = f"real:{dataset_name}"
                 logger.info("QuantTools: real dataset '%s' [%s→%s] loaded", dataset_name, dataset_start, dataset_end)
             except Exception as exc:
-                logger.warning("Real dataset '%s' load failed: %s — falling back to synthetic", dataset_name, exc)
+                # **fail-closed**（与 API 的 _resolve_dataset 同一纪律）：真实数据加载失败时
+                # 绝不静默改用随机游走冒充真实数据——那会让 Sharpe/OOS 在金融上毫无意义，
+                # 且用户看不出来。需要合成数据请显式 allow_synthetic=True。
+                if not allow_synthetic:
+                    raise RuntimeError(
+                        f"数据集 '{dataset_name}' 加载失败：{exc}。"
+                        "拒绝回退到合成数据（研究结论不能建立在随机噪声上）；"
+                        "如确需合成数据用于离线试验，请显式传 allow_synthetic=True。"
+                    ) from exc
+                logger.warning("Real dataset '%s' load failed: %s — 显式允许，降级合成", dataset_name, exc)
                 ds = _make_synthetic_dataset(n_tickers, n_days, seed)
                 self._full_dataset = ds
+                self._data_source = "synthetic(fallback)"
         else:
+            if not allow_synthetic:
+                raise RuntimeError(
+                    "未指定 dataset_name 且未显式允许合成数据。"
+                    "合成数据只能用于离线试验，其 Sharpe/OOS 无金融含义——"
+                    "请传入真实数据集名，或显式 allow_synthetic=True。"
+                )
             ds = _make_synthetic_dataset(n_tickers, n_days, seed)
             self._full_dataset = ds
+            self._data_source = "synthetic"
 
         # F6 修复：三段式切割 IS / Validate(GP OOS) / Test(真实样本外)
         # GP 全程只接触 IS + Validate；Test 段仅在最终验证时用一次。
@@ -113,6 +135,15 @@ class QuantTools:
             logger.warning("三段切割失败（%s），降级为两段切割", exc)
             self._is_data, self._oos_data = _partition(ds, oos_ratio)
             self._test_data = None
+
+    @property
+    def data_source(self) -> str:
+        """当前数据来源标识（"real:<name>" / "synthetic"），供上层与前端如实展示。"""
+        return self._data_source
+
+    @property
+    def is_synthetic(self) -> bool:
+        return self._data_source.startswith("synthetic")
 
     # ------------------------------------------------------------------
     # Tool 1 — hypothesis → seed DSL
@@ -625,14 +656,26 @@ class QuantTools:
         from app.db.alpha_store import AlphaStore, AlphaResult
 
         metrics = _safe_json_loads(metrics_json) if metrics_json.strip() else {}
-        result  = AlphaResult(
+
+        # 数据来源必须随因子一起入库（外部审计修复）：此前合成数据算出的 Sharpe/IC
+        # 被当作研究结论存进台账，审批队列/看板显示的就是这些**无金融含义**的数字。
+        # 合成来源的指标一律**不写入数值字段**（存 0），并在 hypothesis 前缀显式标注，
+        # 避免它们冒充真实回测结果误导人工审批。
+        synthetic = self.is_synthetic
+        tagged_name = f"[{self._data_source}] {name}" if synthetic else name
+        result = AlphaResult(
             dsl          = dsl,
-            hypothesis   = name,
-            sharpe       = float(metrics.get("is_sharpe")   or 0.0),
-            ann_return   = float(metrics.get("is_return")   or 0.0),
-            ann_turnover = float(metrics.get("is_turnover") or 0.0),
-            ic_ir        = float(metrics.get("is_ic")       or 0.0),
+            hypothesis   = tagged_name,
+            sharpe       = 0.0 if synthetic else float(metrics.get("is_sharpe")   or 0.0),
+            ann_return   = 0.0 if synthetic else float(metrics.get("is_return")   or 0.0),
+            ann_turnover = 0.0 if synthetic else float(metrics.get("is_turnover") or 0.0),
+            ic_ir        = 0.0 if synthetic else float(metrics.get("is_ic")       or 0.0),
+            reasoning    = json.dumps({"data_source": self._data_source,
+                                       "raw_metrics": metrics}, ensure_ascii=False),
         )
+        if synthetic:
+            logger.warning("tool_save_alpha: 数据来源=%s → 指标不入库（合成数据无金融含义）",
+                           self._data_source)
         try:
             store    = AlphaStore()
             alpha_id = store.save(result)

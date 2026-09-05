@@ -40,7 +40,8 @@ def _make_dataset(n_days: int = 80, n_tickers: int = 10, seed: int = 0) -> dict:
 @pytest.fixture
 def tools():
     from app.agent._tools import QuantTools
-    return QuantTools(n_tickers=10, n_days=80, oos_ratio=0.3, n_trials=2, seed=42)
+    return QuantTools(n_tickers=10, n_days=80, oos_ratio=0.3, n_trials=2, seed=42,
+                      allow_synthetic=True)
 
 
 # ---------------------------------------------------------------------------

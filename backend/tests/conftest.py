@@ -32,6 +32,10 @@ def _hermetic_run_flags(tmp_path_factory):
     # 部署 .env 可能设 PRICE_SOURCE=moomoo（真实运行用）；测试强制回 yahoo，
     # 否则加载 US 数据集会去打 OpenD 网关（依赖运行时 + 烧历史K线额度）。见 DEV_LESSONS §H。
     settings.price_source = "yahoo"
+    # 聊天路径生产默认走真实数据集（外部审计修复）；测试里显式用合成，避免打网络。
+    # 注意：这是**显式 opt-in**，响应会标注 data_source=synthetic —— 与"静默回退"性质不同。
+    settings.chat_allow_synthetic = True
+    settings.chat_dataset = ""
     # DB 隔离：默认 store（含 TestClient 的 get_store）走 settings.database_url。
     # 若指向真实 alphas.db，测试里的 /alpha/save 等会污染生产账本（曾在 pending 队列
     # 里看到 rank(close) 测试垃圾）。session 级重定向到临时库。

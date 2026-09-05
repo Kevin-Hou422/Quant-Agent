@@ -192,7 +192,9 @@ class GPEvolveRequest(BaseModel):
     n_tickers:     int = Field(20, ge=5, le=200)
     n_days:        int = Field(120, ge=60, le=1000)
     seed:          int = Field(42)
-    dataset_name:  str = Field("", description=_DATASET_FIELD_DESC)
+    # 数据契约一致性（外部审计修复）：原默认 "" → 不传就跑合成数据，与 /backtest/run
+    # 默认 us_tech_large 的口径相反。统一为**默认真实数据集**；要合成需显式传空并开 allow_synthetic。
+    dataset_name:  str = Field("us_tech_large", description=_DATASET_FIELD_DESC)
     dataset_start: str = Field("2021-01-01")
     dataset_end:   str = Field("2024-01-01")
 

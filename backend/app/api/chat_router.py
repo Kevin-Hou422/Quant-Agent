@@ -52,14 +52,27 @@ def _get_agent(store: ChatStore) -> Any:
     global _agent
     if _agent is None:
         from app.agent.quant_agent import QuantAgent
+        from app.config import settings
+        # 数据契约（外部审计修复）：聊天此前**恒跑合成数据且无标识**，屏幕上的 Sharpe/OOS
+        # 在金融上没有意义。现在默认走**真实数据集**；加载失败 fail-closed（不静默回退），
+        # 只有显式配置 chat_allow_synthetic=true 才允许合成（并在响应里如实标注）。
+        allow_syn = bool(getattr(settings, "chat_allow_synthetic", False))
+        chat_ds = getattr(settings, "chat_dataset", "") or ""
+        # 生产：走真实数据集（加载失败 fail-closed）。
+        # 显式允许合成 + 未指定数据集 → 有意使用合成（离线/测试），并在响应中如实标注。
+        dataset = chat_ds if chat_ds else ("" if allow_syn else settings.default_dataset)
         _agent = QuantAgent(
             n_tickers  = 20,
             n_days     = 252,
             oos_ratio  = 0.30,
             n_trials   = 10,
             chat_store = store,
+            dataset_name    = dataset,
+            dataset_start   = settings.default_start,
+            dataset_end     = settings.default_end,
+            allow_synthetic = allow_syn,
         )
-        logger.info("全局 QuantAgent 单例已创建（ChatStore 已注入）")
+        logger.info("全局 QuantAgent 单例已创建 | 数据来源=%s", _agent.data_source)
     return _agent
 
 
@@ -110,6 +123,8 @@ class ChatResponse(BaseModel):
     reply:      str
     dsl:        Optional[str]
     metrics:    Optional[Dict[str, Any]]
+    # 数据来源必须随响应返回：用户要能分辨屏幕上的 Sharpe/OOS 是真实市场还是合成噪声
+    data_source: str = "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -263,10 +278,11 @@ def chat(
         raise HTTPException(status_code=500, detail=str(exc))
 
     return ChatResponse(
-        session_id = req.session_id,
-        reply      = result.get("reply", ""),
-        dsl        = result.get("dsl"),
-        metrics    = result.get("metrics"),
+        session_id  = req.session_id,
+        reply       = result.get("reply", ""),
+        dsl         = result.get("dsl"),
+        metrics     = result.get("metrics"),
+        data_source = agent.data_source,
     )
 
 

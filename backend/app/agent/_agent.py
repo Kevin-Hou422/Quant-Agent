@@ -54,6 +54,12 @@ class QuantAgent:
         api_key:    Optional[str]  = None,
         model:      str            = "gpt-4o-mini",
         chat_store: Optional[Any]  = None,
+        # 数据契约（外部审计修复）：聊天路径此前**恒用合成数据**且无标识，
+        # 使屏幕上的 Sharpe/OOS 在金融上无意义。现在必须显式指定数据来源。
+        dataset_name:    str  = "",
+        dataset_start:   str  = "2021-01-01",
+        dataset_end:     str  = "2024-01-01",
+        allow_synthetic: bool = False,
     ) -> None:
         self._chat_store = chat_store
         self._llm        = None
@@ -85,7 +91,12 @@ class QuantAgent:
             n_trials  = n_trials,
             seed      = seed,
             llm       = self._llm,
+            dataset_name    = dataset_name,
+            dataset_start   = dataset_start,
+            dataset_end     = dataset_end,
+            allow_synthetic = allow_synthetic,
         )
+        logger.info("QuantAgent 数据来源: %s", self._tools.data_source)
 
         # Orchestrators
         self._chain:    Optional[Any]        = None
@@ -140,6 +151,11 @@ class QuantAgent:
     @property
     def tools(self) -> QuantTools:
         return self._tools
+
+    @property
+    def data_source(self) -> str:
+        """当前数据来源（"real:<name>" / "synthetic"）——随每次聊天响应返回，用户须看得见。"""
+        return self._tools.data_source
 
     @property
     def memory(self) -> ConversationMemory:
@@ -313,7 +329,11 @@ class QuantAgent:
 
         def _emit_done(result: dict) -> None:
             if on_event:
-                try: on_event({"type": "done", "result": result})
+                # 数据来源必须随流式最终事件返回——前端用的是 /chat/stream，
+                # 只改 POST /chat 的响应等于只修一半（DEV_LESSONS §R）。
+                payload = dict(result or {})
+                payload.setdefault("data_source", self.data_source)
+                try: on_event({"type": "done", "result": payload})
                 except Exception: pass
 
         def _emit_error(msg: str) -> None:

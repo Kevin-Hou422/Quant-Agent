@@ -94,9 +94,28 @@ export default function ChatMessage({ message }: Props) {
           </div>
         )}
 
-        {/* Metrics chips */}
+        {/* Metrics chips — 必须先标注数据来源：合成数据下的 Sharpe/IC 无金融意义 */}
         {message.metrics && !message.isStreaming && (
           <div className="flex flex-wrap gap-1.5">
+            {message.dataSource && (
+              <span
+                className={
+                  'text-xs rounded px-2 py-0.5 border ' +
+                  (message.dataSource.startsWith('real:')
+                    ? 'bg-emerald-950 border-emerald-800 text-emerald-400'
+                    : 'bg-amber-950 border-amber-700 text-amber-400')
+                }
+                title={
+                  message.dataSource.startsWith('real:')
+                    ? `真实市场数据：${message.dataSource.slice(5)}`
+                    : '合成数据 — 以下指标不代表任何真实收益'
+                }
+              >
+                {message.dataSource.startsWith('real:')
+                  ? `真实数据 · ${message.dataSource.slice(5)}`
+                  : '⚠ 合成数据（指标无效）'}
+              </span>
+            )}
             {Object.entries(message.metrics as Record<string, number>).slice(0, 4).map(([k, v]) =>
               v != null ? (
                 <span key={k} className="text-xs bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-slate-400">

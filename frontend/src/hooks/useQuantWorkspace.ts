@@ -292,7 +292,9 @@ export function useQuantWorkspace() {
       if (finalResult) {
         const r = finalResult as any
         const { dsl, metrics } = r
-        store.finalizeStreamingMessage(streamId, { dsl, metrics, type: 'message' })
+        store.finalizeStreamingMessage(streamId, {
+          dsl, metrics, dataSource: r.data_source ?? null, type: 'message',
+        })
         if (dsl) store.setEditorDsl(dsl)
         // Capture pool top-5 if the chat result came from a GP workflow
         if (r.pool_top5?.length >= 1) {

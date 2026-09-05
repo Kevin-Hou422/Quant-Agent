@@ -362,6 +362,38 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
 
 ---
 
+## Phase A — 外部审计整改（**数据契约**）✅（2026-09-05）
+
+**背景**：一份外部审计指出"聊天路径恒跑合成数据且屏幕上无任何标识"。逐条核对代码后
+**7/8 属实**（且比审计说的更糟：`QuantAgent.__init__` 当时连 `dataset_name` 形参都没有，
+所以调用方**根本无法**传真实数据集），1 条不实（A股/港股 registry 仍在）。整改如下：
+
+- **A.1 fail-closed 数据契约 ✅** — `QuantTools.__init__(..., allow_synthetic=False)`：
+  未指定 `dataset_name` 或真实数据加载失败时 **直接 raise**，绝不静默用随机游走冒充真实
+  数据。要合成必须显式 opt-in。`QuantAgent` 透传 `dataset_name/start/end/allow_synthetic`。
+- **A.2 生产默认走真实数据 ✅** — `chat_router._get_agent` 默认 `settings.default_dataset`；
+  新增配置 `chat_dataset` / `chat_allow_synthetic`。`GPEvolveRequest.dataset_name` 默认
+  由 `""`（=合成）改为 `"us_tech_large"`。
+- **A.3 数据来源全链路披露 ✅** — `data_source`（`"real:<name>"` / `"synthetic"`）经
+  **POST `/api/chat`** 与 **SSE `/api/chat/stream` 的 `done` 事件**双路返回；前端
+  `ChatMessage` 在指标 chips 前渲染徽章：真实=绿色、合成=琥珀色 **"⚠ 合成数据（指标无效）"**。
+  *（差点只修 POST 一条路——前端实际消费的是 SSE，见 DEV_LESSONS §R。）*
+- **A.4 台账不再被合成数字污染 ✅** — `tool_save_alpha` 在合成数据下**把指标清零**、
+  hypothesis 打 `[synthetic]` 前缀、`reasoning` 存 `{data_source, raw_metrics}` 留痕。
+  *（历史残留：用户库中 521 条非零 Sharpe（98 条 >1，25 条 >2，最大 3.44）全部来自
+  开发期合成数据，已全部 retire。门控本就从 DSL 在真实数据上重算，但**人**看的是库里
+  存的数字——这才是真实危害。）*
+- **A.5 不变量测试 ✅** — 新建 `tests/test_invariants.py`(8)：拒绝无 opt-in 的合成、
+  加载失败必须 fail-closed、合成必须带标识、API 模型默认真实数据集、两条聊天路径都带
+  `data_source`、**从入口 BFS 无孤儿模块**（防"写了没接线"）。
+- 顺带修：`alpha_workflows.py` 用 `m.get('is_sharpe', 0):.4f` 格式化 —— 键存在但值为
+  `None` 时 `TypeError`，导致 GP 全部评估失败时聊天流以 500 结束而非返回消息。
+- 回归：后端 **585 passed / 4 skipped / 0 error**；前端 `tsc -b` 干净 + vitest 94 passed。
+- **未整改（已知且已在路线内，非本轮范围）**：fitness=OOS Sharpe 的选择性挖掘、OOS 分段
+  不连续、执行层仅 PaperBroker（Phase 12）、`vwap≈(H+L+C)/3`、universe 写死无幸存者偏差修正。
+
+---
+
 ## Phase 12 — 真实执行层：**moomoo** 纸交易 + 确定性执行工作流 + 风控 + paper-vs-real 建模
 
 **目标**：在 **moomoo**（= TR.2 的单一权威源/执行券商）纸交易上的完整**确定性**交易工作流；建模保真度差距。

@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # 默认使用真实市场数据集（dataset_registry.py 中的注册名称）
     # 可通过 CLI --dataset 或环境变量 DEFAULT_DATASET 覆盖
     default_dataset: str = "us_tech_large"
+    # 聊天路径的数据契约（外部审计修复 2026-09-05）：默认走真实数据集；
+    # chat_allow_synthetic=true 才允许合成（且响应会如实标注 data_source=synthetic）。
+    chat_dataset:         str  = ""      # 空 → 用 default_dataset
+    chat_allow_synthetic: bool = False
     default_start:   str = "2020-01-01"
     default_end:     str = "2024-01-01"
 
