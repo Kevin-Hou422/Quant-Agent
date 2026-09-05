@@ -70,19 +70,29 @@ class TestParseErrors:
 
     def test_very_long_dsl_does_not_crash(self):
         """超长 DSL 应抛出异常，不应让进程崩溃或无限阻塞。"""
+        import time
         long_dsl = "rank(" * 200 + "close" + ")" * 200
+        t0 = time.perf_counter()
         try:
-            _parse(long_dsl)
-        except Exception:
-            pass  # 任何异常均可接受，关键是不崩溃
+            node = _parse(long_dsl)
+        except Exception as e:
+            # 允许拒绝，但必须是**可理解的**解析错误，不能是 RecursionError
+            assert not isinstance(e, RecursionError), (
+                "200 层嵌套触发 RecursionError —— 解析器未做深度保护，"
+                "恶意/误输入可直接打崩进程"
+            )
+            assert str(e).strip(), "抛出空异常信息"
+        else:
+            assert node is not None
+        assert time.perf_counter() - t0 < 5.0, "超长 DSL 解析超过 5 秒（可被用于拖垮服务）"
 
     def test_sql_injection_does_not_execute(self):
         """SQL 注入字符串应被解析器拒绝（不执行 SQL）。"""
         from app.core.alpha_engine.parser import ParseError
-        try:
+        # 契约：必须**拒绝**。原用例 try/except pass 让"解析成功"也算通过 ——
+        # 那才是真正危险的情况，却测不出来。
+        with pytest.raises(Exception):
             _parse("rank('; DROP TABLE alpha_records; --)")
-        except (ParseError, Exception):
-            pass  # 预期失败
 
     def test_unicode_field_name_rejected(self):
         """Unicode 字段名不是有效 DSL 标识符，应被拒绝。"""
@@ -115,11 +125,11 @@ class TestValidationErrors:
         注：CS 嵌套约束在现有验证器中未强制执行。
         此测试记录当前行为（通过），若将来添加约束则需更新。
         """
-        # 不断言抛出异常，而是确认不崩溃
-        try:
-            _validate("rank(rank(close))")
-        except Exception:
-            pass  # 抛出或不抛出均可接受
+        # 记录当前行为需要**确定的**断言：当前验证器允许 CS 嵌套。
+        # 原写法（try/except pass）对"通过"和"抛异常"都算成功 ——
+        # 行为一旦反转也不会有人知道，等于没有记录任何行为。
+        node = _validate("rank(rank(close))")
+        assert node is not None, "rank(rank(x)) 现行为应通过验证；若已改为拒绝，请更新本用例"
 
     def test_ts_window_zero_rejected(self):
         """ts_mean(close, 0) 窗口必须 ≥ 1。"""

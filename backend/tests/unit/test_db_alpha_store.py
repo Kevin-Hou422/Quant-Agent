@@ -133,7 +133,15 @@ class TestAlphaStoreExportCSV:
         assert len(rows) == 3
 
     def test_export_csv_empty_db_no_file(self, store, tmp_path):
-        """空数据库不创建文件（或创建空文件，均可接受）。"""
+        """
+        空库导出：契约必须**确定** —— 要么不建文件，要么建一个只有表头的文件。
+        原用例"或创建空文件，均可接受"+ 零断言 → 任何行为都通过，等于没测。
+        """
+        import os, csv as _csv
         csv_path = str(tmp_path / "empty_export.csv")
         store.export_csv(csv_path)
-        # 不应崩溃
+        if not os.path.exists(csv_path):
+            return                                  # 不建文件：合法
+        with open(csv_path, encoding="utf-8") as f:
+            rows = list(_csv.reader(f))
+        assert len(rows) <= 1, f"空库却导出了 {len(rows)-1} 行数据：{rows[:3]}"

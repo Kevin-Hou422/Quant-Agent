@@ -394,6 +394,78 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。
 
 ---
 
+## Phase B — 全量测试审计 + DEV_LESSONS 强制化（2026-09-06）
+
+**背景**：外部审计连续两轮命中真问题，而本仓库"562 passed"一直全绿。逐条追因后发现
+**不是不够仔细，是三个机制性盲区**（详见 DEV_LESSONS §S）。本 Phase 对 64 个测试文件、
+589 个用例做 AST 级审计，把"不会失败的测试"全部收紧，并把教训编排成强制检查。
+
+### B.1 审计手法（先量化，再动手）
+AST 扫描全部 `tests/`，按"这个断言可能失败吗"分类，查出 **90 处反模式**：
+`accepts_5xx` 16 · `conditional_assert` 30 · `except_swallow` 13 · `no_assert` 12(净) ·
+`body_wrapped_in_try` 2 · `assert_true` 1 · 其余为 4xx 宽容。
+
+### B.2 收紧断言后暴露的**真实问题**（此前全部被绿灯掩盖）
+
+| # | 问题 | 后果 | 状态 |
+|---|------|------|------|
+| B-1 | `/api/backtest/walk_forward` 合成路径**结构性不可用**：端点写死 `n_days=120`，而 `WalkForwardBacktester.min_train_days` 也是 120。实测请求模型允许的 **`n_splits∈[2,10]` × `embargo∈[0,60]` 全 12 种组合均 `ValueError` → 500** | 不是"某些参数下失败"，是**永远不可能成功**；旧断言容忍 500 故一直"通过" | 🔴 待修（改端点 `n_days` 或让 `min_train_days` 随数据长度自适应） |
+| B-2 | 同端点**静默忽略** `n_tickers/n_days/seed`（`WalkForwardRequest` 无这些字段，`_resolve_dataset` 里写死 20/120/42） | 调用方以为自己控制了数据规模，实际没有 | 🔴 待修 |
+| B-3 | `test_api_workflow.py` 全部 8 个用例载荷违反 `ge=` 约束 → 端点**从未被调用过**（一直 422 而断言容忍 422） | `/api/workflow/generate` 与 `/optimize` 零集成覆盖 | ✅ 已修（载荷合规，8→9 用例真跑） |
+| B-4 | `/api/gp/evolve` 同型：`pop_size=3 < ge=5` → 一直 422 | GP 端点零集成覆盖 | ✅ 已修 |
+| B-5 | `DataPartitioner` 默认 `embargo_days=20` **全部从 OOS 段扣除**，且无最小样本保护：n_days=60→OOS **0 行**（下游 500）；n_days=80→OOS **4 行** | 4 行数据算出的年化 Sharpe 被当正常结果返回；或直接 500 | 🔴 待修 |
+| B-6 | 承 B-5：`/api/workflow/generate` 在 120 天合成数据上报出 **OOS Sharpe = 15.78**，且过拟合检测判为 `healthy (0.0000)` | 金融上不可能的数字被当作正常结论展示 | 🔴 待修（已有探针用例锁定） |
+| B-7 | **`ind_neutralize` 行业中性从未生效**：parser 把分组存进 `params["groups_node"]`，`CrossSectionalNode._compute` 读的是 `params["groups"]` → 恒 `None` → 退化成 `cs_zscore`。给不给 `sector` 输出**逐位相同** | 任何用 `ind_neutralize` 的因子都不是行业中性的。兄弟算子 `sector_neutral` 正常 | 🔴 待修 |
+| B-8 | 承 B-7：缺 `sector` 字段时静默退化，**无告警** | 使用者以为做了行业中性 | 🔴 待修 |
+| B-9 | `tests/unit/test_backtest_edge_cases.py` 的 `_run_backtest` 少传必填参数（`run(weights,prices,volume,signal)` 写成 `run(signal,close,volume)`），**每次 TypeError**，被 `except: pass` 吃掉 | 整个边界值测试文件长期空跑 | ✅ 已修（修正后又查出 2 个真问题） |
+| B-10 | `POST /api/backtest/run` **缺 `dsl` 字段仍返回 200 + 完整报告**（静默套用默认 DSL） | 调用方以为测的是自己的因子 | 🔴 待修 |
+| B-11 | 写死合成数据且无 `dataset_name` 入参的端点，属性级扫描查出 **4 个**（外部审计只报了 1 个）：`backtest_realistic` / `backtest_multi` / `alpha_simulate` / `alpha_optimize` | 返回的 Sharpe/风险报告全是随机游走 | 🔴 台账在案 |
+| B-12 | **6 条 API 路由零测试覆盖**：`/api/agent/run`、`/api/backtest/multi`、`/api/paper/{id}/pnl`、`/api/strategies/propose`、`/api/workflow/{generate,optimize}/stream` | `/strategies/propose` 是进审批队列的源头 | 🔴 台账在案 |
+| B-13 | `test_agent_fallback.py` 的两个意图识别用例 import 了不存在的模块级 `_detect_intent`（实为实例方法）→ `except(Exception)` → **无条件 skip** | 意图识别从未被测过 | ✅ 已修 |
+
+### B.3 已完成的整改
+- **审计 #4（目标波动不生效）✅** — `daily_trading_loop` 现按已实现组合收益估计年化波动
+  （权重 t-1 · 收益 t，避免同日自指），样本 <20 日则不缩放并告警；新增 `risk_vol_lookback`。
+  `PortfolioRiskGate.apply(..., port_vol_ann=)` 至此在实线路径上真正接通。
+- **审计 #9（静默吞异常）✅** — `strategy_builder` / `risk_gate` / `promotion_gate` 的
+  9 处裸 `except: pass` 全部改为记录 + 留痕；新增 **`verdict["degraded"]`** 字段：
+  任何一步降级产出都写进策略配置并持久化，审批者能看出"这份配置是完整评估的还是带窟窿的"。
+  策略门崩溃与策略门未过现在**明确区分**（`{"gate_error":..., "evaluated": False}`）。
+- **审计 #11（提示词数据集名不实）✅** — `_lc_agent` 的 `us_sectors`/`cn_ashares` 改为注册表实有名。
+- **上轮 Phase A 的漏网第三处 ✅** — `tool_run_gp_optimization` 的 per-run 数据集覆盖此前
+  加载失败时静默改用会话数据**且 `data_source` 不变**（前端徽章会说谎）。现改为 fail-closed；
+  显式允许合成时，来源标识同步降级为 `...+fallback(gp:X失败)`。
+
+### B.4 DEV_LESSONS 强制化（本 Phase 的主交付）
+新建 **`tests/test_lessons_enforced.py`**（20 passed + 1 xfail），把散文教训变成会失败的检查：
+
+| 教训 | 强制检查 |
+|------|----------|
+| §A | 禁 `assert status_code in (...,500)`（502/503 属设计内上游失败，放行）；禁 `if status_code:` 包住断言；禁整体 `except: pass`；禁 `assert True` / `assert x or True` |
+| §B | 门控开关必须存在于 config（防改名成死分支）；门控模块的 `except` 必须记录或抛出 |
+| §E | LLM 可见的提示词里出现的数据集名必须在注册表中真实存在 |
+| §F/§I | 无 opt-in 不得用合成数据；数据加载失败切源时**必须同步更新来源标识**；POST 与 SSE **两条**聊天路径都要带 `data_source` |
+| §H | conftest 每处 `settings` 覆盖必须有注释说明（每个覆盖 = 一个测试盲区）；**必须存在跑在发布配置下的测试** |
+| §K | 模块级可达性 **+ 参数级可达性**（关键形参必须有真实调用点传值 —— 上一版只查到模块粒度，`port_vol_ann` 正是从那底下走过去的） |
+| §O | 禁止夹具用固定 ±1% 构造 H/L |
+| §Q | 活库路径不得落在云同步目录 |
+| §S | 新增路由必须有测试或进债务台账；端点不得新增"写死合成数据"形态 |
+| §R | **元规则**：扫 DEV_LESSONS 标题，每条都要有检查或在 `EXEMPT` 写明为何无法自动化 —— 防止本文件重新退化成散文 |
+
+新建 **`tests/test_production_defaults.py`**（7 passed，标记 `production_defaults`）：
+不覆盖 settings，只读 `Settings` 类默认值（用户实际拿到的配置），断言"配置→行为"链是通的。
+门控默认值写成**显式快照表**，任何变动都必须有人改这张表 → 在 review 里被看见。
+
+**债务台账机制**：已知未修项记录在 `KNOWN_*` 集合里，配 `no_new_*` 用例防新增，
+外加一条 `xfail(strict=True)` 的 `test_debt_ledger_is_empty` —— 修完却忘删台账行会 XPASS 报错，
+强制台账与现实同步。
+
+### B.5 未修（已定性，需单独决策）
+B-1/B-2/B-5/B-6/B-7/B-8/B-10/B-11/B-12。其中 **B-7（行业中性从未生效）** 影响所有用
+`ind_neutralize` 的历史因子结论；**B-5/B-6** 需要确定"OOS 最小样本"的策略口径（拒绝 vs 标注）。
+
+---
+
 ## Phase 12 — 真实执行层：**moomoo** 纸交易 + 确定性执行工作流 + 风控 + paper-vs-real 建模
 
 **目标**：在 **moomoo**（= TR.2 的单一权威源/执行券商）纸交易上的完整**确定性**交易工作流；建模保真度差距。

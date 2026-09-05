@@ -18,6 +18,14 @@ def client():
         yield c
 
 
+def _ok(resp, expect: int = 200):
+    """DEV_LESSONS §S：断言具体状态码，不容忍 5xx，不用 if 包住断言。"""
+    assert resp.status_code == expect, (
+        f"期望 {expect} 实际 {resp.status_code}｜body={resp.text[:600]}"
+    )
+    return resp.json()
+
+
 class TestDatasetsList:
 
     def test_list_datasets_200(self, client):
@@ -38,13 +46,11 @@ class TestDatasetsList:
         assert body["total"] == len(body["datasets"])
 
     def test_list_datasets_required_fields(self, client):
-        resp = client.get("/api/datasets")
-        body = resp.json()
-        if body.get("datasets"):
-            ds = body["datasets"][0]
-            assert "name" in ds
-            # region 或 n_assets 至少有一个
-            assert "region" in ds or "n_assets" in ds or "provider" in ds
+        body = _ok(client.get("/api/datasets"))
+        assert body.get("datasets"), "注册表为空 —— 系统没有任何可用数据集"
+        for ds in body["datasets"]:
+            for f in ("name", "region", "provider", "n_assets"):
+                assert f in ds, f"数据集条目缺字段 {f}：{sorted(ds)}"
 
 
 class TestDatasetHealth:
@@ -52,14 +58,20 @@ class TestDatasetHealth:
     def test_health_known_dataset(self, client):
         """已知数据集应返回 200 或 202（网络不可用时也可接受）。"""
         resp = client.get("/api/datasets/us_tech_large/health", timeout=30)
-        assert resp.status_code in (200, 202, 404, 500)
+        # 无网络时允许 502/503（明确的上游失败），但**不得** 500（未处理异常）
+        assert resp.status_code in (200, 502, 503), (
+            f"健康检查返回 {resp.status_code}：{resp.text[:400]}"
+        )
 
     def test_health_nonexistent_dataset_returns_404(self, client):
         resp = client.get("/api/datasets/NONEXISTENT_DATASET_XYZ/health", timeout=10)
-        assert resp.status_code in (404, 400, 422, 500)
+        assert resp.status_code == 404, (
+            f"未知数据集必须 404，实际 {resp.status_code}：{resp.text[:300]}"
+        )
 
     def test_health_response_has_score_if_200(self, client):
         resp = client.get("/api/datasets/us_tech_large/health", timeout=30)
-        if resp.status_code == 200:
-            body = resp.json()
-            assert "overall_score" in body or "name" in body
+        if resp.status_code != 200:
+            pytest.skip(f"上游数据不可用（{resp.status_code}）")
+        body = resp.json()
+        assert "overall_score" in body and "name" in body, f"健康报告缺字段：{sorted(body)}"

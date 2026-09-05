@@ -17,6 +17,10 @@ promotion_gate.py — 分级晋级门 + 阈值配置化 + 实验模式（Phase T
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from dataclasses import dataclass
 from typing import List, Sequence, Tuple
 
@@ -42,7 +46,11 @@ class PromotionThresholds:
                 paper_min_sharpe=float(getattr(settings, "tr_paper_min_sharpe", -99.0)),
                 experiment_mode=bool(getattr(settings, "tr_experiment_mode", True)),
             )
-        except Exception:
+        except Exception as exc:
+            # 读配置失败就用类默认值 —— 但这意味着用户设的阈值**全部没生效**，
+            # 必须告警，否则门会用一套没人配过的阈值悄悄放行。
+            logger.error("[promotion_gate] 无法读取配置阈值，回退到类默认值"
+                         "（用户配置的阈值本轮不生效）: %s", exc)
             return cls()
 
 

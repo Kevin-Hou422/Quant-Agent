@@ -87,7 +87,9 @@ def _build_langchain_agent(
         factor_family: pass the value from tool_interpret_factor to bias GP mutations
           toward financially appropriate operators for this factor type.
           (e.g. "momentum", "reversion", "volatility", "liquidity", "composite")
-        dataset_name: optional real market dataset (e.g. "us_sectors", "cn_ashares").
+        dataset_name: optional real market dataset. Valid names come from the
+                      dataset registry (e.g. "us_tech_large", "us_broad_large").
+                      An unknown name is REJECTED, not silently downgraded.
           When omitted, uses the session-default dataset.
 
         Returns: best_dsl, metrics, generations_run, pool_top5, evolution_log.

@@ -224,3 +224,44 @@ Corwin-Schultz 从 H/L 反推价差，对这种"恒定日内区间"会估出 **~
      **留白正是出错的地方**——强制列出未覆盖会逼自己每次重算范围。
   4. **验证后追问一句**："如果这个结论是错的，最可能错在哪个我没看的地方？"然后去看那里。
 - **附带教训**：让正确性依赖用户的怀疑，本身就是分工错误；把上面 1、2 搬进测试，才是把职责搬回代码里。
+
+---
+
+## S. 教训不落成"会失败的检查"，复发率≈100%（本轮全量测试审计的结论）
+
+**触发**：用户问"这么多次全量审计为什么发现不了真问题，dev lesson 到底有没有用"。逐条量化后：
+18 条教训里只有 5 个测试文件引用过 DEV_LESSONS，其余以散文躺在 md 里；**凡是没变成检查的都复发了**——
+§K 写完当天在**参数层**复发（`port_vol_ann`），§R 写完当天在 **SSE 路径**复发，
+而且 §R 复发的同一个文件里还藏着第三处同类漏洞（`_tools.tool_run_gp_optimization` 的 per-run 静默降级）。
+
+### S.1 三个机制性盲区（不是"不够仔细"）
+
+| 盲区 | 具体形态 | 实测后果 |
+|------|----------|----------|
+| **断言写成了不会失败的形状** | `assert status_code in (200,400,422,500)`（恒真）、`if status_code==200:` 包住断言、`try/except Exception: pass` 包住整个测试体、`assert ... or True` | `/api/backtest/walk_forward` 合成路径**从来 100% 返回 500**，测试一直绿；`test_api_workflow.py` 全部 8 个用例的载荷违反 `ge=` 约束 → 端点**从未被调用过**；`test_backtest_edge_cases.py` 的 `_run_backtest` 少传一个必填参数，**每次都 TypeError**，被 `except: pass` 吃掉 |
+| **测试环境 ≠ 部署环境（我自己造的）** | `conftest._hermetic_run_flags` 覆盖 `settings`（不打网络、不起调度器） | **没有任何测试跑在发布配置下** → "函数写对了但默认值没打开"整类 bug 结构性不可见。门控函数单测全绿，线上四个硬门默认全不拦 |
+| **审计的检索单位错了** | 历次审计问的是"Phase X 做完没 / 模块接线没" | 真问题全在**比模块细**（一个参数、一个默认值、docstring 里的字符串、一处 `except: pass`）或**比模块粗**（横切属性：结果是否带来源、谁能调这个端点）的层级，按模块扫两头都看不见 |
+
+### S.2 单测能过、系统仍错的典型：`ind_neutralize`
+
+`tests/test_dsl_engine.py::test_ind_neutralize` 直接调 `fast_ops.ind_neutralize(x, groups)` —— **一直通过**。
+但走 parser→executor 的真实路径上，parser 把分组存进 `params["groups_node"]`，
+`CrossSectionalNode._compute` 读的却是 `params["groups"]` → 恒为 `None` → 退化成 `cs_zscore`。
+**行业中性从未生效**，且给不给 `sector` 输出逐位相同。兄弟算子 `sector_neutral` 读 `dataset["groups"]`，正常。
+> 单测测的是**函数**，bug 在**接线**。这就是 §R 的最纯形态。判别性用例（"给参数与不给参数的输出必须不同"）
+> 一行就能抓住它，而"输出均值≈0"这种弱断言恰好被退化版满足。
+
+### S.3 规则（已落成 `tests/test_lessons_enforced.py`，缺一条即红）
+
+1. **禁恒真断言**：不得容忍 `500`（`502/503` 是设计内的上游失败，允许）；不得把断言藏在 `if status_code` 里；
+   不得整体 `except: pass`；不得 `assert True` / `assert x or True`。
+2. **禁静默降级**：门控/风控模块的 `except` 必须记录或抛出；数据加载失败切换数据源时必须**同步更新来源标识**。
+3. **参数级可达性**：影响资金/风险的关键形参，必须有真实调用点传值（§K 从模块粒度下沉到参数粒度）。
+4. **提示词里的标识符必须真实存在**：LLM 可见的数据集名要在注册表里查得到（否则 LLM 照着调用→失败→走降级）。
+5. **夹具真实性**：禁止 `high=close*1.01` 这种固定 ±1% 日内区间（§O）。
+6. **必须有跑在发布配置下的测试**：`tests/test_production_defaults.py`，标记 `production_defaults`。
+   门控默认值写成显式快照表，任何变动都得有人改这张表 → 在 review 里被看见。
+7. **每条教训都必须有对应检查**：`test_every_lesson_has_an_enforced_check` 扫 DEV_LESSONS 的标题，
+   缺检查又不在 `EXEMPT`（须写明为何无法自动化）即失败。**这条是元规则，防止本文件重新退化成散文。**
+
+- **判据**：写完一条教训问自己——"它能让哪个测试变红？"答不上来，就还没写完。

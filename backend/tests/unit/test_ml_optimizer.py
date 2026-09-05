@@ -27,8 +27,10 @@ def _make_dataset(n_days: int = 80, n_tickers: int = 8, seed: int = 0):
         rng.integers(500_000, 2_000_000, (n_days, n_tickers)).astype(float),
         index=dates, columns=tickers,
     )
-    high  = close * 1.01
-    low   = close * 0.99
+    # DEV_LESSONS §O：固定 ±1% 的日内区间会让 Corwin-Schultz 价差估到 ~54bps
+    # （真实约 8.5bps），足以把有真实 alpha 的因子判死。必须用随机幅度。
+    high  = close * (1 + rng.uniform(0, 0.006, close.shape))
+    low   = close * (1 - rng.uniform(0, 0.006, close.shape))
     open_ = close * (1 + rng.normal(0, 0.005, (n_days, n_tickers)))
     vwap  = (high + low + close) / 3
     return {

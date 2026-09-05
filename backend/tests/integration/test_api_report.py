@@ -41,10 +41,14 @@ class TestReportQuery:
 
     def test_query_limit_param_honored(self, client):
         resp = client.get("/api/report/query", params={"limit": 2})
+        assert resp.status_code == 200, resp.text[:300]
         body = resp.json()
-        if "records" in body:
-            assert len(body["records"]) <= 2
+        assert "records" in body, f"缺 records：{sorted(body)}"
+        assert len(body["records"]) <= 2
 
     def test_query_invalid_limit_rejected(self, client):
+        """limit=9999 超出上限必须被拒 —— 否则等于允许全表拉取。"""
         resp = client.get("/api/report/query", params={"limit": 9999})
-        assert resp.status_code in (200, 422)
+        assert resp.status_code == 422, (
+            f"超限 limit 未被拒绝（{resp.status_code}）—— 查询上限形同虚设"
+        )

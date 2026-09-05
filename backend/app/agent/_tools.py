@@ -84,6 +84,7 @@ class QuantTools:
         # 数据来源标识（"real:<name>" / "synthetic"）——必须能被上层与前端看到，
         # 否则用户无法分辨屏幕上的 Sharpe/OOS 是不是随机数（外部审计打中的正是这点）。
         self._data_source = "unknown"
+        self._allow_synthetic = bool(allow_synthetic)
 
         if dataset_name:
             try:
@@ -264,8 +265,20 @@ class QuantTools:
                 )
                 logger.info("GP: using real dataset '%s' [%s→%s]", dataset_name, dataset_start, dataset_end)
             except Exception as exc:
-                logger.warning("GP real dataset '%s' failed: %s — using session data", dataset_name, exc)
+                # **fail-closed**（与 __init__ 同一纪律，此前只在构造处做了，这条
+                # per-run 路径漏掉了）：真实数据集加载失败时静默改用会话数据，
+                # 而 data_source 仍显示原来的来源 —— 前端徽章会**说谎**。
+                if not self._allow_synthetic:
+                    raise RuntimeError(
+                        f"GP 指定的数据集 '{dataset_name}' 加载失败：{exc}。"
+                        f"拒绝静默改用会话数据（那会让本次 GP 的结论对不上它自称的数据源）。"
+                        f"可用数据集见 dataset_registry；如确需离线合成，请显式 allow_synthetic=True。"
+                    ) from exc
+                logger.warning("GP real dataset '%s' failed: %s — 显式允许，降级为会话数据",
+                               dataset_name, exc)
                 gp_is, gp_oos = self._is_data, self._oos_data
+                # 来源标识必须跟着降级走，否则展示层会继续声称是真实数据
+                self._data_source = f"{self._data_source}+fallback(gp:{dataset_name}失败)"
         else:
             gp_is, gp_oos = self._is_data, self._oos_data
 

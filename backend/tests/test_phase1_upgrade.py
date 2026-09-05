@@ -157,7 +157,12 @@ class TestDataPartitioner:
         train1 = part.train()["close"].copy()
         part.train()["close"].iloc[0, 0] = -9999.0
         train2 = part.train()["close"]
-        assert train2.iloc[0, 0] != -9999.0 or True  # 只要不崩溃即可
+        # 契约必须明确：train() 每次返回**独立副本**，外部改动不得污染分区内部状态。
+        # 原写法 `... or True` 恒真 —— 分区返回同一引用（可被外部改坏）也能通过。
+        assert train2.iloc[0, 0] != -9999.0, (
+            "part.train() 返回的是内部对象的引用，外部修改会污染后续取用 —— "
+            "回测数据可被无意改写"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -305,9 +305,38 @@ class DailyTradingLoop:
         if "sector" in dataset:
             try:
                 sectors = dataset["sector"].iloc[-1]
-            except Exception:
+            except Exception as exc:
+                logger.warning("[portfolio] 行业标签读取失败，行业集中度约束本轮不生效: %s", exc)
                 sectors = None
-        weights, risk_report = PortfolioRiskGate(limits).apply(weights, sectors=sectors)
+
+        # 目标波动缩放需要**当前组合的年化波动估计**。此前调用点不传 port_vol_ann，
+        # 于是 risk_target_vol_ann 配了也永远不生效（vol_scalar 恒为 1.0）——
+        # 配置写了但实线路径没接通（审计 #4 / DEV_LESSONS §K 的参数级形态）。
+        port_vol_ann = None
+        if limits.target_vol_ann:
+            try:
+                # 用**已实现**的组合日收益估计波动：权重(t-1) · 收益(t)，避免用当日权重看当日收益。
+                rets = dataset["close"].pct_change().reindex(columns=weights.columns)
+                port_ret = (weights.shift(1) * rets).sum(axis=1).dropna()
+                lookback = int(getattr(settings, "risk_vol_lookback", 60))
+                sample = port_ret.tail(lookback)
+                if len(sample) >= 20:
+                    port_vol_ann = float(sample.std(ddof=1) * np.sqrt(252.0))
+                    if not np.isfinite(port_vol_ann) or port_vol_ann <= 1e-9:
+                        port_vol_ann = None
+                if port_vol_ann is None:
+                    logger.warning(
+                        "[portfolio] PM.5 目标波动已配置(%.3f)但样本不足(%d<20)，本轮不缩放",
+                        limits.target_vol_ann, len(sample))
+                else:
+                    logger.info("[portfolio] PM.5 目标波动 %.3f / 实际估计 %.3f",
+                                limits.target_vol_ann, port_vol_ann)
+            except Exception as exc:
+                logger.error("[portfolio] PM.5 组合波动估计失败，目标波动本轮不生效: %s", exc)
+                port_vol_ann = None
+
+        weights, risk_report = PortfolioRiskGate(limits).apply(
+            weights, sectors=sectors, port_vol_ann=port_vol_ann)
         composite = composite.reindex(columns=weights.columns)
         logger.info("[portfolio] PM.5 风控：%s", risk_report.to_dict())
 

@@ -239,7 +239,12 @@ class TestScheduler:
             "app.db.alpha_store.AlphaStore",
             lambda *a, **k: store,
         )
-        sched_mod.daily_monitor_job()                  # 不抛即通过
+        # "不抛即通过"太弱：job 什么都不做也算通过。断言它**真的**处理了这条 alpha。
+        sched_mod.daily_monitor_job()
+        rec = store.get_by_id(aid)
+        assert rec is not None, "monitor job 后 alpha 记录消失"
+        ics = store.get_ic_history(aid)
+        assert ics, "daily_monitor_job 执行后没有任何 IC 记录 —— job 实际是空转"
 
 
 # ===========================================================================

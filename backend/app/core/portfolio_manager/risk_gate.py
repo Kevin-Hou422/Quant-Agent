@@ -159,7 +159,9 @@ class PortfolioRiskGate:
         try:
             from app.core.data_engine.sector_mapper import get_sector_code
             return pd.Series({c: get_sector_code(c) for c in cols})
-        except Exception:
+        except Exception as exc:
+            # 静默返回 None → 行业集中度约束**整段失效**且无人知晓。
+            logger.warning("[risk_gate] 行业映射不可用，行业集中度约束本轮不生效: %s", exc)
             return None
 
     @staticmethod
@@ -182,8 +184,11 @@ class PortfolioRiskGate:
                 from app.core.backtest_engine.transaction_cost import project_to_capped_l1
                 cap_vec = np.full(a.shape[0], cap, dtype=float)
                 a = project_to_capped_l1(a.reshape(1, -1), cap_vec, target=target).reshape(-1)
-            except Exception:
-                a = np.clip(a, -cap, cap)          # 兜底：退回硬截断
+            except Exception as exc:
+                # 退回硬截断会把被削的敞口变成现金（小 universe 下白白空仓），
+                # 与 water-filling 的账本不同 —— 必须留痕。
+                logger.warning("[risk_gate] water-filling 投影失败，退回硬截断（会留现金）: %s", exc)
+                a = np.clip(a, -cap, cap)
         # 3. 行业集中度（NAV 比例上限，绝对权重 = max_sector_weight × max_gross）。
         #    只把超限行业缩到上限、不再把 gross 拉回——因为多行业同时 ≤ 上限时 gross 可能达不到满仓
         #    （如 2 个行业各 ≤30%），真人 PM 也会宁可欠配也不违反集中度。

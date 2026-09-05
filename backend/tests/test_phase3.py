@@ -37,7 +37,10 @@ class TestModuleReorg:
         from app.core.backtest_engine.realistic_backtester import RealisticBacktester
         from app.core.ml_engine.alpha_optimizer import AlphaOptimizer
         from app.core.ml_engine.alpha_evaluator import AlphaEvaluator
-        assert True
+        # `assert True` 恒真。导入测试的真实契约是：这些符号确实存在且可实例化。
+        for cls in (SimulationConfig, SignalProcessor, DataPartitioner,
+                    RealisticBacktester, AlphaOptimizer, AlphaEvaluator):
+            assert callable(cls), f"{cls!r} 不可调用"
 
 
 # ===========================================================================

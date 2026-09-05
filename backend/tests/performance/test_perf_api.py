@@ -40,7 +40,7 @@ class TestAPISequentialPerformance:
         start = time.perf_counter()
         resp = client.post("/api/backtest/run", json=SMALL_BACKTEST, timeout=60)
         elapsed = time.perf_counter() - start
-        assert resp.status_code in (200, 400, 422, 500)
+        assert resp.status_code < 500, f"性能用例期间端点崩溃：{resp.status_code} {resp.text[:200]}"
         assert elapsed < 30.0, f"Backtest took {elapsed:.1f}s (limit 30s)"
 
     def test_datasets_list_under_2s(self, client):
@@ -81,7 +81,8 @@ class TestAPIConcurrentPerformance:
         elapsed = time.perf_counter() - start
 
         assert len(errors) == 0, f"Errors: {errors}"
-        assert all(s in (200, 400, 422, 500) for s in results)
+        assert len(results) == 3, f"并发 3 个请求只收到 {len(results)} 个响应"
+        assert all(s < 500 for s in results), f"并发下端点崩溃：{results}"
         assert elapsed < 90.0, f"Concurrent test took {elapsed:.1f}s"
 
     def test_5_rapid_chat_requests_no_timeout(self, client):
@@ -91,4 +92,4 @@ class TestAPIConcurrentPerformance:
                 "message": f"test message {i}",
                 "session_id": f"perf-test-{i}",
             }, timeout=30)
-            assert resp.status_code in (200, 500)
+            assert resp.status_code < 500, f"性能用例期间端点崩溃：{resp.status_code} {resp.text[:200]}"

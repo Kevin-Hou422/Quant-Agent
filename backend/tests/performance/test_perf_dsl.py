@@ -102,7 +102,9 @@ class TestDSLBatchPerformance:
         "rank(ts_std(close, 20))",
         "rank(close - ts_mean(close, 10))",
         "zscore(ts_delta(log(volume), 3))",
-        "rank(ts_momentum(close, 10))",
+        # 原写 "ts_momentum" —— 该算子在 DSL 中**不存在**，解析必失败；
+        # 旧实现的 except:pass 把它藏掉，基准长期只真跑了 9 个 DSL。
+        "rank(ts_momentum_decay(close, 10))",
         "rank(ts_delta(log(close / open), 5))",
         "rank(ts_max(close, 10) - ts_min(close, 10))",
     ]
@@ -116,12 +118,17 @@ class TestDSLBatchPerformance:
         executor = Executor()
 
         start = time.perf_counter()
+        failures = []
         for dsl in self.DSLS:
             try:
                 node = parser.parse(dsl)
                 executor.run(node, data)
-            except Exception:
-                pass
+            except Exception as e:
+                failures.append(f"{dsl}: {type(e).__name__}: {e}")
         elapsed = time.perf_counter() - start
 
+        # 原实现 `except: pass` → 10 个 DSL 全部瞬间失败也会通过（elapsed 极小）。
+        # 性能用例必须先保证**真的跑了**，再谈耗时。
+        assert not failures, ("以下 DSL 执行失败（性能数字因此无意义）：\n  "
+                               + "\n  ".join(failures))
         assert elapsed < 10.0, f"Batch 10 DSLs took {elapsed:.2f}s (limit 10s)"

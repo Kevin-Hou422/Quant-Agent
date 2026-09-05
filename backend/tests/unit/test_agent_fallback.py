@@ -26,8 +26,10 @@ def _make_dataset(n_days: int = 80, n_tickers: int = 10, seed: int = 0) -> dict:
         rng.integers(500_000, 2_000_000, (n_days, n_tickers)).astype(float),
         index=dates, columns=tickers,
     )
-    high  = close * 1.01
-    low   = close * 0.99
+    # DEV_LESSONS §O：固定 ±1% 的日内区间会让 Corwin-Schultz 价差估到 ~54bps
+    # （真实约 8.5bps），足以把有真实 alpha 的因子判死。必须用随机幅度。
+    high  = close * (1 + rng.uniform(0, 0.006, close.shape))
+    low   = close * (1 - rng.uniform(0, 0.006, close.shape))
     open_ = close * (1 + rng.normal(0, 0.005, (n_days, n_tickers)))
     vwap  = (high + low + close) / 3
     return {
@@ -120,25 +122,22 @@ class TestIntentDetection:
         """消息包含 'optimize this' 或 DSL 引用时，应检测为 workflow_b。"""
         from app.agent._agent import QuantAgent
 
-        # 使用最小化配置的 agent（不初始化 LLM）
-        try:
-            data = _make_dataset()
-            n = len(next(iter(data.values())))
-            n_is = int(n * 0.7)
-            is_data  = {k: v.iloc[:n_is]  for k, v in data.items()}
-            oos_data = {k: v.iloc[n_is:]  for k, v in data.items()}
-            from app.agent._tools import QuantTools
-            tools = QuantTools(is_data=is_data, oos_data=oos_data)
-            from app.agent._agent import _detect_intent
-            intent = _detect_intent("Optimize this: rank(ts_delta(log(close), 5))")
-            assert intent in ("workflow_b", "optimize")
-        except (ImportError, Exception):
-            pytest.skip("_detect_intent not directly importable")
+        # 原实现把整个方法体包进 try/except(Exception) → pytest.skip：
+        # QuantTools(is_data=..., oos_data=...) 这两个形参根本不存在 → TypeError
+        # → 无条件 skip。该用例从未真正调用过 _detect_intent。
+        # _detect_intent 是 QuantAgent 的**实例方法** (self, message, session_id)，
+        # 不是模块级函数 —— 原用例 import 模块级名字必然 ImportError，然后被
+        # except(Exception)→skip 吞掉，从未真正执行过。
+        from app.agent.quant_agent import QuantAgent
+        agent = QuantAgent(n_tickers=8, n_days=80, api_key="", allow_synthetic=True)
+        intent, dsl_hint = agent._detect_intent(
+            "Optimize this: rank(ts_delta(log(close), 5))", "s1")
+        assert intent == "workflow_b", f"含显式 DSL 应判为 workflow_b，实际 {intent!r}"
+        assert dsl_hint and "rank(" in dsl_hint, f"未抽出 DSL：{dsl_hint!r}"
 
     def test_generate_intent_detected(self):
-        try:
-            from app.agent._agent import _detect_intent
-            intent = _detect_intent("Generate alpha for momentum factor")
-            assert intent in ("workflow_a", "generate")
-        except (ImportError, Exception):
-            pytest.skip("_detect_intent not directly importable")
+        from app.agent.quant_agent import QuantAgent
+        agent = QuantAgent(n_tickers=8, n_days=80, api_key="", allow_synthetic=True)
+        intent, dsl_hint = agent._detect_intent("Generate alpha for momentum factor", "s2")
+        assert intent == "workflow_a", f"纯自然语言应判为 workflow_a，实际 {intent!r}"
+        assert dsl_hint is None, f"无 DSL 时不应抽出 dsl_hint：{dsl_hint!r}"
