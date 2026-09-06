@@ -195,6 +195,10 @@ class AgentRunResponse(BaseModel):
     final_metrics: Dict[str, Any]
     n_changes: int
     summary: str
+    # `final_dsl=""` 此前既可能表示"所有候选都没过 IC-IR 门"，也可能表示
+    # "agent 内部出错返回了空 log" —— 调用方无从分辨。显式给出结论与来源。
+    passed: bool = False
+    data_source: str = "unknown"
 
 
 class GPEvolveRequest(BaseModel):
@@ -313,6 +317,9 @@ class MultiDatasetBacktestRequest(BaseModel):
 
 class MultiDatasetBacktestResponse(BaseModel):
     dsl:               str
+    # 结果必须自报来源（与 realistic/simulate/optimize 同一纪律）。
+    # 该端点默认走真实数据（use_synthetic=False），但响应此前无从分辨实际用的是哪种。
+    data_source:       str = "unknown"
     aggregated_sharpe: float
     aggregation_mode:  str
     datasets_passed:   int
@@ -367,6 +374,8 @@ def agent_run(
         raise HTTPException(status_code=500, detail=str(exc))
 
     return AgentRunResponse(
+        passed       = bool(log.final_dsl),
+        data_source  = _data_source_label(req.dataset_name),
         hypothesis   = log.hypothesis,
         initial_dsls = log.initial_dsls or [],
         final_dsl    = log.final_dsl,
@@ -1681,8 +1690,10 @@ def backtest_multi(req: MultiDatasetBacktestRequest) -> MultiDatasetBacktestResp
                 ds = load_registry_dataset(ds_name, start=req.start, end=req.end)
             except Exception as exc:
                 logger.error("Failed to load dataset '%s': %s", ds_name, exc)
+                # 上游数据源不可用 → 502，与 _resolve_dataset 同口径；
+                # 500 会被误读成本服务的 bug，也让测试无法区分"网络断"与"代码坏"。
                 raise HTTPException(
-                    status_code=500,
+                    status_code=502,
                     detail=f"Failed to load dataset '{ds_name}': {exc}",
                 )
 
@@ -1728,6 +1739,8 @@ def backtest_multi(req: MultiDatasetBacktestRequest) -> MultiDatasetBacktestResp
 
     return MultiDatasetBacktestResponse(
         dsl               = req.dsl,
+        data_source       = ("synthetic" if req.use_synthetic
+                             else "real:" + ",".join(req.datasets)),
         aggregated_sharpe = result.aggregated_sharpe,
         aggregation_mode  = result.aggregation_mode,
         datasets_passed   = result.datasets_passed,
@@ -2536,8 +2549,10 @@ async def workflow_optimize_stream(
                 reasoning    = result.explanation,
                 status       = "candidate",
             ))
-        except Exception:
-            pass
+        except Exception as exc:
+            # 静默吞掉 = 流式跑完了但结果**没落库**，用户以为存下了。
+            logger.error("[workflow/stream] 结果保存失败，本次产出未入库: %s", exc)
+            resp_dict["persist_error"] = str(exc)
 
         return resp_dict
 

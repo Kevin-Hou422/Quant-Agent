@@ -460,9 +460,35 @@ AST 扫描全部 `tests/`，按"这个断言可能失败吗"分类，查出 **90
 外加一条 `xfail(strict=True)` 的 `test_debt_ledger_is_empty` —— 修完却忘删台账行会 XPASS 报错，
 强制台账与现实同步。
 
-### B.5 未修（已定性，需单独决策）
-B-1/B-2/B-5/B-6/B-7/B-8/B-10/B-11/B-12。其中 **B-7（行业中性从未生效）** 影响所有用
-`ind_neutralize` 的历史因子结论；**B-5/B-6** 需要确定"OOS 最小样本"的策略口径（拒绝 vs 标注）。
+### B.5 第三批整改（2026-09-06，收尾）✅
+
+- **`backtest_multi` ✅** — 复核后**推翻上一版定性**：它有显式 `use_synthetic: bool = False`
+  开关、默认走真实数据，**不是**"写死合成"。是检查器只认 `dataset_name` 一个字段名造成的
+  误报，判据已改为"有无显式的真实/合成选择开关"。真实缺陷只有两处，已修：
+  响应新增 `data_source`；数据集加载失败由 **500 改 502**（与 `_resolve_dataset` 同口径）。
+- **5 条零覆盖路由全部补齐 ✅** — 新建 `tests/integration/test_api_uncovered_routes.py`(14)：
+  `/api/agent/run`、`/api/backtest/multi`、`/api/paper/{id}/pnl`、
+  `/api/workflow/{generate,optimize}/stream`。其中 SSE 两条专门断言
+  **流式与非流式同一样本充足性口径**（防"只修 POST 不修 SSE"的 §R 复发）。
+- **`/api/agent/run` 结论歧义 ✅** — `final_dsl=""` 此前既可能是"所有候选没过 IC-IR 门"
+  也可能是"agent 出错返回空 log"，调用方无从分辨。新增 `passed: bool` + `data_source`。
+- **SSE workflow 静默不落库 ✅** — 存 alpha 的 `except Exception: pass` 改为记录错误并在
+  响应里带 `persist_error`：跑完却没入库不能悄无声息。
+- **债务台账已清空** — `KNOWN_UNTESTED_ROUTES` / `KNOWN_SYNTHETIC_ONLY_ENDPOINTS` 均为空，
+  `test_debt_ledger_is_empty` 由 `xfail(strict)` 转为**必须通过**的正向断言；
+  新增未覆盖路由或新增"写死合成"端点都会让它变红。
+
+### B.6 仍未处理（需你单独决策，非技术阻塞）
+
+- **门控默认值**：`tr_enforce_active_gate` / `risk_halt_on_drawdown` / `pm_strategy_gate_block`
+  三个硬门默认全关。其中 `tr_enforce_active_gate` 的代码注释写的阻塞理由
+  （"ic_history 尚未分离回放/前向"）**已随 Phase 11 消失**，属于"门修好了但没打开"。
+- **fitness = OOS Sharpe 的选择性挖掘**：本轮取得了可复现证据 —— 30 天 Validate 段上
+  按 OOS Sharpe 排序本就是在噪声里选优（置空指标后"最优"直接退化为裸字段 `open`）。
+  这是设计层问题，需单独规划。
+- 其余外部审计条目：OOS 段状态不连续（#2）、执行层仅 PaperBroker（#8, Phase 12）、
+  容量约束只限持仓不限单日成交（#7）、研究路径健康检查不 fail-closed（#5）、
+  API 无认证（#10）、`pandas_market_calendars` 未声明依赖（#6）。
 
 ---
 

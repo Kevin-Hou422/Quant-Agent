@@ -61,12 +61,20 @@ def daily_trading_job() -> None:
     - 摄取走增量：PIT 空则回填，之后每天只拉新 bar；无新 bar 就不交易。
     """
     from app.tasks.daily_ingest import run_daily_pipeline
-    from app.core.data_engine.market_calendar import is_trading_day
+    from app.core.data_engine.market_calendar import is_trading_day, CalendarUnavailable
     from app.config import settings
     import pandas as _pd
 
     today = _pd.Timestamp.utcnow().tz_localize(None).normalize()
-    if not is_trading_day(today):
+    try:
+        trading = is_trading_day(today)
+    except CalendarUnavailable as exc:
+        # **判不出今天是不是交易日 → 不交易**（fail-closed）。
+        # 让异常直接冒出去会变成一条不透明的 APScheduler job error；
+        # 而退回工作日启发式又会在休市日下单。两者都不可接受。
+        logger.error("[scheduler] 交易日历不可用 → 本日**不交易**（fail-closed）: %s", exc)
+        return
+    if not trading:
         logger.info("[scheduler] %s 非美股交易日 → 跳过每日摄取/交易", today.date())
         return
     out = run_daily_pipeline(settings.paper_dataset, settings.paper_start, incremental=True)

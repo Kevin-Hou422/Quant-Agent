@@ -31,13 +31,43 @@ def _to_ts(d: DateLike) -> pd.Timestamp:
     return ts.tz_localize(None) if ts.tzinfo is not None else ts
 
 
+class CalendarUnavailable(RuntimeError):
+    """交易日历不可用，且未显式允许工作日启发式。"""
+
+
 def _calendar(exchange: str = _DEFAULT_EXCHANGE):
-    """返回日历对象；库缺失时返回 None（调用方退回工作日启发式并告警）。"""
+    """
+    返回日历对象。**fail-closed**：库缺失时抛 CalendarUnavailable，
+    除非显式设置 `calendar_allow_heuristic=true`（此时返回 None，调用方退回
+    工作日启发式并 **ERROR 级**告警）。
+
+    为什么不再默认静默降级：本模块决定"今天是不是交易日"、"收盘时刻是几点"，
+    退回 `pd.bdate_range` 会把**节假日当成交易日**（实测 7/4 独立日、12/25 圣诞
+    都被判为交易日），并拿不到 DST/半日市收盘时间 —— 于是调度会在休市日空转、
+    "前向数据是否缺失"的判断失真，而**没有任何报错**。
+    该依赖此前还未在 requirements.txt 中声明，开发机恰好装了、CI 干净环境没有，
+    表现为 CI 上 4 个日历用例失败（外部审计 #6）。
+    """
     try:
         import pandas_market_calendars as mcal
         return mcal.get_calendar(exchange)
     except Exception as exc:      # pragma: no cover - 依赖缺失路径
-        logger.warning("[market_calendar] 日历库不可用（退回工作日启发式）: %s", exc)
+        allow = False
+        try:
+            from app.config import settings
+            allow = bool(getattr(settings, "calendar_allow_heuristic", False))
+        except Exception:
+            allow = False
+        if not allow:
+            raise CalendarUnavailable(
+                f"交易日历不可用：{exc}。"
+                f"拒绝退回工作日启发式 —— 那会把节假日当交易日、拿不到 DST/半日市收盘时间，"
+                f"且不会报错。请安装 pandas_market_calendars（已在 requirements.txt 声明）；"
+                f"如确需离线启发式，显式设置 CALENDAR_ALLOW_HEURISTIC=true。"
+            ) from exc
+        logger.error(
+            "[market_calendar] 日历库不可用，**已显式允许**退回工作日启发式 —— "
+            "节假日将被当作交易日，收盘时刻不含 DST/半日市: %s", exc)
         return None
 
 

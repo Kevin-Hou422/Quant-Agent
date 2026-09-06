@@ -421,6 +421,44 @@ class TestLessonH_TestConfigIsolation:
 # §Q 活的 SQLite 不得放在云同步目录
 # ===========================================================================
 
+class TestLessonC_ImportedDepsMustBeDeclared:
+    """
+    §C 的具体形态（外部审计 #6）：`market_calendar.py` 需要 pandas_market_calendars，
+    但 requirements.txt 从未声明它。缺失时**静默退回** pd.bdate_range —— 节假日被
+    当成交易日、拿不到 DST/半日市收盘时间，且没有任何报错。开发机恰好装了，
+    换台机器就悄悄错。
+    """
+
+    #: 会**静默降级**的第三方依赖（不是硬 import，缺了不报错）→ 必须显式声明
+    SILENT_FALLBACK_DEPS = {
+        "pandas_market_calendars": "app/core/data_engine/market_calendar.py",
+    }
+
+    def test_silently_optional_deps_are_declared_in_requirements(self):
+        req = (BACKEND / "requirements.txt")
+        assert req.exists(), "requirements.txt 不存在"
+        declared = _src(req).replace("-", "_").lower()
+        missing = [
+            f"{mod}（{where}）" for mod, where in self.SILENT_FALLBACK_DEPS.items()
+            if mod.replace("-", "_").lower() not in declared
+        ]
+        assert not missing, (
+            "以下依赖会在缺失时**静默降级**（不报错、结果悄悄变错），"
+            "却未在 requirements.txt 中声明：\n  " + "\n  ".join(missing)
+        )
+
+    def test_calendar_is_actually_using_the_real_exchange_calendar(self):
+        """
+        不只查声明，还要查**运行时真的用上了** —— 独立日（7/4）必须不是交易日。
+        退回 pd.bdate_range 时它是周中工作日，会被判为交易日。
+        """
+        from app.core.data_engine.market_calendar import is_trading_day
+        assert is_trading_day("2024-07-03") is True, "7/3 应为交易日"
+        assert is_trading_day("2024-07-04") is False, (
+            "独立日被判为交易日 —— 日历库未生效，已退回工作日启发式"
+        )
+
+
 class TestLessonQ_LiveDbNotInCloudSync:
 
     def test_default_db_path_is_not_in_cloud_sync_dir(self):
@@ -448,22 +486,19 @@ class TestLessonS_AuditUnitIsNotTheModule:
     #   1) 只许缩短，不许加长（新增即视为回归，由 *_no_new_* 用例把关）；
     #   2) 台账非空这件事本身另有一条 xfail(strict) 红线盯着，修完必须删行；
     #   3) 每条必须写明**后果**，不许只写位置。
-    KNOWN_UNTESTED_ROUTES = {
-        # ✅ /api/strategies/propose 已补覆盖（test_phase_pm7_endpoints.py），已从台账移除
-        "/api/agent/run":                 "自主 agent 入口零覆盖：跑通与否无人知晓",
-        "/api/backtest/multi":            "多数据集回测零覆盖",
-        "/api/paper/{alpha_id}/pnl":      "paper 账本 PnL 读取零覆盖",
-        "/api/workflow/generate/stream":  "SSE 版本零覆盖（非流式版有覆盖，§R 同型风险）",
-        "/api/workflow/optimize/stream":  "同上",
-    }
+    #: ✅ 全部已补覆盖（test_api_uncovered_routes.py + test_phase_pm7_endpoints.py）。
+    #: 台账清空后，test_debt_ledger_is_empty 的 xfail(strict) 会转为 XPASS 报错，
+    #: 提醒把该 xfail 标记一并删除 —— 这正是台账机制的设计意图。
+    KNOWN_UNTESTED_ROUTES: dict = {}
     UNCOVERED_BY_DESIGN = {
         "/api/datasets/{name}/refresh":   "需真实网络拉数，离线测试不覆盖",
     }
     #: 写死合成数据且无 dataset_name 入参的端点（外部审计只报了 realistic 一个，
     #: 属性级扫描发现是 4 个）。后果：返回的 Sharpe/风险报告全是随机游走。
-    #: ✅ realistic / simulate / optimize 已加 dataset_name + data_source（B-11 已修）。
-    #: backtest_multi 仍写死合成数据 —— 它按 dataset **名字列表**取数，改法与其余三个不同。
-    KNOWN_SYNTHETIC_ONLY_ENDPOINTS = {"backtest_multi"}
+    #: ✅ B-11 已全部修完：realistic / simulate / optimize 加了 dataset_name + data_source；
+    #: backtest_multi 经复核**本就不是**"写死合成"（有显式 use_synthetic 开关，默认 False），
+    #: 是上一版检查器只认 dataset_name 这一个字段名造成的误报 —— 已修正判据。
+    KNOWN_SYNTHETIC_ONLY_ENDPOINTS: set = set()
 
     def _untested_routes(self):
         from app.main import app
@@ -492,7 +527,10 @@ class TestLessonS_AuditUnitIsNotTheModule:
             decs = " ".join(ast.unparse(d) for d in fn.decorator_list)
             if "router." not in decs:
                 continue
-            if "dataset_name" not in body_src:
+            # 判据是"**有没有显式的真实/合成选择开关**"，不是某个特定字段名。
+            # `dataset_name`（置空=合成）与 `use_synthetic`（True=合成）都是合法的
+            # 显式 opt-in 形态；只认前者会把 backtest_multi 误判成"写死合成"。
+            if not any(k in body_src for k in ("dataset_name", "use_synthetic", "req.datasets")):
                 out.append(fn.name)
         return sorted(out)
 
@@ -515,14 +553,11 @@ class TestLessonS_AuditUnitIsNotTheModule:
             + "\n  ".join(new)
         )
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "已知未修：5 条路由零覆盖 + backtest_multi 写死合成数据。"
-        "修完后请删除对应台账行；本用例转绿即提示台账已过期。"
-    ))
     def test_debt_ledger_is_empty(self):
         """
-        台账红线：本用例**必须**保持 xfail。一旦有人修完问题却忘了删台账行，
-        它会变成 XPASS(strict) → 失败，强制台账与现实同步。
+        台账红线。曾以 xfail(strict) 标记"已知未修"；现台账已清空，
+        改为**必须通过**的正向断言：任何新增的未覆盖路由或写死合成端点都会让它变红。
+        （若将来又要挂账，重新加回 xfail(strict) 并在上面的 KNOWN_* 里写明后果。）
         """
         assert not self._untested_routes(), self._untested_routes()
         assert not self._synthetic_only_endpoints(), self._synthetic_only_endpoints()

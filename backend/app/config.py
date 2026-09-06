@@ -112,6 +112,7 @@ class Settings(BaseSettings):
     risk_max_sector_weight:  float = 0.30    # 单行业 ≤ 30% NAV
     risk_target_vol_ann:     float = 0.0     # 目标年化波动（0=关闭 vol targeting）
     risk_vol_lookback:       int   = 60      # 估计组合已实现波动的回看交易日数（≥20 才缩放）
+
     risk_max_drawdown:       float = 0.20    # 回撤熔断阈值
     risk_halt_on_drawdown:   bool  = False   # 熔断触发是否停交易（默认否：先记录告警）
 
@@ -121,6 +122,11 @@ class Settings(BaseSettings):
     price_source: str = "yahoo"               # yahoo | moomoo
     moomoo_host:  str = "127.0.0.1"           # OpenD 网关地址
     moomoo_port:  int = 11111                 # OpenD API 端口
+
+    # ── 交易日历（Phase 11.2）────────────────────────────────────────────
+    # 库缺失时是否允许退回工作日启发式。默认 False（fail-closed）：静默降级会把
+    # 节假日当交易日、拿不到 DST/半日市收盘时间，且**不报错**。见 market_calendar。
+    calendar_allow_heuristic: bool = False
 
     # ── Point-in-Time 数据存储（Task 8.1）────────────────────────────────
     # 每日摄取通过健康门的数据按 (field, date, as_of) 追加进此目录，历史只追加不修改

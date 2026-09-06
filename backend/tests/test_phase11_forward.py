@@ -10,6 +10,7 @@ test_phase11_forward.py — Phase 11：交易日历 + 回放/前向分离
 """
 
 from __future__ import annotations
+import pytest
 
 import numpy as np
 import pandas as pd
@@ -125,3 +126,52 @@ def test_run_portfolio_marks_forward_from(tmp_path):
     fwd = store.get_forward_ic(PORTFOLIO_BOOK_ID)
     assert len(all_ic) > len(fwd) > 0                       # 有回放也有前向
     assert all(f.date >= cutoff for f in fwd)               # 前向都在 cutoff 之后
+
+
+# ---------------------------------------------------------------------------
+# CI 事故回归（2026-09-06）：pandas_market_calendars 未在 requirements 声明，
+# CI 干净环境缺库 → market_calendar 静默退回 pd.bdate_range → 本文件 4 个用例失败。
+# 依赖已声明；此外把"静默降级"本身改为 fail-closed，并在此锁定该行为。
+# ---------------------------------------------------------------------------
+
+def test_calendar_missing_library_fails_closed(monkeypatch):
+    """
+    缺库时必须**抛错**，不得静默退回工作日启发式 ——
+    退回后 7/4、12/25 都会被判为交易日，调度会在休市日下单，且没有任何报错。
+    """
+    import sys, importlib
+    import app.core.data_engine.market_calendar as mc
+    monkeypatch.setitem(sys.modules, "pandas_market_calendars", None)
+    with pytest.raises(mc.CalendarUnavailable):
+        mc.is_trading_day("2024-07-04")
+
+
+def test_calendar_heuristic_requires_explicit_optin(monkeypatch):
+    """显式设 calendar_allow_heuristic=True 才允许降级（并会 ERROR 告警）。"""
+    import sys
+    import app.core.data_engine.market_calendar as mc
+    from app.config import settings
+    monkeypatch.setitem(sys.modules, "pandas_market_calendars", None)
+    monkeypatch.setattr(settings, "calendar_allow_heuristic", True, raising=False)
+    # 降级后 7/4 会被误判为交易日 —— 这正是我们默认拒绝它的原因
+    assert mc.is_trading_day("2024-07-04") is True
+
+
+def test_scheduler_does_not_trade_when_calendar_unavailable(monkeypatch, caplog):
+    """判不出交易日 → **不交易**（fail-closed），而不是冒出不透明的 job error。"""
+    import logging
+    from app.tasks import scheduler as sched
+    import app.core.data_engine.market_calendar as mc
+
+    def _boom(*a, **k):
+        raise mc.CalendarUnavailable("simulated")
+    monkeypatch.setattr(mc, "is_trading_day", _boom)
+
+    called = {"n": 0}
+    monkeypatch.setattr("app.tasks.daily_ingest.run_daily_pipeline",
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+    caplog.set_level(logging.ERROR)
+    sched.daily_trading_job()
+    assert called["n"] == 0, "日历不可用时仍然跑了交易管线"
+    assert any("日历" in r.message or "calendar" in r.message.lower()
+               for r in caplog.records), "未记录日历不可用的错误"

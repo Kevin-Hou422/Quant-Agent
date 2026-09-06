@@ -36,3 +36,8 @@ plotly>=5.20
 # ── Testing ──────────────────────────────────────────────────────────────
 pytest>=8.0
 apscheduler>=3.11
+
+# 美股交易日历（Phase 11.2）。**必须显式声明**：缺失时 market_calendar.py
+# 会静默退回 pd.bdate_range —— 把节假日当交易日、拿不到 DST/半日市收盘时间，
+# 且没有任何报错（外部审计 #6：换台机器就悄悄错）。
+pandas_market_calendars>=5.0,<6
