@@ -409,18 +409,18 @@ AST 扫描全部 `tests/`，按"这个断言可能失败吗"分类，查出 **90
 
 | # | 问题 | 后果 | 状态 |
 |---|------|------|------|
-| B-1 | `/api/backtest/walk_forward` 合成路径**结构性不可用**：端点写死 `n_days=120`，而 `WalkForwardBacktester.min_train_days` 也是 120。实测请求模型允许的 **`n_splits∈[2,10]` × `embargo∈[0,60]` 全 12 种组合均 `ValueError` → 500** | 不是"某些参数下失败"，是**永远不可能成功**；旧断言容忍 500 故一直"通过" | 🔴 待修（改端点 `n_days` 或让 `min_train_days` 随数据长度自适应） |
-| B-2 | 同端点**静默忽略** `n_tickers/n_days/seed`（`WalkForwardRequest` 无这些字段，`_resolve_dataset` 里写死 20/120/42） | 调用方以为自己控制了数据规模，实际没有 | 🔴 待修 |
+| B-1 | `/api/backtest/walk_forward` 合成路径**结构性不可用**：端点写死 `n_days=120`，而 `WalkForwardBacktester.min_train_days` 也是 120。实测请求模型允许的 **`n_splits∈[2,10]` × `embargo∈[0,60]` 全 12 种组合均 `ValueError` → 500** | 不是"某些参数下失败"，是**永远不可能成功**；旧断言容忍 500 故一直"通过" | ✅ 已修 |
+| B-2 | 同端点**静默忽略** `n_tickers/n_days/seed`（`WalkForwardRequest` 无这些字段，`_resolve_dataset` 里写死 20/120/42） | 调用方以为自己控制了数据规模，实际没有 | ✅ 已修 |
 | B-3 | `test_api_workflow.py` 全部 8 个用例载荷违反 `ge=` 约束 → 端点**从未被调用过**（一直 422 而断言容忍 422） | `/api/workflow/generate` 与 `/optimize` 零集成覆盖 | ✅ 已修（载荷合规，8→9 用例真跑） |
 | B-4 | `/api/gp/evolve` 同型：`pop_size=3 < ge=5` → 一直 422 | GP 端点零集成覆盖 | ✅ 已修 |
-| B-5 | `DataPartitioner` 默认 `embargo_days=20` **全部从 OOS 段扣除**，且无最小样本保护：n_days=60→OOS **0 行**（下游 500）；n_days=80→OOS **4 行** | 4 行数据算出的年化 Sharpe 被当正常结果返回；或直接 500 | 🔴 待修 |
-| B-6 | 承 B-5：`/api/workflow/generate` 在 120 天合成数据上报出 **OOS Sharpe = 15.78**，且过拟合检测判为 `healthy (0.0000)` | 金融上不可能的数字被当作正常结论展示 | 🔴 待修（已有探针用例锁定） |
-| B-7 | **`ind_neutralize` 行业中性从未生效**：parser 把分组存进 `params["groups_node"]`，`CrossSectionalNode._compute` 读的是 `params["groups"]` → 恒 `None` → 退化成 `cs_zscore`。给不给 `sector` 输出**逐位相同** | 任何用 `ind_neutralize` 的因子都不是行业中性的。兄弟算子 `sector_neutral` 正常 | 🔴 待修 |
-| B-8 | 承 B-7：缺 `sector` 字段时静默退化，**无告警** | 使用者以为做了行业中性 | 🔴 待修 |
+| B-5 | `DataPartitioner` 默认 `embargo_days=20` **全部从 OOS 段扣除**，且无最小样本保护：n_days=60→OOS **0 行**（下游 500）；n_days=80→OOS **4 行** | 4 行数据算出的年化 Sharpe 被当正常结果返回；或直接 500 | ✅ 已修 |
+| B-6 | 承 B-5：`/api/workflow/generate` 在 120 天合成数据上报出 **OOS Sharpe = 15.78**，且过拟合检测判为 `healthy (0.0000)` | 金融上不可能的数字被当作正常结论展示 | ✅ 已修 |
+| B-7 | **`ind_neutralize` 行业中性从未生效**：parser 把分组存进 `params["groups_node"]`，`CrossSectionalNode._compute` 读的是 `params["groups"]` → 恒 `None` → 退化成 `cs_zscore`。给不给 `sector` 输出**逐位相同** | 任何用 `ind_neutralize` 的因子都不是行业中性的。兄弟算子 `sector_neutral` 正常 | ✅ 已修 |
+| B-8 | 承 B-7：缺 `sector` 字段时静默退化，**无告警** | 使用者以为做了行业中性 | ✅ 已修 |
 | B-9 | `tests/unit/test_backtest_edge_cases.py` 的 `_run_backtest` 少传必填参数（`run(weights,prices,volume,signal)` 写成 `run(signal,close,volume)`），**每次 TypeError**，被 `except: pass` 吃掉 | 整个边界值测试文件长期空跑 | ✅ 已修（修正后又查出 2 个真问题） |
-| B-10 | `POST /api/backtest/run` **缺 `dsl` 字段仍返回 200 + 完整报告**（静默套用默认 DSL） | 调用方以为测的是自己的因子 | 🔴 待修 |
-| B-11 | 写死合成数据且无 `dataset_name` 入参的端点，属性级扫描查出 **4 个**（外部审计只报了 1 个）：`backtest_realistic` / `backtest_multi` / `alpha_simulate` / `alpha_optimize` | 返回的 Sharpe/风险报告全是随机游走 | 🔴 台账在案 |
-| B-12 | **6 条 API 路由零测试覆盖**：`/api/agent/run`、`/api/backtest/multi`、`/api/paper/{id}/pnl`、`/api/strategies/propose`、`/api/workflow/{generate,optimize}/stream` | `/strategies/propose` 是进审批队列的源头 | 🔴 台账在案 |
+| B-10 | `POST /api/backtest/run` **缺 `dsl` 字段仍返回 200 + 完整报告**（静默套用默认 DSL） | 调用方以为测的是自己的因子 | ✅ 已修 |
+| B-11 | 写死合成数据且无 `dataset_name` 入参的端点，属性级扫描查出 **4 个**（外部审计只报了 1 个）：`backtest_realistic` / `backtest_multi` / `alpha_simulate` / `alpha_optimize` | 返回的 Sharpe/风险报告全是随机游走 | ✅ 已修 3/4（realistic/simulate/optimize）；`backtest_multi` 仍在台账 |
+| B-12 | **6 条 API 路由零测试覆盖**：`/api/agent/run`、`/api/backtest/multi`、`/api/paper/{id}/pnl`、`/api/strategies/propose`、`/api/workflow/{generate,optimize}/stream` | `/strategies/propose` 是进审批队列的源头 | ✅ 已修 `/strategies/propose`；其余 5 条在台账 |
 | B-13 | `test_agent_fallback.py` 的两个意图识别用例 import 了不存在的模块级 `_detect_intent`（实为实例方法）→ `except(Exception)` → **无条件 skip** | 意图识别从未被测过 | ✅ 已修 |
 
 ### B.3 已完成的整改

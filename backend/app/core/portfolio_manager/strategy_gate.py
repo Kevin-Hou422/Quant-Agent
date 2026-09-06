@@ -46,8 +46,26 @@ _CACHE_MAX = 64
 
 
 def _cache_key(kind: str, dataset: WidePanel, aum: float) -> tuple:
+    """
+    内容指纹，**不用 id()**：CPython 会在对象被回收后复用地址，于是
+    "同 shape + 同 aum + 恰好复用了地址" 的另一个数据集会命中旧条目 ——
+    缓存里存的是**成本参数与无交易带**，串号意味着 A 数据集的成本被用到 B 的回测上。
+    （实测表现为全量跑时 test_phase_pm_s 偶发失败，单独跑必过。）
+    取首末行的和 + 索引端点，O(N) 而非 O(T×N)，足够区分。
+    """
     c = dataset["close"]
-    return (kind, id(c), c.shape, float(aum))
+    arr = c.to_numpy()
+    try:
+        head = float(np.nansum(arr[0])) if len(arr) else 0.0
+        tail = float(np.nansum(arr[-1])) if len(arr) else 0.0
+    except Exception as exc:
+        # 指纹退化只会削弱缓存区分度（不会致错），但仍记录，避免"缓存突然总不命中"无从查起
+        logger.debug("[strategy_gate] 缓存指纹计算失败，退化为形状级键: %s", exc)
+        head = tail = 0.0
+    idx = c.index
+    return (kind, c.shape, str(idx[0]) if len(idx) else "",
+            str(idx[-1]) if len(idx) else "", round(head, 6), round(tail, 6),
+            tuple(map(str, c.columns[:4])), float(aum))
 
 
 def _cache_put(key: tuple, val):
@@ -70,7 +88,10 @@ def resolve_band(dataset: WidePanel, aum: float) -> float:
         from app.core.trading_context import TradingContext
         return float(_cache_put(
             key, float(TradingContext(aum=aum).analyze(dataset).rebalance_band)))  # type: ignore[arg-type]
-    except Exception:
+    except Exception as exc:
+        # 静默返回 0 会让"无交易带推导失败"与"带就是 0"无法区分，
+        # 换手率会被高估且无人知晓（审计 #9 同型）。
+        logger.warning("[strategy_gate] 无交易带推导失败，本轮按 0 处理: %s", exc)
         return 0.0
 
 
@@ -239,7 +260,13 @@ class StrategyGate:
                 try:
                     from app.db.trial_ledger import TrialLedger
                     n_trials = max(1, TrialLedger().total())
-                except Exception:
+                except Exception as exc:
+                    # **这不是无害兜底**：n_trials 是 Deflated Sharpe 的多重检验校正项，
+                    # 静默退回 1 等于宣称"只试过一个策略" → DSR 被高估 → 门变松。
+                    # 门在读不到试验台账时应当更保守，而不是更宽松。
+                    logger.error(
+                        "[strategy_gate] 读取全局试验台账失败，n_trials 退回 1 —— "
+                        "本次 Deflated Sharpe **未做多重检验校正，偏乐观**: %s", exc)
                     n_trials = 1
             else:
                 n_trials = 1

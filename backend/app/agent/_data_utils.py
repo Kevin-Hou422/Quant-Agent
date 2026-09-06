@@ -162,7 +162,7 @@ def _run_backtest_core(
     """
     from app.core.backtest_engine.realistic_backtester import RealisticBacktester
 
-    bt     = RealisticBacktester(config=cfg)
+    bt     = RealisticBacktester(config=cfg, min_obs=0)  # min_obs=0：内部搜索排序用，只标注不置空（见 RiskReport._apply_sample_sufficiency）
     result = bt.run(dsl, is_data, oos_dataset=oos_data)
     is_r   = result.is_report
     oos_r  = result.oos_report

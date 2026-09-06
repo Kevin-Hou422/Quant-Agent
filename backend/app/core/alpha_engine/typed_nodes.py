@@ -11,7 +11,11 @@ Memoization is handled externally by the Executor via the shared
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
+
+logger = logging.getLogger(__name__)
 from abc import ABC, abstractmethod
 from enum import Enum, auto
 from typing import Dict, List, Optional
@@ -276,19 +280,51 @@ class CrossSectionalNode(Node):
                 return f"{self.op}({repr(self.child)},{repr(groups_node)})"
         return f"{self.op}({repr(self.child)})"
 
+    def _groups_field(self) -> str:
+        """
+        把 `ind_neutralize(x, 'sector')` 的第二参解析成 dataset 字段名。
+        参数可能是 ScalarNode('sector') / DataNode('sector') / 裸字符串；
+        缺省回退到 'groups'（dsl_executor 会把 dataset['sector'] 映射到它）。
+        """
+        gn = self.params.get("groups_node")
+        if gn is None:
+            return "groups"
+        for attr in ("value", "field", "name"):
+            v = getattr(gn, attr, None)
+            if isinstance(v, str) and v:
+                return v
+        return gn if isinstance(gn, str) and gn else "groups"
+
     def _compute(self, dataset: Dataset, cache: Cache) -> np.ndarray:
         from .fast_ops import FAST_CS_OPS
         x  = self.child.evaluate(dataset, cache)
         fn = FAST_CS_OPS[self.op]
         if self.op == "ind_neutralize":
-            groups = self.params.get("groups")
+            # B-7：parser 把分组参数存进 params["groups_node"]（一个 AST 节点，
+            # 即 `ind_neutralize(x, 'sector')` 里的 'sector' 字面量），而这里
+            # 读的是 params["groups"] —— 永远拿不到，fast_ops 遂退化为 cs_zscore。
+            # 结果：**行业中性从未生效**，且给不给 sector 输出逐位相同。
+            # 正确做法与 sector_neutral 一致：把 groups_node 当**字段名**去 dataset 里取。
+            field = self._groups_field()
+            groups = dataset.get(field)
+            if groups is None and field != "groups":
+                groups = dataset.get("groups")
+            if groups is None:
+                logger.warning(
+                    "ind_neutralize：数据集里没有分组字段 %r（也没有 'groups'）——"
+                    "本次退化为全截面中性化，**不是行业中性**。"
+                    "请在 dataset 中提供 (N,) 数值型行业码。", field)
             return fn(x, groups)
         if self.op == "sector_neutral":
             # Reads GICS sector codes from dataset["groups"] (set by dsl_executor
             # from dataset["sector"] when real sector data is present).
-            # Falls back to full cross-sectional demean when sector data is absent.
             groups = dataset.get("groups")
             if groups is None:
+                # 退化为全截面去均值是合理兜底，但**必须告知** —— 否则使用者
+                # 会以为自己做了行业中性（B-8）。
+                logger.warning(
+                    "sector_neutral：数据集缺 'groups'/'sector' —— 退化为全截面去均值，"
+                    "**不是行业中性**。")
                 from .fast_ops import cs_demean
                 return cs_demean(x)
             return fn(x, groups)
@@ -343,15 +379,20 @@ class GroupNode(Node):
         fn = FAST_GROUP_OPS[self.op]
 
         raw = dataset.get(self.group_field)
-        if raw is not None:
-            arr = np.asarray(raw)
-            # If stored as (T, N), take first row (groups are time-invariant)
-            groups = arr[0] if arr.ndim == 2 else arr
-        else:
-            # Auto-generate: divide assets into 10 groups
-            N = x.shape[1] if x.ndim == 2 else 1
-            groups = np.arange(N) % 10
-
+        if raw is None and self.group_field != "groups":
+            raw = dataset.get("groups")
+        if raw is None:
+            # 旧实现在这里**凭空捏造分组** `np.arange(N) % 10`，按 i%10 分组做
+            # "分组中性化" —— 产出的是看起来像分组结果的无意义数字，比直接报错坏得多。
+            # （dsl_executor.py 的注释声称该假分组已被移除，实际只从那一处移除了。）
+            raise KeyError(
+                f"'{self.op}' 需要分组字段 '{self.group_field}'，数据集中不存在"
+                f"（也没有 'groups'）。可用字段：{sorted(dataset.keys())}。"
+                f"请提供 (N,) 数值型行业码；**不会**为你自动编造分组。"
+            )
+        arr = np.asarray(raw)
+        # If stored as (T, N), take first row (groups are time-invariant)
+        groups = arr[0] if arr.ndim == 2 else arr
         return fn(x, groups.astype(int))
 
     def depth(self) -> int:

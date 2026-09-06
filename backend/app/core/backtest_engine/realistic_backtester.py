@@ -258,9 +258,16 @@ class RealisticBacktester:
         self,
         config:      SimulationConfig,
         cost_params: CostParams = None,
+        min_obs:     int = None,
     ) -> None:
         self.config      = config
         self.cost_params = cost_params or CostParams()
+        # 样本充足性口径（B-6）。None → 用严格默认（60 交易日，比率类指标不足即置空）。
+        # **内部搜索**（GP fitness = OOS Sharpe）需传 0：只标注不置空，否则短段上
+        # 所有候选 fitness 都是 NaN，选择退化为掷硬币。对外展示/落库仍须看
+        # report.insufficient_sample 拒绝该数字。
+        from .risk_report import MIN_OBS_FOR_SHARPE
+        self.min_obs = MIN_OBS_FOR_SHARPE if min_obs is None else int(min_obs)
         self._processor  = SignalProcessor(config)
         self._parser     = Parser()
         self._validator  = AlphaValidator()
@@ -307,7 +314,7 @@ class RealisticBacktester:
         )
 
         is_report = RiskReport.from_result(
-            is_result, prices=dataset.get("close")
+            is_result, prices=dataset.get("close"), min_obs=self.min_obs
         )
 
         # 4. OOS 回测（使用相同 DSL 和 config）
@@ -319,7 +326,7 @@ class RealisticBacktester:
                 node, oos_dataset, label="OOS"
             )
             oos_report = RiskReport.from_result(
-                oos_result, prices=oos_dataset.get("close")
+                oos_result, prices=oos_dataset.get("close"), min_obs=self.min_obs
             )
 
         return RealisticBacktestResult(

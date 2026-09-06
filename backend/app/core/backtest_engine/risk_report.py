@@ -9,6 +9,7 @@ RiskReport — 回测绩效汇总数据类
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -16,12 +17,31 @@ import numpy as np
 import pandas as pd
 
 from .backtest_engine import BacktestResult
+
+logger = logging.getLogger(__name__)
 from .performance_analyzer import PerformanceAnalyzer
 
 
 # ---------------------------------------------------------------------------
 # RiskReport
 # ---------------------------------------------------------------------------
+
+#: 报告年化 Sharpe 所需的最少净收益观测数（交易日）。
+#: 取 60 与 tr_min_forward_days 对齐 —— 跨门阈值一致比阈值本身微调更有价值。
+#: 低于此值：比率类指标一律置 NaN（不是"标注后照样返回数字" —— 人读的是数字，
+#: 不是数字旁边的旗标，见 Phase A 台账污染的教训）。
+MIN_OBS_FOR_SHARPE = 60
+
+
+def sharpe_standard_error(sr: float, n_obs: int, tdays_per_year: float = 252.0) -> float:
+    """年化 Sharpe 的标准误（Lo 2002）：SE = √((1 + SR²/2) / T年)。"""
+    if not np.isfinite(sr) or n_obs <= 1:
+        return float("nan")
+    t_years = float(n_obs) / float(tdays_per_year)
+    if t_years <= 0:
+        return float("nan")
+    return float(np.sqrt((1.0 + 0.5 * sr * sr) / t_years))
+
 
 @dataclass
 class RiskReport:
@@ -91,6 +111,15 @@ class RiskReport:
     rolling_ic:         Optional[pd.Series] = field(default=None, repr=False)
     drawdown_series:    Optional[pd.Series] = field(default=None, repr=False)
 
+    # ---- 样本充足性（B-6）----
+    # 年化 Sharpe 的标准误 ≈ √((1+SR²/2)/T年)。16 天样本时 SE≈4.0 ——
+    # 此时的 "Sharpe=15.78" 与噪声无法区分。必须与 Sharpe 并排返回，
+    # 让荒谬性自证；阈值可以被人调低，标准误不能。
+    sharpe_se:          float = np.nan
+    #: 观测数低于 MIN_OBS_FOR_SHARPE 时置 True，且比率类指标全部置 NaN
+    insufficient_sample: bool = False
+    min_obs_required:   int   = 0
+
     # ---- 元信息 ----
     n_days:             int   = 0
     n_assets:           int   = 0
@@ -112,6 +141,7 @@ class RiskReport:
         benchmark_returns: Optional[pd.Series] = None,
         n_trials:          int = 1,
         trial_sharpes:     Optional[list] = None,
+        min_obs:           int = MIN_OBS_FOR_SHARPE,
     ) -> "RiskReport":
         """
         Parameters
@@ -174,7 +204,7 @@ class RiskReport:
         rs = pa.rolling_sharpe(rolling_sharpe_window)
         dd = pa.drawdown_series()
 
-        return cls(
+        rep = cls(
             annualized_return  = metrics["annualized_return"],
             annualized_vol     = metrics["annualized_vol"],
             sharpe_ratio       = metrics["sharpe_ratio"],
@@ -215,6 +245,38 @@ class RiskReport:
             n_days             = len(result.equity_curve),
             n_assets           = result.positions.shape[1],
         )
+        return rep._apply_sample_sufficiency(min_obs=min_obs)
+
+    # ------------------------------------------------------------------
+    # 样本充足性（B-6）
+    # ------------------------------------------------------------------
+
+    def _apply_sample_sufficiency(self, min_obs: int = MIN_OBS_FOR_SHARPE) -> "RiskReport":
+        """
+        观测数不足时把**比率类**指标置 NaN，并标注 insufficient_sample。
+        原始序列（净值/收益）保留 —— 数据本身没错，错的是从它算年化比率。
+
+        min_obs=0 → 只标注不置空。**仅供内部搜索/排序**使用：GP 的 fitness
+        就是 OOS Sharpe，若把它置空则所有候选无从区分，选择退化为掷硬币
+        （实测：n_days=150 的三段切分下 Validate 只有 30 天，全部候选 fitness=NaN
+        → "最优" DSL 变成裸字段 `open`）。注意这**不是**放宽报告口径：
+        insufficient_sample 仍为 True，任何对外展示/落库的路径都必须据此拒绝该数字。
+        """
+        n = int(len(self.net_returns.dropna())) if self.net_returns is not None else int(self.n_days)
+        self.min_obs_required = int(min_obs)
+        self.sharpe_se = sharpe_standard_error(self.sharpe_ratio, n)
+        if n < min_obs or (min_obs == 0 and n < MIN_OBS_FOR_SHARPE):
+            self.insufficient_sample = True
+        if min_obs > 0 and n < min_obs:
+            for f in ("sharpe_ratio", "sharpe_tstat", "calmar_ratio", "sortino_ratio",
+                      "ic_ir", "deflated_sharpe", "information_ratio",
+                      "long_sharpe", "short_sharpe", "annualized_return", "annualized_vol"):
+                setattr(self, f, float("nan"))
+            logger.warning(
+                "[RiskReport] 观测数 %d < %d，比率类指标置 NaN（%d 天样本的年化 Sharpe "
+                "标准误约 %.1f，与噪声无法区分）", n, min_obs, n,
+                sharpe_standard_error(1.0, max(n, 2)))
+        return self
 
     # ------------------------------------------------------------------
     # 文本摘要

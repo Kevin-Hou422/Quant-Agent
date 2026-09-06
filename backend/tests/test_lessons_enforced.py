@@ -161,6 +161,7 @@ class TestLessonB_GatesMustNotFailOpen:
             APP / "core" / "portfolio_manager" / "strategy_builder.py",
             APP / "core" / "portfolio_manager" / "risk_gate.py",
             APP / "core" / "lifecycle" / "promotion_gate.py",
+            APP / "core" / "portfolio_manager" / "strategy_gate.py",
         ]
         bad = []
         for p in watch:
@@ -448,10 +449,10 @@ class TestLessonS_AuditUnitIsNotTheModule:
     #   2) 台账非空这件事本身另有一条 xfail(strict) 红线盯着，修完必须删行；
     #   3) 每条必须写明**后果**，不许只写位置。
     KNOWN_UNTESTED_ROUTES = {
+        # ✅ /api/strategies/propose 已补覆盖（test_phase_pm7_endpoints.py），已从台账移除
         "/api/agent/run":                 "自主 agent 入口零覆盖：跑通与否无人知晓",
-        "/api/backtest/multi":            "多数据集回测零覆盖，且写死合成数据（见下）",
+        "/api/backtest/multi":            "多数据集回测零覆盖",
         "/api/paper/{alpha_id}/pnl":      "paper 账本 PnL 读取零覆盖",
-        "/api/strategies/propose":        "策略提案入口零覆盖 —— 这是进审批队列的源头",
         "/api/workflow/generate/stream":  "SSE 版本零覆盖（非流式版有覆盖，§R 同型风险）",
         "/api/workflow/optimize/stream":  "同上",
     }
@@ -460,9 +461,9 @@ class TestLessonS_AuditUnitIsNotTheModule:
     }
     #: 写死合成数据且无 dataset_name 入参的端点（外部审计只报了 realistic 一个，
     #: 属性级扫描发现是 4 个）。后果：返回的 Sharpe/风险报告全是随机游走。
-    KNOWN_SYNTHETIC_ONLY_ENDPOINTS = {
-        "backtest_realistic", "backtest_multi", "alpha_simulate", "alpha_optimize",
-    }
+    #: ✅ realistic / simulate / optimize 已加 dataset_name + data_source（B-11 已修）。
+    #: backtest_multi 仍写死合成数据 —— 它按 dataset **名字列表**取数，改法与其余三个不同。
+    KNOWN_SYNTHETIC_ONLY_ENDPOINTS = {"backtest_multi"}
 
     def _untested_routes(self):
         from app.main import app
@@ -515,7 +516,7 @@ class TestLessonS_AuditUnitIsNotTheModule:
         )
 
     @pytest.mark.xfail(strict=True, reason=(
-        "已知未修：6 条路由零覆盖 + 4 个端点写死合成数据。"
+        "已知未修：5 条路由零覆盖 + backtest_multi 写死合成数据。"
         "修完后请删除对应台账行；本用例转绿即提示台账已过期。"
     ))
     def test_debt_ledger_is_empty(self):
@@ -525,6 +526,67 @@ class TestLessonS_AuditUnitIsNotTheModule:
         """
         assert not self._untested_routes(), self._untested_routes()
         assert not self._synthetic_only_endpoints(), self._synthetic_only_endpoints()
+
+
+class TestLessonT_OperatorArgsMustReachTheirConsumer:
+    """
+    §T：算子的参数从 AST 传到消费方，中间只要键名对不上就会**静默退化**。
+    这类 bug 用"结果均值≈0"这种弱断言测不出（退化实现恰好满足），
+    必须用**判别性**断言：带参数与不带参数的结果必须不同。
+    """
+
+    @staticmethod
+    def _panel(n_tickers: int = 10, n_days: int = 40):
+        import numpy as np, pandas as pd
+        rng = np.random.default_rng(0)
+        tk = [f"T{i:02d}" for i in range(n_tickers)]
+        idx = pd.bdate_range("2022-01-03", periods=n_days)
+        close = pd.DataFrame(
+            100 * np.cumprod(1 + rng.normal(0, 0.01, (n_days, n_tickers)), axis=0),
+            index=idx, columns=tk)
+        return {"close": close, "open": close,
+                "high": close * (1 + rng.uniform(0, 0.006, close.shape)),
+                "low":  close * (1 - rng.uniform(0, 0.006, close.shape)),
+                "volume": close * 1000, "vwap": close,
+                "returns": close.pct_change().fillna(0.0)}, tk
+
+    def test_group_argument_actually_changes_the_result(self):
+        """给 sector 与不给 sector，行业中性算子的输出**必须不同**。"""
+        import numpy as np
+        from app.core.alpha_engine.parser import Parser
+        from app.core.alpha_engine.dsl_executor import Executor
+        base, tk = self._panel()
+        sec = np.array([0.0] * (len(tk) // 2) + [1.0] * (len(tk) - len(tk) // 2))
+        for expr in ("ind_neutralize(close, 'sector')", "sector_neutral(close)"):
+            node = Parser().parse(expr)
+            with_g = Executor().run(node, {**base, "sector": sec})
+            without = Executor().run(node, base)
+            assert not np.allclose(with_g.values, without.values, equal_nan=True), (
+                f"{expr}：给分组与不给分组输出逐位相同 —— 分组参数未被消费，"
+                f"该算子实际等价于全截面版本"
+            )
+            # 组内均值必须归零（真正的组内中性）
+            last = with_g.iloc[-1]
+            for g in (0.0, 1.0):
+                cols = [t for t, v in zip(tk, sec) if v == g]
+                m = float(last[cols].mean())
+                assert abs(m) < 1e-8, f"{expr}：行业 {g} 组内均值 {m:.3e} 未归零"
+
+    def test_missing_group_field_raises_instead_of_fabricating(self):
+        """
+        缺分组字段时**不得凭空编造**（旧实现用 np.arange(N) % 10 按 i%10 分组）。
+        编造输入会把"没数据"变成"有数据但全错"，且从结果上看不出来。
+        """
+        import pytest as _pytest
+        from app.core.alpha_engine.parser import Parser
+        from app.core.alpha_engine.dsl_executor import Executor
+        base, _ = self._panel()
+        node = Parser().parse("group_rank(close, 'sector')")
+        with _pytest.raises(Exception) as ei:
+            Executor().run(node, base)          # 故意不提供 sector/groups
+        assert "sector" in str(ei.value) or "groups" in str(ei.value), (
+            f"缺分组时的报错没有点明缺哪个字段：{ei.value}"
+        )
 
 
 class TestLessonR_EveryLessonIsEnforced:

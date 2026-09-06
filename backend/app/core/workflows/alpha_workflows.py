@@ -183,7 +183,7 @@ def _quick_metrics(
             return 0.0
 
     try:
-        bt     = RealisticBacktester(config=default_cfg)
+        bt     = RealisticBacktester(config=default_cfg, min_obs=0)  # min_obs=0：内部搜索排序用，只标注不置空（见 RiskReport._apply_sample_sufficiency）
         result = bt.run(dsl, is_data, oos_dataset=oos_data or None)
         is_r   = result.is_report
         oos_r  = result.oos_report
@@ -196,18 +196,28 @@ def _quick_metrics(
             float(np.clip((s_is - s_oos) / abs(s_is), 0.0, 1.0))
             if abs(s_is) > 1e-9 else 0.0
         )
+        # min_obs=0 让内部排序拿得到数值（否则短段上全是 NaN，选择退化为掷硬币），
+        # 但**样本充足性标记必须一起传出去** —— 否则这些只配用于排序的数字会被
+        # 原样送进 API 响应展示给人看（曾观测到 120 天数据报出 OOS Sharpe=15.78）。
+        insuf = bool(getattr(oos_r, "insufficient_sample", False)
+                     or getattr(is_r, "insufficient_sample", False))
         return {
             "is_sharpe":         s_is,
             "oos_sharpe":        s_oos,
             "turnover":          turn,
             "fitness":           fit,
             "overfitting_score": overfit,
+            "insufficient_sample": insuf,
+            "n_obs_oos":         int(getattr(oos_r, "n_days", 0) or 0),
+            "oos_sharpe_se":     float(getattr(oos_r, "sharpe_se", float("nan"))) if oos_r else float("nan"),
         }
     except Exception as exc:
         logger.debug("_quick_metrics failed for '%s': %s", dsl[:60], exc)
         return {
             "is_sharpe": 0.0, "oos_sharpe": 0.0,
             "turnover": 0.0, "fitness": 0.0, "overfitting_score": 0.0,
+            "insufficient_sample": True, "n_obs_oos": 0,
+            "oos_sharpe_se": float("nan"),
         }
 
 
@@ -706,6 +716,17 @@ class GenerationWorkflow:
         )
 
         m = gp_result.metrics
+        # B-6 边界：GP 内部用 min_obs=0 拿到可比较的数值（否则短段上全 NaN，
+        # 选择退化为掷硬币），但这些数字**只配用于排序**。这里把样本充足性标记
+        # 补进最终 metrics，供 API 层在对外返回前置空比率类指标。
+        try:
+            _seg = _quick_metrics(gp_result.best_dsl, is_data, oos_data)
+            m.setdefault("insufficient_sample", bool(_seg.get("insufficient_sample")))
+            m.setdefault("n_obs_oos", int(_seg.get("n_obs_oos") or 0))
+            m.setdefault("oos_sharpe_se", _seg.get("oos_sharpe_se"))
+        except Exception as exc:
+            logger.warning("[Workflow] 样本充足性标记回填失败（按不足处理）: %s", exc)
+            m.setdefault("insufficient_sample", True)
         oos_s = m.get("oos_sharpe")
 
         # Phase S.2：在 held-out Test 上评估赢家（GP 全程未见）→ 唯一诚实的样本外数字。

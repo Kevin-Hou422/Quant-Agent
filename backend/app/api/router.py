@@ -58,6 +58,18 @@ _DATASET_FIELD_DESC = (
 # 合成数据集（演示/测试用，与 CLI 保持一致）
 # ---------------------------------------------------------------------------
 
+def _data_source_label(dataset_name: str) -> str:
+    """
+    数据来源标识（"real:<name>" / "synthetic"）。
+
+    B-11：`realistic` / `multi` / `simulate` / `optimize` 四个端点此前**写死合成数据**
+    且响应不带任何来源标识 —— 名字再像"真实回测"，返回的 Sharpe/风险报告也是随机游走。
+    与 Phase A 的聊天路径同一纪律：**结果必须自报来源**。
+    _resolve_dataset 在真实数据加载失败时抛 502（不静默降级），故来源可由入参确定。
+    """
+    return f"real:{dataset_name}" if dataset_name else "synthetic"
+
+
 def _resolve_dataset(
     dataset_name:  str,
     dataset_start: str,
@@ -215,7 +227,9 @@ class GPEvolveResponse(BaseModel):
 
 
 class BacktestRequest(BaseModel):
-    dsl:           str = Field("rank(ts_delta(log(close),5))", description="Alpha DSL 表达式")
+    # B-10：dsl 此前有默认值 —— 调用方漏传字段时端点返回 **200 + 完整回测报告**，
+    # 报告里是那个默认 DSL 的结果，调用方却会以为测的是自己的因子。改为必填 → 422。
+    dsl:           str = Field(..., min_length=1, description="Alpha DSL 表达式（必填）")
     dataset_name:  str = Field("us_tech_large", description=_DATASET_FIELD_DESC)
     dataset_start: str = Field("2021-01-01")
     dataset_end:   str = Field("2024-01-01")
@@ -242,6 +256,11 @@ class SimulationConfigSchema(BaseModel):
 class RealisticBacktestRequest(BaseModel):
     dsl:       str                  = Field("rank(ts_delta(log(close),5))")
     config:    SimulationConfigSchema = Field(default_factory=SimulationConfigSchema)
+    # B-11：此前**没有**这三个字段，端点写死 _make_synthetic_dataset —— 一个叫
+    # "realistic" 的端点返回的全是随机游走。置空 = 显式请求合成数据。
+    dataset_name:  str = Field("", description=_DATASET_FIELD_DESC)
+    dataset_start: str = Field("2021-01-01")
+    dataset_end:   str = Field("2024-01-01")
     n_tickers: int                  = Field(20, ge=5, le=200)
     n_days:    int                  = Field(120, ge=60, le=1000)
     oos_ratio: float                = Field(0.30, ge=0.0, lt=1.0)
@@ -250,6 +269,7 @@ class RealisticBacktestRequest(BaseModel):
 
 class RealisticBacktestResponse(BaseModel):
     dsl:    str
+    data_source: str = "unknown"      # "real:<name>" / "synthetic"
     is_report:  Dict[str, Any]
     oos_report: Optional[Dict[str, Any]]
     config: Dict[str, Any]
@@ -543,6 +563,14 @@ class WalkForwardRequest(BaseModel):
     embargo_days:  int   = Field(20, ge=0, le=60, description="IS/OOS 间隔天数")
     portfolio_mode: str  = Field("long_short")
     delay:         int   = Field(1, ge=0, le=10)
+    # B-2：这三个字段此前**不存在**，而端点内部写死 20/120/42 —— 调用方传了也被静默忽略。
+    # B-1：写死的 n_days=120 恰好等于 WalkForwardBacktester.min_train_days=120，
+    #      导致合成路径在**所有**合法参数组合下都无法成功（实测 12/12 全部 ValueError→500）。
+    #      默认值改为 750（≈3 年），足够 min_train(120) + n_splits×30。
+    n_tickers:     int   = Field(20,  ge=5,   le=200, description="合成数据集标的数（dataset_name 为空时生效）")
+    n_days:        int   = Field(750, ge=210, le=5000, description="合成数据集交易日数（下限须 ≥ min_train + n_splits×30）")
+    seed:          int   = Field(42,  description="合成数据集随机种子")
+    min_train_days: int  = Field(120, ge=30, le=2000, description="每折 IS 最少交易日")
 
 
 class WalkForwardFoldReportSchema(BaseModel):
@@ -597,10 +625,26 @@ def walk_forward_backtest(req: WalkForwardRequest) -> WalkForwardResponse:
     from app.core.backtest_engine.realistic_backtester import WalkForwardBacktester
 
     # Load full dataset — WalkForwardPartitioner handles splits internally
+    # B-2：这三个参数此前写死为 20/120/42，请求里传的值被静默丢弃。
     full_data, _, _ = _resolve_dataset(
         req.dataset_name, req.dataset_start, req.dataset_end,
-        20, 120, 42, oos_ratio=0.0,
+        req.n_tickers, req.n_days, req.seed, oos_ratio=0.0,
     )
+
+    # B-1：数据不够是**调用方的请求问题**（4xx），不是服务端故障（5xx）。
+    # 提前校验并给出可执行的修改建议，而不是让底层 ValueError 冒成 500。
+    n_available = len(next(iter(full_data.values())))
+    required    = req.min_train_days + req.n_splits * 30 + req.embargo_days
+    if n_available < required:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"数据不足以做 Walk-Forward：可用 {n_available} 个交易日，"
+                f"需要 ≥{required}（min_train={req.min_train_days} + "
+                f"n_splits={req.n_splits}×30 + embargo={req.embargo_days}）。"
+                f"请增大 n_days、减少 n_splits/min_train_days，或改用更长历史的 dataset_name。"
+            ),
+        )
 
     cfg = SimulationConfig(
         delay          = req.delay,
@@ -608,13 +652,18 @@ def walk_forward_backtest(req: WalkForwardRequest) -> WalkForwardResponse:
     )
 
     bt = WalkForwardBacktester(
-        config       = cfg,
-        n_splits     = req.n_splits,
-        embargo_days = req.embargo_days,
+        config         = cfg,
+        n_splits       = req.n_splits,
+        embargo_days   = req.embargo_days,
+        min_train_days = req.min_train_days,
     )
 
     try:
         result = bt.run(req.dsl, full_data)
+    except ValueError as exc:
+        # 参数/数据范围问题 → 422（可由调用方修正），不是服务端崩溃
+        logger.warning("WalkForward 参数不可行: %s", exc)
+        raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
         logger.exception("WalkForwardBacktester failed")
         raise HTTPException(status_code=500, detail=str(exc))
@@ -1496,7 +1545,10 @@ def backtest_realistic(req: RealisticBacktestRequest) -> RealisticBacktestRespon
     from app.core.backtest_engine.realistic_backtester import RealisticBacktester
     from app.core.data_engine.data_partitioner import DataPartitioner
 
-    dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
+    dataset, _, _ = _resolve_dataset(
+        req.dataset_name, req.dataset_start, req.dataset_end,
+        req.n_tickers, req.n_days, req.seed, oos_ratio=0.0,
+    )
 
     # 构造 SimulationConfig
     cfg = SimulationConfig(
@@ -1535,7 +1587,8 @@ def backtest_realistic(req: RealisticBacktestRequest) -> RealisticBacktestRespon
         raise HTTPException(status_code=500, detail=str(exc))
 
     return RealisticBacktestResponse(
-        dsl        = req.dsl,
+        dsl         = req.dsl,
+        data_source = _data_source_label(req.dataset_name),
         is_report  = result.is_report.to_dict(),
         oos_report = result.oos_report.to_dict() if result.oos_report else None,
         config     = result.to_dict()["config"],
@@ -1706,6 +1759,9 @@ class SearchSpaceSchema(BaseModel):
 class SimulateRequest(BaseModel):
     dsl:       str                   = Field("rank(ts_delta(log(close),5))")
     config:    SimulationConfigSchema = Field(default_factory=SimulationConfigSchema)
+    dataset_name:  str = Field("", description=_DATASET_FIELD_DESC)   # B-11
+    dataset_start: str = Field("2021-01-01")
+    dataset_end:   str = Field("2024-01-01")
     n_tickers: int                   = Field(20, ge=5, le=200)
     n_days:    int                   = Field(252, ge=60, le=2000)
     oos_ratio: float                 = Field(0.30, ge=0.0, lt=1.0)
@@ -1715,6 +1771,9 @@ class SimulateRequest(BaseModel):
 class OptimizeRequest(BaseModel):
     dsl:          str               = Field("rank(ts_delta(log(close),5))")
     search_space: SearchSpaceSchema = Field(default_factory=SearchSpaceSchema)
+    dataset_name:  str = Field("", description=_DATASET_FIELD_DESC)   # B-11
+    dataset_start: str = Field("2021-01-01")
+    dataset_end:   str = Field("2024-01-01")
     n_trials:     int               = Field(30, ge=1, le=200)
     n_tickers:    int               = Field(20, ge=5, le=200)
     n_days:       int               = Field(252, ge=60, le=2000)
@@ -1724,6 +1783,8 @@ class OptimizeRequest(BaseModel):
 
 class EvalResponse(BaseModel):
     dsl:               str
+    # B-11：结果必须自报来源。"synthetic" 时下面所有 metrics 都出自随机游走。
+    data_source:       str = "unknown"
     best_config:       Optional[Dict[str, Any]]
     is_metrics:        Dict[str, Any]
     oos_metrics:       Optional[Dict[str, Any]]
@@ -1765,6 +1826,7 @@ def _run_evaluate(
     oos_data:    Optional[dict],
     best_config: Optional[dict] = None,
     n_trials:    Optional[int]  = None,
+    data_source: str            = "unknown",
 ) -> EvalResponse:
     """
     共享逻辑：用给定 config 执行 IS+OOS 回测 + AlphaEvaluator 高级评估。
@@ -1850,6 +1912,7 @@ def _run_evaluate(
 
     return EvalResponse(
         dsl               = dsl,
+        data_source       = data_source,
         best_config       = best_config,
         is_metrics        = eval_dict["is_metrics"],
         oos_metrics       = eval_dict["oos_metrics"],
@@ -1887,8 +1950,10 @@ def alpha_simulate(req: SimulateRequest) -> EvalResponse:
             detail=f"[Syntax Error] {exc}",
         )
 
-    dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
-    is_data, oos_data = _partition_dataset(dataset, req.oos_ratio)
+    dataset, is_data, oos_data = _resolve_dataset(
+        req.dataset_name, req.dataset_start, req.dataset_end,
+        req.n_tickers, req.n_days, req.seed, oos_ratio=req.oos_ratio,
+    )
 
     cfg = SimulationConfig(
         delay            = req.config.delay,
@@ -1900,7 +1965,8 @@ def alpha_simulate(req: SimulateRequest) -> EvalResponse:
     )
 
     try:
-        return _run_evaluate(req.dsl, cfg, is_data, oos_data)
+        return _run_evaluate(req.dsl, cfg, is_data, oos_data,
+                             data_source=_data_source_label(req.dataset_name))
     except Exception as exc:
         logger.exception("alpha_simulate failed")
         raise HTTPException(status_code=500, detail=str(exc))
@@ -1934,10 +2000,10 @@ def alpha_optimize(req: OptimizeRequest) -> EvalResponse:
             detail=f"[Syntax Error] {exc}",
         )
 
-    dataset = _make_synthetic_dataset(req.n_tickers, req.n_days, req.seed)
-
-    # Step 1: 分区 — OOS 此后物理隔离
-    is_data, oos_data = _partition_dataset(dataset, req.oos_ratio)
+    dataset, is_data, oos_data = _resolve_dataset(
+        req.dataset_name, req.dataset_start, req.dataset_end,
+        req.n_tickers, req.n_days, req.seed, oos_ratio=req.oos_ratio,
+    )
 
     # Step 2: 构造搜索空间
     ss = req.search_space
@@ -1973,6 +2039,7 @@ def alpha_optimize(req: OptimizeRequest) -> EvalResponse:
             oos_data    = oos_data,
             best_config = study_summary.best_params,
             n_trials    = study_summary.n_trials,
+            data_source = _data_source_label(req.dataset_name),
         )
     except Exception as exc:
         logger.exception("alpha_optimize final evaluation failed")
@@ -2041,6 +2108,28 @@ class WorkflowResponse(BaseModel):
     is_overfit:        bool  = False
     # IC Decay: {"t1": float, "t5": float} — populated by _add_workflow_pnl
     ic_decay:          Dict[str, Any] = Field(default_factory=dict)
+
+
+_REPORTABLE_RATIOS = ("is_sharpe", "oos_sharpe", "fitness", "overfitting_score",
+                      "test_sharpe", "oos_deflated_sharpe", "is_overfit")
+
+
+def _null_ratios_if_insufficient(metrics: dict) -> dict:
+    """
+    展示/落库边界（B-6）。内部搜索用 min_obs=0 拿到可比较的数值，但那些数字
+    **只配用于排序**：短段年化 Sharpe 的标准误可达 4~5，与噪声无法区分
+    （曾观测到 120 天数据报出 OOS Sharpe=15.78 且过拟合检测判 healthy）。
+    对外返回前一律置空，并保留 n_obs / SE 让读者看到为什么。
+    """
+    if not isinstance(metrics, dict) or not metrics.get("insufficient_sample"):
+        return metrics
+    out = dict(metrics)
+    for k in _REPORTABLE_RATIOS:
+        if k in out:
+            out[k] = None
+    out["insufficient_sample"] = True
+    logger.info("[workflow] OOS 样本仅 %s 天，比率类指标对外置空", out.get("n_obs_oos"))
+    return out
 
 
 def _add_workflow_pnl(
@@ -2205,6 +2294,7 @@ def workflow_generate(
         # Build response dict + inject PnL series for frontend chart
         # (is_data / oos_data already resolved above)
         resp_dict = result.to_dict()
+        resp_dict["metrics"] = _null_ratios_if_insufficient(resp_dict.get("metrics") or {})
         _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
         _record_run_manifest(
             run_type="workflow_generate", dataset=is_data, seed=req.seed,
@@ -2291,6 +2381,7 @@ def workflow_optimize(
 
         # Build response dict + inject PnL series (is_data / oos_data already resolved above)
         resp_dict = result.to_dict()
+        resp_dict["metrics"] = _null_ratios_if_insufficient(resp_dict.get("metrics") or {})
         _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
         _record_run_manifest(
             run_type="workflow_optimize", dataset=is_data, seed=req.seed,
@@ -2430,6 +2521,7 @@ async def workflow_optimize_stream(
         )
         result = wf.run(dsl=req.dsl, dataset=dataset, on_progress=emit_text)
         resp_dict = result.to_dict()
+        resp_dict["metrics"] = _null_ratios_if_insufficient(resp_dict.get("metrics") or {})
         _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
 
         try:
@@ -2483,6 +2575,7 @@ async def workflow_generate_stream(
         )
         result = wf.run(hypothesis=req.hypothesis, dataset=dataset, on_progress=emit_text)
         resp_dict = result.to_dict()
+        resp_dict["metrics"] = _null_ratios_if_insufficient(resp_dict.get("metrics") or {})
         _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
 
         try:

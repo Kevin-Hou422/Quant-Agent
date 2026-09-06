@@ -76,3 +76,79 @@ def test_run_portfolio_trades_active_config(tmp_path):
         cfgmod.settings.database_url = old
     assert out["active_config"] == sid        # 按 active 配置交易
     assert out["n_factors"] == 1              # 只交易配置里的 1 个因子（不是全部 3 个）
+
+
+# ---------------------------------------------------------------------------
+# B-12：/api/strategies/propose 此前**零测试覆盖** —— 它是进审批队列的源头。
+# 该端点会加载真实数据集（需网络），故此处 monkeypatch 数据加载为合成面板。
+# ---------------------------------------------------------------------------
+
+def _panel(n_days=180, n_tickers=8, seed=3):
+    rng = np.random.default_rng(seed)
+    idx = pd.bdate_range("2023-01-02", periods=n_days)
+    cols = [f"T{i:02d}" for i in range(n_tickers)]
+    close = pd.DataFrame(
+        100 * np.cumprod(1 + rng.normal(0, 0.012, (n_days, n_tickers)), axis=0),
+        index=idx, columns=cols)
+    # DEV_LESSONS §O：H/L 用随机幅度，固定 ±1% 会让价差估计荒谬
+    high = close * (1 + rng.uniform(0, 0.006, close.shape))
+    low  = close * (1 - rng.uniform(0, 0.006, close.shape))
+    vol  = pd.DataFrame(rng.integers(8e5, 5e6, close.shape).astype(float), index=idx, columns=cols)
+    return {"close": close, "open": close, "high": high, "low": low, "volume": vol,
+            "vwap": (high + low + close) / 3.0,
+            "returns": close.pct_change().fillna(0.0)}
+
+
+class _FakeDS:
+    def __init__(self, data): self.data = data
+
+
+def _patch_dataset(monkeypatch):
+    import app.core.data_engine.dataset_registry as reg
+    monkeypatch.setattr(reg, "load_registry_dataset",
+                        lambda *a, **k: _FakeDS(_panel()))
+
+
+def test_propose_without_paper_factors_returns_400(test_client, monkeypatch):
+    """无 PAPER/ACTIVE 因子时必须 400，而不是产出一份空策略配置。"""
+    _patch_dataset(monkeypatch)
+    from app.dependencies import get_store
+    store = get_store()
+    for rec in store.query(limit=500):
+        if str(rec.status) in ("paper", "active", "decaying"):
+            store.update_status(rec.id, "retired")
+    r = test_client.post("/api/strategies/propose")
+    assert r.status_code == 400, f"实际 {r.status_code}：{r.text[:300]}"
+    assert "因子" in r.json()["detail"]
+
+
+def test_propose_creates_proposed_config_with_evidence(test_client, monkeypatch):
+    """
+    有 PAPER 因子时：产出 proposed 配置，且必须带**证据字段** ——
+    verdict / risk_report / turnover_ann。审批者靠这些判断该不该批。
+    """
+    _patch_dataset(monkeypatch)
+    from app.dependencies import get_store
+    from app.db.alpha_store import AlphaResult
+    store = get_store()
+    aid = store.save(AlphaResult(dsl="rank(ts_delta(log(close), 5))",
+                                 hypothesis="propose-test", sharpe=0.0, status="candidate"))
+    for nxt in ("validated", "paper"):
+        store.update_status(aid, nxt)
+
+    r = test_client.post("/api/strategies/propose")
+    assert r.status_code == 200, f"实际 {r.status_code}：{r.text[:400]}"
+    cfg = r.json()
+    assert cfg["status"] == "proposed", cfg["status"]
+    assert str(aid) in cfg["factors"], f"提案未包含该 PAPER 因子：{cfg['factors']}"
+    for k in ("verdict", "risk_report", "turnover_ann", "no_trade_band", "aum"):
+        assert k in cfg, f"提案缺少证据字段 {k}：{sorted(cfg)}"
+    # 审计 #9 整改：门评估若中途降级，必须在 verdict 里留痕而不是静默产出
+    v = cfg["verdict"]
+    assert isinstance(v, dict) and v, "verdict 为空 —— 策略门没有产生任何证据"
+    if v.get("degraded"):
+        assert isinstance(v["degraded"], list) and v["degraded"], v["degraded"]
+
+    # 提案必须真的进了审批队列
+    pend = test_client.get("/api/strategies/pending").json()
+    assert any(x["id"] == cfg["id"] for x in pend), "提案未出现在 pending 队列"

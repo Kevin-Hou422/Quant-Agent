@@ -135,10 +135,38 @@ class TestCrossSectionalOperators:
         row_sums = out.abs().sum(axis=1).dropna()
         assert (row_sums.between(0.9, 1.1)).all()
 
-    def test_ind_neutralize_via_group_rank(self):
-        """group_rank 按 'sector' 字段分组排名。"""
-        out, shape = _exec("group_rank(close, 'sector')")
-        assert out.shape == shape
+    def test_group_rank_actually_ranks_within_groups(self):
+        """
+        group_rank 必须**在组内**排名。原用例只断言 out.shape —— 而旧实现在缺
+        'sector' 时凭空捏造 `np.arange(N)%10` 分组，形状当然对，分组全错也照过。
+        这里显式提供分组并检查组内秩。
+        """
+        from app.core.alpha_engine.parser import Parser
+        from app.core.alpha_engine.dsl_executor import Executor
+        rng = np.random.default_rng(0)
+        n_days, tk = 60, [f"T{i}" for i in range(6)]
+        idx = pd.bdate_range("2022-01-03", periods=n_days)
+        close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.01, (n_days, 6)), axis=0),
+                             index=idx, columns=tk)
+        data = {"close": close, "open": close,
+                "high": close * (1 + rng.uniform(0, 0.006, close.shape)),
+                "low":  close * (1 - rng.uniform(0, 0.006, close.shape)),
+                "volume": close * 1000, "vwap": close,
+                "returns": close.pct_change().fillna(0.0),
+                "sector": np.array([0., 0., 0., 1., 1., 1.])}
+        out = Executor().run(Parser().parse("group_rank(close, 'sector')"), data)
+        assert out.shape == close.shape
+        # 每组内部的秩取值集合必须一致（各组独立排名，而非全截面排名）
+        last = out.iloc[-1]
+        g0 = sorted(np.round(last.iloc[:3].values, 6))
+        g1 = sorted(np.round(last.iloc[3:].values, 6))
+        assert g0 == g1, f"两组的组内秩集合不同 → 未按组独立排名：{g0} vs {g1}"
+
+    def test_group_rank_without_sector_raises(self):
+        """缺分组字段必须报错，**不得**凭空编造分组（那会产出看似正常的错数字）。"""
+        with pytest.raises(KeyError) as ei:
+            _exec("group_rank(close, 'sector')")
+        assert "sector" in str(ei.value)
 
 
 # ---------------------------------------------------------------------------

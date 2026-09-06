@@ -105,14 +105,14 @@ class TestWalkForward:
 
     def test_walk_forward_basic(self, client):
         payload = {**self.BASE, "n_splits": 2, "embargo_days": 5,
-                   "n_tickers": 8, "n_days": 120, "seed": 0}
+                   "n_tickers": 8, "n_days": 400, "seed": 0}
         body = _ok(client.post("/api/backtest/walk_forward", json=payload))
         assert "fold_reports" in body, f"缺 fold_reports：{sorted(body)}"
         assert body["fold_reports"], "fold_reports 为空 —— walk-forward 实际未运行任何一折"
 
     def test_walk_forward_fold_count(self, client):
         payload = {**self.BASE, "n_splits": 3, "embargo_days": 0,
-                   "n_tickers": 6, "n_days": 150, "seed": 1}
+                   "n_tickers": 6, "n_days": 400, "seed": 1}
         body = _ok(client.post("/api/backtest/walk_forward", json=payload))
         folds = body["fold_reports"]
         assert 1 <= len(folds) <= 3, f"折数 {len(folds)} 不在 [1,3]"
@@ -123,7 +123,7 @@ class TestWalkForward:
         （原用例只断言 gap>=0，那是恒真的——embargo 设成 0 也能过，等于没测。）
         """
         payload = {**self.BASE, "n_splits": 2, "embargo_days": 10,
-                   "n_tickers": 6, "n_days": 200, "seed": 2}
+                   "n_tickers": 6, "n_days": 500, "seed": 2}
         body = _ok(client.post("/api/backtest/walk_forward", json=payload))
         folds = body["fold_reports"]
         assert folds, "无 fold 可检查 embargo"
@@ -137,6 +137,28 @@ class TestWalkForward:
                 f"embargo 未生效：fold{f.get('fold_idx')} IS 末 {is_end.date()} → "
                 f"OOS 始 {oos_start.date()} 仅隔 {n_bdays} 个工作日（要求 ≥10）"
             )
+
+
+    def test_walk_forward_insufficient_data_is_422_not_500(self, client):
+        """B-1：数据不够是调用方的请求问题（422），不是服务端崩溃（500）。"""
+        payload = {**self.BASE, "n_splits": 10, "embargo_days": 60,
+                   "n_tickers": 6, "n_days": 210, "seed": 3}
+        resp = client.post("/api/backtest/walk_forward", json=payload)
+        assert resp.status_code == 422, f"实际 {resp.status_code}：{resp.text[:300]}"
+        assert "交易日" in resp.json()["detail"], "错误信息未说明缺多少数据"
+
+    def test_walk_forward_honors_n_days(self, client):
+        """B-2：n_days 此前被静默忽略（端点写死 120）。不同 n_days 必须产出不同结果。"""
+        small = {**self.BASE, "n_splits": 2, "embargo_days": 0,
+                 "n_tickers": 6, "n_days": 400, "seed": 7}
+        large = {**small, "n_days": 900}
+        b1 = _ok(client.post("/api/backtest/walk_forward", json=small))
+        b2 = _ok(client.post("/api/backtest/walk_forward", json=large))
+        d1 = sum(f["is_days"] + f["oos_days"] for f in b1["fold_reports"])
+        d2 = sum(f["is_days"] + f["oos_days"] for f in b2["fold_reports"])
+        assert d2 > d1, (
+            f"n_days 900 与 400 用到的天数相同（{d2} vs {d1}）—— 参数仍被忽略"
+        )
 
 
 class TestRealisticBacktest:

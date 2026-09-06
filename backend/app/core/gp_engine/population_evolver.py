@@ -443,7 +443,7 @@ class PopulationEvolver:
         from ..backtest_engine.realistic_backtester import RealisticBacktester
 
         try:
-            bt     = RealisticBacktester(config=self._default_cfg)
+            bt     = RealisticBacktester(config=self._default_cfg, min_obs=0)  # min_obs=0：内部搜索排序用，只标注不置空（见 RiskReport._apply_sample_sufficiency）
             result = bt.run(dsl, self._is_data, oos_dataset=self._oos_data)
             is_r   = result.is_report
             oos_r  = result.oos_report
@@ -505,7 +505,7 @@ class PopulationEvolver:
 
         try:
             # Get IS Sharpe from primary dataset for overfitting penalty
-            bt_is  = RealisticBacktester(config=self._default_cfg)
+            bt_is  = RealisticBacktester(config=self._default_cfg, min_obs=0)
             res_is = bt_is.run(dsl, self._is_data)
             sharpe_is = float(res_is.is_report.sharpe_ratio or 0.0)
             turnover  = float(res_is.is_report.ann_turnover  or 0.0)
@@ -752,7 +752,7 @@ class PopulationEvolver:
 
             # Final IS+OOS backtest with tuned config
             from ..backtest_engine.realistic_backtester import RealisticBacktester
-            bt     = RealisticBacktester(config=best_cfg)
+            bt     = RealisticBacktester(config=best_cfg, min_obs=0)
             result = bt.run(dsl, self._is_data, oos_dataset=self._oos_data)
             metrics = self._extract_metrics(result)
             return cfg_dict, metrics

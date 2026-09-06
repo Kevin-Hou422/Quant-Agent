@@ -79,22 +79,28 @@ class TestWorkflowGenerate:
         body = _ok(client.post("/api/workflow/generate", json=MINIMAL_GENERATE, timeout=120))
         assert body.get("workflow") == "generation", body.get("workflow")
 
-    def test_generate_oos_sharpe_is_not_absurd(self, client):
+    def test_generate_oos_sharpe_is_absent_or_sane(self, client):
         """
-        真实问题探针：OOS 段太短时，年化 Sharpe 会飙到荒谬值（曾观测到 15.78），
-        且过拟合检测判为 "healthy"。任何 |OOS Sharpe| > 8 都不可能是真信号，
-        必须要么被拒绝、要么被标注样本不足 —— 不能当作正常结果返回。
+        契约二选一，**不允许第三种**：
+          (a) OOS 样本充足 → 返回一个不荒谬的 Sharpe（|SR|≤8）；
+          (b) 样本不足     → oos_sharpe 置 None 且 insufficient_sample=True。
+        绝不允许"样本只有十几天却返回 15.78 且判 healthy"。
+        （原用例在 oos_sharpe 为 None 时 skip —— skip 不是断言，见 DEV_LESSONS §S。）
         """
         body = _ok(client.post("/api/workflow/generate", json=MINIMAL_GENERATE, timeout=120))
         m = body.get("metrics") or {}
-        oos = m.get("oos_sharpe")
+        assert "oos_sharpe" in m, f"metrics 缺 oos_sharpe：{sorted(m)}"
+        oos = m["oos_sharpe"]
         if oos is None:
-            pytest.skip("该响应未含 oos_sharpe")
+            assert m.get("insufficient_sample") is True, (
+                f"oos_sharpe 为 None 却没标 insufficient_sample —— 读者无从判断"
+                f"是'没算'还是'算不出来'：{m}"
+            )
+            assert "n_obs_oos" in m, "未告知 OOS 实际有多少观测"
+            return
         assert abs(float(oos)) <= 8.0, (
-            f"OOS Sharpe={oos:.2f} 荒谬（|Sharpe|>8 在真实市场不存在）。"
-            f"根因通常是 OOS 段样本过少后做年化：n_days={MINIMAL_GENERATE['n_days']}, "
-            f"oos_ratio={MINIMAL_GENERATE['oos_ratio']}, embargo 默认 20 → OOS 仅剩十几行。"
-            f"系统却把它当正常结果返回。"
+            f"OOS Sharpe={oos:.2f} 荒谬（|SR|>8 在真实市场不存在），"
+            f"且未被标为样本不足。n_obs_oos={m.get('n_obs_oos')}"
         )
 
 

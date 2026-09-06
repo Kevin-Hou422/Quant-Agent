@@ -222,11 +222,24 @@ class QuantAgent:
         is_s    = metrics.get("is_sharpe")
         overfit = metrics.get("overfitting_score", 0.0)
 
+        def _fmt(v, nd: int = 3) -> str:
+            """
+            指标可能是 None（样本不足时 RiskReport 会把比率类指标置空，见 B-6），
+            直接 f"{v:.3f}" 会 TypeError 并把整轮对话变成 "Processing failed"。
+            原守卫只检查 is_s 却同时格式化 oos_s —— 潜伏的半条守卫。
+            """
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return "N/A"
+            return "N/A" if f != f else f"{f:.{nd}f}"      # f != f → NaN
+
         reply = (
             f"DSL: {dsl} | "
-            f"IS Sharpe={is_s:.3f}  OOS Sharpe={oos_s:.3f}  "
-            f"Overfit={overfit:.2f}  "
+            f"IS Sharpe={_fmt(is_s)}  OOS Sharpe={_fmt(oos_s)}  "
+            f"Overfit={_fmt(overfit, 2)}  "
             f"{'⚠ Overfit detected' if metrics.get('is_overfit') else '✓ Passed'}"
+            + ("  ⚠ 样本不足，比率类指标已置空" if oos_s is None and is_s is not None else "")
         ) if is_s is not None else f"Generated DSL: {dsl} (insufficient backtest data)"
 
         if self._chat_store is not None:

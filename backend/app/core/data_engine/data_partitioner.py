@@ -119,7 +119,12 @@ class DataPartitioner:
     ----------
     start        : 全局起始日期（"YYYY-MM-DD"）
     end          : 全局终止日期（"YYYY-MM-DD"）
-    oos_ratio    : OOS 占全部交易日的比例（默认 0.30）
+    oos_ratio    : OOS 占**可用**交易日（总交易日扣除 embargo 后）的比例，默认 0.30。
+                   注意语义：embargo 先从总跨度里扣掉，再按 ratio 切分剩余部分，
+                   因此 oos_ratio=0.3 得到的确实是可用样本的 30%。
+                   （旧实现把 IS 按**总天数**取 70%，embargo 再全部从 OOS 里扣 ——
+                   于是 60 天 + embargo=20 会得到 OOS **0 行**、80 天得到 4 行，
+                   请求的比例从未被兑现，且下游会拿 4 行样本算年化 Sharpe。）
     embargo_days : IS 末日后跳过的交易日数（默认 20）。
                    这些日期不参与 IS 训练，也不参与 OOS 验证，
                    防止时间序列自相关导致的标签泄漏。
@@ -151,8 +156,21 @@ class DataPartitioner:
                 f"日期范围 {start}→{end} 交易日不足（{total_days}天）。"
             )
 
-        is_count = int(round(total_days * (1.0 - oos_ratio)))
-        is_count = max(1, min(is_count, total_days - 1)) if oos_ratio > 0 else total_days
+        if oos_ratio > 0:
+            # embargo **先从总跨度扣除**，再按 ratio 切分剩余可用样本。
+            usable = total_days - embargo_days
+            if usable < 2:
+                raise ValueError(
+                    f"日期范围 {start}→{end} 共 {total_days} 个交易日，"
+                    f"扣除 embargo={embargo_days} 后仅剩 {usable} 天，无法切分 IS/OOS。"
+                    f"请延长区间或减小 embargo_days。"
+                )
+            is_count  = int(round(usable * (1.0 - oos_ratio)))
+            is_count  = max(1, min(is_count, usable - 1))
+            oos_count = usable - is_count
+        else:
+            is_count  = total_days
+            oos_count = 0
 
         self._all_bdays  = all_bdays
         self._is_count   = is_count
@@ -171,7 +189,14 @@ class DataPartitioner:
         else:
             self._oos_start = self._split_date
 
-        self._oos_count = max(0, total_days - is_count - embargo_days)
+        self._oos_count = oos_count
+        # 兑现请求的比例：切完必须真的有 OOS 样本，否则明确报错而非静默返回 0 行。
+        # （旧实现在这里静默产出空 OOS，下游 _validate_dataset 才以 500 崩掉。）
+        if oos_ratio > 0 and (self._oos_start is None or oos_count < 1):
+            raise ValueError(
+                f"切分后 OOS 为空：总={total_days} IS={is_count} embargo={embargo_days}。"
+                f"请延长日期区间、减小 embargo_days 或提高 oos_ratio。"
+            )
 
         logger.info(
             "DataPartitioner 初始化 | 总=%d | IS=%d | embargo=%d | OOS=%d | split=%s",

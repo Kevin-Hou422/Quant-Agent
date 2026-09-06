@@ -115,7 +115,7 @@ class AlphaAgent:
                     dsl          = result_dsl,
                     hypothesis   = hypothesis,
                     sharpe       = metrics.get("sharpe", 0.0),
-                    ic_ir        = metrics.get("ic_ir", 0.0),
+                    ic_ir        = (lambda v: 0.0 if v is None else float(v))(metrics.get("ic_ir")),
                     ann_turnover = metrics.get("ann_turnover", 0.0),
                     reasoning    = log.to_json(),
                     status       = "candidate",
@@ -190,8 +190,18 @@ class AlphaAgent:
         metrics = _quick_eval(valid_dsl, dataset)
 
         for refine in range(self._max_refine):
-            ic_ir    = metrics.get("ic_ir", 0.0)
-            turnover = metrics.get("ann_turnover", 0.0)
+            # dict.get(k, default) 在"键存在但值为 None"时返回 None，不是 default。
+            # 样本不足时 RiskReport 会把比率类指标置空（B-6），后面的 `<` 比较和
+            # `:.4f` 格式化都会 TypeError。统一按 0.0 处理并保持判定语义（0<0.3 → 继续精炼）。
+            def _num(k: str, d: float = 0.0) -> float:
+                v = metrics.get(k, d)
+                try:
+                    f = float(v) if v is not None else d
+                except (TypeError, ValueError):
+                    return d
+                return d if f != f else f          # NaN → default
+            ic_ir    = _num("ic_ir")
+            turnover = _num("ann_turnover")
 
             if ic_ir >= 0.3 and turnover <= 5.0:
                 try:
