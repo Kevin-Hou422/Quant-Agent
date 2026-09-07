@@ -154,8 +154,11 @@ class DiscoveryEngine:
         try:
             from app.config import settings
             mode = getattr(settings, "factor_gate_mode", "leak")
-        except Exception:
-            mode = "leak"
+        except Exception as exc:
+            # 本函数 docstring 明写 "fail-closed：出错视为不通过"，而原兜底却退回
+            # "leak"（**较松**的门）—— 方向正好相反。读不到配置时用严门。
+            logger.error("[discovery] 读取 factor_gate_mode 失败，按 strict 严门处理: %s", exc)
+            mode = "strict"
         try:
             if mode == "strict":
                 from app.core.lifecycle.validation_gate import ValidationGate

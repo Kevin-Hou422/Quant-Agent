@@ -191,7 +191,8 @@ def generate_random_alpha(depth: int = 4, factor_family: str = "") -> Node:
             else:
                 dsl = _rng.choice(_SEED_DSLS)
             return _parser_inst.parse(dsl)
-        except Exception:
+        except Exception as exc:
+            logger.debug("[gp] 种子 DSL 解析失败，换一个: %s", exc)
             continue
 
     # Ultimate fallback — guaranteed to parse

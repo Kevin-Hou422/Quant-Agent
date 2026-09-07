@@ -191,8 +191,8 @@ class RiskReport:
                     var_m = float(np.var(x))
                     if var_m > 1e-12:
                         portfolio_beta = float(np.cov(y, x)[0, 1] / var_m)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("组合 beta 计算失败，保持 NaN: %s", exc)
 
         # O2: 压力测试子区间分析
         stress = pa.stress_test()

@@ -181,6 +181,9 @@ class AlphaMonitor:
             try:
                 st = coerce_status(rec.status)
             except ValueError:
+                # 仪表板上该因子会被**重新归类**为候选，与它的真实状态不符
+                logger.warning("[monitor] alpha id=%s 状态 %r 无法解析，仪表板按 CANDIDATE 显示",
+                               getattr(rec, "id", "?"), getattr(rec, "status", None))
                 st = AlphaStatus.CANDIDATE          # 未知历史状态按候选处理
             if st in TERMINAL_STATES:
                 continue

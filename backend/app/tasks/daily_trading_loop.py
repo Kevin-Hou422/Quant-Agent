@@ -106,10 +106,16 @@ class DailyTradingLoop:
 
         # 取活跃因子（PAPER / ACTIVE / DECAYING）
         candidates = []
+        n_bad_status = 0
         for rec in self.store.query(limit=500):
             try:
                 st = coerce_status(rec.status)
             except ValueError:
+                # 状态串无法解析 → 该因子**静默退出当日交易账本**。
+                # 这是实盘账本组成，不能无声。
+                n_bad_status += 1
+                logger.warning("[daily_loop] alpha id=%s 状态 %r 无法解析，已排除出当日账本",
+                               getattr(rec, "id", "?"), getattr(rec, "status", None))
                 continue
             if st in (AlphaStatus.PAPER, AlphaStatus.ACTIVE, AlphaStatus.DECAYING):
                 candidates.append(rec)
@@ -166,6 +172,8 @@ class DailyTradingLoop:
                 if coerce_status(rec.status) in (AlphaStatus.PAPER, AlphaStatus.ACTIVE, AlphaStatus.DECAYING):
                     recs.append(rec)
             except ValueError:
+                logger.warning("[portfolio] alpha id=%s 状态 %r 无法解析，已排除出组合成分",
+                               getattr(rec, "id", "?"), getattr(rec, "status", None))
                 continue
 
         cfg = SimulationConfig(delay=1, decay_window=0, truncation_min_q=0.05, truncation_max_q=0.95)
@@ -362,7 +370,9 @@ class DailyTradingLoop:
             try:
                 from app.core.trading_context.context import TradingContext
                 band = float(TradingContext(aum=aum).analyze(dataset).rebalance_band)
-            except Exception:
+            except Exception as exc:
+                # band=0 意味着**每天全额调仓**，换手与成本都会显著高于预期设定
+                logger.error("[portfolio] 无交易带推导失败 → 本轮按 band=0（全额调仓）: %s", exc)
                 band = 0.0
         to_before = annualized_turnover(weights)
         weights = apply_no_trade_band(weights, band)

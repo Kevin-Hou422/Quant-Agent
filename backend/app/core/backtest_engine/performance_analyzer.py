@@ -10,6 +10,8 @@ E3 修复：TRADING_DAYS 不再硬编码为 252，改为从实际数据日期范
 
 from __future__ import annotations
 
+import logging
+
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -17,6 +19,8 @@ import pandas as pd
 from scipy import stats as scipy_stats
 
 from .backtest_engine import BacktestResult
+
+logger = logging.getLogger(__name__)
 
 # 模块级回退常量（仅用于极端情况 < 2 个交易日）
 _FALLBACK_TDAYS = 252.0
@@ -461,7 +465,9 @@ class PerformanceAnalyzer:
         def _safe_resample(freq: str) -> pd.Series:
             try:
                 return ret.resample(freq).apply(lambda x: float((1 + x).prod() - 1))
-            except Exception:
+            except Exception as exc:
+                # 返回空 Series → 对应周期的收益分解在报告里**整段消失**
+                logger.warning("[perf] %s 频率重采样失败，该周期收益分解为空: %s", freq, exc)
                 return pd.Series(dtype=float)
 
         # 月度 / 季度 / 年度最差

@@ -478,17 +478,47 @@ AST 扫描全部 `tests/`，按"这个断言可能失败吗"分类，查出 **90
   `test_debt_ledger_is_empty` 由 `xfail(strict)` 转为**必须通过**的正向断言；
   新增未覆盖路由或新增"写死合成"端点都会让它变红。
 
-### B.6 仍未处理（需你单独决策，非技术阻塞）
+### B.6 第四批：审计 #5 / #9 / #10 整改（2026-09-07）✅
 
-- **门控默认值**：`tr_enforce_active_gate` / `risk_halt_on_drawdown` / `pm_strategy_gate_block`
-  三个硬门默认全关。其中 `tr_enforce_active_gate` 的代码注释写的阻塞理由
-  （"ic_history 尚未分离回放/前向"）**已随 Phase 11 消失**，属于"门修好了但没打开"。
-- **fitness = OOS Sharpe 的选择性挖掘**：本轮取得了可复现证据 —— 30 天 Validate 段上
-  按 OOS Sharpe 排序本就是在噪声里选优（置空指标后"最优"直接退化为裸字段 `open`）。
-  这是设计层问题，需单独规划。
-- 其余外部审计条目：OOS 段状态不连续（#2）、执行层仅 PaperBroker（#8, Phase 12）、
-  容量约束只限持仓不限单日成交（#7）、研究路径健康检查不 fail-closed（#5）、
-  API 无认证（#10）、`pandas_market_calendars` 未声明依赖（#6）。
+**#5 研究路径健康门 ✅** —— 修的过程中发现比审计所述**更严重**的问题：
+`check_dataset_health` 里 `warn_only=False` 抛的 `ValueError` 被同函数末尾的
+`except Exception` 当成"检查器故障"吞掉并返回 `None` —— **fail-closed 开关从未生效过**
+（实测健康分 0.665 < 阈值 0.99 时返回 None 而非抛错）。
+整改：新增 `DatasetHealthError` 并 `except DatasetHealthError: raise` 放行
+（判定结果 ≠ 检查器故障）；`load_registry_dataset` 与 ingest 口径统一，
+新增 `research_health_fail_closed`（默认 **True**）+ `research_min_health`（0.7）。
+⚠️ 该默认值会让此前被静默放行的低质量数据直接报错，逃生口 `RESEARCH_HEALTH_FAIL_CLOSED=false`。
+
+**#10 零认证 ✅（按"本机自用"形态）** —— 正确的防线不是加密码，而是保证服务
+**不会在无人察觉时被绑到对外地址**：CORS 由 `["*"]` 收紧为 localhost 白名单
+（`*` + `allow_credentials=True` 是危险组合）；新增启动自检 `_assert_safe_bind()`，
+绑非回环地址即**拒绝启动**，除非显式 `ALLOW_INSECURE_BIND=true`。
+前端走 vite proxy（dev server 转发），不触发 CORS，不受影响。
+
+**#9 静默吞异常 131 → 97**（棘轮锁定，只许降不许升）。按危害而非数量整改：
+
+| 类别 | 具体问题 | 后果 |
+|------|----------|------|
+| **兜底方向反了** | `manager.py` 读不到 `trading_allow_short` → `long_only=False`（**允许做空**） | 现金账户会构造出无法成交的空头腿 |
+| | `discovery_engine.py` 读不到 `factor_gate_mode` → `"leak"`（**松门**），与自身 docstring "fail-closed：出错视为不通过"矛盾 | 门失败时反而更宽松 |
+| **门变松** | `validation_gate.py` 读不到试验台账 → `n_trials=1` | DSR 未做多重检验校正，**偏乐观** |
+| **空仓假象** | `trading_context/providers.positions()` 读失败 → 返回 `{}` | 下游把全部权益当可用买入力，**按满额重新建仓** ≈ 凭空加杠杆。已改为抛错 |
+| **账本静默缺员** | `daily_trading_loop` 状态无法解析 → `continue`（×2） | 因子悄悄退出当日交易账本／组合成分 |
+| **口径静默改变** | `AlphaCombiner` 协方差奇异 → 退回**等权**；`PortfolioConstructor` 求解失败 → 沿用基准权重 | 调用方以为拿到最小方差/优化权重 |
+| **数据静默缺席** | `yahoo_provider` 缺字段 → 全 NaN 面板；`PITStore` 分区名畸形 → 跳过；`dataset_filters` 市值取不到 → NaN 参与筛选 | universe 与数据完整性悄悄改变 |
+| **同源被破坏** | `dataset_registry` 读不到 `price_source` → 退回 yahoo | 研究用 yahoo、执行用 moomoo → 重新引入 train/serve skew（TR.2 的全部意义） |
+| 其余 | `horizon` 因子丢失、`evaluation_utils` 惩罚哨兵、`alpha_monitor` 状态重归类、`performance_analyzer` 周期分解为空 | 结论不完整而不自知 |
+
+剩余 97 处已逐条分类：滚动窗口数值兜底 13、DB bootstrap 7、数值/类型转换 18、
+可选依赖探测 6、GP 变异算子内部 9，其余为影响面较小的 agent/chat 管线。
+新增 `test_silent_except_count_does_not_grow` 棘轮：**降了必须同步下调预算**（防回潮）。
+
+**补审此前声明的留白 ✅** —— `tests/golden/`（1e-12 金标准 + 专门验证"金标准真能抓到 1bp
+变化"的敏感性测试）、`test_phase6_reproducibility.py`（判别性断言 + 反例）质量良好；
+`test_supplementary_fixes.py` 两条弱用例（断言仅 `is not None`）已收紧为
+**repr round-trip 结构保真**与**组内均值必须归零**。
+
+### B.7 仍未处理（需你单独决策，非技术阻塞）
 
 ---
 

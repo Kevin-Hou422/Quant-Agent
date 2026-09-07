@@ -16,10 +16,14 @@ no signal processing pipeline). Use RealisticBacktester for final evaluation.
 
 from __future__ import annotations
 
+import logging
+
 from typing import Dict
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def quick_ic_eval(
@@ -46,7 +50,10 @@ def quick_ic_eval(
 
     try:
         signal_df = Executor().run_expr(dsl, dataset)
-    except Exception:
+    except Exception as exc:
+        # 这是**惩罚哨兵**（让求值失败的候选排到最后），不是真实指标。
+        # 但如果不留痕，"这个因子很差"与"这个因子根本没跑起来"就无法区分。
+        logger.debug("[quick_eval] 求值失败，返回惩罚哨兵指标: %s | %s", dsl[:60], exc)
         return {"ic_ir": 0.0, "ann_turnover": 99.0, "sharpe": -1.0}
 
     close = dataset.get("close")

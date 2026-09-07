@@ -14,11 +14,15 @@ LLM 不参与。
 
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass
 from typing import Dict, List
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def annualized_turnover(weights: pd.DataFrame, tdays_per_year: float = 252.0) -> float:
@@ -73,6 +77,8 @@ def horizon_profile(factor_signals: Dict[str, pd.DataFrame],
             w = SignalWeightedPortfolio(clip_z=clip_z).construct(sig)
             to = annualized_turnover(w, tdays_per_year)
             out.append(FactorHorizon(name, to, classify_horizon(to, fast_threshold)))
-        except Exception:
+        except Exception as exc:
+            # 静默跳过 = 该因子从 horizon 画像里消失，快慢分类结论不完整
+            logger.warning("[horizon] 因子 %s 换手计算失败，已从画像中排除: %s", name, exc)
             continue
     return out

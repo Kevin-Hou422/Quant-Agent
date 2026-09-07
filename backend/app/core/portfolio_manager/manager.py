@@ -86,8 +86,13 @@ class PortfolioManager:
             try:
                 from app.config import settings
                 long_only = not bool(getattr(settings, "trading_allow_short", False))
-            except Exception:
-                long_only = False
+            except Exception as exc:
+                # 兜底方向必须朝**保守**一侧：读不到配置就假定不允许做空。
+                # 原来退回 False（=允许做空）—— 现金账户/不可融券时会构造出
+                # 根本无法成交的空头腿，且无人知晓。
+                logger.error("[PortfolioManager] 读取 trading_allow_short 失败，"
+                             "按 long_only=True 保守处理: %s", exc)
+                long_only = True
         self.long_only = bool(long_only)
 
     # ------------------------------------------------------------------ PM.1

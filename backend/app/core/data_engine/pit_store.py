@@ -246,6 +246,9 @@ class PITStore:
             try:
                 y = int(part_dir.name.split("=")[1])
             except (IndexError, ValueError):
+                # 分区目录名畸形 → 该年份数据**静默缺席**于查询结果
+                logger.warning("[PITStore] 分区目录名无法解析，该分区数据未纳入本次查询: %s",
+                               part_dir.name)
                 continue
             if start_dt is not None and y < start_dt.year:
                 continue

@@ -157,11 +157,22 @@ class TestLessonB_GatesMustNotFailOpen:
         门控/风控相关模块里，`except Exception: pass`（连日志都没有）意味着
         门算失败也照常放行且无人知晓。至少要有 logger 或重新抛出。
         """
+        # 关键路径：门控 / 风控 / 实盘账本 / 数据源。这些地方的静默 except 会让
+        # "门失败"变成"门通过"、"数据缺失"变成"数据正常"，且没有任何痕迹。
         watch = [
             APP / "core" / "portfolio_manager" / "strategy_builder.py",
             APP / "core" / "portfolio_manager" / "risk_gate.py",
-            APP / "core" / "lifecycle" / "promotion_gate.py",
             APP / "core" / "portfolio_manager" / "strategy_gate.py",
+            APP / "core" / "portfolio_manager" / "manager.py",
+            APP / "core" / "portfolio_manager" / "horizon.py",
+            APP / "core" / "lifecycle" / "promotion_gate.py",
+            APP / "core" / "lifecycle" / "validation_gate.py",
+            APP / "core" / "trading_context" / "providers.py",
+            APP / "core" / "discovery" / "discovery_engine.py",
+            APP / "core" / "monitor" / "alpha_monitor.py",
+            APP / "core" / "backtest_engine" / "alpha_combiner.py",
+            APP / "core" / "backtest_engine" / "portfolio_constructor.py",
+            APP / "tasks" / "daily_trading_loop.py",
         ]
         bad = []
         for p in watch:
@@ -177,6 +188,36 @@ class TestLessonB_GatesMustNotFailOpen:
         assert not bad, (
             "以下门控异常处理既不记录也不抛出（门失败后静默继续）：\n  " + "\n  ".join(bad)
         )
+
+
+    #: 全库"既不记录也不抛出"的 except 计数上限（棘轮：只许降，不许升）。
+    #: 起点 131 → 本轮降到当前值。剩余多为滚动窗口数值兜底、DB bootstrap、
+    #: 可选依赖探测等**有理由的**兜底；新增一处就会顶破这个数字。
+    SILENT_EXCEPT_BUDGET = 97
+
+    def test_silent_except_count_does_not_grow(self):
+        import ast as _ast
+        n = 0
+        for p in _py_files(APP):
+            try:
+                tree = _ast.parse(_src(p))
+            except Exception:
+                continue
+            for h in [x for x in _ast.walk(tree) if isinstance(x, _ast.ExceptHandler)]:
+                d = _ast.dump(h)
+                if (all(k not in d for k in ("logger", "logging", "Raise", "print"))
+                        and "warn" not in d.lower()):
+                    n += 1
+        assert n <= self.SILENT_EXCEPT_BUDGET, (
+            f"静默 except 增加到 {n} 处（上限 {self.SILENT_EXCEPT_BUDGET}）。"
+            f"新增的兜底必须记录或抛出 —— 否则失败会伪装成成功。"
+            f"若确属良性（滚动窗口数值兜底等），下调 SILENT_EXCEPT_BUDGET 并在此说明理由。"
+        )
+        if n < self.SILENT_EXCEPT_BUDGET:
+            pytest.fail(
+                f"静默 except 已降到 {n} 处，低于记录的上限 {self.SILENT_EXCEPT_BUDGET}。"
+                f"请把 SILENT_EXCEPT_BUDGET 改成 {n}（棘轮只降不升，防止回潮）。"
+            )
 
 
 # ===========================================================================
@@ -665,6 +706,70 @@ class TestLessonT_OperatorArgsMustReachTheirConsumer:
         assert "sector" in str(ei.value) or "groups" in str(ei.value), (
             f"缺分组时的报错没有点明缺哪个字段：{ei.value}"
         )
+
+
+class TestLessonU_FallbacksMustLeanConservative:
+    """
+    §U：兜底必须朝**保守**一侧倒。失败时自动滑向"更容易通过/更容易下单"的一侧
+    比崩溃危险得多 —— 崩溃会被发现，悄悄放宽看起来一切正常。
+    """
+
+    #: (模块, 危险兜底的源码片段, 说明) —— 出现即失败
+    FORBIDDEN_FALLBACKS = [
+        ("app/core/portfolio_manager/manager.py", "long_only = False",
+         "读不到 trading_allow_short 时不得默认允许做空"),
+        ("app/core/discovery/discovery_engine.py", 'mode = "leak"',
+         "读不到 factor_gate_mode 时不得默认用松门（与其 docstring 的 fail-closed 相悖）"),
+    ]
+
+    @pytest.mark.parametrize("path,snippet,why", FORBIDDEN_FALLBACKS)
+    def test_no_permissive_fallback_in_except_block(self, path, snippet, why):
+        import ast as _ast
+        src = _src(BACKEND / path)
+        tree = _ast.parse(src)
+        offenders = []
+        for h in [n for n in _ast.walk(tree) if isinstance(n, _ast.ExceptHandler)]:
+            seg = _ast.get_source_segment(src, h) or ""
+            if snippet in seg:
+                offenders.append(f"{path}:{h.lineno}")
+        assert not offenders, f"{why}｜出现在：{offenders}"
+
+    def test_positions_reader_refuses_to_fake_empty_book(self):
+        """
+        持仓读失败绝不能返回 {} —— 空仓 = "全部权益都是可用买入力"，
+        下游会按满额重新建仓（等于凭空加杠杆）。必须抛错。
+        """
+        from app.core.trading_context.providers import SimAccountProvider
+
+        class _Boom:
+            class store:
+                @staticmethod
+                def latest_positions(_):
+                    raise RuntimeError("db down")
+
+        prov = SimAccountProvider.__new__(SimAccountProvider)
+        prov._broker = _Boom()
+        prov._book = 0
+        with pytest.raises(RuntimeError):
+            prov.positions()
+
+    def test_business_exceptions_are_not_swallowed_by_generic_handler(self):
+        """
+        有意抛出的业务异常必须用**专用类型**并在通用兜底前放行。
+        `check_dataset_health` 曾把自己 raise 的 ValueError 又 except 掉，
+        导致 fail-closed 开关从未生效。
+        """
+        import numpy as np, pandas as pd
+        from app.core.data_engine.dataset_registry import (
+            check_dataset_health, DatasetHealthError, Dataset)
+        idx = pd.bdate_range("2022-01-03", periods=120)
+        close = pd.DataFrame(100.0, index=idx, columns=["A", "B", "C"])
+        close.iloc[30:70] = np.nan
+        data = {f: close.copy() for f in
+                ("close", "open", "high", "low", "volume", "vwap", "returns")}
+        ds = Dataset(name="broken", frequency="daily", universe=["A", "B", "C"], data=data)
+        with pytest.raises(DatasetHealthError):
+            check_dataset_health(ds, min_score=0.99, warn_only=False)
 
 
 class TestLessonR_EveryLessonIsEnforced:

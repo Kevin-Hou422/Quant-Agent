@@ -491,7 +491,10 @@ class DatasetFilterEngine:
                     try:
                         fi = yf.Ticker(t).fast_info
                         result[t] = float(getattr(fi, "market_cap", np.nan) or np.nan)
-                    except Exception:
+                    except Exception as exc:
+                        # 市值取不到 → 该标的在市值筛选中的去留由 NaN 决定，
+                        # 等于**被筛选规则悄悄放过或剔除**，universe 因此改变。
+                        logger.warning("[filters] %s 市值获取失败，按 NaN 参与筛选: %s", t, exc)
                         result[t] = np.nan
             except ImportError:
                 result = {t: np.nan for t in tickers}

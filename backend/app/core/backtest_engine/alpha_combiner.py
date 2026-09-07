@@ -257,7 +257,10 @@ class AlphaCombiner:
                 w = ones / n
             else:
                 w /= w_sum
-        except np.linalg.LinAlgError:
+        except np.linalg.LinAlgError as exc:
+            # 协方差奇异 → 退回等权。等权是合理兜底，但调用方以为拿到的是
+            # 最小方差/IC 加权 —— 组合结论口径已经变了，必须说出来。
+            logger.warning("[AlphaCombiner] 协方差奇异，权重退回**等权**（非最小方差）: %s", exc)
             w = np.ones(n) / n
 
         return {dsl: float(w[i]) for i, dsl in enumerate(dsls)}

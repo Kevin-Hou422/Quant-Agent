@@ -101,7 +101,12 @@ class ValidationGate:
                 try:
                     from app.db.trial_ledger import TrialLedger
                     n_trials = max(1, TrialLedger().total())
-                except Exception:
+                except Exception as exc:
+                    # n_trials 是 Deflated Sharpe 的多重检验校正项。退回 1 等于宣称
+                    # "只试过一个策略" → DSR 被高估 → **门变松**。读不到台账时门应更
+                    # 保守而非更宽松，至少必须留痕。
+                    logger.error("[validation_gate] 试验台账不可读，n_trials 退回 1 —— "
+                                 "本次 DSR **未做多重检验校正，偏乐观**: %s", exc)
                     n_trials = 1
             else:
                 n_trials = 1

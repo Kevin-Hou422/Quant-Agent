@@ -378,7 +378,9 @@ def load_registry_dataset(
     try:
         from app.config import settings
         _src = getattr(settings, "price_source", "yahoo")
-    except Exception:
+    except Exception as exc:
+        # 缓存键含数据源；读不到时按 yahoo 记键，可能让 moomoo 数据落在 yahoo 键下
+        logger.warning("[registry] 读取 price_source 失败，缓存键按 yahoo 记: %s", exc)
         _src = "yahoo"
     cache_key = f"{name}|{start_dt}|{end_dt}|{_src}"
     if use_cache and cache_key in _CACHE:
@@ -467,7 +469,11 @@ def _fetch_raw(spec: DatasetSpec, start: str, end: str) -> Dict:
     try:
         from app.config import settings
         use_moomoo = getattr(settings, "price_source", "yahoo") == "moomoo"
-    except Exception:
+    except Exception as exc:
+        # 静默退回 yahoo 会破坏 TR.2 的**研究/执行同源**：研究用 yahoo 价、
+        # 执行用 moomoo 价 → 重新引入 train/serve skew，而没有任何提示。
+        logger.error("[registry] 读取 price_source 失败，本次取数退回 yahoo —— "
+                     "若执行侧走 moomoo，研究/执行将**不同源**: %s", exc)
         use_moomoo = False
     if use_moomoo and spec.region == "US":
         return _fetch_moomoo(spec.universe, start, end)

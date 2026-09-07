@@ -124,10 +124,16 @@ class SimAccountProvider(AccountProvider):
         return max(0.0, (1.0 - invested)) * self._equity_dollars()
 
     def positions(self) -> Dict[str, float]:
+        """
+        当前持仓。**读失败绝不能返回 {}**：空字典 = "我什么都没持有"，
+        下游据此把全部权益当成可用买入力，会按满额重新建仓（等于凭空加杠杆）。
+        读不到就抛错，让调用方决定是跳过本轮还是告警。
+        """
         try:
             return dict(self._broker.store.latest_positions(self._book))
-        except Exception:
-            return {}
+        except Exception as exc:
+            logger.error("[SimAccountProvider] 持仓读取失败 —— 拒绝返回空仓假象: %s", exc)
+            raise RuntimeError(f"无法读取当前持仓，本轮不可交易: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------

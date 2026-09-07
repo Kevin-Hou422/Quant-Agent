@@ -9,12 +9,16 @@ Portfolio Constructor — 信号矩阵 → 权重矩阵
 
 from __future__ import annotations
 
+import logging
+
 import warnings
 from abc import ABC, abstractmethod
 from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +231,11 @@ class MVOPortfolio(PortfolioConstructor):
                     S_shrunk + 1e-8 * eye[: valid.sum(), : valid.sum()],
                     s[valid],
                 )
-            except np.linalg.LinAlgError:
-                continue                                    # 保留基准权重
+            except np.linalg.LinAlgError as exc:
+                # 求解失败 → 当日沿用基准权重。结果与"优化成功"不同，必须留痕，
+                # 否则回测里会混着两种口径的权重而无从分辨。
+                logger.warning("[PortfolioConstructor] 协方差求解失败，当日沿用基准权重: %s", exc)
+                continue
             row = np.zeros(N)
             row[valid] = w_sub
             l1 = np.abs(row).sum()

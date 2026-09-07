@@ -130,6 +130,10 @@ class YahooFinanceProvider(DataProvider):
             try:
                 df = raw[field_key]
             except KeyError:
+                # 返回全 NaN 面板 = 该字段**整段缺席**却看起来"有数据"。
+                # 下游的健康门能发现，但必须先知道是这里丢的。
+                logger.error("[yahoo] 上游返回缺少字段 %r，该字段整段为 NaN（%d 个标的）",
+                             field_key, len(tickers))
                 return pd.DataFrame(index=raw.index, columns=tickers, dtype=float)
             if isinstance(df, pd.Series):
                 df = df.to_frame(name=tickers[0])
