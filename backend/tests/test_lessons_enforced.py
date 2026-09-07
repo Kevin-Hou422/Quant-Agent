@@ -421,6 +421,49 @@ class TestLessonH_TestConfigIsolation:
 # §Q 活的 SQLite 不得放在云同步目录
 # ===========================================================================
 
+class TestLessonB2_DataQualityGateIsConsistent:
+    """
+    §B 的具体形态（审计 #5）：ingest 路径**真拒**低质量数据，研究/API 路径却写死
+    `warn_only=True` 只记日志 —— 同一份烂数据，走哪条路结果完全不同。
+    更糟的是 `warn_only=False` 抛的 ValueError 被同函数的 `except Exception` 吞掉，
+    fail-closed 开关**从来没生效过**（实测 0.665 < 0.99 时返回 None 而非抛错）。
+    """
+
+    def _broken_dataset(self):
+        import numpy as np, pandas as pd
+        from app.core.data_engine.dataset_registry import Dataset
+        idx = pd.bdate_range("2022-01-03", periods=120)
+        close = pd.DataFrame(100.0, index=idx, columns=["A", "B", "C"])
+        close.iloc[30:70] = np.nan          # 大段断档
+        close.iloc[80, 0] = 1e6             # 尖刺
+        data = {f: close.copy() for f in
+                ("close", "open", "high", "low", "volume", "vwap", "returns")}
+        return Dataset(name="broken", frequency="daily",
+                       universe=["A", "B", "C"], data=data)
+
+    def test_fail_closed_actually_raises(self):
+        """warn_only=False 必须真的抛错，而不是被自己的 except 吞掉。"""
+        from app.core.data_engine.dataset_registry import (
+            check_dataset_health, DatasetHealthError)
+        with pytest.raises(DatasetHealthError):
+            check_dataset_health(self._broken_dataset(), min_score=0.99, warn_only=False)
+
+    def test_warn_only_still_returns_report(self):
+        """warn_only=True 时不抛错，但必须**返回报告**（否则调用方无从判断质量）。"""
+        from app.core.data_engine.dataset_registry import check_dataset_health
+        rep = check_dataset_health(self._broken_dataset(), min_score=0.99, warn_only=True)
+        assert rep is not None and rep.overall_score < 0.99, rep
+
+    def test_research_path_gate_is_configurable_and_defaults_closed(self):
+        """研究路径必须与 ingest 同口径：默认 fail-closed，阈值可配。"""
+        from app.config import Settings
+        for f in ("research_health_fail_closed", "research_min_health"):
+            assert f in Settings.model_fields, f"缺配置项 {f}"
+        assert Settings.model_fields["research_health_fail_closed"].default is True, (
+            "研究路径默认不拦低质量数据 —— 与 ingest 路径口径不一致"
+        )
+
+
 class TestLessonC_ImportedDepsMustBeDeclared:
     """
     §C 的具体形态（外部审计 #6）：`market_calendar.py` 需要 pandas_market_calendars，

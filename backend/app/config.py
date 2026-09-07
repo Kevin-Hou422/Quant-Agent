@@ -39,7 +39,19 @@ class Settings(BaseSettings):
     app_title: str = "Quant Agent API"
     app_version: str = "0.1.0"
     debug: bool = False
-    cors_origins: list[str] = ["*"]
+    # ⚠️ CORS：`["*"]` + allow_credentials=True 是危险组合。本系统当前**只在本机运行**
+    # （uvicorn 绑 127.0.0.1），默认白名单只放前端 dev server 与本地回环。
+    # 若将来要让局域网/公网访问，**必须先加认证**（见 ULTIMATE_GOAL_ROADMAP 审计 #10），
+    # 而不是简单把这里改回 ["*"] —— 所有审批/拒绝/删除/跑 GP 的端点都无任何鉴权。
+    cors_origins: list[str] = [
+        "http://localhost:5173", "http://127.0.0.1:5173",   # vite dev
+        "http://localhost:4173", "http://127.0.0.1:4173",   # vite preview
+        "http://localhost:3000", "http://127.0.0.1:3000",
+    ]
+    #: 服务绑定地址。非回环地址 = 对外暴露，而本服务**零认证** → 启动时拒绝。
+    #: 确需暴露时，先做认证，再显式设 allow_insecure_bind=true。
+    api_bind_host:        str  = "127.0.0.1"
+    allow_insecure_bind:  bool = False
 
     # ── 数据集默认参数 ────────────────────────────────────────────────────
     # 默认使用真实市场数据集（dataset_registry.py 中的注册名称）
@@ -122,6 +134,13 @@ class Settings(BaseSettings):
     price_source: str = "yahoo"               # yahoo | moomoo
     moomoo_host:  str = "127.0.0.1"           # OpenD 网关地址
     moomoo_port:  int = 11111                 # OpenD API 端口
+
+    # ── 研究路径数据质量门（审计 #5）─────────────────────────────────────
+    # 此前 load_registry_dataset 写死 warn_only=True：缺列/跳点/断档只记日志，
+    # 随后照常进回测/GP/策略构建；而 ingest 路径是真拒的 —— 两条路口径不一致。
+    # 默认 fail-closed，与 ingest 的 min_health 对齐。
+    research_health_fail_closed: bool  = True
+    research_min_health:         float = 0.7
 
     # ── 交易日历（Phase 11.2）────────────────────────────────────────────
     # 库缺失时是否允许退回工作日启发式。默认 False（fail-closed）：静默降级会把

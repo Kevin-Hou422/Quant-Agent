@@ -74,6 +74,30 @@ app = FastAPI(
     lifespan = _lifespan,
 )
 
+def _assert_safe_bind() -> None:
+    """
+    启动自检（审计 #10）：本服务**没有任何认证** —— 所有策略审批/拒绝/状态变更/
+    会话删除/GP 跑批端点，任何能访问到它的人都能调用。
+    因此绑定到非回环地址等同于把这些能力开放给整个网络，必须显式解除保险。
+    """
+    host = str(getattr(settings, "api_bind_host", "127.0.0.1") or "")
+    loopback = host in ("127.0.0.1", "localhost", "::1", "")
+    if not loopback and not getattr(settings, "allow_insecure_bind", False):
+        raise RuntimeError(
+            f"拒绝启动：API_BIND_HOST={host!r} 不是回环地址，而本服务**零认证** —— "
+            f"审批/拒绝/删除/跑 GP 等端点将对整个网络开放。"
+            f"请先实现认证（见 roadmap 审计 #10）；若确知风险并要临时暴露，"
+            f"显式设置 ALLOW_INSECURE_BIND=true。"
+        )
+    if "*" in settings.cors_origins and getattr(settings, "allow_insecure_bind", False) is False:
+        # 注意：模块级 logger 在本函数之后才定义，这里按名字取，避免 NameError。
+        logging.getLogger("main").warning(
+            "[security] CORS 允许任意来源（'*'）且服务无认证 —— "
+            "仅在本机自用时可接受，切勿在此配置下对外暴露。")
+
+
+_assert_safe_bind()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins     = settings.cors_origins,

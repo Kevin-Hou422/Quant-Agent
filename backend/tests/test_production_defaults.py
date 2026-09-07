@@ -139,3 +139,45 @@ class TestProductionDataContract:
             assert not any(k in val for k in ("onedrive", "dropbox", "icloud")), (
                 f"发布默认把活库放在云同步目录：{attr}={val}"
             )
+
+
+# ---------------------------------------------------------------------------
+# 审计 #10：零认证服务的暴露面（本机自用形态）
+# ---------------------------------------------------------------------------
+
+class TestNoAuthServiceIsNotExposed:
+    """
+    本服务**没有任何认证**：策略审批/拒绝/状态变更/删会话/跑 GP 全部裸奔。
+    当前形态是"只在本机跑"，因此正确的防线不是加密码，而是
+    **保证它不会在无人察觉的情况下被绑到对外地址**。
+    """
+
+    def test_bind_host_defaults_to_loopback(self, fresh_settings):
+        assert fresh_settings.api_bind_host in ("127.0.0.1", "localhost", "::1"), (
+            f"默认绑定 {fresh_settings.api_bind_host!r} 不是回环地址 —— "
+            f"零认证服务会对整个网络开放"
+        )
+        assert fresh_settings.allow_insecure_bind is False
+
+    def test_cors_is_not_wildcard_by_default(self, fresh_settings):
+        assert "*" not in fresh_settings.cors_origins, (
+            "CORS 默认允许任意来源，且 allow_credentials=True —— 危险组合"
+        )
+        assert fresh_settings.cors_origins, "CORS 白名单为空会让前端无法访问"
+
+    def test_startup_refuses_non_loopback_bind(self, monkeypatch):
+        """绑非回环地址时必须**拒绝启动**，除非显式解除保险。"""
+        from app.config import settings as live
+        import app.main as m
+        monkeypatch.setattr(live, "api_bind_host", "0.0.0.0", raising=False)
+        monkeypatch.setattr(live, "allow_insecure_bind", False, raising=False)
+        with pytest.raises(RuntimeError, match="零认证|回环"):
+            m._assert_safe_bind()
+
+    def test_explicit_optin_allows_exposure(self, monkeypatch):
+        """显式 allow_insecure_bind=true 才放行（保留逃生口，但必须是有意为之）。"""
+        from app.config import settings as live
+        import app.main as m
+        monkeypatch.setattr(live, "api_bind_host", "0.0.0.0", raising=False)
+        monkeypatch.setattr(live, "allow_insecure_bind", True, raising=False)
+        m._assert_safe_bind()          # 不抛即通过

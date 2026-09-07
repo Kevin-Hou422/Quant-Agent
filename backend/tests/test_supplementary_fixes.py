@@ -75,8 +75,20 @@ class TestS2CsNesting:
         "winsorize(zscore(returns), 3)",
     ])
     def test_reasonable_nesting_parses(self, parser, expr):
+        """
+        `assert node is not None` 太弱：解析器返回任何东西都算过。
+        真正的契约是 **repr 能还原原表达式**（round-trip）——这才证明嵌套结构
+        被正确保留，而不是被压平/丢参数。
+        """
         node = parser.parse(expr)
         assert node is not None
+        rt = repr(node)
+        assert parser.parse(rt) is not None, f"repr 产出的 DSL 无法再解析：{rt}"
+        # 结构必须保住：外层与内层算子名都要出现在 repr 里
+        import re as _re
+        ops = _re.findall(r"([a-z_]+)\(", expr)
+        for op in ops:
+            assert op in rt, f"round-trip 丢失算子 {op}：{expr} → {rt}"
 
     def test_nested_cs_evaluates(self, parser, make_dataset):
         """不仅可解析，还能对真实形状数据求值出 (T,N) 面板。"""
@@ -181,13 +193,25 @@ class TestS8AuxGroupValidation:
         from app.core.alpha_engine.signal_processor import SimulationConfig
 
         ds = make_dataset(n_days=80, n_tickers=6)
-        ds["groups"] = np.array([0, 0, 1, 1, 2, 2])          # Task 3.4 文档格式
+        groups = np.array([0, 0, 1, 1, 2, 2])                 # Task 3.4 文档格式
+        ds["groups"] = groups
         _validate_dataset(ds, label="test")                   # 不抛即通过
 
         result = RealisticBacktester(config=SimulationConfig()).run(
             "sector_neutral(ts_delta(close, 5))", ds,
         )
+        # `is_report is not None` 太弱：分组被忽略也照样返回报告（B-7 的教训）。
+        # 断言 (N,) groups **真的被消费**了：sector_neutral 的组内均值必须为 0。
         assert result.is_report is not None
+        from app.core.alpha_engine.parser import Parser
+        from app.core.alpha_engine.dsl_executor import Executor
+        sig = Executor().run(Parser().parse("sector_neutral(ts_delta(close, 5))"), ds)
+        last = sig.dropna(how="all").iloc[-1]
+        cols = list(sig.columns)
+        for g in np.unique(groups):
+            members = [c for c, gv in zip(cols, groups) if gv == g]
+            m = float(last[members].mean())
+            assert abs(m) < 1e-8, f"组 {g} 组内均值 {m:.3e} 未归零 → (N,) groups 未被消费"
 
     def test_wrong_length_1d_groups_rejected(self, make_dataset):
         from app.core.backtest_engine.realistic_backtester import _validate_dataset

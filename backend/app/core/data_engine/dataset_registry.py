@@ -340,6 +340,8 @@ def load_registry_dataset(
     use_cache:    bool = True,
     with_sector:  bool = True,
     health_check: bool = True,
+    health_fail_closed: Optional[bool] = None,
+    min_health:   Optional[float] = None,
 ) -> Dataset:
     """
     Load a named dataset from the production registry.
@@ -417,9 +419,16 @@ def load_registry_dataset(
         data      = data,
     )
 
-    # Run data quality check (Task 2.4) — warn-only, never blocks loading
+    # 数据质量门（审计 #5）。此前写死 warn_only=True：缺列/跳点/断档只写日志，
+    # 随后照常进回测、GP 搜索、策略构建 —— 而 ingest 路径是**真拒**的，两条路口径不一致。
+    # 现与 ingest 对齐：默认 fail-closed，阈值与开关均可配置。
     if health_check:
-        check_dataset_health(ds, min_score=0.7, warn_only=True)
+        from app.config import settings as _st
+        fc = (bool(getattr(_st, "research_health_fail_closed", True))
+              if health_fail_closed is None else bool(health_fail_closed))
+        thr = (float(getattr(_st, "research_min_health", 0.7))
+               if min_health is None else float(min_health))
+        check_dataset_health(ds, min_score=thr, warn_only=not fc)
 
     if use_cache:
         _CACHE[cache_key] = ds
@@ -575,6 +584,16 @@ def load_multi_datasets(
 # 数据健康检查工具（Task 2.4）
 # ---------------------------------------------------------------------------
 
+class DatasetHealthError(ValueError):
+    """数据质量低于阈值且要求 fail-closed。
+
+    **必须是独立类型**：旧实现在同一个 try 里 `raise ValueError(msg)`，
+    而函数末尾的 `except Exception` 把它当成"检查器自身出错"吞掉并返回 None ——
+    于是 `warn_only=False` 这个 fail-closed 开关**从来没有生效过**
+    （实测：健康分 0.665 < 阈值 0.99，返回 None 而非抛错）。
+    """
+
+
 def check_dataset_health(
     ds:         Dataset,
     min_score:  float = 0.7,
@@ -620,7 +639,7 @@ def check_dataset_health(
             if warn_only:
                 logger.warning(msg)
             else:
-                raise ValueError(msg)
+                raise DatasetHealthError(msg)
         else:
             logger.info(
                 "Dataset '%s' 健康检查通过 (score=%.3f, tickers=%d, dates=%d)",
@@ -629,6 +648,8 @@ def check_dataset_health(
 
         return report
 
+    except DatasetHealthError:
+        raise                       # 这是**判定结果**，不是检查器故障 —— 必须放行上抛
     except ImportError:
         logger.debug("DataHealthChecker 不可用，跳过健康检查")
         return None

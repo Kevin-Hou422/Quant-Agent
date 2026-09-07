@@ -320,6 +320,7 @@ def _generate_diverse_seeds(
     R-N1：``seed`` 非空时绑定确定性随机源，使种子生成可复现（消除对全局
     random 状态的依赖 → 修复测试顺序敏感的偶发失败）。
     """
+    n_rejected = 0          # 审计 #9：被解析/验证拒掉的候选数，供汇总告警
     if seed is not None:
         from ..gp_engine import _rng as _shared_rng
         _shared_rng.bind_seed(seed)
@@ -370,8 +371,9 @@ def _generate_diverse_seeds(
                 valid_nodes.append(mutant)
                 valid_dsls.append(key)
                 seen.add(key)
-        except Exception:
-            pass
+        except Exception as exc:
+            n_rejected += 1
+            logger.debug("[GenWorkflow] 变异体被拒: %s", exc)
 
     # ── Layer 4: Random alphas ────────────────────────────────────────
     attempts = 0
@@ -387,8 +389,14 @@ def _generate_diverse_seeds(
                 if key not in seen:
                     valid_dsls.append(key)
                     seen.add(key)
-        except Exception:
-            pass
+        except Exception as exc:
+            n_rejected += 1
+            logger.debug("[GenWorkflow] 随机候选被拒: %s", exc)
+
+    if n_rejected:
+        # 审计 #9：候选被拒此前完全不可见 —— 种子池比预期小时无从判断是
+        # "生成器产出少"还是"大量候选被悄悄丢掉"。
+        logger.warning("[GenWorkflow] 种子生成期间丢弃 %d 个候选（解析/验证失败）", n_rejected)
 
     logger.info(
         "[GenWorkflow] Final seed pool: %d DSLs for hypothesis='%.60s'",
@@ -413,6 +421,7 @@ def _expand_for_optimization(dsl: str, n_mutations: int = 8) -> List[str]:
     canonical = repr(seed_node)
     results:  List[str] = [canonical]
     seen:     set       = {canonical}
+    n_rejected = 0          # 审计 #9：被解析/验证拒掉的候选数，供汇总告警
 
     mutation_ops = [point_mutation, hoist_mutation, param_mutation]
     attempts = 0
@@ -426,8 +435,9 @@ def _expand_for_optimization(dsl: str, n_mutations: int = 8) -> List[str]:
             if key not in seen:
                 results.append(key)
                 seen.add(key)
-        except Exception:
-            pass
+        except Exception as exc:
+            n_rejected += 1
+            logger.debug("[OptWorkflow] 变异体被拒: %s", exc)
 
     # Random fill
     attempts = 0
@@ -439,9 +449,12 @@ def _expand_for_optimization(dsl: str, n_mutations: int = 8) -> List[str]:
             if key not in seen:
                 results.append(key)
                 seen.add(key)
-        except Exception:
-            pass
+        except Exception as exc:
+            n_rejected += 1
+            logger.debug("[OptWorkflow] 随机候选被拒: %s", exc)
 
+    if n_rejected:
+        logger.warning("[OptWorkflow] 候选扩展期间丢弃 %d 个（解析/验证失败）", n_rejected)
     logger.info("[OptWorkflow] Expanded '%s' → %d candidates", dsl[:60], len(results))
     return results
 
@@ -543,7 +556,11 @@ def _combine_pool_alphas(
                 signals[dsl] = executor.run_expr(dsl, oos_data)
                 if is_data:
                     is_signals[dsl] = executor.run_expr(dsl, is_data)
-            except Exception:
+            except Exception as exc:
+                # 静默 pop = 该候选从组合样本里消失且无人知晓（审计 #9）。
+                # 组合权重是在**剩下的**因子上算的，样本被悄悄削过。
+                logger.warning("[AlphaCombiner] 信号求值失败，已剔除该因子: %s | %s",
+                               dsl[:60], exc)
                 signals.pop(dsl, None)
                 is_signals.pop(dsl, None)
 
@@ -659,8 +676,8 @@ class GenerationWorkflow:
             if on_progress is not None:
                 try:
                     on_progress(text)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("on_progress 回调失败（不影响主流程）: %s", exc)
 
         _emit(f'[Workflow A] Hypothesis: "{hypothesis[:80]}"')
         _emit(f"[Workflow A] Generating {self._n_seeds} diverse seed DSLs...")
@@ -670,8 +687,13 @@ class GenerationWorkflow:
         try:
             is_data, oos_data, test_data = _partition_three_way(
                 dataset, self._oos_ratio, self._test_ratio)
-        except ValueError:
-            # 数据太短无法三段 → 退回两段（无 held-out test；仅在极小数据集/测试中发生）
+        except ValueError as exc:
+            # 数据太短无法三段 → 退回两段（无 held-out test）。
+            # metrics 里的 held_out_test 会置 False，但**退化本身此前无任何告警** ——
+            # 使用者不看那个字段就以为拿到了真样本外数字。
+            logger.warning("[Workflow A] 数据不足以三段切割，退回两段：**本次无 held-out Test**，"
+                           "汇报的 OOS 是 GP 选择时用过的那一段: %s", exc)
+            _emit("[Workflow A] ⚠ 数据不足以三段切割 → 无 held-out Test，OOS 非真正样本外")
             is_data, oos_data = _partition(dataset, self._oos_ratio)
             test_data = {}
 
@@ -852,8 +874,8 @@ class OptimizationWorkflow:
             if on_progress is not None:
                 try:
                     on_progress(text)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("on_progress 回调失败（不影响主流程）: %s", exc)
 
         _emit(f"[Workflow B] Input DSL: {dsl[:80]}")
         _emit("[Workflow B] Parsing and diagnosing initial quality...")

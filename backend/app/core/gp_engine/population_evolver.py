@@ -184,6 +184,8 @@ class PopulationEvolver:
         self._rng = random.Random(seed)
 
         self._pool = AlphaPool(max_size=200, corr_threshold=corr_threshold)
+        # 审计 #9：本代因求值失败被丢弃的候选（供上层如实上报，不再静默消失）
+        self._last_dropped: List[str] = []
 
         # Default SimulationConfig for GP evaluation (no parameter tuning per-individual)
         from ..alpha_engine.signal_processor import SimulationConfig
@@ -282,8 +284,8 @@ class PopulationEvolver:
             if on_generation_end is not None:
                 try:
                     on_generation_end(gen_log)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("on_generation_end 回调失败（不影响进化）: %s", exc)
 
             # d. Phase 8: adaptive mutation weights — metrics + factor family
             diag    = self._pool.population_diagnostics()
@@ -352,6 +354,7 @@ class PopulationEvolver:
             if d not in all_seeds:
                 all_seeds.append(d)
 
+        n_seed_rejected = 0
         for dsl in all_seeds:
             try:
                 node = _parser.parse(dsl)
@@ -375,11 +378,13 @@ class PopulationEvolver:
                     if key not in seen:
                         pop.append(node)
                         seen.add(key)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    n_seed_rejected += 1
+                    logger.debug("种子 DSL 被拒: %s | %s", dsl[:60], exc)
 
         # 2b. Fill remainder from crossover of seeds + mutations + random
         attempts = 0
+        n_fill_rejected = 0
         while len(pop) < self._pop_size and attempts < self._pop_size * 20:
             attempts += 1
             try:
@@ -406,9 +411,16 @@ class PopulationEvolver:
                 if key not in seen:
                     pop.append(cand)
                     seen.add(key)
-            except Exception:
-                pass
+            except Exception as exc:
+                n_fill_rejected += 1
+                logger.debug("填充候选被拒: %s", exc)
 
+        if len(pop) < self._pop_size:
+            # 目标种群没填满 ≠ "跑了 pop_size 个" —— 必须说出来，否则后续
+            # "best of pop_size" 的说法就是假的。
+            logger.warning(
+                "种群未填满：目标 %d，实得 %d（种子被拒 %d，填充被拒 %d，尝试 %d 次）",
+                self._pop_size, len(pop), n_seed_rejected, n_fill_rejected, attempts)
         return pop
 
     # ------------------------------------------------------------------
@@ -416,12 +428,27 @@ class PopulationEvolver:
     # ------------------------------------------------------------------
 
     def _evaluate_population(self, population: List[Node]) -> List[EvalResult]:
-        results = []
+        """
+        审计 #9：`_evaluate_one` 返回 None 的候选会**静默从搜索样本里消失** ——
+        使用者看到的是"跑了 pop_size 个个体"，实际参与选择的可能少得多，
+        而"最优"是在这个被悄悄削过的样本里选出来的。这里统计并如实上报。
+        """
+        results, dropped = [], []
         for node in population:
             dsl = repr(node)
             r   = self._evaluate_one(dsl, node)
             if r is not None:
                 results.append(r)
+            else:
+                dropped.append(dsl)
+        if dropped:
+            self._last_dropped = list(dropped)
+            logger.warning(
+                "评估流失：%d/%d 个候选求值失败被丢弃（参与选择的实际只有 %d 个）｜示例: %s",
+                len(dropped), len(population), len(results),
+                "; ".join(d[:48] for d in dropped[:3]))
+        else:
+            self._last_dropped = []
         return results
 
     def _evaluate_one(self, dsl: str, node: Optional[Node] = None) -> Optional[EvalResult]:
@@ -581,6 +608,8 @@ class PopulationEvolver:
         if not results:
             return [generate_random_alpha(factor_family=self._factor_family) for _ in range(self._pop_size)]
 
+        n_rejected = 0          # 审计 #9：被拒的下一代候选数（供未填满时汇总告警）
+
         # Build map DSL → Node
         dsl_to_node = {r.dsl: r.node or _try_parse(r.dsl) for r in results}
         dsl_to_node = {k: v for k, v in dsl_to_node.items() if v is not None}
@@ -690,14 +719,18 @@ class PopulationEvolver:
                         _validator.validate(cand)
                         next_gen.append(cand)
                         seen.add(key)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        n_rejected += 1
+                        logger.debug("下一代候选被拒: %s", exc)
 
-            except Exception:
-                pass
+            except Exception as exc:
+                n_rejected += 1
+                logger.debug("交叉/变异失败: %s", exc)
 
         # Pad with random individuals if still short (family-biased)
-        while len(next_gen) < self._pop_size:
+        pad_attempts = 0
+        while len(next_gen) < self._pop_size and pad_attempts < self._pop_size * 20:
+            pad_attempts += 1
             try:
                 node = generate_random_alpha(factor_family=self._factor_family)
                 key  = repr(node)
@@ -705,8 +738,18 @@ class PopulationEvolver:
                     _validator.validate(node)
                     next_gen.append(node)
                     seen.add(key)
-            except Exception:
-                pass
+            except Exception as exc:
+                n_rejected += 1
+                logger.debug("随机补位被拒: %s", exc)
+
+        if len(next_gen) < self._pop_size:
+            # 审计 #9：补不满就静默返回短种群 —— 下一代实际参与进化的个体数
+            # 比声称的少，而这一点此前完全不可见。
+            # （原 while 还没有尝试上限，补不出来时会**死循环**。）
+            logger.warning("下一代种群未填满：目标 %d，实得 %d（累计拒绝 %d）",
+                           self._pop_size, len(next_gen), n_rejected)
+        elif n_rejected:
+            logger.debug("下一代构建期间拒绝 %d 个候选", n_rejected)
 
         return next_gen[: self._pop_size]
 
