@@ -171,8 +171,16 @@ class DiscoveryEngine:
                 store.update_status(aid, "validated")
             return passed, detail
         except Exception as exc:
-            logger.warning("[discovery] 候选 %s 入池门出错（视为不通过）: %s", aid, exc)
-            return False, None
+            # `return False, None` 把"门判定不通过"和"门根本没跑起来"混为一谈：
+            # 调用方看到 gate=None 只知道没结果，不知道为什么。带上诊断信息，
+            # 让这类偶发失败自己说出原因，而不是靠事后二分定位（审计 #9 形态）。
+            import traceback
+            logger.error(
+                "[discovery] 候选 %s 入池门出错（不是判定为未通过，是压根没跑起来）"
+                "｜mode=%s｜%s\n%s",
+                aid, mode, exc, traceback.format_exc(limit=3))
+            return False, {"gate_error": f"{type(exc).__name__}: {exc}",
+                           "evaluated": False, "mode": mode}
 
     @staticmethod
     def _save_candidate(store, dsl, family, regime, m, explanation) -> Optional[int]:

@@ -45,9 +45,20 @@ class TestLifecycle:
 
     FULL_PATH = ["candidate", "validated", "paper", "active", "decaying", "retired"]
 
+    @staticmethod
+    def _assert_validator_is_live():
+        """
+        活性对照：证明 validate_transition **不是空函数**。
+        "调用它不抛异常"这种写法的致命缺陷是——把被测函数改成 `pass` 也会通过。
+        每个依赖"不抛即通过"的用例都必须搭一个"必须抛"的对照。
+        """
+        with pytest.raises(IllegalTransition):
+            validate_transition("retired", "active")
+
     def test_full_happy_path(self):
+        self._assert_validator_is_live()
         for old, new in zip(self.FULL_PATH, self.FULL_PATH[1:]):
-            validate_transition(old, new)      # 不抛即通过
+            validate_transition(old, new)      # 合法流转：不抛即通过
 
     def test_illegal_jumps_blocked(self):
         for old, new in [
@@ -59,6 +70,7 @@ class TestLifecycle:
                 validate_transition(old, new)
 
     def test_idempotent_same_state(self):
+        self._assert_validator_is_live()
         for s in AlphaStatus:
             validate_transition(s, s)          # old == new 永远合法
 
@@ -71,16 +83,22 @@ class TestLifecycle:
                     validate_transition(terminal, target)
 
     def test_decaying_can_recover(self):
+        self._assert_validator_is_live()
         validate_transition("decaying", "active")
 
     def test_active_can_be_superseded(self):
+        self._assert_validator_is_live()
         validate_transition("active", "superseded")
 
     def test_any_state_can_retire(self):
+        self._assert_validator_is_live()
+        n_checked = 0
         for s in AlphaStatus:
             if s in TERMINAL_STATES:
                 continue
             validate_transition(s, AlphaStatus.RETIRED)
+            n_checked += 1
+        assert n_checked >= 3, f"仅检查了 {n_checked} 个非终态，覆盖不足"
 
     def test_unknown_status_raises(self):
         with pytest.raises(ValueError, match="未知"):

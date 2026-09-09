@@ -131,5 +131,8 @@ class TestAlphaOptimizer:
         dsl = "rank(ts_delta(log(close), 5))"
         opt = self._make_optimizer(dsl, is_data)
         _, study_summary = opt.optimize()
-        if study_summary is not None:
-            assert hasattr(study_summary, "best_value") or "best_value" in dir(study_summary)
+        # optimize() 返回 None 时原写法直接跳过 —— 优化器彻底失效也算通过。
+        assert study_summary is not None, "optimize() 未返回 study_summary"
+        assert hasattr(study_summary, "best_value"), (
+            f"study_summary 缺 best_value：{[a for a in dir(study_summary) if not a.startswith('_')][:8]}"
+        )

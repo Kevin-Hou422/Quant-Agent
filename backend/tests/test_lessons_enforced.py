@@ -133,6 +133,110 @@ class TestLessonA_AssertionsMustBeAbleToFail:
         assert not bad, "以下断言恒真：\n  " + "\n  ".join(bad)
 
 
+    #: 视为"真断言"的调用（np.testing / pytest 家族）
+    _ASSERT_CALLS = {"assert_allclose", "assert_array_equal", "assert_almost_equal",
+                     "assert_equal", "assert_series_equal", "assert_frame_equal",
+                     "assert_index_equal", "fail", "raises", "approx"}
+
+    @staticmethod
+    def _is_fixture(fn: ast.FunctionDef) -> bool:
+        return any("fixture" in ast.unparse(d) for d in fn.decorator_list)
+
+    @staticmethod
+    def _asserting_helpers(tree: ast.Module) -> set:
+        """本模块内**自身含断言**的辅助函数名 —— 调用它们等同于断言（如 _ok）。"""
+        out = set()
+        for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+            if fn.name.startswith("test"):
+                continue
+            body = ast.dump(fn)
+            if any(isinstance(x, ast.Assert) for x in ast.walk(fn)) or "raises" in body:
+                out.add(fn.name)
+        return out
+
+    def _test_funcs(self):
+        """遍历所有测试函数，产出 (文件, 函数节点, 源码, 辅助函数名集合)。"""
+        for p in _py_files(TESTS):
+            if p.name == Path(__file__).name:
+                continue
+            src = _src(p)
+            try:
+                tree = ast.parse(src)
+            except SyntaxError as exc:
+                raise AssertionError(f"测试文件无法解析（会被静默排除出检查）：{_rel(p)}: {exc}")
+            helpers = self._asserting_helpers(tree)
+            for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                       and n.name.startswith("test") and not self._is_fixture(n)]:
+                yield p, fn, src, helpers
+
+    def test_no_zero_assertion_test(self):
+        """
+        零断言的测试 = 被测函数改成空实现也照样通过。
+        实测漏网：我自己写的 test_explicit_optin_allows_exposure 就是
+        "调用一下 + 注释'不抛即通过'" —— 临时扫描器抓到了，强制套件当时没这条检查。
+        """
+        bad = []
+        for p, fn, _src_, helpers in self._test_funcs():
+            has_assert = any(isinstance(n, ast.Assert) for n in ast.walk(fn))
+            names = self._ASSERT_CALLS | helpers
+            has_call = any(
+                isinstance(n, ast.Call) and
+                (getattr(n.func, "attr", None) in names
+                 or getattr(n.func, "id", None) in names)
+                for n in ast.walk(fn))
+            has_raises = "raises" in ast.dump(fn)
+            if not (has_assert or has_call or has_raises):
+                bad.append(f"{_rel(p)}:{fn.lineno} {fn.name}")
+        assert not bad, (
+            "以下测试没有任何断言（被测实现清空也会通过）：\n  " + "\n  ".join(bad))
+
+    def test_no_generic_conditional_assert(self):
+        """
+        `if <条件>: assert ...` —— 条件不成立时**一条都不检查**。
+        守卫若本身就是契约（如 long_short 两侧都要有），应写成断言而非 if。
+        确需守卫（样本量不足等）时，必须记录分支是否真的走到。
+        """
+        ALLOW_MARK = "分支"          # 注释里说明了为何保留守卫 → 放行
+        bad = []
+        for p, fn, src, _h in self._test_funcs():
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.If) or node.orelse:
+                    continue
+                if not any(isinstance(x, ast.Assert) for x in ast.walk(node)):
+                    continue
+                # if 体以 return/raise 收尾 → 提前返回模式，其后代码即 else 分支，
+                # 两条路都被检查到，不算"跳过断言"。
+                if node.body and isinstance(node.body[-1], (ast.Return, ast.Raise)):
+                    continue
+                seg = ast.get_source_segment(src, node) or ""
+                # 分支内自增计数器（记录是否走到）或注释说明 → 认为是有意保留
+                if "+= 1" in seg or ALLOW_MARK in seg:
+                    continue
+                bad.append(f"{_rel(p)}:{node.lineno} if {ast.unparse(node.test)[:56]}")
+        assert not bad, (
+            "以下断言藏在 if 之后（条件不成立就什么都不检查）：\n  "
+            + "\n  ".join(bad)
+            + "\n修法：守卫即契约就写成断言；确需守卫则在分支内计数并断言计数>0。")
+
+    def test_no_swallowed_exception_inside_test(self):
+        """测试里的 except 必须 fail/raise/断言，否则被测行为出错也不会红。"""
+        bad = []
+        for p, fn, _src_, _h in self._test_funcs():
+            for h in [n for n in ast.walk(fn) if isinstance(n, ast.ExceptHandler)]:
+                d = ast.dump(h)
+                if "Assert" in d or "Raise" in d or "fail" in d or "skip" in d:
+                    continue
+                # 把异常**收集到变量**（供后续断言）也算处理，例如多线程里
+                # errors.append(exc) + 事后 assert not errors
+                if "append" in d or isinstance(h.body[0] if h.body else None, ast.Assign):
+                    continue
+                tname = ast.unparse(h.type) if h.type else "bare"
+                bad.append(f"{_rel(p)}:{h.lineno} {fn.name} (except {tname})")
+        assert not bad, (
+            "以下测试内的 except 既不断言也不失败（吞掉被测行为的错误）：\n  "
+            + "\n  ".join(bad))
+
+
 # ===========================================================================
 # §B 安全门不要 fail-open  /  §J 财务关键参数不能是隐藏默认
 # ===========================================================================
@@ -197,17 +301,23 @@ class TestLessonB_GatesMustNotFailOpen:
 
     def test_silent_except_count_does_not_grow(self):
         import ast as _ast
-        n = 0
+        n, unparsable = 0, []
         for p in _py_files(APP):
             try:
                 tree = _ast.parse(_src(p))
-            except Exception:
+            except Exception as exc:
+                # 讽刺但真实：这个棘轮此前自己用 except:continue 吞掉解析失败 ——
+                # 一个语法坏掉的文件就能让它少数一批，等于给计数开后门。
+                unparsable.append(f"{_rel(p)}: {exc}")
                 continue
             for h in [x for x in _ast.walk(tree) if isinstance(x, _ast.ExceptHandler)]:
                 d = _ast.dump(h)
                 if (all(k not in d for k in ("logger", "logging", "Raise", "print"))
                         and "warn" not in d.lower()):
                     n += 1
+        assert not unparsable, (
+            "以下 app/ 文件无法解析，未被计入静默 except 统计（棘轮会因此虚低）：\n  "
+            + "\n  ".join(unparsable))
         assert n <= self.SILENT_EXCEPT_BUDGET, (
             f"静默 except 增加到 {n} 处（上限 {self.SILENT_EXCEPT_BUDGET}）。"
             f"新增的兜底必须记录或抛出 —— 否则失败会伪装成成功。"

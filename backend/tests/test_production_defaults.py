@@ -180,4 +180,9 @@ class TestNoAuthServiceIsNotExposed:
         import app.main as m
         monkeypatch.setattr(live, "api_bind_host", "0.0.0.0", raising=False)
         monkeypatch.setattr(live, "allow_insecure_bind", True, raising=False)
-        m._assert_safe_bind()          # 不抛即通过
+        # "不抛即通过" 是零断言（本文件此前唯一一处）：函数被改成空实现也照样过。
+        # 断言真实契约：opt-in 打开时放行，关掉时立刻拒绝 —— 两个方向都测到。
+        m._assert_safe_bind()
+        monkeypatch.setattr(live, "allow_insecure_bind", False, raising=False)
+        with pytest.raises(RuntimeError):
+            m._assert_safe_bind()

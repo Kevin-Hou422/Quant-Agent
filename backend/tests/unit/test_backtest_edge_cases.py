@@ -129,11 +129,15 @@ class TestOneDayData:
         assert result is not None
         eq = np.asarray(result.equity_curve, dtype=float)
         assert np.isfinite(eq).all(), "单日数据产出非有限净值"
+        # 契约二选一（不允许第三种）：单日数据要么**没有** Sharpe（None/NaN），
+        # 要么必须是 0 —— 绝不能报出一个看起来正常的比率。
+        # 原写法用 if 守卫，Sharpe 是 None 时一条都不检查。
         sr = getattr(result, "sharpe_ratio", None)
-        if sr is not None and np.isfinite(sr):
-            assert abs(float(sr)) < 1e-9, (
-                f"仅 1 天数据却报出 Sharpe={sr} —— 无样本的统计量被当成真实结果"
-            )
+        if sr is None or not np.isfinite(sr):
+            return                      # 没有 Sharpe：符合契约
+        assert abs(float(sr)) < 1e-9, (
+            f"仅 1 天数据却报出 Sharpe={sr} —— 无样本的统计量被当成真实结果"
+        )
 
 
 class TestSignalAllZero:

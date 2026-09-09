@@ -115,11 +115,14 @@ class TestGPEdgeCases:
             pop_size=5, n_generations=1, seed=7,
         ).run(n_optuna_trials=0)
 
-        if result is not None and hasattr(result, "pool_top5"):
-            pool = result.pool_top5
-            if pool:
-                fitnesses = [e.get("fitness", e.get("sharpe_oos", 0)) if isinstance(e, dict) else e.fitness for e in pool]
-                assert any(not np.isnan(f) for f in fitnesses)
+        # 三层 if 保护 = GP 什么都没产出也照样通过。pop_size=5/n_gen=1 必定有 pool。
+        assert result is not None, "GP 返回 None"
+        assert hasattr(result, "pool_top5"), f"结果缺 pool_top5：{dir(result)[:8]}"
+        pool = result.pool_top5
+        assert pool, "pool_top5 为空 —— GP 没有产出任何可用个体"
+        fitnesses = [e.get("fitness", e.get("sharpe_oos", 0)) if isinstance(e, dict) else e.fitness
+                     for e in pool]
+        assert any(not np.isnan(f) for f in fitnesses), f"全部 fitness 为 NaN：{fitnesses}"
 
 
 class TestGPEvolutionLog:
@@ -136,8 +139,10 @@ class TestGPEvolutionLog:
             pop_size=4, n_generations=2, seed=0,
         ).run(n_optuna_trials=0)
 
-        if result is not None and hasattr(result, "evolution_log"):
-            log = result.evolution_log
-            if log:
-                for entry in log:
-                    assert "generation" in entry or "gen" in entry
+        # n_generations=2 必定产出 2 条进化日志；三层 if 会让"GP 没跑"也通过。
+        assert result is not None, "GP 返回 None"
+        log = result.evolution_log
+        assert log, "evolution_log 为空 —— GP 实际没有跑过任何一代"
+        assert len(log) >= 1, f"n_generations=2 却只有 {len(log)} 条日志"
+        for entry in log:
+            assert "generation" in entry or "gen" in entry, f"日志条目缺代数字段：{entry}"

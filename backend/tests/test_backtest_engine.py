@@ -102,11 +102,15 @@ def test_decile_portfolio(signal_df):
         long_tks  = valid_w[valid_w > 0].index
         short_tks = valid_w[valid_w < 0].index
 
-        if len(long_tks) > 0 and len(short_tks) > 0:
-            # 做多组信号均值 > 做空组信号均值
-            assert (
-                sig_row[long_tks].mean() > sig_row[short_tks].mean()
-            ), f"第 {t} 日: 多头信号均值应 > 空头信号均值"
+        # long_short 模式下**两侧都必须存在** —— 这是契约，不是碰巧。
+        # 原写法把它当守卫：若某日只剩单边（权重构造出错），核心断言直接被跳过。
+        assert len(long_tks) > 0 and len(short_tks) > 0, (
+            f"第 {t} 日 long_short 组合出现单边：多头 {len(long_tks)} 个、"
+            f"空头 {len(short_tks)} 个"
+        )
+        assert (
+            sig_row[long_tks].mean() > sig_row[short_tks].mean()
+        ), f"第 {t} 日: 多头信号均值应 > 空头信号均值"
 
         # 市场中性（等权做多做空）：所有权重绝对值之和 > 0 且权重和 ≈ 0
         row_sum = float(w_row.fillna(0).sum())
@@ -126,6 +130,7 @@ def test_signal_weighted(signal_df):
 
     assert weights.shape == signal_df.shape
 
+    n_corr_checked = 0
     for t in range(N_DAYS):
         s = signal_df.iloc[t].dropna()
         w = weights.iloc[t].reindex(s.index)
@@ -135,10 +140,17 @@ def test_signal_weighted(signal_df):
         assert abs(row_sum) < 1e-8, f"第 {t} 日市场中性化后权重和={row_sum:.2e}"
 
         # 权重与信号方向相关（Pearson > 0）
+        # 样本 <4 时相关系数无意义，故保留守卫；但必须记录**是否真的检查过** ——
+        # 否则一次都没进分支（例如信号全 NaN）也算通过。
         if len(s) >= 4:
+            n_corr_checked += 1
             corr = np.corrcoef(s.values, w.values)[0, 1]
             assert corr > 0 or np.isnan(corr), \
                 f"第 {t} 日权重与信号应正相关，实际 corr={corr:.4f}"
+
+    assert n_corr_checked >= N_DAYS // 2, (
+        f"仅 {n_corr_checked}/{N_DAYS} 日进行了相关性检查 —— 断言基本没生效"
+    )
 
 
 # ===========================================================================
@@ -301,14 +313,17 @@ def test_performance_metrics(backtest_result, prices_df):
     assert report.cvar_95 >= 0, f"CVaR 应 ≥ 0，实际: {report.cvar_95}"
 
     # ---- IC ∈ [-1, 1] ----
-    if not np.isnan(report.mean_ic):
-        assert -1.0 <= report.mean_ic <= 1.0, \
-            f"Mean IC 应在 [-1,1]，实际: {report.mean_ic:.4f}"
+    # 传了 prices 的报告必定算出 IC；NaN 说明 IC 计算整段失效，不该被守卫放过。
+    assert not np.isnan(report.mean_ic), "mean_ic 为 NaN —— IC 计算未执行或全部失败"
+    assert -1.0 <= report.mean_ic <= 1.0, (
+        f"Mean IC 应在 [-1,1]，实际: {report.mean_ic:.4f}")
 
     # ---- 分档分析单调性检查（非严格要求，仅校验形状）----
-    if report.decile_returns is not None:
-        assert len(report.decile_returns) == 10, \
-            f"分档数应=10，实际={len(report.decile_returns)}"
+    # decile_returns 缺席时原写法什么都不查 —— 该功能整个失效也能通过。
+    # 传了 prices 的报告必定做分档分析，这是契约。
+    assert report.decile_returns is not None, "报告缺少分档收益（decile 分析未执行）"
+    assert len(report.decile_returns) == 10, (
+        f"分档数应=10，实际={len(report.decile_returns)}")
 
     # ---- Visualizer 返回有效 Figure ----
     try:

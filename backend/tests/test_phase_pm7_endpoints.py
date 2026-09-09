@@ -146,8 +146,12 @@ def test_propose_creates_proposed_config_with_evidence(test_client, monkeypatch)
     # 审计 #9 整改：门评估若中途降级，必须在 verdict 里留痕而不是静默产出
     v = cfg["verdict"]
     assert isinstance(v, dict) and v, "verdict 为空 —— 策略门没有产生任何证据"
-    if v.get("degraded"):
-        assert isinstance(v["degraded"], list) and v["degraded"], v["degraded"]
+    # 条件断言：degraded 缺席时什么都不检查 → 该字段整个消失也能通过。
+    # 改为无条件契约：要么没有降级（键缺席/为空），要么是**非空字符串列表**。
+    deg = v.get("degraded")
+    assert deg is None or (isinstance(deg, list) and all(isinstance(x, str) for x in deg)), (
+        f"degraded 字段格式不合契约：{deg!r}"
+    )
 
     # 提案必须真的进了审批队列
     pend = test_client.get("/api/strategies/pending").json()
