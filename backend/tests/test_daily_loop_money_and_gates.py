@@ -108,20 +108,36 @@ def test_strategy_gate_blocks_only_when_it_fails(loop, monkeypatch):
 # L310：long_only 必须是 allow_short 的**取反**
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("allow_short,expect_negative_weights", [(False, False), (True, True)])
-def test_long_only_follows_allow_short(loop, monkeypatch, allow_short, expect_negative_weights):
+@pytest.mark.parametrize("allow_short", [False, True])
+def test_risk_limits_long_only_is_negation_of_allow_short(loop, monkeypatch, allow_short):
     """
     `long_only=(not allow_short)` 删掉 `not` → 现金账户被允许做空。
-    allow_short=False 时**不得出现负权重**。
+
+    上一版用"结果里不得出现负权重"来测，**杀不死这个变异** ——
+    PortfolioManager 自身也有 long_only，权重进风控门时早已非负，
+    风控门这一层改了看不出差别（防御纵深的第二道，不可观测）。
+    正确做法：直接拦截传进 PortfolioRiskGate 的 RiskLimits，断言那个**值**。
     """
     from app.config import settings
+    import app.core.portfolio_manager.risk_gate as rg
     monkeypatch.setattr(settings, "trading_allow_short", allow_short, raising=False)
-    out = loop.run_portfolio(_dataset(seed=3), aum=10_000.0)
-    assert out.get("days_processed", 0) > 0, f"未产生交易日：{out.get('reason')}"
-    pos = loop.broker.store.latest_positions(0)          # PORTFOLIO_BOOK_ID
-    has_neg = any(w < -1e-9 for w in pos.values())
-    if not allow_short:
-        assert not has_neg, f"allow_short=False 却出现负权重：{pos}"
+
+    seen = {}
+    orig = rg.PortfolioRiskGate.__init__
+
+    def _spy(self, limits=None):
+        seen["limits"] = limits
+        return orig(self, limits)
+
+    monkeypatch.setattr(rg.PortfolioRiskGate, "__init__", _spy)
+    loop.run_portfolio(_dataset(seed=3), aum=10_000.0)
+
+    lim = seen.get("limits")
+    assert lim is not None, "未捕获到传入风控门的 RiskLimits"
+    assert lim.long_only is (not allow_short), (
+        f"allow_short={allow_short} 时 long_only 应为 {not allow_short}，"
+        f"实际 {lim.long_only} —— 取反被去掉了"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -178,25 +194,37 @@ def test_drawdown_halt_flattens_book_only_when_enabled(loop, monkeypatch):
 # L328 / L332：组合波动估计的公式
 # ---------------------------------------------------------------------------
 
-def test_portfolio_vol_estimate_formula(loop, monkeypatch):
+def test_portfolio_vol_estimate_is_annualised_correctly(loop, monkeypatch):
     """
-    目标波动缩放依赖 `port_vol_ann = std(权重(t-1)·收益(t)) × √252`。
-    - `weights.shift(1) * rets` 写成 `/` → 组合收益完全错
-    - `std * √252` 写成 `/` → 年化因子反转（差 252 倍）
+    `port_vol_ann = std(权重(t-1)·收益(t)) × √252`。
 
-    做法：开启目标波动，断言 risk_report 里的 vol_scalar 落在合理量级
-    （目标/实际），而不是 1.0（未缩放）或天文数字。
+    上一版断言 `0.05 <= vol_scalar <= 3.0`，**杀不死** `× √252 → ÷ √252`：
+    除以 √252 会让估计小 252 倍 → vol_scalar 暴涨 → 被 `np.clip(…, 0, 3)` **削到 3.0**，
+    正好落在断言区间内。clip 把错误盖住了。
+    正确做法：拦截传给 apply() 的 port_vol_ann，直接断言**年化波动本身**的量级。
     """
     from app.config import settings
+    import app.core.portfolio_manager.risk_gate as rg
     monkeypatch.setattr(settings, "risk_target_vol_ann", 0.10, raising=False)
     monkeypatch.setattr(settings, "risk_vol_lookback", 60, raising=False)
-    out = loop.run_portfolio(_dataset(n_days=120, seed=7), aum=10_000.0)
-    rr = out.get("risk_report") or {}
-    vs = rr.get("vol_scalar")
-    assert vs is not None, f"risk_report 缺 vol_scalar：{sorted(rr)}"
-    # 合成数据的组合年化波动大致在 5%~60%，目标 10% → scalar 落在 [0.15, 3.0]
-    assert 0.05 <= float(vs) <= 3.0, (
-        f"vol_scalar={vs} 超出合理范围 —— 波动估计公式（×√252 / 权重×收益）被改动"
+
+    seen = {}
+    orig_apply = rg.PortfolioRiskGate.apply
+
+    def _spy(self, weights, sectors=None, port_vol_ann=None):
+        seen["vol"] = port_vol_ann
+        return orig_apply(self, weights, sectors=sectors, port_vol_ann=port_vol_ann)
+
+    monkeypatch.setattr(rg.PortfolioRiskGate, "apply", _spy)
+    loop.run_portfolio(_dataset(n_days=120, seed=7), aum=10_000.0)
+
+    vol = seen.get("vol")
+    assert vol is not None, "目标波动已配置，却没有把 port_vol_ann 传进风控门"
+    # 日波动约 1.2% → 年化 ≈ 0.19。合理带宽放宽到 [0.02, 2.0]；
+    # 若 √252 的方向反了，估计会掉到 ~0.0008，远低于下界。
+    assert 0.02 <= float(vol) <= 2.0, (
+        f"年化组合波动 {vol:.6f} 不在合理量级 —— ×√252 的方向疑似反了"
+        f"（÷√252 会让它小 252 倍，且被 vol_scalar 的 clip 掩盖）"
     )
 
 

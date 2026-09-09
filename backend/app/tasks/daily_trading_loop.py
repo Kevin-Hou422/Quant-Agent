@@ -157,7 +157,7 @@ class DailyTradingLoop:
         from app.db.alpha_lifecycle import AlphaStatus, coerce_status
 
         # 单一真实 AUM：默认取 broker 的 initial_capital，保证 PM 容量与 broker 成本/容量同口径
-        aum = float(aum) if aum is None else float(self.broker.initial_capital)
+        aum = float(aum) if aum is not None else float(self.broker.initial_capital)
         prices = dataset.get("close")
         if prices is None or prices.empty:
             raise ValueError("dataset 缺少 close")

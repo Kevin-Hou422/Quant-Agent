@@ -882,6 +882,59 @@ class TestLessonU_FallbacksMustLeanConservative:
             check_dataset_health(ds, min_score=0.99, warn_only=False)
 
 
+class TestLessonV_NoMutationResidueInRepo:
+    """
+    §V：变异测试**原地改文件**，一旦提交发生在变异运行期间，被改坏的源码会进仓库。
+
+    这不是假想 —— 实际发生了：commit 24c251a 把
+    `aum = float(aum) if aum is not None else ...` 变成了 `if aum is None`
+    （正是变异算子"删掉 not"），同时把临时备份 `daily_trading_loop.py.mutbak`
+    （562 行）也一并提交。变异测试跑完后 finally 把工作区还原成正确版本，
+    于是**仓库里是坏的、工作区是好的**，`git diff` 才把它暴露出来。
+    """
+
+    def test_no_mutbak_files_in_tree(self):
+        """变异测试的临时备份绝不能留在树里，更不能进仓库。"""
+        stray = [_rel(p) for p in BACKEND.rglob("*.mutbak")]
+        assert not stray, (
+            "发现变异测试残留备份（应已被 .gitignore 且运行结束即删）：\n  "
+            + "\n  ".join(stray))
+
+    def test_mutbak_is_gitignored(self):
+        gi = BACKEND.parent / ".gitignore"
+        assert gi.exists(), ".gitignore 不存在"
+        assert "*.mutbak" in _src(gi), (
+            "*.mutbak 未加入 .gitignore —— 变异运行期间的提交会把改坏的备份带进仓库")
+
+    def test_known_mutation_targets_are_in_original_form(self):
+        """
+        对**已知被变异污染过**的关键行做形态断言。
+        这些行的"正确形态"本身就是契约：写反了不会报错，只会让钱算错或门失效。
+        """
+        checks = [
+            ("app/tasks/daily_trading_loop.py",
+             "aum = float(aum) if aum is not None else",
+             "aum 为 None 时才回退 broker 资金；写成 `is None` 会 float(None) 崩溃且忽略传参"),
+            ("app/tasks/daily_trading_loop.py",
+             "long_only=(not getattr(settings",
+             "long_only 必须是 allow_short 的取反"),
+            ("app/tasks/daily_trading_loop.py",
+             "weights = weights * 0.0",
+             "熔断清仓是乘 0，写成除 0 会产生 inf/NaN 权重"),
+            ("app/tasks/daily_trading_loop.py",
+             "prices_prev=prices_f.iloc[t - 1] if t > 0 else",
+             "第 0 天必须取当日自身；`t >= 0` 会取末行价 → 前视"),
+            ("app/core/execution/paper_broker.py",
+             "pv = equity * self.initial_capital",
+             "组合市值是乘法；写成除法会差 12 个数量级"),
+        ]
+        bad = []
+        for path, snippet, why in checks:
+            if snippet not in _src(BACKEND / path):
+                bad.append(f"{path}: 缺少 {snippet!r} —— {why}")
+        assert not bad, "关键行形态不符（疑似变异残留或被误改）：\n  " + "\n  ".join(bad)
+
+
 class TestLessonR_EveryLessonIsEnforced:
 
     def test_every_lesson_has_an_enforced_check(self):

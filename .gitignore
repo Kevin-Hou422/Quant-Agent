@@ -32,3 +32,6 @@ htmlcov/
 .coverage
 dist/
 build/
+
+# 变异测试的原地备份（绝不能进仓库）
+*.mutbak

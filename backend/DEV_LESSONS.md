@@ -329,3 +329,35 @@ parser 把第二参存进 `params["groups_node"]`（一个 AST 节点），
 
 - **判据**：看到一处 `except: <默认值>` 时问——"如果这个默认值是错的，
   系统会变得更谨慎还是更冒险？"答案是后者，就必须改方向或改成抛错。
+
+---
+
+## V. 会改动工作区的分析工具，必须假设"随时可能被提交"
+
+**触发**：变异测试工具**原地修改源码**再还原。commit `24c251a` 恰好发生在一次变异运行期间，
+于是把被注入的变异一起提交进了仓库：
+
+```
+-  aum = float(aum) if aum is not None else float(self.broker.initial_capital)
++  aum = float(aum) if aum is None     else float(self.broker.initial_capital)
+```
+
+这正是变异算子"删掉 not"的产物 —— `aum=None` 时 `float(None)` 崩溃，传了 aum 又被忽略。
+同一个 commit 还把 562 行的临时备份 `daily_trading_loop.py.mutbak` 带进了仓库。
+
+变异跑完后 `finally` 把工作区还原成正确版本，于是形成一个**极难察觉**的状态：
+**仓库里是坏的、工作区是好的**，本地测试全绿。是 `git diff` 偶然暴露的。
+
+### 规则
+1. **原地改源码的工具必须在隔离副本里跑**（`git worktree` / 临时目录），不要在主工作区。
+   本轮的教训代价是一次真实的仓库污染。
+2. **工具产生的临时文件必须先进 `.gitignore` 再开跑**（`*.mutbak`）。
+3. **工具运行期间不提交**；反过来说，工具必须假设"随时会被提交"，因此 (1) 是硬要求。
+4. **不并行跑原地改文件的工具** —— 两个变异任务同时跑会互相污染，
+   表现为"基线莫名其妙是红的"（本轮也踩了）。
+5. **关键行的"正确形态"要有断言**：写反了不报错、只让钱算错的行（乘 0 清仓、
+   `t > 0` 防前视、`long_only=not allow_short`、`equity * capital`），
+   用形态断言钉住 —— 见 `test_known_mutation_targets_are_in_original_form`。
+
+- **更一般的判据**：任何"会写工作区"的分析/生成工具，都要问一句
+  「如果此刻有人提交，仓库会变成什么样？」答案不可接受，就必须先隔离。
