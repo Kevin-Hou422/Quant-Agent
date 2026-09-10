@@ -436,11 +436,18 @@ def test_date_normalisation_branch_is_unreachable_for_real_inputs():
 
     samples = ["2024-03-05", datetime(2024, 3, 5, 15, 30),
                pd.Timestamp("2024-03-05 15:30"), _date(2024, 3, 5)]
+    # 前两个 if 会拦下 str 与 datetime（Timestamp 是 datetime 子类）；
+    # 只有剩下的形态才真的走到 L192。把"谁走到了"数出来再断言，
+    # 而不是写 `if 走到了: assert ...` —— 那样一旦没人走到就什么都没查（§A）。
+    reached = []
     for d in samples:
         assert _as_date(d) == _date(2024, 3, 5)
         if not isinstance(d, (str, datetime)):
-            # 能走到 L192 的唯一形态是 date 本身，而 date 没有 .date 属性
-            assert not hasattr(d, "date"), f"{type(d).__name__} 竟然带 .date，L192 可达"
+            reached.append(d)
+    assert reached, "没有任何样本走到 L192，本用例证明不了它不可达"
+    for d in reached:
+        # 能走到 L192 的形态里，date 没有 `.date` 属性 → 条件恒为假
+        assert not hasattr(d, "date"), f"{type(d).__name__} 竟然带 .date，L192 可达"
 
 
 def test_epsilon_guards_in_paper_broker_are_unreachable():

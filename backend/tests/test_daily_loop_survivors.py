@@ -639,5 +639,7 @@ def test_average_ranks_loop_bound_mutation_is_equivalent():
     for x in cases:
         a, b = _ranks(x, False), _ranks(x, True)
         assert np.array_equal(a, b), f"输入 {x} 上两个循环边界给出不同结果：{a} vs {b}"
-        if len(x):
-            assert np.array_equal(a, _average_ranks(x)), "复刻实现与生产实现不一致"
+        # 空数组也要比：_average_ranks([]) 返回空数组，np.array_equal 对两个空数组为真。
+        # 原来这里写成 `if len(x): assert ...`，空数组那一例就什么都没查 —— §A。
+        assert np.array_equal(a, _average_ranks(x)), (
+            f"复刻实现与生产实现在 {x} 上不一致：{a} vs {_average_ranks(x)}")
