@@ -178,15 +178,35 @@ def test_drawdown_halt_flattens_book_only_when_enabled(loop, monkeypatch):
     )
 
     # 阶段 3：开关打开 + 更长数据（新交易日）→ 必须清仓，且权重必须有限
+    #
+    # ⚠️ 只看**落账持仓**是杀不死 `* 0.0 → / 0.0` 的：除零得到 inf 与 NaN，
+    #    inf 会被 ADV 上限截回有限值、NaN 又被 `abs(w) > 1e-12` 过滤掉，
+    #    最后 latest_positions 可能照样看起来是"空仓"。变异测试证实该用例
+    #    在场却让 L361 存活。改为**直接拦截送进 broker 的目标权重**。
+    from app.core.execution.paper_broker import PaperBroker
+
+    sent = []
+    orig_step = PaperBroker.step
+
+    def _spy_step(self, alpha_id, date, target_w, *a, **kw):
+        sent.append(np.asarray(target_w, dtype=float).copy())
+        return orig_step(self, alpha_id, date, target_w, *a, **kw)
+
+    monkeypatch.setattr(PaperBroker, "step", _spy_step)
+
     longer_ds = _dataset(n_days=140, seed=5)
     monkeypatch.setattr(settings, "risk_halt_on_drawdown", True, raising=False)
     out_on = loop.run_portfolio(longer_ds, aum=10_000.0)
     assert out_on.get("days_processed", 0) > 0, "阶段 3 没有新交易日，测试无效"
+    assert sent, "没有捕获到任何送进 broker 的目标权重"
+    flat = np.concatenate(sent)
+    assert np.isfinite(flat).all(), (
+        "熔断清仓后送出的目标权重含 inf/NaN —— `weights * 0.0` 疑似被写成 `/ 0.0`")
+    assert np.abs(flat).max() == 0.0, (
+        f"熔断开启时送出的目标权重应逐项恰好为 0，实际最大 |w|={np.abs(flat).max()}")
+
     pos_on = loop.broker.store.latest_positions(0)
     gross_on = sum(abs(w) for w in pos_on.values())
-    assert np.isfinite(gross_on), (
-        f"熔断清仓后权重非有限（{gross_on}）—— `weights * 0.0` 疑似被写成 `/ 0.0`"
-    )
     assert gross_on < 1e-6, f"熔断开启时应清仓，实际 gross={gross_on:.6f}｜{pos_on}"
 
 
@@ -236,16 +256,34 @@ def test_portfolio_first_day_has_no_lookahead(loop):
     """
     `prices_f.iloc[t-1] if t > 0 else prices_f.iloc[t]` 把 `>` 改成 `>=`
     → 第 0 天取 `iloc[-1]`（窗口最后一天，**未来价**）当昨收。
-    构造单调强上行的价格：若发生前视，第 0 天会出现巨大负毛收益。
+
+    ⚠️ 这一版之前是**测不出来的**：全新账本第 0 天 `prev_w` 全是 0，
+    `gross = Σ(prev_w × price_chg)` 恒等于 0，昨收取哪一天都一样。
+    变异测试证实了这一点——该用例在场却让 L408 存活。
+
+    修法：**先种一条早于数据起点的持仓记录**，让第 0 天带着昨仓进场。
+    此时正确实现的 price_chg 仍为 0（prev = 当日自身），而变异实现会用
+    末行价当昨收，实测毛收益 ≈ -11.4%，两者可区分。
     """
+    from app.core.execution.paper_broker import DailyPnL
+
     ds = _dataset(n_days=60, seed=11, trend=0.01)     # 每日 +1% 漂移
+    cols = list(ds["close"].columns)
+    start = ds["close"].index[0]
+    seed_date = start - pd.Timedelta(days=7)          # 早于数据起点 → 不影响幂等续跑
+    loop.broker.store.record_day(
+        0, seed_date, {cols[0]: 0.5, cols[1]: -0.5}, [],
+        DailyPnL(alpha_id=0, date=str(seed_date.date()),
+                 gross_ret=0.0, net_ret=0.0, cost_bps=0.0, equity=1.0))
+
     out = loop.run_portfolio(ds, aum=10_000.0)
     assert out.get("days_processed", 0) > 0, f"未交易：{out.get('reason')}"
     hist = loop.broker.store.pnl_history(0, limit=200)
-    assert hist, "组合账本无记录"
-    first = min(hist, key=lambda h: str(h.date))
+    traded = [h for h in hist if str(h.date) >= str(start.date())]   # 排除种子行
+    assert traded, "组合账本无新交易日记录"
+    first = min(traded, key=lambda h: str(h.date))
     assert abs(first.gross_ret) < 1e-9, (
-        f"首日毛收益应为 0（无昨仓 + prev=当日自身），实际 {first.gross_ret:.6f} —— "
+        f"带昨仓进场的首日毛收益应为 0（prev = 当日自身），实际 {first.gross_ret:.6f} —— "
         f"疑似取了窗口最后一天的价格作昨收（前视）"
     )
     # 全程净值必须有限：除零/前视都会立刻产生 inf/NaN

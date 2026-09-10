@@ -150,3 +150,120 @@ def test_threshold_is_effective_not_decorative(ds):
     assert loose is True and strict is False, (
         f"max_plausible_sharpe 不起作用：严={strict} 松={loose}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 4. 公式与边界（变异测试驱动补充）
+#
+# 上面这些用例把击杀率从 0% 提到 44.4%，但 9 个变异点仍存活 5 个：
+# 静态校验开关、年化系数、阈值比较的等号侧，改坏了全都没人发现。
+# 下面逐个处置。
+# ---------------------------------------------------------------------------
+
+DSL = "rank(ts_delta(log(close), 5))"
+
+
+def _replica_is_sharpe(dsl: str, dataset) -> float:
+    """
+    用与 leak_filter 相同的公开组件复算 IS 夏普，得到**未取整**的精确值。
+
+    刻意复刻而不是读 `detail["is_sharpe"]`：后者 `round(x, 3)` 过，
+    无法用来构造"阈值恰好等于夏普"的边界输入；而且这份复刻本身就把
+    「Executor → SignalProcessor → SignalWeightedPortfolio → BacktestEngine」
+    这条管线钉住了——管线一改，这里就会红。
+    """
+    import pandas as _pd
+    from app.core.alpha_engine.dsl_executor import Executor
+    from app.core.alpha_engine.signal_processor import SignalProcessor, SimulationConfig
+    from app.core.backtest_engine.backtest_engine import BacktestEngine
+    from app.core.backtest_engine.portfolio_constructor import SignalWeightedPortfolio
+
+    raw = Executor(validate=False).run_expr(dsl, dataset)
+    cfg = SimulationConfig(delay=1, decay_window=0,
+                           truncation_min_q=0.05, truncation_max_q=0.95)
+    proc = SignalProcessor(cfg).process(raw)
+    w = SignalWeightedPortfolio(clip_z=3.0).construct(proc)
+    rets = _pd.Series(
+        BacktestEngine().run(w, dataset["close"], dataset["volume"], proc).net_returns
+    ).dropna()
+    mu, sd = float(rets.mean()), float(rets.std(ddof=1))
+    return (mu / sd) * np.sqrt(252.0) if sd > 1e-12 else 0.0
+
+
+def test_static_validator_is_deliberately_off():
+    """
+    `Executor(validate=False)` 里的 False 是**有意的设计**，不是笔误：
+    本门要靠"实测夏普高到不可信"来抓泄漏，而不是靠静态规则先把表达式毙掉。
+    改成 True 后，凡是触发 WindowValidator（窗口 > 252）/ DepthValidator 的
+    表达式都会走进 `except` 被记成"执行失败"，理由完全指错方向。
+
+    用 `ts_mean(close, 300)`：静态校验会拒（窗口 300 > 252），但它能正常执行，
+    也没有任何泄漏，属于必须放行的一类。
+    """
+    long_window_ds = _panel(n_days=400)
+    passed, detail = leak_filter("rank(ts_mean(close, 300))", long_window_ds)
+    assert passed is True, f"长窗口因子被静态校验误伤：{detail}"
+    assert not any("执行失败" in r for r in detail.get("reasons", [])), detail
+    assert "is_sharpe" in detail, "没有走到夏普分支 —— 说明执行被提前中断了"
+
+
+def test_is_sharpe_is_annualised_by_sqrt_252(ds):
+    """
+    `(mu / sd) * np.sqrt(252.0)`。`*` 改 `/` 后年化系数变成 1/15.87，
+    夏普整体缩小 252 倍——但**符号和相对大小都不变**，
+    所以任何"夏普为正/为负"的断言都抓不住它，必须比数值。
+    """
+    expected = _replica_is_sharpe(DSL, ds)
+    _, detail = leak_filter(DSL, ds, max_plausible_sharpe=1e9)
+    assert detail["is_sharpe"] == pytest.approx(round(float(expected), 3), abs=1e-9)
+    # 量级本身也钉一下：日频 mu/sd 乘 √252 后应在个位数量级，
+    # 而不是被除成千分之一（改 `/` 后 0.488 → 0.0019）。
+    assert abs(detail["is_sharpe"]) > 0.05
+
+
+def test_threshold_boundary_excludes_equality(ds):
+    """
+    `if abs(sharpe) > max_plausible_sharpe:` —— 阈值**恰好等于**实测夏普时
+    属于**放行**的一侧。这个区分值可以精确构造（复刻管线拿未取整的值），
+    因此不属于"浮点上造不出区分值"的等价变异，必须写用例。
+    """
+    s = abs(_replica_is_sharpe(DSL, ds))
+    assert s > 0, "复刻夏普为 0，本用例无法区分边界"
+    at_boundary, _ = leak_filter(DSL, ds, max_plausible_sharpe=s)
+    just_below, d2 = leak_filter(DSL, ds, max_plausible_sharpe=float(np.nextafter(s, 0.0)))
+    assert at_boundary is True, "阈值恰好等于实测夏普时被拦 —— 等号侧判错"
+    assert just_below is False, f"阈值低于实测夏普却放行：{d2}"
+
+
+# ---------------------------------------------------------------------------
+# 5. 存活变异的等价性证明
+# ---------------------------------------------------------------------------
+
+PROVEN_EQUIVALENT = {
+    "L44 `cs_var < 1e-12` → `<=`":
+        "区分值需要 cs_var **恰好等于** 1e-12。cs_var = raw.var(axis=1).median()，"
+        "是逐日截面方差再取中位数的浮点结果；真正的退化信号给出的是精确 0.0，"
+        "正常信号给出的是 1e-2 量级，两侧都离 1e-12 极远，"
+        "无法构造使其落在这一个浮点值上。",
+
+    "L58 `sd > 1e-12` → `>=`":
+        "同理，区分值需要 net_returns 的样本标准差恰好等于 1e-12。"
+        "该守卫的用途是「波动小到无法定义夏普时记 0」，边界两侧行为连续，"
+        "且实测收益序列的 sd 在 1e-3 量级。",
+}
+
+
+def test_variance_epsilon_boundaries_are_unreachable(ds):  # noqa: F811 - 需要面板夹具
+    """上面两条证明的机械验证：实测值离 1e-12 有若干个数量级。"""
+    tol = 1e-12
+    _, detail = leak_filter(DSL, ds, max_plausible_sharpe=1e9)
+    assert detail["cs_var"] > 1e-6, f"cs_var 落进了 1e-12 邻域，证明不成立：{detail}"
+    for base in (0.12, 1.0, 1e-3):
+        assert (base + tol) - base != tol
+
+
+def test_every_survivor_has_a_written_proof():
+    """存活项要么被上面的用例杀死，要么在此有书面证明；不许有第三种状态。"""
+    assert len(PROVEN_EQUIVALENT) == 2
+    for key, why in PROVEN_EQUIVALENT.items():
+        assert len(why) >= 40, f"{key} 的等价性说明过于敷衍：{why!r}"

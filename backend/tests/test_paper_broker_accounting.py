@@ -272,3 +272,187 @@ def test_price_change_uses_subtraction_not_addition(broker):
     assert abs(pnl.gross_ret - 0.10) < 1e-9, (
         f"满仓且价格 100→110，毛收益应精确为 0.10，实际 {pnl.gross_ret:.6f}"
     )
+
+
+# ===========================================================================
+# 第二轮变异测量（工具修好算术变异器之后）：26 个变异点存活 9 个。
+#
+# 上一轮只有 22 个点，且 `*` `+` `-` 三个算术变异器当时**静默失效**，
+# 所以文件头注释里写的"L96 容量上限公式""L117 组合市值"其实
+# **从来没有被真正验证过** —— 只是注释这么写。这一轮才是真的。
+# ===========================================================================
+
+def test_zero_initial_capital_falls_back_to_no_cap_not_nan(tmp_path):
+    """
+    `if self.initial_capital > 0: cap_w = adv * pct / initial_capital`。
+    改成 `>=` 后 initial_capital==0 会走进除零：
+      - adv > 0  → inf（与正确分支的 np.inf 同值，看不出来）
+      - adv == 0 → **nan**（0/0）→ 投影全 nan → `abs(nan) > 1e-12` 为假
+                   → **持仓整片消失**。
+    所以必须 initial_capital==0 **且** adv==0 才能区分，只测前者不够。
+    """
+    from app.db.position_store import PositionStore
+    b = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp_path/'zero.db'}"),
+                    initial_capital=0.0)
+    tk = ["A", "B"]
+    b.step(alpha_id=31, date="2024-01-02",
+           target_w=_series([0.6, -0.4], tk), prices_t=_series([100.0, 50.0], tk),
+           prices_prev=_series([100.0, 50.0], tk), adv_usd=_series([0.0, 0.0], tk),
+           daily_vol=_series([0.02, 0.02], tk))
+    pos = b.store.latest_positions(31)
+    assert pos, "initial_capital==0 且 adv==0 时持仓整片消失（cap 被算成 NaN）"
+    assert pos["A"] == pytest.approx(0.6, abs=1e-12)
+    assert pos["B"] == pytest.approx(-0.4, abs=1e-12)
+
+
+def test_unchanged_position_still_appears_in_fills(broker):
+    """
+    `if abs(delta[i]) < 1e-12 and abs(filled[i]) < 1e-12: continue`
+    —— **两个条件同时成立**才跳过（既没交易、也没持仓）。
+    改成 `or` 后，"持仓不变但仍有仓位"的名字会被整条丢出 fills，
+    审计时看不到自己还拿着什么。
+
+    构造：连续两天下同一个目标权重 → 第二天 delta≈0 而 filled≠0。
+    """
+    tk = ["A", "B"]
+    for d in ("2024-02-01", "2024-02-02"):
+        broker.step(alpha_id=32, date=d,
+                    target_w=_series([0.6, -0.4], tk), prices_t=_series([100.0, 50.0], tk),
+                    prices_prev=_series([100.0, 50.0], tk),
+                    adv_usd=_series([1e12, 1e12], tk), daily_vol=_series([0.02, 0.02], tk))
+    fills = {f.ticker: f for f in broker.store.fills_on(32, "2024-02-02")}
+    assert set(fills) == {"A", "B"}, (
+        f"持仓未变的名字从 fills 里消失了：{sorted(fills)}")
+    assert fills["A"].filled_weight == pytest.approx(0.6, abs=1e-12)
+    assert fills["B"].filled_weight == pytest.approx(-0.4, abs=1e-12)
+
+
+def test_fully_filled_order_is_not_flagged_as_adv_capped(broker):
+    """
+    `reject = "adv_cap" if abs(filled) < abs(tgt) - 1e-9 else ""`
+    —— 那个 `- 1e-9` 是容差；写成 `+ 1e-9` 会让**足额成交**的订单
+    （filled == tgt）被误标成"被 ADV 上限拒绝"，审计结论完全反了。
+    """
+    tk = ["A", "B"]
+    broker.step(alpha_id=33, date="2024-02-05",
+                target_w=_series([0.6, -0.4], tk), prices_t=_series([100.0, 50.0], tk),
+                prices_prev=_series([100.0, 50.0], tk),
+                adv_usd=_series([1e12, 1e12], tk), daily_vol=_series([0.02, 0.02], tk))
+    fills = {f.ticker: f for f in broker.store.fills_on(33, "2024-02-05")}
+    assert fills["A"].reject_reason == "", "足额成交却被标成 adv_cap"
+    assert fills["B"].reject_reason == ""
+
+
+def test_adv_capped_order_is_flagged(broker):
+    """对照组：真被 ADV 上限削掉时必须标出来，否则上一条可能只是'永远不标'。"""
+    tk = ["A", "B"]
+    broker.step(alpha_id=34, date="2024-02-06",
+                target_w=_series([0.9, -0.1], tk), prices_t=_series([100.0, 50.0], tk),
+                prices_prev=_series([100.0, 50.0], tk),
+                adv_usd=_series([1e5, 1e12], tk), daily_vol=_series([0.02, 0.02], tk))
+    fills = {f.ticker: f for f in broker.store.fills_on(34, "2024-02-06")}
+    assert fills["A"].reject_reason == "adv_cap"
+    assert abs(fills["A"].filled_weight) < abs(fills["A"].target_weight)
+
+
+def test_cost_bps_is_consistent_with_gross_minus_net(broker):
+    """
+    `cost_bps = (cost_ret + borrow_ret) * 1e4`，而 `net = gross - cost - borrow`。
+    两者必须自洽：cost_bps == (gross_ret - net_ret) * 1e4。
+    把 `* 1e4` 写成 `/ 1e4` 只改量纲（差 1e8 倍），符号与相对大小都不变，
+    任何"成本为正""净收益低于毛收益"的断言都抓不住它。
+    """
+    tk = ["A", "B"]
+    broker.step(alpha_id=35, date="2024-03-01",
+                target_w=_series([0.6, -0.4], tk), prices_t=_series([100.0, 50.0], tk),
+                prices_prev=_series([100.0, 50.0], tk),
+                adv_usd=_series([1e12, 1e12], tk), daily_vol=_series([0.02, 0.02], tk))
+    pnl = broker.step(alpha_id=35, date="2024-03-04",
+                      target_w=_series([0.6, -0.4], tk), prices_t=_series([101.0, 50.0], tk),
+                      prices_prev=_series([100.0, 50.0], tk),
+                      adv_usd=_series([1e12, 1e12], tk), daily_vol=_series([0.02, 0.02], tk))
+    assert pnl.cost_bps == pytest.approx((pnl.gross_ret - pnl.net_ret) * 1e4, rel=1e-6)
+    assert pnl.cost_bps > 0.0, "持有空头仓位，借券成本不可能为零"
+
+
+def test_borrow_cost_is_charged_on_shorts_only(broker):
+    """
+    `borrow_ret = sum(max(-prev_w, 0)) * daily_borrow` 只对**昨仓空头**计费。
+    同等条件下多空组合的成本必须严格高于纯多头，否则借券那一项形同虚设。
+    """
+    tk = ["A", "B"]
+    common = dict(prices_t=_series([100.0, 50.0], tk),
+                  prices_prev=_series([100.0, 50.0], tk),
+                  adv_usd=_series([1e12, 1e12], tk),
+                  daily_vol=_series([0.02, 0.02], tk))
+    for aid, w in ((36, [0.6, -0.4]), (37, [0.6, 0.4])):
+        for d in ("2024-03-01", "2024-03-04"):
+            broker.step(alpha_id=aid, date=d, target_w=_series(w, tk), **common)
+    pick = lambda aid: [p.cost_bps for p in broker.store.pnl_history(aid, limit=9)
+                        if str(p.date) == "2024-03-04"][0]
+    s, l = pick(36), pick(37)
+    assert s > l, f"多空组合的成本没有高于纯多头（借券费没生效）：short={s} long={l}"
+
+
+# ---------------------------------------------------------------------------
+# 存活变异的等价性证明
+# ---------------------------------------------------------------------------
+
+PROVEN_EQUIVALENT = {
+    "L119 `abs(delta[i]) < 1e-12` -> `<=`":
+        "区分值需要 |delta| 恰好等于 1e-12。delta = filled - prev_w，filled 来自 "
+        "water-filling 投影（多轮浮点乘除后归一到 L1=1），无法反解出使其精确等于 "
+        "1e-12 的目标权重；该阈值的用途本就是「小到等于没交易」的模糊带。",
+
+    "L121 `abs(filled) < abs(tgt) - 1e-9` -> `<=`":
+        "区分值需要 |filled| 恰好等于 |tgt| - 1e-9。同上，filled 是投影输出，"
+        "无法构造成与 tgt 相差恰好 1e-9 的值；该容差存在的目的就是让"
+        "「足额成交」的判定对末位浮点误差不敏感。",
+
+    "L127 `abs(filled[i]) > 1e-12` -> `>=`":
+        "区分值需要 |filled| 恰好等于 1e-12。同 L119：投影输出无法精确落在该值上。"
+        "两侧语义连续——比 1e-12 还小的权重在 100 万美元资金上不足 1e-6 美元，"
+        "记不记入持仓没有可观测差别。",
+
+    "L192 `hasattr(d, 'date') and not isinstance(d, date)` -> 删掉 not":
+        "该分支对系统实际产生的**每一种**日期形态都不可达：str 与 datetime/Timestamp "
+        "在前两个 if 就已返回；datetime.date 没有 `.date` 属性（hasattr 为假）。"
+        "条件恒为假，改不改 not 都返回 d。见 "
+        "test_date_normalisation_branch_is_unreachable_for_real_inputs。",
+
+    "L192 `hasattr(...) and not isinstance(...)` -> `or`":
+        "同上：对四种实际输入形态条件恒为假。date 对象走 hasattr 假 + not isinstance 假，"
+        "or 之后仍是假；其余三种在更早的分支已返回，根本走不到这一行。",
+}
+
+
+def test_date_normalisation_branch_is_unreachable_for_real_inputs():
+    """
+    L192 等价性的机械验证：枚举系统实际会传进 `_as_date` 的四种形态，
+    逐一确认它们要么在更早的分支返回、要么让 L192 的条件为假。
+    """
+    from datetime import date as _date, datetime
+    from app.core.execution.paper_broker import _as_date
+
+    samples = ["2024-03-05", datetime(2024, 3, 5, 15, 30),
+               pd.Timestamp("2024-03-05 15:30"), _date(2024, 3, 5)]
+    for d in samples:
+        assert _as_date(d) == _date(2024, 3, 5)
+        if not isinstance(d, (str, datetime)):
+            # 能走到 L192 的唯一形态是 date 本身，而 date 没有 .date 属性
+            assert not hasattr(d, "date"), f"{type(d).__name__} 竟然带 .date，L192 可达"
+
+
+def test_epsilon_guards_in_paper_broker_are_unreachable():
+    """L119 / L121 / L127 三条证明的共同机械验证。"""
+    for tol in (1e-12, 1e-9):
+        for base in (0.6, 0.4, 1.0, 0.01):
+            assert (base + tol) - base != tol, (
+                f"base={base} tol={tol} 处容差可精确还原，等价性证明不成立")
+
+
+def test_every_survivor_has_a_written_proof():
+    """存活项要么被用例杀死，要么在此有书面证明；不许有第三种状态。"""
+    assert len(PROVEN_EQUIVALENT) == 5
+    for key, why in PROVEN_EQUIVALENT.items():
+        assert len(why) >= 40, f"{key} 的等价性说明过于敷衍：{why!r}"

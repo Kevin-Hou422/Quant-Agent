@@ -11,6 +11,7 @@ test_lessons_enforced.py — 把 DEV_LESSONS 的每一条从散文变成**可执
 from __future__ import annotations
 
 import ast
+import pathlib
 import re
 from pathlib import Path
 
@@ -933,6 +934,88 @@ class TestLessonV_NoMutationResidueInRepo:
             if snippet not in _src(BACKEND / path):
                 bad.append(f"{path}: 缺少 {snippet!r} —— {why}")
         assert not bad, "关键行形态不符（疑似变异残留或被误改）：\n  " + "\n  ".join(bad)
+
+
+class TestLessonW_KillRateLedgerIsMaintained:
+    """
+    §W：通过数在弱套件上不是证据。检出能力必须被**测量并记录**，
+    而不是靠"测试全绿"这种口头印象。
+    """
+
+    LEDGER = BACKEND / "MUTATION_LEDGER.md"
+
+    def test_ledger_exists_and_states_the_bar(self):
+        assert self.LEDGER.exists(), (
+            "缺少 MUTATION_LEDGER.md —— 击杀率没有台账，等于没有测量")
+        txt = _src(self.LEDGER)
+        for kw in ("击杀率", "作废", "从未测量", "完成标准"):
+            assert kw in txt, f"台账缺少必要栏目：{kw}"
+
+    def test_ledger_marks_void_measurements_explicitly(self):
+        """
+        用有缺陷的工具测出的数字必须被标为**作废**，不能留在表里冒充有效。
+        本会话已有 6 个数字因工具 bug 被推翻。
+        """
+        txt = _src(self.LEDGER)
+        assert "必须重测" in txt or "作废" in txt, "台账未标注作废项"
+
+    def test_mutation_tool_runs_in_isolation(self):
+        """
+        变异工具必须在**隔离副本**里跑（§V）。它一旦原地改主工作区，
+        任何一次提交都可能把变异带进仓库 —— 已经发生过一次（commit 24c251a）。
+        """
+        tool = pathlib.Path(
+            r"C:/Users/ADMINI~1/AppData/Local/Temp/claude"
+            r"/c--Users-Administrator-OneDrive-Desktop-Quant-Agent"
+            r"/0204b135-cbc7-40a6-bca3-efd088f02a6b/scratchpad/mutate.py")
+        if not tool.exists():
+            pytest.skip("变异工具不在本机 scratchpad（换机器/换会话）")
+        src = _src(tool)
+        assert "mkdtemp" in src and "copytree" in src, (
+            "变异工具没有建立隔离副本 —— 会直接改主工作区，"
+            "提交时机不巧就会把变异提交进仓库")
+
+    def test_mutation_tool_does_not_silently_drop_mutators(self):
+        """
+        §W 规则 5：度量工具的缺陷不报错，只静默缩小分母。
+
+        已发生过的具体缺陷（MUTATION_LEDGER "工具缺陷史" #5）：
+            re.sub(pat, rep, m.group(0))
+        m.group(0) 不含 lookaround 消耗的字符，**正向**后顾断言在孤立片段上
+        必然失配 → 变异器静默失效。`*` `+` `-` 三个算术变异器因此从未生效，
+        `transaction_cost` 129 个候选行只有 22 行被变异过。
+        """
+        tool = self._tool_path()
+        if tool is None:
+            pytest.skip("变异工具不在本机 scratchpad（换机器/换会话）")
+        # 只看代码行：工具里那条"不要改回 …"的警示注释本身含有该写法，
+        # 不剥注释就会被自己的注释判红（第一版就是这么红的）。
+        src = "\n".join(
+            ln for ln in _src(tool).splitlines() if not ln.lstrip().startswith("#")
+        )
+        assert not re.search(r"re\.sub\(\s*pat\s*,\s*rep\s*,\s*m\.group\(0\)", src), (
+            "变异工具又用 re.sub 去改 m.group(0) —— 带正向 lookbehind 的变异器"
+            "会静默失效，算术变异全部消失，击杀率虚高")
+        assert "tokenize.COMMENT" in src, (
+            "变异工具没有屏蔽行尾注释 —— 注释里的 > < 会被变异成假存活项")
+
+    def test_mutation_ledger_records_tool_defect_history(self):
+        """
+        工具缺陷必须留档：本会话已有 6 类缺陷，每一类都让整批数字作废。
+        不留档就会在下一次"数字看起来合理"时重新相信它。
+        """
+        txt = _src(self.LEDGER)
+        assert "工具缺陷史" in txt, "台账缺少工具缺陷史 —— 作废的原因无从追溯"
+        assert "m.group(0)" in txt or "lookbehind" in txt or "后顾断言" in txt, (
+            "台账没有记录算术变异器静默失效这一类缺陷")
+
+    @staticmethod
+    def _tool_path():
+        p = pathlib.Path(
+            r"C:/Users/ADMINI~1/AppData/Local/Temp/claude"
+            r"/c--Users-Administrator-OneDrive-Desktop-Quant-Agent"
+            r"/0204b135-cbc7-40a6-bca3-efd088f02a6b/scratchpad/mutate.py")
+        return p if p.exists() else None
 
 
 class TestLessonR_EveryLessonIsEnforced:

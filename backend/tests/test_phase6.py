@@ -96,15 +96,37 @@ class TestConstraintHardening:
         assert np.all(out["A"].abs() <= cap_a + 1e-9)
 
     def test_max_single_weight_enforced_end_to_end(self, make_dataset):
+        """
+        原版断言 `result.is_report is not None` —— 名字承诺"端到端强制单票上限"，
+        断言却只证明跑通了，把 cap 改成任何值都照样绿（DEV_LESSONS §A：
+        写了断言不等于能发现问题）。改为直接看**落到账上的持仓权重**。
+
+        两段都必须有：
+          - 开了 cap → 逐日逐票 |w| <= cap；
+          - 关了 cap → 确实有票超过 cap。
+        缺后一段则前一段可能是空真（信号本来就不集中，cap 根本没生效）。
+        """
         from app.core.backtest_engine.realistic_backtester import RealisticBacktester
         from app.core.alpha_engine.signal_processor import SimulationConfig
         ds = make_dataset(n_days=120, n_tickers=8)
-        cfg = SimulationConfig(max_single_weight=0.15)
-        bt = RealisticBacktester(config=cfg)
-        result = bt.run("rank(ts_delta(close, 5))", ds)
-        pos = result.is_report.positions if hasattr(result.is_report, "positions") else None
-        # 通过 net_returns 存在即说明跑通；权重上限不变量在 unit 层已覆盖
-        assert result.is_report is not None
+        expr = "rank(ts_delta(close, 5))"
+
+        capped = RealisticBacktester(
+            config=SimulationConfig(max_single_weight=0.15)
+        ).run(expr, ds)
+        w = capped.is_result.positions.abs()
+        assert not w.empty
+        assert w.to_numpy().max() <= 0.15 + 1e-9, (
+            f"上限 0.15 被突破，最大单票权重 {w.to_numpy().max():.4f}"
+        )
+
+        uncapped = RealisticBacktester(
+            config=SimulationConfig(max_single_weight=0.0)
+        ).run(expr, ds)
+        w0 = uncapped.is_result.positions.abs()
+        assert w0.to_numpy().max() > 0.15 + 1e-9, (
+            "不加上限时也没有票超过 0.15 —— 该用例对 cap 不敏感，等于没测"
+        )
 
 
 # ===========================================================================

@@ -550,13 +550,38 @@ class DailyTradingLoop:
         return res
 
 
+def _average_ranks(x: np.ndarray) -> np.ndarray:
+    """
+    平均秩（并列取均值）—— 这是 Spearman 的**定义**要求的做法。
+
+    旧实现用 `argsort(argsort(x))`：它对并列值按出现顺序强行排出先后，
+    于是一个**完全无区分度**的常数信号会得到 [0,1,2,...] 的假秩，
+    与任意收益算出 IC = ±1（完美预测）。这个 IC 会写进 alpha_ic_history，
+    直接喂给 →ACTIVE 晋级门 —— 等于凭空造出业绩。
+    """
+    order = np.argsort(x, kind="mergesort")
+    ranks = np.empty(len(x), dtype=float)
+    i = 0
+    while i < len(x):
+        j = i
+        while j + 1 < len(x) and x[order[j + 1]] == x[order[i]]:
+            j += 1
+        ranks[order[i:j + 1]] = 0.5 * (i + j)      # 并列区间取平均秩
+        i = j + 1
+    return ranks
+
+
 def _cs_spearman(a: np.ndarray, b: np.ndarray) -> float:
-    """截面 Spearman rank 相关；有效对 < 3 返回 NaN。"""
+    """
+    截面 Spearman rank 相关；有效对 < 3、或任一侧无秩差（全并列）时返回 NaN。
+
+    "无区分度的信号得不出 IC" 是**必须**的：否则常数信号会被判为完美预测。
+    """
     mask = ~(np.isnan(a) | np.isnan(b))
     if mask.sum() < 3:
         return float("nan")
-    ra = np.argsort(np.argsort(a[mask])).astype(float)
-    rb = np.argsort(np.argsort(b[mask])).astype(float)
+    ra = _average_ranks(np.asarray(a[mask], dtype=float))
+    rb = _average_ranks(np.asarray(b[mask], dtype=float))
     ra -= ra.mean(); rb -= rb.mean()
     denom = np.sqrt((ra**2).sum() * (rb**2).sum())
     return float(np.dot(ra, rb) / denom) if denom > 0 else float("nan")
