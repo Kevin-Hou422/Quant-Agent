@@ -483,3 +483,360 @@ target = [0.9, -0.1]，A 的 ADV 只够 0.01
 4. **可以交付给外部做严格检查** —— 任何一项"未知"都不算达标
 
 在此之前不得宣布阶段结束，也不得转去修被发现的问题。
+
+---
+
+## B 档（数据正确性 / 因子计算与评估）—— 16 模块 / 450 变异点
+
+**队列**：`tools/mutation/plan_tier_b.json`，进度文件 `tools/mutation/progress_b.json`
+（与 A 档分开 —— 共用一个会互相整体覆盖，见工具缺陷 #7）。
+
+### 为什么是这 16 个，以及被排除的 6 个
+
+按"错了会不会改变结论"排完序之后，B 档取的是**数据正确性 + 因子计算/评估**
+这一层。收录标准只有一条：**该模块有既有测试**。
+
+| 模块 | 变异点 | 覆盖测试 |
+|---|---:|---|
+| `core/alpha_engine/fast_ops.py` | 145 | test_dsl_operators / test_dsl_edge_cases / test_dsl_engine |
+| `core/data_engine/data_partitioner.py` | 54 | test_phase1_upgrade / test_phase2 |
+| `core/alpha_engine/typed_nodes.py` | 33 | test_dsl_engine / test_dsl_operators / test_dsl_edge_cases |
+| `core/alpha_engine/dsl_executor.py` | 25 | test_dsl_operators / test_dsl_edge_cases / test_dsl_engine / test_leak_filter |
+| `core/ml_engine/alpha_optimizer.py` | 24 | unit/test_ml_optimizer |
+| `core/ml_engine/alpha_evaluator.py` | 22 | test_phase2 |
+| `core/discovery/market_observer.py` | 22 | test_phase9_market_observer |
+| `core/alpha_engine/signal_processor.py` | 18 | test_phase1_upgrade / test_leak_filter |
+| `config.py` | 17 | test_production_defaults / test_invariants |
+| `core/data_engine/regime_detector.py` | 17 | test_phase4 / test_phase6 |
+| `core/data_engine/dataset_registry.py` | 16 | test_phase7_ingest / test_phase8_pit / test_daily_ingest_increment |
+| `core/data_engine/providers/moomoo_provider.py` | 13 | test_phase_tr2_moomoo |
+| `core/alpha_engine/parser.py` | 13 | test_dsl_edge_cases / test_dsl_operators / test_dsl_engine |
+| `core/monitor/alpha_monitor.py` | 12 | test_phase5 / test_phase_pm |
+| `core/alpha_engine/validator.py` | 11 | test_alpha_discovery / test_dsl_engine / test_dsl_edge_cases |
+| `core/ml_engine/proxy_model.py` | 8 | test_alpha_discovery |
+
+**被排除的 6 个（零测试引用，属于下一阶段"给未覆盖模块补测试"，不是 B 档）**：
+`backtest_engine/alpha_combiner.py`(25)、`data_engine/multi_dataset.py`(23)、
+`data_engine/schema.py`(11)、`portfolio_manager/strategy_builder.py`(8)、
+`portfolio_manager/horizon.py`(7)、`data_engine/base.py`(5) —— 共 79 点。
+对零测试的模块做变异测量没有意义（击杀率必然是 0），先补测试再测量。
+
+> 引用判定用的是**精确匹配**（`from app.x.y import` / `import app.x.y` /
+> `"app.x.y..."` 形式的 patch 目标），不是模块名裸串匹配 —— 裸串会把
+> `tests` 里任何提到 `horizon` 字样的文件都算成覆盖，得出 4 个假覆盖。
+
+### B 档在测量之前就已确认的产品问题（读代码 + 直接复现，非变异结果）
+
+这四条都在 `fast_ops.py`，即**全系统每一个因子值都要流过的算子内核**。
+
+1. **`ts_rank` 的量纲与 docstring 不符，且两条分支互相矛盾（严重）**
+   docstring 写 "Rolling rank (percentile in [0,1])"。`_HAS_BN=True`（生产环境
+   实测已安装 bottleneck 1.6.0）时走 `bn.move_rank(...) / window`，而
+   `bn.move_rank` 的值域是 **[-1, 1]**，除以 window 之后变成 **[-1/w, 1/w]**。
+   numpy 回退分支算的是 `le/count` ∈ (0, 1]。实测单调上升序列 window=5：
+   bottleneck 分支 **0.2**，numpy 分支 **1.0**。
+   后果：① 任何 `ts_rank(x, w) > 0.8` 形式的表达式**永远为假**（上限只有 1/w）；
+   ② 与其他算子做算术时量纲差一个 window 倍 ——
+   `ts_rank(close,20) + ts_zscore(volume,10)` 里 rank 项（±0.05）被 zscore 项
+   （±3）完全淹没，等价于只用了后者。
+   当前种子表达式都把 ts_rank 包在 `rank(...)` 里（单调变换，暂不受影响），
+   所以这是**潜伏**问题，但 GP 变异随时可以生成受影响的表达式。
+
+2. **`ts_corr` 系统性偏低 (w-1)/w（严重）**
+   `cov_xy = np.mean(dx*dy, axis=1)` 用 ddof=0，而 `std_x/std_y` 用 ddof=1，
+   两者不配套。实测完全线性相关的两条序列、window=20，返回 **0.950000**
+   而不是 1.0，偏差因子恰好 `(w-1)/w = 0.95`。
+   后果：`ts_corr` 永远够不到 ±1；window 越小偏得越多（w=5 时只有 0.8）。
+   任何拿 `ts_corr` 与阈值比较、或把它当相关系数解读的地方都被压缩了。
+
+3. **`cs_rank` 的 docstring 声称 "ties resolved by average rank"，实现是序数名次**
+   `argsort(argsort(x))` 给的是序数。实测 `[1, 1, 2, 3]` → `[0, 0.333, 0.667, 1]`，
+   两个并列的 1.0 拿到了不同名次，且**谁在前谁排低**取决于列顺序 ——
+   同一截面换个标的顺序会得到不同因子值。
+
+4. **`ts_entropy(n_bins=1)` 返回 -0.0 而不是 NaN/报错**
+   `log_nbins = np.log(n_bins) if n_bins > 1 else 1.0` 把退化情形静默地
+   归一化成 0，调用方看不出参数给错了。
+
+> 按用户定的顺序，本阶段**只登记不修**。
+
+### B 档在补用例过程中新查出的产品问题（登记，本阶段不修）
+
+编号接上面四条。**每一条都有一条测试把当前的错误行为原样钉住**，
+断言消息里写明"修好之后这条要改成什么"，修复时不会漏改。
+
+5. **`ts_max` / `ts_min` 的 NaN 策略两条分支不一致（严重）**
+   模块 docstring 承诺 "All rolling operators enforce strict NaN policy:
+   fewer than `window` valid observations → NaN output"。
+   bottleneck 分支遵守（`min_count=window`），numpy 分支用 `np.nanmax` /
+   `np.nanmin` **直接忽略 NaN**。实测 `[1,2,NaN,4,5,6]` window=3：
+   bottleneck `[nan,nan,nan,nan,nan,6]`，numpy `[nan,nan,2,4,5,6]`。
+   后果：没装 bottleneck 的环境里，缺了一根 bar 的标的照样吐出 ts_max 值 ——
+   停牌/次新股的窗口被当成完整窗口用。
+   钉在 `test_fast_ops_kernel.py::test_ts_max_min_nan_policy_differs_between_paths`。
+
+6. **`cs_rank` 在含 NaN 的截面上值域越出 [0,1]（严重）**
+   NaN 资产被 `-inf` 填充后**参与了 argsort**、占掉名次 0，而分母只按有效
+   个数算（`valid_count - 1`）。实测 `[10, NaN, 30, 40]` → `[0.5, nan, 1.0, 1.5]`。
+   后果：`rank(x) > 0.9` 这类阈值条件会因为当天缺了几只票而莫名多命中；
+   缺失越多偏得越狠，而缺失率本身是随时间变化的 —— 因子含有一个
+   **与数据完整度相关的伪信号**。
+   钉在 `test_fast_ops_kernel.py::test_cs_rank_range_overflows_one_when_the_row_has_nan`。
+
+7. **面板行数短于窗口时 bottleneck 分支抛异常而不是返回 NaN（严重）**
+   `if T < window: return 全 NaN` 这个守卫**只存在于 numpy 分支**；
+   bottleneck 分支直接把 window 传给 `bn.move_*`，抛
+   `ValueError: Moving window (=5) must between 1 and 3, inclusive`。
+   七个算子全部如此：ts_mean / ts_std / ts_var / ts_sum / ts_max / ts_min / ts_rank。
+   后果：walk-forward 第一折、次新股子集、小 universe 切片都会让整条 DSL
+   表达式求值崩掉，而 docstring 承诺的是"返回 NaN"。
+   钉在 `test_fast_ops_kernel.py::test_bottleneck_rolling_ops_raise_when_the_panel_is_shorter_than_window`。
+
+8. **`ProxyModel` 在 `_fit()` 放弃之后仍走模型分支 → AttributeError（严重）**
+   `_fit()` 遇到单一类别（或 xgboost 未安装）会提前 return，`self._model`
+   保持 None；但 `should_prune` 只判断 `len(self._X) >= cold_start_n`，
+   随即调用 `self._model.predict_proba` → `'NoneType' object has no attribute`。
+   触发条件很常见：冷启动期所有候选都失败（标签全是 1）。
+   讽刺的是 `self._fitted` 这个字段正是为此存在的 —— 它从头到尾**没有任何读取方**，
+   两次赋值都是死存储（变异测试因此把它们判为等价变异，证明见测试文件）。
+   钉在 `test_proxy_model_pruning.py::test_unfitted_model_past_cold_start_crashes`。
+
+9. **`use_label_encoder=False` 对当前依赖版本已无意义（轻）**
+   xgboost 自 2.0 起移除该参数，本环境 3.2.0 对两种取值都只是忽略。
+   留着它会让人以为有效果。机械验证见
+   `test_proxy_model_pruning.py::test_label_encoder_flag_is_ignored_by_xgboost`。
+
+10. **`fast_ops` 的向量化分支被 `except Exception` 完全兜住（中）**
+    每个滚动算子都是「try: 向量化实现 / except Exception: 纯循环兜底」。
+    兜底本身是对的（`as_strided` 在异常内存布局下确实可能失败），
+    问题是 `except Exception` 太宽：**向量化实现写错到抛异常的程度时，
+    外部一点差别都观察不到**，只是慢了。变异测试因此把十处（四个 shape 算术、
+    六个 `keepdims=True`）判成等价变异 —— 它们不是测试写不到，是这段代码的
+    结构决定了写不到。
+    建议（本阶段不改）：收窄成 `except (ValueError, TypeError)` 并在兜底时
+    `logger.warning` 一次，让"向量化路径失效"成为可观测事件。
+    证明与失效告警见 `test_fast_ops_kernel.py::test_vectorised_paths_are_wrapped_in_a_rescuing_except`。
+
+11. **`data_partitioner` 的"OOS 为空"守卫不可达（轻）**
+    `if oos_ratio > 0 and (self._oos_start is None or oos_count < 1): raise`
+    以及 `else: self._oos_start = None` 这两处，在当前算术下**永远不会触发**：
+    前置守卫已保证 `usable >= 2`，而 `is_count` 被夹在 `[1, usable-1]`，
+    于是 `oos_count >= 1` 且 `is_count + embargo <= total - 1 < total` 恒成立。
+    对全部 (总天数 10..400) × (embargo 0..59) × 9 档 ratio 的组合穷举验证，
+    零反例。
+    后果不是当下出错，而是**给人以"我们检查过空 OOS"的假印象**：
+    哪天上面的切分算术被改动，真正的空 OOS 会绕过它静默通过。
+    证明与失效告警见
+    `test_data_partitioner_split.py::test_the_oos_guards_are_unreachable_over_the_whole_parameter_space`。
+
+### B 档首测击杀率（补用例之前）
+
+整体 **19.1%**（450 个变异点，存活 364）—— 也就是说，在这一层里
+**改坏 10 处只有 2 处会被现有测试发现**，而当时这些模块的测试全是绿的。
+
+| 模块 | 变异点 | 存活 | 首测击杀率 |
+|---|---:|---:|---:|
+| `core/data_engine/dataset_registry.py` | 16 | 16 | **0.0%** |
+| `core/ml_engine/alpha_optimizer.py` | 24 | 23 | **4.2%** |
+| `core/alpha_engine/fast_ops.py` | 145 | 135 | **6.9%** |
+| `core/data_engine/providers/moomoo_provider.py` | 13 | 12 | **7.7%** |
+| `core/ml_engine/proxy_model.py` | 8 | 7 | **12.5%** |
+| `core/alpha_engine/parser.py` | 13 | 11 | **15.4%** |
+| `core/data_engine/data_partitioner.py` | 54 | 44 | **18.5%** |
+| `core/discovery/market_observer.py` | 22 | 17 | **22.7%** |
+| `core/ml_engine/alpha_evaluator.py` | 22 | 17 | **22.7%** |
+| `core/alpha_engine/validator.py` | 11 | 8 | **27.3%** |
+| `core/alpha_engine/typed_nodes.py` | 33 | 23 | **30.3%** |
+| `config.py` | 17 | 11 | **35.3%** |
+| `core/alpha_engine/dsl_executor.py` | 25 | 16 | **36.0%** |
+| `core/alpha_engine/signal_processor.py` | 18 | 10 | **44.4%** |
+| `core/monitor/alpha_monitor.py` | 12 | 6 | **50.0%** |
+| `core/data_engine/regime_detector.py` | 17 | 8 | **52.9%** |
+
+**0.0% 的那一个值得单说**：`dataset_registry` 有 7 个测试文件"引用"它，
+16 个变异点却**一个都杀不死** —— 因为那 7 个文件全都是把它 `monkeypatch` 掉
+去测别的东西。"有多少测试提到这个模块"和"这些测试能发现这个模块的问题"
+是两件毫不相干的事，这是本档最直观的一个例证。
+
+### B 档补用例之后（复测）
+
+整体 **19.1% → 92.2%**（450 点，存活从 364 降到 **35**）。
+剩下的 35 个存活项**全部**有书面且可机械验证的等价性证明（见下表最后一列指向的测试文件）。
+
+| 模块 | 变异点 | 首测 | 复测 | 剩余存活 | 取数于 |
+|---|---:|---:|---:|---:|---|
+| `core/alpha_engine/fast_ops.py` | 145 | 6.9% | **87.6%** | 18 | `progress_b_rerun_7.json` |
+| `core/data_engine/data_partitioner.py` | 54 | 18.5% | **83.3%** | 9 | `progress_b_rerun_8b.json` |
+| `core/alpha_engine/typed_nodes.py` | 33 | 30.3% | **100.0%** | 0 | `progress_b_rerun_9.json` |
+| `core/alpha_engine/dsl_executor.py` | 25 | 36.0% | **100.0%** | 0 | `progress_b_rerun_9.json` |
+| `core/ml_engine/alpha_optimizer.py` | 24 | 4.2% | **95.8%** | 1 | `progress_b_rerun_7.json` |
+| `core/discovery/market_observer.py` | 22 | 22.7% | **100.0%** | 0 | `progress_b_rerun_3.json` |
+| `core/ml_engine/alpha_evaluator.py` | 22 | 22.7% | **100.0%** | 0 | `progress_b_rerun_7.json` |
+| `core/alpha_engine/signal_processor.py` | 18 | 44.4% | **88.9%** | 2 | `progress_b_rerun_5.json` |
+| `config.py` | 17 | 35.3% | **100.0%** | 0 | `progress_b_rerun_4.json` |
+| `core/data_engine/regime_detector.py` | 17 | 52.9% | **94.1%** | 1 | `progress_b_rerun_5.json` |
+| `core/data_engine/dataset_registry.py` | 16 | 0.0% | **100.0%** | 0 | `progress_b_rerun_9.json` |
+| `core/alpha_engine/parser.py` | 13 | 15.4% | **92.3%** | 1 | `progress_b_rerun_dsl2.json` |
+| `core/data_engine/providers/moomoo_provider.py` | 13 | 7.7% | **100.0%** | 0 | `progress_b_rerun_3.json` |
+| `core/monitor/alpha_monitor.py` | 12 | 50.0% | **100.0%** | 0 | `progress_b_rerun_5.json` |
+| `core/alpha_engine/validator.py` | 11 | 27.3% | **100.0%** | 0 | `progress_b_rerun_dsl2.json` |
+| `core/ml_engine/proxy_model.py` | 8 | 12.5% | **62.5%** | 3 | `progress_b_rerun_2.json` |
+
+> "取数于"这一列是**可复跑的凭据**：每个数字都来自那个进度文件里那一次运行，
+> 而那次运行用的测试集写在对应的 `plan_tier_b_rerun_*.json` 里。
+> 复测分了九批，因为每补一批用例就要拿"新用例 + 原有覆盖"重测一次 ——
+> 只跑新文件会漏掉旧文件覆盖到的点，只跑旧文件就等于重做首测。
+
+**`proxy_model` 的 62.5% 是本档最低，但它达标**：8 个点里 3 个存活，
+三个都是不可观测的赋值（`_fitted` 这个字段**全代码库没有任何读取方**，
+`use_label_encoder` 在 xgboost 3.x 里已被忽略）。击杀率本身从来不是标准 ——
+"每个存活项要么被杀死、要么有可机械验证的等价性证明"才是。
+
+### B 档新增的 15 个测试文件
+
+共 **6400 余行 / 581 条用例**（`pytest --collect-only` 实数）。每个文件的头部写明了：该模块首测击杀率是多少、
+存活了哪些、为什么那些存活项危险、既有测试为什么没抓到。
+
+| 测试文件 | 覆盖模块 | 条数 |
+|---|---|---:|
+| `test_fast_ops_kernel.py` | fast_ops（三条执行路径交叉验证） | 151 |
+| `test_data_partitioner_split.py` | data_partitioner + WalkForwardPartitioner + `_slice_dataset` | 61 |
+| `test_typed_nodes_semantics.py` | typed_nodes | 39 |
+| `test_alpha_optimizer_search.py` | alpha_optimizer | 36 |
+| `test_dsl_parser_and_validator_bounds.py` | parser + validator | 37 |
+| `test_signal_processor_pipeline.py` | signal_processor | 36 |
+| `test_regime_detector_labels.py` | regime_detector | 35 |
+| `test_alpha_evaluator_overfit.py` | alpha_evaluator | 30 |
+| `test_dataset_registry_loading.py` | dataset_registry | 29 |
+| `test_dsl_executor_pipeline.py` | dsl_executor | 27 |
+| `test_market_observer_scoring.py` | market_observer | 25 |
+| `test_proxy_model_pruning.py` | proxy_model | 22 |
+| `test_alpha_monitor_decay.py` | alpha_monitor | 21 |
+| `test_moomoo_paging_and_window.py` | moomoo_provider | 18 |
+| `test_settings_boolean_defaults.py` | config（全部 16 个 bool 默认值的快照） | 14 |
+
+### B 档过程中我自己踩的坑（与 A 档不重复的那几条）
+
+1. **"上界钉住了"不等于"这一行钉住了"**
+   `np.clip(x, mu - k * sd, mu + k * sd)` 一行里有**两个** `*`，变异器只改第一个，
+   于是只有**下界**变了。我只断言了 `max()`，那个变异连续两轮存活。
+   同一个错在 `dsl_executor._postprocess` 里犯了第二次。
+   → 一行里出现多次同一运算符时，每一处都要有各自的断言。
+
+2. **断言的字符串恰好也出现在别处**
+   `ind_neutralize` 缺分组时的警告是"没有分组字段 %r（也没有 'groups'）"。
+   我断言 `"'groups' in msg"，而消息后半句本来就有这个词 —— 变异版照样命中。
+   → 断言"某个错误值**没有**出现"往往比断言"正确值出现了"更有区分力。
+
+3. **等价性的直觉判断必须由机械验证兜底，而且它真的会推翻你**
+   我给 `ts_corr` 的 `denom > 1e-12` 写了"边界值不可构造"的证明，
+   机械验证当场证伪：`sqrt(1e-12)² == 1e-12` 在浮点上是精确的，
+   `[-c, 0, c]` 的样本标准差恰好等于 `|c|`，边界一构就中。
+   同样地，`typed_nodes` 的 L296、`fast_ops` 的 L37 我都判成了"不可达"，
+   复测把它们都杀死了。
+   → **写了证明不代表成立**；把证明写成可执行断言，让它有机会当场打脸。
+
+4. **归一化会把绝对值抹掉，断言要挑不受归一化影响的量**
+   `market_observer` 的六个族分最后除以 `max(raw)`。我一开始比较两个独立面板的
+   归一化分数，结果 regime 跟着变了，动量分抬高了归一化基准，
+   liquidity 的分反而更低 —— 断言错在构造，不在实现。
+   → 改成"同一次观察内部两个族的比值"，或构造出只有一个变量在动的两个面板。
+
+5. **一个模块里可能有两套独立的算术**
+   `data_partitioner` 的 54 个点里，`DataPartitioner` 只占一半，
+   另一半在 `WalkForwardPartitioner` 和共用的 `_slice_dataset` 里。
+   先只覆盖前者时复测停在 37%。
+   → 补用例之前先按**函数/类**把存活项分组，别按文件。
+
+### 剩余待办（本节取代前面「从未测量（≥20 行的应用模块）」那份清单）
+
+A+B 完成后，已测量模块 **46 个 / 1148 变异点**。按同样的口径重算，剩余：
+
+**C 档候选 —— 有既有测试，可以直接测量：17 模块 / 476 点**
+
+| 模块 | 点数 | | 模块 | 点数 |
+|---|---:|---|---|---:|
+| `api/router.py` | 75 | | `tasks/scheduler.py` | 20 |
+| `core/workflows/alpha_workflows.py` | 69 | | `core/gp_engine/fitness.py` | 20 |
+| `core/gp_engine/mutations.py` | 65 | | `agent/_critic.py` | 18 |
+| `core/gp_engine/population_evolver.py` | 48 | | `agent/_agent.py` | 16 |
+| `core/data_engine/health_report.py` | 32 | | `core/gp_engine/gp_engine.py` | 15 |
+| `core/gp_engine/alpha_pool.py` | 22 | | `tasks/backup.py` | 14 |
+| `agent/_tools.py` | 22 | | `core/discovery/discovery_engine.py` | 9 |
+| `main.py` | 21 | | `core/data_engine/sector_mapper.py` | 5 |
+| | | | `api/chat_router.py` | 5 |
+
+**零测试引用 —— 必须先补测试再测量：19 模块 / 376 点**
+
+`data_engine/dataset_filters.py`(54)、`alpha_engine/financial_interpreter.py`(50)、
+`alpha_engine/financial_diagnostics.py`(35)、`agent/_prompts.py`(35)、
+`backtest_engine/alpha_combiner.py`(25)、`data_engine/multi_dataset.py`(23)、
+`agent/_data_utils.py`(22)、`data_engine/local_parquet_provider.py`(21)、
+`backtest_engine/visualizer.py`(19)、`backtest_engine/multi_dataset_backtester.py`(14)、
+`data_engine/providers/ccxt_provider.py`(12)、`data_engine/schema.py`(11)、
+`agent/alpha_agent.py`(11)、`gp_engine/evaluation_utils.py`(10)、
+`data_engine/providers/akshare_provider.py`(9)、`portfolio_manager/strategy_builder.py`(8)、
+`portfolio_manager/horizon.py`(7)、`data_engine/base.py`(5)、`agent/_lc_agent.py`(5)
+
+> 前面那份清单写于 A 档开始之前，现在已经过期（里面列的 `fast_ops`、
+> `dataset_filters` 之外的绝大多数都已测量）。按"不改已结束的报告"的规矩，
+> 那一节原样保留，以本节为准。
+
+### B 档收尾时由全量回归暴露的一条（登记，本阶段不修）
+
+12. **`chat_store` 的排序没有第二排序键，同一时钟 tick 内的记录顺序反了（中）**
+    `list_sessions()` 是 `ORDER BY created_at DESC`，`get_history()` 是 ASC，
+    两处都只有一个排序键。而 `created_at = datetime.utcnow()` 在 **Windows 上
+    的分辨率约 15.6 ms**（实测连续两次调用返回完全相同的值），
+    连着创建的记录很容易落在同一个 tick 上。
+
+    实测：把时钟冻住让两条会话的 `created_at` 完全相同，
+    `list_sessions()` 稳定返回 **(A, B)** —— 即**最老的排在最前**，
+    与"最新在前"的契约恰好相反。
+
+    发现过程值得记：这条是**全量回归自己抓出来的**，
+    `tests/unit/test_db_chat_store.py::test_list_sessions_sorted_by_created_desc`
+    在单跑时一直绿、在 1802 条的全量套件里红了 ——
+    因为单跑时两次创建之间的 DB flush 恰好跨过一个 tick，机器忙的时候跨不过去。
+    同一文件的 `test_get_history_returns_messages_in_order` 有同样的隐患，
+    只是这一轮没轮到它。
+
+    **测试侧已修**（属于本阶段范围）：新增 `tick` fixture 注入
+    "每次读取前进一秒"的确定时钟，两条用例都改成钉住完整顺序，
+    并额外断言"构造的时间戳确实互不相同"，防止将来又退化成测并列裁决。
+    连跑 5 次稳定通过。
+    **产品侧未修**：排序需要补一个第二排序键（如自增主键或 id），本阶段只登记。
+
+### 既有测试到底还值多少：仅新 / 仅旧 / 新+旧 三方对照
+
+起因是一个很直接的质疑：**那些首测击杀率极低的旧测试，留着是不是只在充覆盖率？**
+这个不该靠判断，能测。队列 `plan_b_newonly.json`，进度 `progress_b_newonly.json`：
+**只用新写的定钉文件、不带任何既有测试**，与「新+旧」对比。
+
+| 模块 | 仅旧 | 仅新 | 新+旧 | 旧测试的边际贡献 |
+|---|---:|---:|---:|---|
+| `core/monitor/alpha_monitor.py` | 50.0% | 58.3% | 100.0% | **+41.7 个百分点** |
+| `core/data_engine/providers/moomoo_provider.py` | 7.7% | 92.3% | 100.0% | +7.7 |
+| `core/discovery/market_observer.py` | 22.7% | 95.5% | 100.0% | +4.5 |
+| `core/alpha_engine/validator.py` | 27.3% | 100.0% | 100.0% | 0 |
+| `core/alpha_engine/parser.py` | 15.4% | 92.3% | 92.3% | 0 |
+| `core/data_engine/dataset_registry.py` | 0.0% | 100.0% | 100.0% | 0 |
+| `config.py` | 35.3% | 100.0% | 100.0% | 0 |
+
+**结论与我动手前的判断相反，记下来**：
+
+1. **新文件不是旧文件的替代品，是补集。** 我写新用例时是盯着**存活项**写的 ——
+   已经被旧测试杀死的那些根本没重复写。省力，但代价是新文件单独跑覆盖不全：
+   `alpha_monitor` 的新文件单独只有 58.3%，是旧测试把它顶到 100% 的。
+   按"低击杀率=没用"删掉旧测试，这个模块会掉回 58.3%，丢 5 个变异点。
+
+2. **"零贡献"是对这个模块而言，不能据此删文件。**
+   那 4 个之所以出现在模块的引用列表里，是因为它们把该模块 `monkeypatch` 掉
+   去测别的东西 —— 它们真正保护的是别的模块。
+
+3. **真正该堵的不是这些文件，是读数方式。**
+   留着它们的成本只有运行时间；危害在于 "1892 passed" 会被读成
+   "1892 件事被保护着"。`dataset_registry` 首测 0.0% 之前，
+   任何人看测试列表都会以为它被 7 个文件覆盖着。
+   → 覆盖的唯一口径应当是**该模块的变异击杀率**，不是"有几个测试提到它"。
+   （是否把这条写成 `test_lessons_enforced.py` 里的强制检查，待定，需用户拍板。）
