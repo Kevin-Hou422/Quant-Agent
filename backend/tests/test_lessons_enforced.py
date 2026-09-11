@@ -964,12 +964,9 @@ class TestLessonW_KillRateLedgerIsMaintained:
         变异工具必须在**隔离副本**里跑（§V）。它一旦原地改主工作区，
         任何一次提交都可能把变异带进仓库 —— 已经发生过一次（commit 24c251a）。
         """
-        tool = pathlib.Path(
-            r"C:/Users/ADMINI~1/AppData/Local/Temp/claude"
-            r"/c--Users-Administrator-OneDrive-Desktop-Quant-Agent"
-            r"/0204b135-cbc7-40a6-bca3-efd088f02a6b/scratchpad/mutate.py")
-        if not tool.exists():
-            pytest.skip("变异工具不在本机 scratchpad（换机器/换会话）")
+        tool = self._tool_path()
+        if tool is None:
+            pytest.skip("变异工具不在本机（tools/ 尚未随测试一起提交）")
         src = _src(tool)
         assert "mkdtemp" in src and "copytree" in src, (
             "变异工具没有建立隔离副本 —— 会直接改主工作区，"
@@ -987,7 +984,7 @@ class TestLessonW_KillRateLedgerIsMaintained:
         """
         tool = self._tool_path()
         if tool is None:
-            pytest.skip("变异工具不在本机 scratchpad（换机器/换会话）")
+            pytest.skip("变异工具不在本机（tools/ 尚未随测试一起提交）")
         # 只看代码行：工具里那条"不要改回 …"的警示注释本身含有该写法，
         # 不剥注释就会被自己的注释判红（第一版就是这么红的）。
         src = "\n".join(
@@ -1011,11 +1008,22 @@ class TestLessonW_KillRateLedgerIsMaintained:
 
     @staticmethod
     def _tool_path():
-        p = pathlib.Path(
+        """
+        优先找**仓库里**的 backend/tools/mutation/mutate.py。
+
+        工具应当进仓库（关机重启能续跑；交付复核时对方能原样复跑，而不是听我
+        口述击杀率——本会话已有 6 个口头数字被推翻）。但本文件与工具是**两次
+        独立提交**，所以两处守卫都做成"找不到就 skip"，让测试能单独成立；
+        一旦 tools/ 入库，这两条就会真的跑起来。
+        """
+        p = BACKEND / "tools" / "mutation" / "mutate.py"
+        if p.exists():
+            return p
+        legacy = pathlib.Path(
             r"C:/Users/ADMINI~1/AppData/Local/Temp/claude"
             r"/c--Users-Administrator-OneDrive-Desktop-Quant-Agent"
             r"/0204b135-cbc7-40a6-bca3-efd088f02a6b/scratchpad/mutate.py")
-        return p if p.exists() else None
+        return legacy if legacy.exists() else None
 
 
 class TestLessonR_EveryLessonIsEnforced:

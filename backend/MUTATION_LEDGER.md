@@ -7,11 +7,17 @@
 > 1. 变异必须在 **隔离副本** 中进行（`mutate.py` 复制 backend/ 到临时目录），主工作区零改动
 > 2. 变异后必须仍能 `ast.parse`，否则不计入分子分母
 > 3. 替换行必须保留行尾换行
-> 4. 不并行运行（原地改文件的工具不是并行安全的）
+> 4. 隔离副本本身是并发安全的；**不安全的只有共享 state 文件**（见前提 7）
 > 5. **变异器必须真的生效** —— 见下方"工具缺陷史"，两次虚高都源于此
-> 6. **每行每个变异器各算一个变异点**，不是每行只取第一个
+> 6. **每行每个变异点各算一个**，不是每行只取第一个
+> 7. **并发运行必须各用各的 `--state` 文件**（缺陷史 #7）
 >
-> 工具：`scratchpad/mutate.py`（隔离版，2026-09-09 起）
+> **判读补充**：测试超时（默认 1800s）计为**被杀死**。理由是"跑不完"同样是
+> 一种可观测的回归；但这类杀死比断言失败慢两个数量级，看到某个模块卡住很久，
+> 多半就是撞上了这种变异（strategy_gate 的一处 PBO 相关变异实测卡满 30 分钟）。
+>
+> 工具：`backend/tools/mutation/`（在仓库里，不在临时目录 —— 关机重启可续跑，
+> 交付复核时对方能原样复跑；见该目录的 README）
 
 ## 工具缺陷史（每一条都曾让整批数字作废）
 
@@ -23,6 +29,7 @@
 | 4 | 只认 `tokenize.STRING`，漏 Python 3.12 的 `FSTRING_*` | f-string 里的 `>` 被当代码 → 假存活 | 逐条核对存活项 |
 | 5 | `re.sub(pat, rep, m.group(0))` —— **正向后顾断言在孤立片段上必然失配** | `*` `+` `-` 三个算术变异器**从未生效过**，`transaction_cost` 129 个候选行只有 22 个被变异 | 存活列表清一色是比较符，一个乘除都没有 |
 | 6 | 每行只做第一个匹配的变异器 | 比较符排在算术符前，`abs(dw) * val / p if p > 0` 这类行永远只测 `>` | 与 #5 一并发现 |
+| 7 | 两个并发批次共用同一个 `--state` 文件 | 各自持一份内存快照整份覆盖写，**先完成那批的 12 个模块结果被后一批清空** | 进度表突然从 11/24 掉回 4/24 |
 
 **#5 + #6 修复后，变异面翻倍**：`transaction_cost` 22 → 42 个变异点（其中 19 个算术），
 `risk_gate` 22 → 42（其中 13 个算术）。**先前所有击杀率——包括 risk_gate 的 54.5%——
@@ -49,10 +56,11 @@
 | `execution/paper_broker.py` | **80.8%** | 26 | 5 | ✅ 4 处写用例杀死，5 处证明等价 | ~~73.7~~ ~~65.4~~ |
 | `tasks/daily_trading_loop.py` | **84.1%** | 63 | 10 | ✅ 12 处写用例杀死，10 处证明等价 | ~~18.6~~ ~~66.0~~ ~~65.1~~ |
 
-**六个模块已达标**（存活项 100% 已处置）。新增用例合计 **82 条**，
-每一条都对应一个"改坏了原本没人发现"的具体位置，不是补覆盖率。
+**这 6 个模块已达标**（存活项 100% 已处置）。连同下方 A 档的 24 个，
+共 **30 个模块**完成收口。每一条新增用例都对应一个"改坏了原本没人发现"的
+具体位置，不是补覆盖率。
 
-### 单点验证工具（`scratchpad/verify_mutant.py`）
+### 单点验证工具（`tools/mutation/verify_mutant.py`）
 
 补一条用例之后要确认它**确实**杀得死目标变异，但重跑整模块太贵
 （daily_trading_loop 一轮 **4890 秒**）。该工具在隔离副本里只施加**一个**指定变异，
@@ -126,6 +134,108 @@ risk_gate 的 10 处存活全部属于后者，且证明本身写成了可执行
 
   真正的差别在**逐名权重**：正确 `[2, -2, 0, 0]`，变异后 `[1.03, -1.03, -0.97, -0.97]`
   ——两个 0.1 的小仓被放大成接近满仓的空头，而**聚合量完全看不出来**。
+
+---
+
+## A 档（直接算钱/下单/账本）—— 24 模块 / 504 变异点
+
+工具与进度都在仓库里，关机重启原地续跑：
+
+```
+backend/tools/mutation/
+  mutate.py          # 隔离副本 + 逐点落盘（--state）
+  runner.py          # 按 plan 跑整档；--status 看进度
+  rerun.py           # 补完用例后重测指定模块
+  verify_mutant.py   # 单点复核，不必重跑整模块
+  plan_tier_a.json   # 模块 → 覆盖测试集
+  progress*.json     # 逐变异点的判定结果
+```
+
+### 首测击杀率（补用例之前）
+
+| 模块 | 首测 | 变异点 | 存活 |
+|------|------|--------|------|
+| `portfolio_manager/strategy_gate.py` | **0.0%** | 31 | 31 |
+| `backtest_engine/risk_report.py` | **3.1%** | 32 | 31 |
+| `db/position_store.py` | 24.0% | 25 | 19 |
+| `db/alpha_store.py` | 26.1% | 23 | 17 |
+| `backtest_engine/performance_analyzer.py` | 30.4% | 92 | 64 |
+| `tasks/daily_ingest.py` | 31.8% | 22 | 15 |
+| `backtest_engine/portfolio_constructor.py` | 32.4% | 37 | 25 |
+| `backtest_engine/realistic_backtester.py` | 32.4% | 37 | 25 |
+| `trading_context/spread.py` | 47.6% | 21 | 11 |
+| `tasks/cost_calibration.py` | 50.0% | 16 | 8 |
+| `db/chat_store.py` | 58.8% | 17 | 7 |
+| `data_engine/pit_store.py` | 70.8% | 24 | 7 |
+| `data_engine/market_calendar.py` | 77.3% | 22 | 5 |
+
+**`strategy_gate` 是 0.0%** —— 31 个变异点全部存活，即"决定一个策略配不配拿真钱"
+的那道门，改坏任何一处都没有测试会红。`risk_report` 3.1% 紧随其后，
+而它是所有对外结论的载体（策略门读它的 Sharpe/DSR、晋级门读它的
+`insufficient_sample`、前端与台账读它的 `to_dict()`）。
+
+### 补用例之后（复测）
+
+A 档 24 个模块各自补了一份**定钉测试**，命名统一为
+`tests/test_<模块>_<主题>.py`（formulas / contracts / schema / …）。
+每个文件开头写明"该模块首测多少、存活哪几类、为什么这些存活项危险"。
+
+| 模块 | 首测 → 复测 | 剩余存活 | 处置 |
+|------|-------------|----------|------|
+| `backtest_engine/performance_analyzer.py` | 30.4% → **95.7%** | 4 | ✅ 全部证明等价 |
+| `backtest_engine/risk_report.py` | 3.1% → **93.8%** | 2 | ✅ 全部证明等价 |
+| `backtest_engine/realistic_backtester.py` | 32.4% → **89.2%** | 4 | ✅ 全部证明等价 |
+| `backtest_engine/portfolio_constructor.py` | 32.4% → **86.5%** | 5 | ✅ 全部证明等价 |
+| `backtest_engine/backtest_engine.py` | 20.0% → **100%** | 0 | ✅ |
+| `tasks/cost_calibration.py` | 50.0% → **100%** | 0 | ✅ |
+| `trading_context/providers.py` | 50.0% → **100%** | 0 | ✅ |
+| `db/chat_store.py` | 58.8% → **100%** | 0 | ✅ |
+| `db/position_store.py` | 24.0% → **96.0%** | 1 | ✅ 证明等价 |
+| `db/alpha_store.py` | 26.1% → **95.7%** | 1 | ✅ 证明等价 |
+| `db/strategy_store.py` | 38.5% → **92.3%** | 1 | ✅ 证明等价 |
+| `data_engine/market_calendar.py` | 77.3% → **90.9%** | 2 | ✅ 全部证明等价 |
+| `tasks/daily_ingest.py` | 31.8% → **100%** | 0 | ✅（最后 1 处由单点验证确认杀死）|
+| `trading_context/context.py` | 45.5% → **90.9%** | 1 | ✅ 证明等价 |
+| `db/trial_ledger.py` | 50.0% → **87.5%** | 1 | ✅ 证明等价 |
+| `portfolio_manager/manager.py` | 35.7% → **85.7%** | 2 | ✅ 全部证明等价 |
+| `db/diagnostics_store.py` | 28.6% → **85.7%** | 1 | ✅ 证明等价 |
+| `trading_context/spread.py` | 47.6% → **81.0%** | 4 | ✅ 全部证明等价 |
+| `data_engine/pit_store.py` | 70.8% → **79.2%** | 5 | ✅ 全部证明等价 |
+| `db/run_manifest.py` | 14.3% → **85.7%** | 2 | ✅ 全部证明等价 |
+| `lifecycle/validation_gate.py` | 25.0% → **75.0%** | 2 | ✅ 全部证明等价 |
+| `portfolio_manager/strategy_gate.py` | 0.0% → **93.5%** | 2 | ✅ 全部证明等价 |
+| `backtest_engine/overfit_stats.py` | 20.0% → **80.0%** | 2 | ✅ 全部证明等价 |
+| `db/alpha_lifecycle.py` | **100%** | 0 | ✅ |
+
+> 击杀率本身不是达标标准 —— `pit_store` 复测后**降到** 79.2% 却已达标
+> （分母没变，是先前被误杀的几个布尔参数在补测后暴露为真正的等价变异）；
+> 标准始终是"**每个存活项要么被杀死、要么有可机械验证的等价性证明**"。
+
+### A 档查出的问题（登记，本阶段不修）
+
+- **PIT 被双写**：`ingest_incremental` 的注释写着"只把**增量**写进 PIT（而非整段重写）"，
+  但它调用的 `ingest()` **内部已经把取到的整段写过一遍**（`_append_pit(dataset_name, data, as_of)`），
+  随后外层又追加一次增量。一次增量摄取因此产生两个 vintage；
+  只因 `as_of` 精度是**秒**、两次写入通常落在同一秒而被幂等去重掩盖。
+  实测注入递增时钟后，8 个交易日每天都出现 2 个 vintage。
+
+  > 顺带修掉一处**测试自身的不确定性**：`test_pit_only_receives_the_increment`
+  > 原先断言"每天最多 1 个 vintage"，这依赖两次写落在同一秒 —— 单文件跑绿、
+  > 与其他文件并跑就红。现改为注入确定时钟后**逐日**钉住 vintage 数
+  > （回填日 1、增量日 2）。`df.index > last` → `>=` 会让重叠那天也变成 2，
+  > 仍被杀死（`verify_mutant.py app/tasks/daily_ingest.py 114` 复核通过）。
+  > 修掉双写之后，这条断言要同步改成"增量日也是 1"。
+
+
+- **`np.nanstd(rets) == 0.0` 判不出零方差**：`pd.Series(0.001)` 的 nanstd 是
+  2.17e-19 而非 0，策略门的"方差为 0"守卫**根本不会触发**（浮点零用 `==` 判）。
+- **`PerformanceAnalyzer` 对近零波动没有防护**：全常数收益序列的 std 是 1.06e-17，
+  `vol > 0` 成立 → 年化 Sharpe ≈ 3e16、t ≈ 15.5，"高度显著"。
+- **`PerformanceAnalyzer` 不接受非日期索引**：`max_drawdown` 里有一条按序号相减的
+  else 分支，但 `__init__` 的 `_tdays` 先做 `(idx[-1]-idx[0]).days`，整数索引在那里
+  就抛 AttributeError —— 该分支**不可达**，且报错信息指向内部实现而非"索引类型不对"。
+- **`MVOPortfolio` 注释与实现不符**：注释写"剔除 NaN 过多的资产（保留其基准权重）"，
+  实现是 `w_out[t] = row / l1` **整行替换**，被剔除的资产拿到的是 0 而不是基准权重。
 
 ---
 
