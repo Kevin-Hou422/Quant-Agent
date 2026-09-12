@@ -840,3 +840,341 @@ A+B 完成后，已测量模块 **46 个 / 1148 变异点**。按同样的口径
    任何人看测试列表都会以为它被 7 个文件覆盖着。
    → 覆盖的唯一口径应当是**该模块的变异击杀率**，不是"有几个测试提到它"。
    （是否把这条写成 `test_lessons_enforced.py` 里的强制检查，待定，需用户拍板。）
+
+---
+
+## 工具缺陷史续：#8 —— 改完测试没有重测，台账里的存活列表会过期
+
+**发现方式**：B 档收尾后做交付前自检，写了一个机械核对 ——
+把每个模块**最新一次测量**里的存活变异点，逐个拿行号去所有测试文件的
+`PROVEN_EQUIVALENT` 表里找。89 个存活点里 **10 个找不到对应行号**，全在 A 档。
+
+**根因**：A 档收尾阶段我改过若干测试（`daily_ingest` 的去 flake 修复、
+`run_manifest` 改成打桩 `subprocess.run`、`strategy_gate` 补用例……），
+但**没有在改完之后重新测量那些模块**。台账里记的还是改动之前那一轮的存活列表。
+
+这比"数字不准"更糟：它让"每个存活项都有书面证明"这句话**看起来**成立
+（表里那几条证明确实在），实际上台账列的存活项与当前代码对不上号 ——
+既可能漏掉真盲区，也可能给已经被杀死的点写证明。
+
+**实测确认是过期而非真缺证明**：按当前测试状态重测 `strategy_gate`，
+存活从 7 个降到 2 个（L158×2 / L336 / L417 / L419 全部已被杀死），
+只剩 L177、L310 两个 epsilon 守卫 —— 而这两个本来就在证明表里。
+
+**规矩（补进本文件的测量前置条件）**：
+> **任何一次测试改动之后，该模块必须重新做整模块测量。**
+> 单点 `verify_mutant.py` 只能用来快速确认"这一个杀死了"，
+> **不能**用它的结论去更新台账里的击杀率 —— 台账的每个数字必须来自
+> 一次完整的整模块运行，并在结果表里注明取自哪个 `progress*.json`。
+
+**这个核对本身应当固化**：上面那段"逐个存活点核对行号"的检查现在只是我
+手跑的一次性脚本。它应该进 `test_lessons_enforced.py`，否则下一次还是靠人声称。
+（属于改动测试体系，待用户确认后再加。）
+
+---
+
+## 已登记缺陷编号表（与 `tests/test_known_defects.py` 一一对应）
+
+上面各节的产品问题此前只有序号没有编号，测试侧引用起来对不上。
+这里给出**正式编号**，`test_known_defects.py::test_defect_registry_matches_the_ledger`
+会机械核对两边一致。
+
+| 编号 | 模块 | 一句话 | 行为断言 |
+|---|---|---|---|
+| **B-1** | `fast_ops.bn_ts_rank` | bottleneck 分支值域是 [-1/w, 1/w]，非 docstring 承诺的 [0,1] | 有 |
+| **B-2** | `fast_ops.ts_corr` | cov(ddof=0)/std(ddof=1) 不配套 → 系统性偏低 (w-1)/w | 有 |
+| **B-3** | `fast_ops.cs_rank` | 并列处理是序数名次，非 docstring 声称的平均名次 | 有 |
+| **B-4** | `fast_ops.ts_entropy` | `n_bins=1` 静默返回 -0.0，而非 NaN/报错 | 有 |
+| **B-5** | `fast_ops.bn_ts_max/min` | NaN 策略在 bottleneck 与 numpy 分支之间不一致 | 有 |
+| **B-6** | `fast_ops.cs_rank` | 含 NaN 的截面上值域越出 [0,1] | 有 |
+| **B-7** | `fast_ops` 七个滚动算子 | 面板短于窗口时抛 ValueError，而非返回 NaN | 有 |
+| **B-8** | `ml_engine.proxy_model` | `_fit()` 放弃后仍走模型分支 → AttributeError | 有 |
+| **B-9** | `ml_engine.proxy_model` | `use_label_encoder=False` 对 xgboost 3.x 已无意义 | 无（整洁问题） |
+| **B-10** | `fast_ops` | 向量化分支被 `except Exception` 完全兜住 | 无（结构问题） |
+| **B-11** | `data_partitioner` | "OOS 为空"守卫不可达 | 无（结构问题） |
+| **B-12** | `db.chat_store` | ORDER BY 无第二排序键，同一 tick 内顺序反了 | 有 |
+| **A-1** | `tasks.daily_ingest` | 增量被写进 PIT 两次 | 有（见 test_daily_ingest_increment） |
+
+### 为什么要有 `test_known_defects.py`
+
+此前这些缺陷只被"钉住当前错误行为"的断言覆盖（断言错的值，注释写"修好后改成对的值"）。
+钉住现状有价值 —— 任何一处算术被改坏仍会被抓到 —— 但它有个致命副作用：
+**已知坏掉的东西在每次运行里完全不可见**，十几个缺陷躺着，套件照样报全绿。
+
+`test_known_defects.py` 用 `xfail(strict=True)` 补上另一半：断言**应有行为**。
+于是每次运行的汇总行会显示 `N xfailed`，已知坏掉的数量摆在台面上；
+谁修好了缺陷，用例变 XPASS → strict 判失败 → 强制他同步更新三处
+（xfail 标记、模块里钉住现状的断言、本台账）。
+
+两套断言互补：钉住现状的那条提供**检出能力**，xfail 那条提供**可见性与修复告警**。
+
+---
+
+## Tier C 收尾：把上一轮误判为"等价"的三处翻案
+
+Tier C rerun 2 剩 12 个存活点。逐个坐下来查之后，**有三处是我自己判错了**——
+把可杀的漏测写成了"等价变异证明"。这一节记录翻案过程，因为它比结论更重要：
+**等价性证明必须枚举所有对外可观察面，漏一个面就是假证明。**
+
+### 翻案 1：`alpha_pool.py:204` `if len(self._entries) > self._max_size:`
+
+原证明说：`len == max_size` 时切片取回全部、`removed` 为空、`_seen_dsls` 不变、
+`top_k` 自己排序，所以观察不到差别。
+
+**漏了 `all_entries()`**——它返回 `list(self._entries)` 的**插入顺序**，
+而 `>=` 分支会就地 `sort(key=fitness, reverse=True)` 把它重排。
+`get_orthogonal_signals()` 的 `enumerate(valid)` 同样吃这个顺序。
+
+改为直接杀：`test_pool_order_is_insertion_order_until_it_actually_overflows`
+按插入顺序钉死，并验证真正溢出时淘汰的是 fitness 最低那条。
+
+### 翻案 2：`alpha_pool.py:174` `1.0 / (s[:k] + 1e-9)` 的 `+`
+
+原先没有证明，只是存活。关键观察：**n 条信号去中心化后秩最多 n-1**，
+最小奇异值 ≈ 1e-17，于是 `1/(1e-17 - 1e-9)` 与 `1/(1e-17 + 1e-9)`
+差一个**符号**（±1e9）。松断言（`allclose` 默认 rtol=1e-5）两种都放过。
+
+改为跟公式的参考实现逐位比，`rtol=1e-12, atol=0`，并把"最小奇异值确实退化"
+这个前提一并钉住 —— 前提没了，符号论证也就不成立，测试会红着提醒。
+
+### 翻案 3：`fitness.py:133` `return all(...) if children else False`
+
+原证明说 parser 产不出零子节点的 `ArithmeticNode`，所以分支不可达。
+**理由站不住**：`ArithmeticNode.__init__` 没有元数校验，`ArithmeticNode("add", [])`
+直接就能造，而 GP 的变异/交叉是程序化拼节点、不走 parser。
+改为直接断言 `_is_scale_stable(ArithmeticNode("add", [])) is False`。
+
+### 仍然成立的等价性证明（新增两条机械验证）
+
+| 位置 | 结论 | 机械验证 |
+|---|---|---|
+| `alpha_pool.py:170` `mean(axis=0, keepdims=True)` → `False` | 等价：`mu` 只用于 `mat_clean - mu`，numpy 按尾轴对齐，(n,T)−(T,) 与 (n,T)−(1,T) 逐位相同 | `test_keepdims_makes_no_difference_to_the_broadcast`，四组 (n,T) 形状 `array_equal` |
+| `alpha_pool.py:172` `svd(full_matrices=False)` → `True` | 等价：`Vt` 只以 `Vt[:k]` 被读，k ≤ min(n,T)，两种形式的前 min(n,T) 行是同一组右奇异向量 | `test_full_matrices_does_not_change_the_rows_that_are_read`；**注意** n<T 时两种形式走不同 LAPACK 驱动，实测有 ≤ 3.4e-16 的舍入抖动（非语义差别），断言用 `≤1e-14` 的上界而非逐位相等 |
+| `gp_engine.py:272` `if denom > 0:` → `>=` | 等价：`argsort(argsort(x))` 恒返回 0..n-1 的**排列**，去中心化平方和恒为 n(n²−1)/12；`n_valid ≥ 5` ⇒ denom ≥ 10 | `test_the_rank_denominator_can_never_be_zero`，n=5..39 × 4 类输入（全并列/全零/连续/大量重复） |
+| `gp_engine.py:254` `(close[1:] - close[:-1])` → `+` | 等价：`(P₁+P₀)/P₀ = 2 + r` 是 r 的严格单调增变换，而 fwd_ret **只**进 Spearman 秩相关 | 已有 `test_sum_form_is_a_monotone_transform_of_the_return`，另加 `fwd_ret` 使用点计数的失效告警 |
+| `gp_engine.py:258` `sig_arr.shape[0] - 1` → `+ 1` | 等价：signal 行数与 close 恒等（都是 T），两种取值下 `min(...)` 都取 T−1 | 已有 `test_signal_and_close_always_have_the_same_row_count` |
+| `gp_engine.py:171` `mapped and mapped in ...` → `or` | 等价：`_ALIAS` 的每个目标值都是 `_SEED_DSLS_BY_FAMILY` 的键，未知家族时 mapped 是空串、两式同假 | 已有 `test_every_alias_target_exists_in_the_seed_table` |
+
+### 顺带查出的自身问题：`test_gp_engine_fitness.py` 有整段重复
+
+`TestRankIc` 里有 57 行被整段复制粘贴了两遍，四个用例名重名 ——
+Python 只保留后定义的那份，**前一份从未被执行过**。已去重。
+这也说明：用例数（"25 个测试"）同样不是强度指标，重名会静默吞掉用例。
+
+### 新登记缺陷 C-1：GP 适应度的截面秩不处理并列
+
+翻案 3 的副产品。`rs = np.argsort(np.argsort(s[mask]))` 是**序数**名次。
+当日信号对所有票同值时，它给出的是 0,1,2,… —— 也就是**列在面板里的位置**。
+
+后果：`(close/close)` 这种截面恒定、零信息的信号，mean_IC 不是 0，
+而是"ticker 排列顺序 vs 未来收益秩"的相关系数。**把面板的列顺序打乱，
+同一个信号的 fitness 会变** —— GP 的分数依赖数据加载时的列序，而列序不是市场事实。
+
+正确做法是并列取平均名次（`scipy.stats.rankdata` 或手写 tie-average），
+此时常数信号去中心化后全 0 → denom = 0 → 该截面被 `if denom > 0:` 正确跳过
+（那条守卫本来就是为这个场景写的，只是现在永远进不去）。
+
+| 编号 | 模块 | 一句话 | 行为断言 |
+|---|---|---|---|
+| **C-1** | `gp_engine._evaluate_individual` | 截面秩用 argsort(argsort) 不处理并列，零信息信号拿到由列序决定的非零 IC | 有（`TestGpFitnessRankTies`，strict xfail） |
+
+已登记缺陷总数由 18 升至 **19**，`test_the_outstanding_defect_count_is_visible`
+的数字同步改为 19。
+
+---
+
+## 自伤教训 #6：源码文本断言用**子串**判断，同一串在文件里出现多次就杀不掉
+
+写 `router.py` 的 `daemon=True` 用例时用了：
+
+```python
+assert "threading.Thread(target=_run, daemon=True)" in src
+```
+
+`daemon=True` 这件事在进程内**观察不到**（差别只在解释器退出时显现），
+所以源码断言是合理的。但 router.py 里有 **3 处** `daemon=True`，其中
+**两处一模一样**（L431 与 L2471 都是 `threading.Thread(target=_run, daemon=True)`）。
+把 L431 那处改成 `False`，L2471 那处仍让子串命中 —— 断言照过。
+在隔离副本上实测：三处逐个改，**一处都杀不掉**。
+
+这和工具缺陷 #3（"一行上有多个 `*`，变异器只改第一个"）是同一类错误的两面：
+**一个位置的性质，不能用全文件的存在性去断言。**
+
+改法是走 AST，断言的是**全称命题**而不是存在性：
+
+```python
+for node in ast.walk(ast.parse(inspect.getsource(R))):
+    if isinstance(node, ast.Call) and 是 threading.Thread(...):
+        assert kw["daemon"] 是常量 True, f"第 {node.lineno} 行不是守护线程"
+```
+
+改完之后三处逐个变异，**三处全部被杀**。附带好处：以后新加线程忘了写
+`daemon` 同样会被这条抓到 —— 存在性断言给不了这个保证。
+
+**规则**：源码文本断言只在"进程内确实观察不到"时才用；一旦要用，
+先确认那个串在文件里**唯一**，不唯一就走 AST 写成全称命题。
+本轮据此改写了 `test_every_thread_the_router_spawns_is_a_daemon`。
+
+### 同一轮里已用行为断言替换掉的源码断言
+
+`main.py:422` 的 `getattr(args, "walk_forward", False)` 起初也想用
+`inspect.getsource` 断言，后来改成**真跑 `run_realistic()`、看它选了哪个
+回测器**（把两个回测器换成只记账的替身）。行为断言在这里是可行的，
+就不该退回文本断言。
+
+---
+
+## C 档方法论：三条"覆盖了行，却没覆盖能区分真假的那一格"
+
+C 档补强过程中，同一类错误反复出现，值得单独立一节。它们的共同点是
+**用例确实执行到了那一行，但选的观察面看不出两种取值的差别**——
+覆盖率报告全绿，变异却活着。
+
+### 1. 参数组合恰好让两种取值同解
+
+`_agent.py` 的 `if intent == "workflow_b" and dsl_hint:`，既有用例喂的是
+
+| intent | dsl_hint | `and` | `or` |
+|---|---|---|---|
+| workflow_a | None | 假 | 假 |
+| workflow_b | "rank(close)" | 真 | 真 |
+
+**两格都同解**。真正能分开的是 `(workflow_b, None)` 那一格，而
+`_detect_intent` 产不出来 —— 必须打桩造。
+
+同类：`population_evolver` 的过拟合公式 `(is - oos)/abs(is)`。
+只喂"极端过拟合"（is=2.0, oos=0.0）时 `+` 与 `-` 都被 `clip(0,1)` 压成 1.0，
+**必须喂"完全没退化"（oos == is）** 才分得开：正确 0.0，错误 1.0。
+四份同样的公式（`_evaluate_one_single` / `_evaluate_one_multi` /
+`_extract_metrics` / `alpha_workflows._quick_metrics`）全栽在这一点上。
+
+### 2. 下游把差别吸收掉了
+
+`alpha_workflows._expand_for_optimization` 有两个循环：变异循环 + 随机补位循环。
+把变异循环的尝试上限 `n_mutations * 15` 改成 `/ 15`，它**一次都不跑**，
+但补位循环会把总数补齐到 `n_mutations + 3` —— **候选总数一模一样**，
+只是里面一个变异体都没有，全是随机 alpha。
+
+后果不小：Workflow B 的职责是"针对用户给的这条 DSL 做结构优化"，
+这样就退化成了纯随机搜索，用户的输入被无视，而 `len(candidates)` 完全正常。
+
+抓法：**数变异算子被调用了几次**，不要数候选条数。
+
+同类：`population_evolver._generate_next_population` 末尾的
+`return next_gen[: self._pop_size]` 把"多填一个"截断掉了 ——
+那个 `<` → `<=` 是真等价（已证），但它说明**凡是产出经过截断/归一化的地方，
+计数类断言都要往上游挪一层**。
+
+### 3. 前置层把被测层掩盖了
+
+`_generate_diverse_seeds` 的 Layer 1（AlphaAgent 回退种子，实测 5 条）
+与 Layer 2（关键词模板）是**无条件追加**的，只有 Layer 3/4 看 `n_target`。
+n_target=12 时填充循环只需补 6 条，把它的尝试上限压成 1 次，
+结果还剩 8 条 —— 断言"填满 12"抓得到，但换个参数就抓不到了。
+
+抓法：把前置层**全部关掉**，让被测层单独对结果负责。
+
+### 这一轮用来定位问题的手段：新测试单跑
+
+上面这些不是靠读代码想出来的，是靠一次**只用新测试**的测量
+（`plan_wf_newonly.json`，基线 3 秒 vs 原选择的 16 秒 + 大量死循环变异）
+把"旧测试盖住的"与"我确实漏写的"分开之后逐条查出来的。
+
+三路对照（仅旧 / 仅新 / 新+旧）此前只在 B 档做过一次，用来衡量旧测试的
+边际贡献；这一轮发现它还有第二个用途：**定位自己的盲区**。
+只跑新测试时存活、而新+旧时被杀的点，说明是旧测试在兜底；
+两种情况下都存活的，才是真正需要动手的。
+
+## 工具改进：单点超时与进程树
+
+`alpha_workflows` 首测用 1800s 超时跑了 11.6 小时才判完 12 个变异点 ——
+平均 58 分钟/点，**比超时上限还长**。原因是
+`subprocess.run(timeout=...)` 超时后只 kill 直接子进程，pytest 派生的孙进程
+还握着 stdout 管道，`communicate()` 继续阻塞到孙进程自己退出，超时上限形同虚设。
+
+改法（`mutate.py`）：
+- 改用 `Popen` + `wait(timeout=...)`，stdout/stderr 直接丢弃（不再用管道）
+- 超时后 Windows 走 `taskkill /F /T /PID`、POSIX 走 `killpg`，**连孙进程一起杀**
+- 默认超时从 1800s 降到 300s，`runner.py` 加 `--timeout` 透传
+
+选超时值的规矩：**取该测试选择基线耗时的 10 倍以上**。实测基线
+`_tools` 70s / `population_evolver` 35s / `router` 54s，故用 600s。
+超时判为"击杀"是对的（变异让测试跑不完本身就是被检出），
+但上限太紧会把"慢而正确"的变异误判成击杀，制造假强度。
+
+---
+
+# C 档结果（15 个模块 / 439 个变异点）
+
+| 模块 | 首测 | 终测 | 存活 |
+|---|---|---|---|
+| `agent/_agent.py` | 0.0% | **100%** | 0 |
+| `agent/_critic.py` | 50.0% | **100%** | 0 |
+| `api/chat_router.py` | 40.0% | **100%** | 0 |
+| `core/discovery/discovery_engine.py` | 33.3% | **100%** | 0 |
+| `core/gp_engine/fitness.py` | 35.0% | **100%** | 0 |
+| `core/gp_engine/mutations.py` | 4.6% | **100%** | 0 |
+| `core/gp_engine/population_evolver.py` | 10.4% | **100%** | 0 |
+| `main.py` | 9.5% | **100%** | 0 |
+| `tasks/backup.py` | 57.1% | **100%** | 0 |
+| `tasks/scheduler.py` | 5.0% | **100%** | 0 |
+| `api/router.py` | 16.0% | 98.7% | 1 |
+| `agent/_tools.py` | 4.5% | 95.5% | 1 |
+| `core/gp_engine/alpha_pool.py` | 59.1% | 95.5% | 1 |
+| `core/workflows/alpha_workflows.py` | 20.3% | 92.8% | 5 |
+| `core/gp_engine/gp_engine.py` | 0.0% | 73.3% | 4 |
+| **合计** | — | **97.3%（427/439）** | **12** |
+
+**12 个存活项全部有机械可验证的等价性证明**（达标标准是"存活项 100% 处置"，
+不是击杀率数字本身）：
+
+| 位置 | 证明要点 | 验证用例 |
+|---|---|---|
+| `gp_engine` L171 | `_ALIAS` 的每个目标值都是 `_SEED_DSLS_BY_FAMILY` 的键 | `test_every_alias_target_exists_in_the_seed_table` |
+| `gp_engine` L254 | `(P₁+P₀)/P₀ = 2+r`，是 r 的严格单调增变换，而 fwd_ret 只进 Spearman 秩相关 | `test_sum_form_is_a_monotone_transform_of_the_return` |
+| `gp_engine` L258 | signal 行数与 close 恒等，两种取值下 `min(...)` 都取 T−1 | `test_signal_and_close_always_have_the_same_row_count` |
+| `gp_engine` L272 / `alpha_workflows` L603 | `argsort(argsort(x))` 恒为 0..n−1 的排列 ⇒ 平方和恒为 n(n²−1)/12，n≥5 时 denom ≥ 10 | `test_the_rank_denominator_can_never_be_zero` |
+| `alpha_workflows` L335/338/342 | `_try_add` 两个调用点都是 `ast.Expr` 语句，返回值被丢弃 | `test_try_add_return_value_is_discarded_at_every_call_site` |
+| `alpha_workflows` L573 | `is_data` 与"键集相等"两个子式不可能独立取值（失败时成对 pop + `len<2` 早退） | `test_the_two_operands_cannot_vary_independently` |
+| `router` L1423 | `opend_up` 初值在 try 成功分支与 except 分支都被覆盖 | `test_the_initial_flag_is_always_overwritten` |
+| `_tools` L476 | LLM 返回值域 `{None,'point','hoist','param'}` ⊆ 权重表键集 | `test_every_possible_hint_is_already_a_weight_key` |
+| `alpha_pool` L170 | numpy 广播按尾轴对齐，`(n,T)−(T,)` 与 `(n,T)−(1,T)` 逐位相同 | `test_keepdims_makes_no_difference_to_the_broadcast` |
+
+## 自伤教训 #7：**能杀就不要写等价证明**
+
+第二轮我把 `population_evolver` 的
+`while len(next_gen) < self._pop_size and attempts < ...` 的 `<` → `<=`
+判成了等价变异，理由写得很像样：末尾 `return next_gen[: self._pop_size]`
+会把多产出的那个个体截掉，**返回值逐元素相同**（还配了一条机械验证用例）。
+
+第三轮才发现这个结论是错的：
+
+> 输出看不出来，**调用次数看得出来**。多跑一轮就是多一次
+> `point_mutation` / `generate_random_alpha` 调用。
+
+同一行的 `and` → `or` 更明显：种群填满之后还会空转到 `pop_size * 20` 次
+尝试上限 —— 每一代白烧几百次随机生成 + 校验。这根本不是"观察不到"，
+是我**没找对观察面**。三个点最后全部改成杀死。
+
+**规则**：写等价性证明之前，先穷举可观察面 ——
+返回值、副作用、**调用次数**、日志、耗时、异常。
+只有当**每一个**都证明不受影响时才能写等价；
+"我试的那个观察面没差别"不是等价。
+
+**待办（交付审计前）**：A/B 档已写的 35 + 若干条等价证明，
+应按这条标准复查一遍，重点是那些理由为"下游把差别吸收了"
+（截断、clip、归一化、兜底重算）的条目 —— 它们最可能只是观察面没选对。
+
+## C 档补强的测试文件
+
+| 文件 | 用例数 | 针对模块 |
+|---|---|---|
+| `test_gp_mutation_operators.py` | 98 | `mutations.py` |
+| `test_alpha_workflows_internals.py` + `_round2` + `_round3` | 62+40+14 | `alpha_workflows.py` |
+| `test_population_evolver_internals.py` + `_round2` + `_round3` | 44+28+15 | `population_evolver.py` |
+| `test_api_router_guards.py` + `test_api_router_round2.py` | 35+38 | `router.py` |
+| `test_agent_tools_guards.py` | 34 | `_tools.py` |
+| （A/B 档已有）`test_agent_routing.py` 等 | — | 其余模块 |
+
+全量回归：**2523 passed / 1 skipped / 20 xfailed**（24 分 30 秒）。
+其中 20 个 xfailed = 已登记但未修复的产品缺陷，每次运行都摆在汇总行上。
