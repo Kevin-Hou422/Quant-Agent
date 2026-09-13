@@ -26,6 +26,34 @@ from app.tasks.daily_trading_loop import (
 
 
 # ===========================================================================
+# 顺序无关性：本文件的用例不得依赖"前面跑过什么"
+# ===========================================================================
+
+@pytest.fixture(autouse=True)
+def _no_leaked_active_strategy(monkeypatch):
+    """
+    把 `StrategyStore.latest_active()` 默认打成 None，使本文件与执行顺序无关。
+
+    **为什么需要**：`StrategyStore()` 不传 `db_url` 时回落到
+    `settings.database_url`，而 conftest 的 `_hermetic_run_flags` 把它指向一个
+    **session 级共享临时库**。只要前面任何一条用例往里存过 `status="active"`
+    的策略配置（`unit/db/` 里的策略端点用例就会），
+    `run_portfolio` 随后读到它 → `using_active_config` 非 None →
+    **边际准入分支被整个跳过**，`selection` 为 None。
+
+    这个泄漏本来就在，只是旧的扁平目录下执行顺序恰好让它没暴露；
+    2026-09 重组目录后 `unit/db/` 排到了 `unit/trading_context/` 前面，
+    `test_marginal_selection_runs_when_enabled` 立刻变红 ——
+    **一条用例的结论取决于它前面跑过什么**，这种套件不能交付审计。
+
+    需要"有 active 配置"的那条用例在自己体内再 monkeypatch 一次覆盖本 fixture。
+    """
+    from app.db.strategy_store import StrategyStore
+    monkeypatch.setattr(StrategyStore, "latest_active", lambda self: None,
+                        raising=False)
+
+
+# ===========================================================================
 # 已证明的**等价变异** —— 不是漏测，是改了也不可能被观测到
 # ===========================================================================
 

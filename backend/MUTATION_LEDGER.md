@@ -1178,3 +1178,138 @@ n_target=12 时填充循环只需补 6 条，把它的尝试上限压成 1 次�
 
 全量回归：**2523 passed / 1 skipped / 20 xfailed**（24 分 30 秒）。
 其中 20 个 xfailed = 已登记但未修复的产品缺陷，每次运行都摆在汇总行上。
+
+---
+
+# tests/ 目录整理（2026-09-13）
+
+## 结论先行：废料几乎没有，但整理过程炸出三个真问题
+
+用**四条可机械确认**的判据扫完 2550 个用例（不是靠感觉挑）：
+
+| 判据 | 命中 |
+|---|---|
+| 空壳文件（整文件不 import 任何 app 模块） | **0** |
+| 无条件 skip（永不执行） | **0**（扫出的 10 条全是 `pytest.importorskip`，依赖守卫，是扫描器误报） |
+| 重言式（断言恒真，常量折叠后判定） | **1** |
+| 逐字重复（AST 指纹相同） | **2 条用例** |
+
+**真正删掉的只有那 2 条**逐字重复（`test_invariants.py` 与 `test_lessons_enforced.py`
+各有一份完全相同的 data_source 检查，保留后者）。其余一律保留 ——
+原则是"只有确认完全没用才删，模糊不确定就留"。
+
+那 1 条重言式是
+`assert ("" if "" is not None else current_git_commit()) == ""` ——
+`"" is not None` 恒真，整条等价于 `assert "" == ""`，
+**把产品的表达式在测试里抄了一遍而没有碰产品**。
+它有真实意图（空串是显式取值，不该触发自动探测），所以**修而不删**：
+改成真存一条 `git_commit=""` 的记录，并把自动探测打成"一旦被调用就失败"的地雷。
+
+> 第一版重言式扫描器只查"断言里一个名字都没有"，漏掉了这条（它里面有
+> `current_git_commit` 这个名字，只是那个调用**永远执行不到**）。
+> 加了常量折叠（`X is not None` 且 X 为字面量 → 折叠）之后才抓到。
+
+## 发现 1：`/api/chat/stream` 零测试，靠一句 docstring "被覆盖"
+
+删掉那 2 条重复用例后，`test_no_new_untested_api_route` 立刻变红。
+
+回查发现：这条路由此前之所以算"已覆盖"，**只因为被删那条用例的 docstring 里
+写了 `/api/chat/stream` 这个字符串** —— enforcement 的判据是
+"路径字面量在测试源码里出现过"，注释与 docstring 同样命中。
+41 条 API 路由里只有这一条是假覆盖，而它恰好是**前端唯一消费的那条**。
+
+这与「自伤教训 #6」（源码子串断言）是同一类错误，这次出现在
+**项目自己的 enforcement 检查里**。两处都修：
+
+1. 新增 `integration/test_api_chat_stream.py`（7 条）——
+   测 SSE 的真契约：帧格式 `data: <json>\n\n`、必须以 `done`/`error` **终止**、
+   终局带 `data_source`、三个反缓冲头、至少有一个增量 `text` 事件
+2. 判据加强：先剥掉 docstring 与注释再匹配（`_executable_text`）
+
+## 发现 2：共享 session 级 DB 造成的顺序依赖
+
+`StrategyStore()` 不传 `db_url` 时回落到 `settings.database_url`，
+而 conftest 的 `_hermetic_run_flags` 把它指向一个 **session 级共享临时库**。
+`unit/db/` 里的策略端点用例往里存了 `status="active"` 的配置，
+后面 `run_portfolio` 读 `latest_active()` 拿到它 →
+`using_active_config` 非 None → **边际准入分支被整个跳过** → `selection` 为 None。
+
+旧的扁平目录下执行顺序恰好让它没暴露；重组后 `unit/db/` 排到
+`unit/trading_context/` 前面，`test_marginal_selection_runs_when_enabled` 立刻变红。
+
+修法：给该文件加 autouse fixture 把 `latest_active` 默认打成 None，
+使整个文件与执行顺序无关；需要"有 active 配置"的那条用例在体内自行覆盖。
+
+## 发现 3（最隐蔽）：`importlib.reload(app.main)` 污染整个会话
+
+`test_main_startup_guards.py` 里验"重复导入不会重复插 sys.path"时
+调了 `importlib.reload(app.main)`。而 `app/main.py` 顶层有 `app = FastAPI(...)`，
+reload 会**重新执行模块、造出一个全新的 FastAPI 实例**绑到 `app.main.app`。
+
+后果链：
+
+1. 任一测试用 conftest 的 **session 级 `test_client`** → 它包住**当时**的 app 对象
+2. reload → `app.main.app` 变成**新**实例
+3. 之后任何 `from app.main import app; app.dependency_overrides[...] = ...`
+   改的是新实例 → **覆盖到不了 client** → 接口打到真实依赖上
+
+症状是毫不相干的 **404 / 409**，完全看不出跟 reload 有关。
+
+洗牌顺序（seed=20260913）下的时间线严丝合缝：
+最早建 client 在 **#10**、reload 在 **#2149**、失败用例在 **#2350**。
+三步顺序复现：修复前 `1 failed`，修复后 `3 passed`。
+
+修法：把"重复导入"那半移到**子进程**。既消除污染，也更忠实 ——
+要验的本来就是"全新解释器里导入两次不会重复插 `sys.path`"。
+
+> 注：前两次复现尝试失败（都通过），因为漏了第 1 步"先建 session client"。
+> 当时如实说了"假设未被证实"，补齐顺序后才确认。
+> **没复现出来之前不要把猜测当成因**。
+
+## 新增常备工具：`shuffle_check.py`
+
+本仓**没有** pytest-randomly —— 顺序依赖此前**没有任何机制在防**
+（我一度误以为有，`-p no:randomly` 关的是个不存在的插件）。
+新增一个零依赖的收集期洗牌插件：
+
+```bash
+python -m pytest tests/ -q -p shuffle_check                   # 默认种子
+SHUFFLE_SEED=123 python -m pytest tests/ -q -p shuffle_check  # 换种子
+SHUFFLE_DUMP=order.txt python -m pytest tests/ --co -p shuffle_check   # 导出顺序
+```
+
+失败后用同种子 + `SHUFFLE_DUMP` 导出执行顺序，即可二分定位是哪条前置用例弄脏了状态。
+上面两个顺序依赖就是这么找出来的。
+
+**交付前必须过这一关**：固定顺序全绿 **不等于** 套件可信。
+
+## 目录结构
+
+114 个文件 `git mv`（保留历史），33 个 `test_phaseN_*.py` 按实际测试内容改名
+（`test_phase7_paper.py` → `test_paper_broker_replay_parity.py` 之类）。
+
+```
+tests/
+  README.md          导航索引：每个文件测什么、强度怎么保证、该盯哪两个数
+  meta/          3   对套件本身的约束 —— 审计入口
+  unit/<包>/    88   17 个子目录，与 app/ 的包结构一一对应
+  integration/  33   跨包链路 + 真实 HTTP 端点
+  golden/        1
+  performance/   2
+```
+
+**移动前必须先做的一步**：把 3 处 `Path(__file__).resolve().parents[1]`
+这类**硬编码层数**改成"向上找含 `app/` 的目录"。否则文件下沉一层之后
+它会静默指到 `tests/` 而不是 `backend/`，`rglob("*.py")` 扫出空集合 ——
+而**对空集合的全称断言恒真**，一批约束会静默变成空转且没有任何报错。
+
+## 整理后的口径
+
+| 指标 | 值 |
+|---|---|
+| 文件 / 用例 | 127 / 2550 |
+| 固定顺序全量 | 2529 passed · 1 skipped · 20 xfailed · **0 failed**（11分48秒） |
+| **洗牌顺序全量** | 2529 passed · 1 skipped · 20 xfailed · **0 failed**（18分02秒） |
+| 全量耗时 | 24 分钟 → **11分48秒**（重组后 fixture 局部性变好） |
+
+`20 xfailed` = 已登记但尚未修复的产品缺陷，每次运行都摆在汇总行上。

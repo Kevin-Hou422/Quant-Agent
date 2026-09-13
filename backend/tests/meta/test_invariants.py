@@ -14,7 +14,22 @@ from pathlib import Path
 
 import pytest
 
-BACKEND = Path(__file__).resolve().parents[1]
+def _backend_root() -> Path:
+    """
+    向上找到含 `app/` 的目录 = backend/。
+
+    **不要写成 `Path(__file__).resolve().parents[N]`**：层数一旦随目录重组
+    变化，这里会静默指到错误的目录，`rglob("*.py")` 扫出空集合，
+    而"对空集合的全称断言恒真" —— 约束静默失效且没有任何报错。
+    """
+    p = Path(__file__).resolve()
+    for parent in p.parents:
+        if (parent / "app").is_dir():
+            return parent
+    raise RuntimeError(f"从 {p} 向上找不到含 app/ 的 backend 根目录")
+
+
+BACKEND = _backend_root()
 APP = BACKEND / "app"
 
 
@@ -63,26 +78,12 @@ def test_api_request_models_default_to_real_dataset():
         assert default, f"{model.__name__}.dataset_name 默认为空 → 会静默跑合成数据"
 
 
-def test_chat_response_carries_data_source():
-    """聊天响应必须带 data_source，否则用户无法分辨 Sharpe 是不是随机数。"""
-    from app.api.chat_router import ChatResponse
-    assert "data_source" in ChatResponse.model_fields
-
-
-def test_stream_done_event_carries_data_source():
-    """
-    前端实际消费的是 SSE /api/chat/stream，不是 POST /api/chat。
-    只给 POST 加 data_source = 只修了一半（DEV_LESSONS §R）——最终 done 事件必须也带。
-    """
-    from app.agent.quant_agent import QuantAgent
-    agent = QuantAgent(n_tickers=20, n_days=252, n_trials=1,
-                       dataset_name="", allow_synthetic=True)
-    events: list[dict] = []
-    agent.stream_chat("rank(close)", session_id="inv_stream",
-                      on_event=lambda e: events.append(e))
-    done = [e for e in events if e.get("type") == "done"]
-    assert done, f"stream_chat 未发出 done 事件：{[e.get('type') for e in events]}"
-    assert done[-1]["result"].get("data_source") == agent.data_source
+# `test_chat_response_carries_data_source` 与
+# `test_stream_done_event_carries_data_source` 原本在这里各有一份，
+# 与 `meta/test_lessons_enforced.py::TestLessonF` 里的两条**逐字相同**
+# （AST 指纹比对确认）。同一条约束由两个 meta 套件各查一次没有增量，
+# 已删除本文件里的副本，保留 lessons_enforced 那一份 ——
+# 那里是"教训固化"的正式归属地，且与同组的其他 §R 检查放在一起。
 
 
 # ---------------------------------------------------------------------------

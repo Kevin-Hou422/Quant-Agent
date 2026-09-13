@@ -34,6 +34,16 @@ import numpy as np
 import pytest
 
 
+def _backend_root():
+    """向上找到含 `app/` 的目录 —— 不写死层数，目录重组不会静默指错。"""
+    from pathlib import Path
+    p = Path(__file__).resolve()
+    for parent in p.parents:
+        if (parent / "app").is_dir():
+            return parent
+    raise RuntimeError("找不到 backend 根目录")
+
+
 @pytest.fixture
 def main_mod():
     import app.main as m
@@ -488,12 +498,41 @@ def test_backend_root_is_on_sys_path_exactly_once():
     `if _ROOT not in sys.path:` —— 删掉 `not` 会让**已在路径里**时再插一次，
     重复导入时 sys.path 无限膨胀；反过来则永远不插，作为脚本运行时导不到包。
     """
+    import subprocess
     import sys
     import app.main as m
+
     root = m._ROOT
     assert root in sys.path, "backend 根目录没有进 sys.path"
     assert sys.path.count(root) == 1, (
         f"backend 根目录在 sys.path 里出现了 {sys.path.count(root)} 次 —— "
         f"`not in` 的守卫失效")
-    importlib.reload(m)
-    assert sys.path.count(m._ROOT) == 1, "重新导入后 sys.path 里出现了重复项"
+
+    # ⚠️ 重复导入这一半**必须放到子进程里**，不能在本进程 `importlib.reload`。
+    #
+    # `app/main.py` 顶层有 `app = FastAPI(...)`，reload 会重新执行模块、
+    # 造出一个**全新的 FastAPI 实例**绑到 `app.main.app`。于是：
+    #   - conftest 的 session 级 `test_client` 仍包着**旧**的 app 对象
+    #   - 之后任何 `from app.main import app; app.dependency_overrides[...] = ...`
+    #     改的是**新**对象，覆盖到不了 client
+    #   - 那些测试于是静默地打到真实依赖上，症状是毫不相干的 409/404
+    #
+    # 2026-09 用洗牌顺序跑全量时抓到过：这条排到前面之后，
+    # `test_approval_workflow_api.py::test_approve_promotes_to_paper_and_records`
+    # 报 "仅 VALIDATED 可批准，当前=candidate" —— 它的 store 覆盖失效了。
+    # 旧的扁平目录下这条恰好排得晚，后面没人再用依赖覆盖，所以一直没暴露。
+    #
+    # 子进程同时也更忠实：真正验的就是"全新解释器里导入两次"。
+    probe = (
+        "import sys, importlib;"
+        "import app.main as m;"
+        "importlib.reload(m);"
+        "print(sys.path.count(m._ROOT))"
+    )
+    r = subprocess.run([sys.executable, "-c", probe],
+                       cwd=str(_backend_root()), capture_output=True, text=True)
+    assert r.returncode == 0, f"子进程导入 app.main 失败：{r.stderr[-500:]}"
+    count = int(r.stdout.strip().splitlines()[-1])
+    assert count == 1, (
+        f"重新导入后 backend 根目录在 sys.path 里出现了 {count} 次 —— "
+        f"`if _ROOT not in sys.path:` 的守卫失效")

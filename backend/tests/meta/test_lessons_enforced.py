@@ -17,7 +17,22 @@ from pathlib import Path
 
 import pytest
 
-BACKEND = Path(__file__).resolve().parent.parent
+def _backend_root() -> Path:
+    """
+    向上找到含 `app/` 的目录 = backend/。
+
+    **不要写成 `Path(__file__).resolve().parents[N]`**：层数一旦随目录重组
+    变化，这里会静默指到错误的目录，`rglob("*.py")` 扫出空集合，
+    而"对空集合的全称断言恒真" —— 约束静默失效且没有任何报错。
+    """
+    p = Path(__file__).resolve()
+    for parent in p.parents:
+        if (parent / "app").is_dir():
+            return parent
+    raise RuntimeError(f"从 {p} 向上找不到含 app/ 的 backend 根目录")
+
+
+BACKEND = _backend_root()
 APP     = BACKEND / "app"
 TESTS   = BACKEND / "tests"
 LESSONS = BACKEND / "DEV_LESSONS.md"
@@ -695,13 +710,48 @@ class TestLessonS_AuditUnitIsNotTheModule:
     #: 是上一版检查器只认 dataset_name 这一个字段名造成的误报 —— 已修正判据。
     KNOWN_SYNTHETIC_ONLY_ENDPOINTS: set = set()
 
+    @staticmethod
+    def _executable_text(src: str) -> str:
+        """
+        去掉 docstring 与注释，只留会被执行的代码文本。
+
+        **为什么必须去**：本检查的判据是"路径字面量在测试源码里出现过"。
+        不去注释的话，**一句 docstring 提到路径就算这条路由被测了**。
+
+        实际踩过：`/api/chat/stream`（前端唯一消费的 SSE 端点）长期算"已覆盖"，
+        靠的只是某条用例 docstring 里的一句
+        "前端实际消费的是 SSE /api/chat/stream" —— 整仓没有一个测试碰过它。
+        整理 tests/ 目录、删掉那条与本文件重复的用例时才暴露出来。
+
+        同一类错误见 MUTATION_LEDGER「自伤教训 #6」：
+        **一个位置的性质，不能用全文件的存在性去断言。**
+        """
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            return src
+        kill: set = set()
+        for n in ast.walk(tree):
+            if not isinstance(n, (ast.Module, ast.FunctionDef,
+                                  ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if (n.body and isinstance(n.body[0], ast.Expr)
+                    and isinstance(n.body[0].value, ast.Constant)
+                    and isinstance(n.body[0].value.value, str)):
+                d = n.body[0]
+                kill.update(range(d.lineno, (d.end_lineno or d.lineno) + 1))
+        kept = [ln for i, ln in enumerate(src.splitlines(keepends=True), 1)
+                if i not in kill]
+        return re.sub(r"#[^\n]*", "", "".join(kept))
+
     def _untested_routes(self):
         from app.main import app
         routes = {
             r.path for r in app.routes
             if getattr(r, "methods", None) and str(r.path).startswith("/api")
         }
-        test_src = "\n".join(_src(p) for p in _py_files(TESTS)
+        test_src = "\n".join(self._executable_text(_src(p))
+                             for p in _py_files(TESTS)
                              if p.name != Path(__file__).name)
         out = []
         for path in sorted(routes):

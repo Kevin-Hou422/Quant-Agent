@@ -161,9 +161,29 @@ class TestGitCommit:
         assert rec.git_commit == "deadbee", (
             f"显式传入的 commit 被覆盖成了 {rec.git_commit!r}")
 
-    def test_empty_string_commit_is_respected(self):
-        """空串是**显式**取值（不是 None），不得触发自动探测。"""
-        assert ("" if "" is not None else current_git_commit()) == ""
+    def test_empty_string_commit_is_respected(self, store, monkeypatch):
+        """
+        空串是**显式**取值（不是 None），不得触发自动探测。
+
+        上一版写的是
+        `assert ("" if "" is not None else current_git_commit()) == ""` ——
+        `"" is not None` 恒真，整条等价于 `assert "" == ""`，
+        **把产品的表达式在测试里抄了一遍而没有碰产品**，恒真。
+        这里改成真的存一条 `git_commit=""` 的 manifest，
+        并把自动探测打成"一旦被调用就失败"的地雷。
+        """
+        import app.db.run_manifest as rm
+
+        def _landmine():
+            raise AssertionError(
+                "显式传了 git_commit=\"\" 却仍然触发了自动探测 —— "
+                "`git_commit if git_commit is not None else current_git_commit()` "
+                "的空值判定被改成了真值判定")
+
+        monkeypatch.setattr(rm, "current_git_commit", _landmine)
+        rid = store.record("backtest", _dataset(11), seed=3, git_commit="")
+        assert store.get(rid).git_commit == "", (
+            "显式的空串 commit 没有被原样保存")
 
 
 # ===========================================================================

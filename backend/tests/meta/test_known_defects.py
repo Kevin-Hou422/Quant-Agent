@@ -33,6 +33,24 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
+
+
+def _backend_root() -> Path:
+    """
+    向上找到含 `app/` 的目录 = backend/。
+
+    **不要写成 `Path(__file__).resolve().parents[N]`**：层数一旦随目录重组
+    变化，这里会静默指到错误的目录，`rglob("*.py")` 扫出空集合，
+    而"对空集合的全称断言恒真" —— 约束静默失效且没有任何报错。
+    """
+    p = Path(__file__).resolve()
+    for parent in p.parents:
+        if (parent / "app").is_dir():
+            return parent
+    raise RuntimeError(f"从 {p} 向上找不到含 app/ 的 backend 根目录")
+
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -498,8 +516,7 @@ def test_defect_registry_matches_the_ledger():
     """
     import pathlib
     import re
-    ledger = (pathlib.Path(__file__).resolve().parents[1] /
-              "MUTATION_LEDGER.md").read_text(encoding="utf-8")
+    ledger = (_backend_root() / "MUTATION_LEDGER.md").read_text(encoding="utf-8")
     missing = [d for d in DEFECT_REGISTRY
                if d.startswith("B-") and not re.search(rf"\bB-{d[2:]}\b", ledger)]
     assert not missing, (

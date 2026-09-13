@@ -19,6 +19,24 @@ ProxyModel 决定**哪些 Alpha 连回测都不跑就被丢掉**。它错了不�
 """
 from __future__ import annotations
 
+from pathlib import Path
+
+
+def _backend_root() -> Path:
+    """
+    向上找到含 `app/` 的目录 = backend/。
+
+    **不要写成 `Path(__file__).resolve().parents[N]`**：层数一旦随目录重组
+    变化，这里会静默指到错误的目录，`rglob("*.py")` 扫出空集合，
+    而"对空集合的全称断言恒真" —— 约束静默失效且没有任何报错。
+    """
+    p = Path(__file__).resolve()
+    for parent in p.parents:
+        if (parent / "app").is_dir():
+            return parent
+    raise RuntimeError(f"从 {p} 向上找不到含 app/ 的 backend 根目录")
+
+
 import numpy as np
 import pytest
 
@@ -269,7 +287,7 @@ def test_fitted_flag_has_no_reader():
     """L110/L163 等价性的机械验证：全代码库没有任何地方读 ProxyModel._fitted。"""
     import pathlib
     import re
-    root = pathlib.Path(__file__).resolve().parents[1] / "app"
+    root = _backend_root() / "app"
     readers = []
     for p in root.rglob("*.py"):
         for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
