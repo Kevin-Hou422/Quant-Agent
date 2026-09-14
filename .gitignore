@@ -35,3 +35,9 @@ build/
 
 # 变异测试的原地备份（绝不能进仓库）
 *.mutbak
+
+# 变异测试的中间态：可续跑的进度文件与按需生成的计划。
+# 结论落在 backend/tests/meta/measured_modules.json（那份要提交），
+# 计划用 backend/tools/mutation/make_plan.py 重新生成。
+backend/tools/mutation/progress*.json
+backend/tools/mutation/plan_*.json

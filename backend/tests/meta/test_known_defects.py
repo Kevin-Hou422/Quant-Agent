@@ -787,10 +787,14 @@ def test_defect_registry_matches_the_ledger():
     import pathlib
     import re
     ledger = (_backend_root() / "MUTATION_LEDGER.md").read_text(encoding="utf-8")
+    # 早期这里只核对 `B-` 前缀，于是台账的缺陷索引停在 A-1 就再没更新过，
+    # 而登记表已经涨到 25 条 —— 两边各说各话了很久都没人发现。
+    # 现在**所有**编号都核，漏一个就红。
     missing = [d for d in DEFECT_REGISTRY
-               if d.startswith("B-") and not re.search(rf"\bB-{d[2:]}\b", ledger)]
+               if not re.search(rf"\b{re.escape(d)}\b", ledger)]
     assert not missing, (
-        f"以下缺陷编号在台账里找不到：{missing} —— 两边已经不同步")
+        f"以下缺陷编号在台账里找不到：{missing} —— 两边已经不同步。\n"
+        f"修法：在 MUTATION_LEDGER.md 的『已登记产品缺陷』索引表里补上一行。")
 
 
 def test_every_behavioural_defect_has_an_xfail_case():

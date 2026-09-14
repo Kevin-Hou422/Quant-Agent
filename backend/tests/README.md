@@ -1,6 +1,6 @@
 # tests/ 导航
 
-**149 个文件 / 3383 个用例。**
+**149 个文件 / 3394 个用例。**
 
 ## 怎么读这个目录
 
@@ -124,9 +124,9 @@ python -m pytest tests/ -q -p shuffle_check
 
 | 文件 | 用例 | 测什么 |
 |---|---:|---|
-| `test_invariants.py` | 9 | 系统级**不变量**（不是用例） |
+| `test_invariants.py` | 14 | 系统级**不变量**（不是用例） |
 | `test_known_defects.py` | 30 | 每条一个 `xfail(strict=True)` 用例。 |
-| `test_lessons_enforced.py` | 43 | 把 DEV_LESSONS 的每一条从散文变成**可执行的强制检查** |
+| `test_lessons_enforced.py` | 49 | 把 DEV_LESSONS 的每一条从散文变成**可执行的强制检查** |
 
 ## `tests/performance/`
 

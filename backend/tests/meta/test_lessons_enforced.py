@@ -1059,21 +1059,215 @@ class TestLessonW_KillRateLedgerIsMaintained:
     @staticmethod
     def _tool_path():
         """
-        优先找**仓库里**的 backend/tools/mutation/mutate.py。
+        变异工具在仓库里的位置。
 
-        工具应当进仓库（关机重启能续跑；交付复核时对方能原样复跑，而不是听我
-        口述击杀率——本会话已有 6 个口头数字被推翻）。但本文件与工具是**两次
-        独立提交**，所以两处守卫都做成"找不到就 skip"，让测试能单独成立；
-        一旦 tools/ 入库，这两条就会真的跑起来。
+        工具**必须**进仓库：交付复核时对方要能原样复跑，而不是听口述击杀率
+        （本项目已有 6 个口头数字被工具缺陷推翻）。
+        早期版本这里还留了一条指向临时目录的回退路径 —— 那是会话残留，
+        会让检查在别人的机器上静默 skip。已删除：找不到就是真的缺了。
         """
         p = BACKEND / "tools" / "mutation" / "mutate.py"
-        if p.exists():
-            return p
-        legacy = pathlib.Path(
-            r"C:/Users/ADMINI~1/AppData/Local/Temp/claude"
-            r"/c--Users-Administrator-OneDrive-Desktop-Quant-Agent"
-            r"/0204b135-cbc7-40a6-bca3-efd088f02a6b/scratchpad/mutate.py")
-        return legacy if legacy.exists() else None
+        return p if p.exists() else None
+
+
+# ===========================================================================
+# §X 等价性证明必须可机械验证
+#     → 每条 PROVEN_EQUIVALENT 点名的验证用例必须真的存在
+# ===========================================================================
+#
+# 来由（MUTATION_LEDGER 自伤教训 #7）：存活变异的两条出路是"杀死"或
+# "给出可机械验证的等价性证明"。我写过三条**错的**等价性证明 ——
+# `alpha_pool.py:204` 只看了 `top_k` 与 `_seen_dsls`，漏了 `all_entries()`
+# 返回的插入序；`population_evolver.py:637` 的输出被 `[:pop_size]` 截断，
+# 换个观察面（数算子调用次数）立刻就能杀。
+#
+# 结论：**能杀就不要写等价证明**。确实杀不掉时，证明本身必须配一条
+# 会随前提变化而变红的可执行用例 —— 而不是在注释里写一句"我认为它们等价"。
+# 本节强制的就是这个"配一条"。
+
+
+class TestLessonX_EquivalenceProofsAreMechanical:
+
+    @staticmethod
+    def _proof_files():
+        """产出 (路径, {证明键: 说明}, 该文件里的全部测试函数名)。"""
+        for p in sorted(TESTS.rglob("test_*.py")):
+            if "__pycache__" in p.parts:
+                continue
+            src = _src(p)
+            if "PROVEN_EQUIVALENT" not in src:
+                continue
+            try:
+                tree = ast.parse(src)
+            except SyntaxError:
+                continue
+            proofs = {}
+            for node in tree.body:
+                if not isinstance(node, ast.Assign):
+                    continue
+                if not any(getattr(t, "id", None) == "PROVEN_EQUIVALENT"
+                           for t in node.targets):
+                    continue
+                if not isinstance(node.value, ast.Dict):
+                    continue
+                for k, v in zip(node.value.keys, node.value.values):
+                    try:
+                        proofs[ast.literal_eval(k)] = ast.literal_eval(v)
+                    except Exception:
+                        continue
+            funcs = {n.name for n in ast.walk(tree)
+                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+            if proofs:
+                yield p, proofs, funcs
+
+    @staticmethod
+    def _all_test_names() -> set:
+        names = set()
+        for p in TESTS.rglob("test_*.py"):
+            if "__pycache__" in p.parts:
+                continue
+            try:
+                tree = ast.parse(_src(p))
+            except SyntaxError:
+                continue
+            names |= {n.name for n in ast.walk(tree)
+                      if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        return names
+
+    def test_there_are_proofs_to_check(self):
+        """
+        守住本节的前提：确实存在等价性证明。
+        全部消失时（比如有人把 PROVEN_EQUIVALENT 改名）本节会对空集合
+        做全称断言而恒真 —— 那就是约束静默失效。
+        """
+        files = list(self._proof_files())
+        assert len(files) >= 10, (
+            f"只找到 {len(files)} 个带 PROVEN_EQUIVALENT 的文件 —— "
+            f"约定可能被改名了，本节的全称断言会变成空转")
+
+    def test_every_named_verification_test_exists(self):
+        """
+        证明说明里写"见 test_xxx"的，那条用例必须真的存在（可跨文件）。
+
+        点名一条不存在的用例 = 这份证明没有任何可执行的支撑，
+        而读的人会以为它有。
+        """
+        known = self._all_test_names()
+        dangling = []
+        for path, proofs, _funcs in self._proof_files():
+            for key, why in proofs.items():
+                for name in re.findall(r"\b(test_[a-z0-9_]+)", why):
+                    # 形如 test_alpha_workflows_round2 的是**文件名**引用，跳过
+                    if (TESTS / "unit").rglob(f"{name}.py") and name.startswith(
+                            "test_") and (name in known or
+                                          any(TESTS.rglob(f"{name}.py"))):
+                        continue
+                    dangling.append(f"{_rel(path)} 的证明 {key[:40]!r} 点名了 {name}")
+        assert not dangling, (
+            "以下等价性证明点名的验证用例不存在：\n  " + "\n  ".join(dangling)
+            + "\n修法：补上那条用例，或把说明改成真实存在的用例名。")
+
+    def test_every_proof_carries_a_substantive_explanation(self):
+        """
+        说明太短 = 等于没写。这条原本散落在各文件的
+        `test_every_survivor_has_a_written_proof` 里（每个文件各判一次），
+        这里做成全局的，新文件忘了写也会红。
+        """
+        thin = []
+        for path, proofs, _ in self._proof_files():
+            for key, why in proofs.items():
+                if len(why) < 40:
+                    thin.append(f"{_rel(path)} :: {key[:50]}（{len(why)} 字）")
+        assert not thin, (
+            "以下等价性证明的说明过于敷衍（少于 40 字）：\n  " + "\n  ".join(thin))
+
+    def test_every_proof_file_states_how_many_survivors_it_covers(self):
+        """
+        每个带证明的文件都要有一条声明"本模块还剩几个存活"的用例
+        （约定名 `test_every_survivor_has_a_written_proof`）。
+
+        它的价值是**数字对不上就红**：复测后存活数变了而没人更新证明，
+        这条会把差异顶出来，而不是让一份过期的证明继续躺着。
+        """
+        missing = []
+        for path, _proofs, funcs in self._proof_files():
+            if "test_every_survivor_has_a_written_proof" not in funcs:
+                missing.append(_rel(path))
+        assert not missing, (
+            "以下文件写了 PROVEN_EQUIVALENT，却没有声明覆盖了几个存活项：\n  "
+            + "\n  ".join(missing)
+            + "\n修法：加一条 test_every_survivor_has_a_written_proof，"
+              "断言 len(PROVEN_EQUIVALENT) 等于复测后的存活数。")
+
+
+# ===========================================================================
+# §Y 源码子串断言不得增长
+#     → 同一串在文件里出现多次就杀不掉任何东西
+# ===========================================================================
+#
+# 来由（MUTATION_LEDGER 自伤教训 #6）：用
+#     assert "daemon=True" in src
+# 去"钉住"线程是守护线程 —— 而 `router.py` 里 `threading.Thread(...)` 有
+# 三处、其中两处一模一样。把任意一处改掉，另外两处仍然让断言为真，
+# 这条断言**杀不掉任何变异**，却让人以为该约束被守住了。
+#
+# 正确写法是 AST 全称量化（"所有 Thread 调用都必须带 daemon=True"）。
+# 但全库已有一批历史写法，一次性重写风险大于收益，所以这里用**棘轮**：
+# 允许存量，禁止增长 —— 与本文件 §B 的 `test_silent_except_count_does_not_grow`
+# 同一个思路。
+
+
+class TestLessonY_SourceSubstringAssertionsDoNotGrow:
+
+    #: 2026-09-15 基线。只许降不许升；降了就把这个数一起改小。
+    BASELINE = 65
+
+    @classmethod
+    def _sites(cls):
+        """所有 `assert "字面量" in <源码文本变量>` 的位置。"""
+        SRC_NAMES = {"src", "source", "_src", "mod_src", "text"}
+        out = []
+        for p in sorted(TESTS.rglob("test_*.py")):
+            if "__pycache__" in p.parts:
+                continue
+            try:
+                tree = ast.parse(_src(p))
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Compare) and len(node.ops) == 1
+                        and isinstance(node.ops[0], ast.In)):
+                    continue
+                if not (isinstance(node.left, ast.Constant)
+                        and isinstance(node.left.value, str)):
+                    continue
+                r = node.comparators[0]
+                name = (getattr(r, "id", None) or getattr(r, "attr", None)
+                        or (getattr(getattr(r, "func", None), "id", None)
+                            if isinstance(r, ast.Call) else None))
+                if name in SRC_NAMES:
+                    out.append((_rel(p), node.lineno, node.left.value[:48]))
+        return out
+
+    def test_the_count_does_not_grow(self):
+        sites = self._sites()
+        assert len(sites) <= self.BASELINE, (
+            f"源码子串断言从 {self.BASELINE} 处涨到了 {len(sites)} 处。\n"
+            f"同一串在文件里出现多次时这种断言杀不掉任何变异"
+            f"（台账自伤教训 #6）。新增的请改成 AST 全称量化，例如"
+            f'"所有 threading.Thread(...) 调用都必须带 daemon=True"。\n'
+            f"新增位置见：\n  "
+            + "\n  ".join(f"{f}:{ln}  {txt!r}" for f, ln, txt in sites[-8:]))
+
+    def test_the_baseline_is_not_stale(self):
+        """
+        棘轮另一侧：存量降下去之后要把基线一起调小，
+        否则它会变成一个永远够用的松口子。
+        """
+        n = len(self._sites())
+        assert n >= self.BASELINE - 5, (
+            f"源码子串断言已降到 {n} 处（基线 {self.BASELINE}）—— "
+            f"请把 BASELINE 改成 {n}，让棘轮继续收紧。")
 
 
 class TestLessonR_EveryLessonIsEnforced:

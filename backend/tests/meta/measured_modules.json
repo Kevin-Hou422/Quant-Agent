@@ -1392,5 +1392,21 @@
     100.0
    ]
   }
+ },
+ "proof_reconciliation": {
+  "_doc": "存活变异的处置对账状态。这是本轮交付**已知未闭合**的唯一缺口，写在这里是为了它不会被忘掉。",
+  "modules_with_survivors": 44,
+  "total_survivors": 138,
+  "proof_files_in_suite": 44,
+  "proof_entries_in_suite": 97,
+  "per_file_accounting": "自洽：44 个文件的 PROVEN_EQUIVALENT 条目数与各自声明的存活数逐个相等（由 test_lessons_enforced.py::TestLessonX 强制）",
+  "module_level_attribution": "未逐条对账",
+  "why_not": "PROVEN_EQUIVALENT 的键是自由文本（如 'L124 (weights < -tol) → <='），不带模块路径；按 import 归属会错判（risk_gate 的 10 条证明在它自己的文件里，而那个文件并不直接 import 该模块）。所以无法机械地把 138 个存活逐条对上 97 条证明。",
+  "what_is_established": "① app/ 下 88 个有变异点的模块全部测量过（本文件对账）；② 每个写了证明的文件，条目数与它声明的存活数一致；③ 每条证明说明 ≥40 字、点名的验证用例真实存在。",
+  "how_to_close": "把每条证明的键改成 '<模块路径>:L<行号> <变异描述>' 的固定格式，再加一条 meta 测试：每个模块的存活数 == 以该模块路径为前缀的证明条数。约 97 条键需要改写。",
+  "ratchet": {
+   "proof_entries_min": 97,
+   "_doc": "证明条数只许增不许减；减少意味着有证明被删而存活项没被杀"
+  }
  }
 }

@@ -314,3 +314,50 @@ class TestEveryModuleIsMeasured:
         assert d["totals"]["modules_with_mutants"] == len(d["modules"])
         assert d["totals"]["total_points"] == sum(m["points"] for m in mods)
         assert d["totals"]["total_survived"] == sum(m["survived"] for m in mods)
+
+    def test_the_open_reconciliation_gap_stays_visible(self):
+        """
+        存活项的**模块级**归属尚未逐条对账 —— 这是本阶段已知未闭合的唯一缺口。
+
+        把它写进清单并在这里断言，是为了它不会随时间被忘掉：
+        删掉那个块、或让证明条数变少，这条都会红。
+        （条数变少 = 有证明被删而对应的存活项并没有被杀死。）
+        """
+        d = self._manifest()
+        rec = d.get("proof_reconciliation")
+        assert rec, (
+            "measured_modules.json 里的 proof_reconciliation 块被删了 —— "
+            "已知缺口必须保持可见，不能靠记忆")
+        for k in ("total_survivors", "proof_entries_in_suite", "why_not",
+                  "how_to_close", "ratchet"):
+            assert rec.get(k), f"proof_reconciliation 缺字段 {k}"
+
+        n = _count_proof_entries()
+        floor = rec["ratchet"]["proof_entries_min"]
+        assert n >= floor, (
+            f"全库等价性证明从 {floor} 条降到了 {n} 条 —— "
+            f"要么有证明被删（而存活项并没被杀死），"
+            f"要么该模块被真正收口了：后者请把 ratchet.proof_entries_min 调低并说明。")
+
+
+def _count_proof_entries() -> int:
+    """全库 PROVEN_EQUIVALENT 的条目总数。"""
+    total = 0
+    tests = _backend_root() / "tests"
+    for p in tests.rglob("test_*.py"):
+        if "__pycache__" in p.parts:
+            continue
+        src = p.read_text(encoding="utf-8", errors="replace")
+        if "PROVEN_EQUIVALENT" not in src:
+            continue
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                    getattr(t, "id", None) == "PROVEN_EQUIVALENT"
+                    for t in node.targets):
+                if isinstance(node.value, ast.Dict):
+                    total += len(node.value.keys)
+    return total
