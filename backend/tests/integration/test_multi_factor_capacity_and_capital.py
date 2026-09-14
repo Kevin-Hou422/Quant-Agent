@@ -1,5 +1,5 @@
 """
-test_phase_pm.py — Phase PM 第一批验收
+test_multi_factor_capacity_and_capital.py — Phase PM 第一批验收
 
 PM.1 多因子合成 + 跨因子净持仓
 PM.2 容量：AUM 越大越 binding（gross 下降）

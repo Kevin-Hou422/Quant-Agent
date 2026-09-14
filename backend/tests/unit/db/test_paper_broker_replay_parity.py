@@ -1,5 +1,5 @@
 """
-test_phase7_paper.py — Phase 7 Paper Trading 验收（2026-08-02）
+test_paper_broker_replay_parity.py — Phase 7 Paper Trading 验收（2026-08-02）
 
 覆盖：
   7.2 PaperBroker 对账：replay 净值与 BacktestEngine 逐位一致（机器精度）

@@ -1,5 +1,5 @@
 """
-test_phase_pm_s3.py — Phase PM.S3 经典基准策略库验收
+test_baseline_strategy_library.py — Phase PM.S3 经典基准策略库验收
 
 - 库内每个经典策略的 DSL 都能解析 + 执行，产出非空横截面信号
 - baseline_signals 可直接喂 PortfolioManager 组一个真实 AUM 账本（"没因子也能交易"）

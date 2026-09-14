@@ -128,3 +128,56 @@ def tmp_chat_store(tmp_path):
     from app.db.chat_store import ChatStore
     db_path = tmp_path / "chat_test.db"
     return ChatStore(db_url=f"sqlite:///{db_path}")
+
+
+# ---------------------------------------------------------------------------
+# 进程外副作用的总闸：任何测试都不得弹出浏览器
+# ---------------------------------------------------------------------------
+# 教训（2026-09-14，实测事故）：`visualizer.plot()` 的签名是
+# `show: bool = False`，为 False 时不调 `fig.show()`。变异测试把这个布尔
+# 字面量翻成 True 之后，`test_backtest_plot_fidelity.py` 里三十多条
+# 「画图然后检查 trace」的用例**每条都真的打开了一个浏览器标签**，
+# 一次性在使用者屏幕上弹出几十个页面。
+#
+# 当时只在专门测 show 开关的那两条用例里 monkeypatch 了 `Figure.show`，
+# 而变异测试**会把代码跑在你没预期的配置下** —— 所以凡是能对进程外
+# 产生副作用的东西（浏览器、网络、进程外文件），必须在**全局**堵死，
+# 不能只在"相关"用例里堵。
+#
+# 这里把 plotly 的 `Figure.show` 换成一个只记账的替身，并把记录挂在
+# `pytest` 的全局位置上，供需要断言"show 有没有被调用"的用例读取。
+_FIGURE_SHOW_CALLS: list = []
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _never_open_a_browser():
+    """把 plotly 的 Figure.show 全局换成记账替身（没装 plotly 则跳过）。"""
+    try:
+        import plotly.graph_objects as go
+    except Exception:
+        yield
+        return
+
+    original = go.Figure.show
+
+    def _recording_show(self, *args, **kwargs):
+        _FIGURE_SHOW_CALLS.append({"args": args, "kwargs": kwargs})
+
+    go.Figure.show = _recording_show
+    try:
+        yield
+    finally:
+        go.Figure.show = original
+
+
+@pytest.fixture
+def figure_show_calls():
+    """
+    本条用例期间 `Figure.show` 的调用记录（进入时清空）。
+
+    需要断言"show 到底有没有被调用"的用例用它，而不要自己去
+    monkeypatch `Figure.show` —— 自己打补丁只保护自己那一条。
+    """
+    _FIGURE_SHOW_CALLS.clear()
+    yield _FIGURE_SHOW_CALLS
+    _FIGURE_SHOW_CALLS.clear()

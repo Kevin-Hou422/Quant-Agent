@@ -1,5 +1,5 @@
 """
-test_phase4.py — Phase 4 验收测试
+test_regime_mvo_and_backtest_chain.py — Phase 4 验收测试
 
 覆盖：
   Task 4.1  RegimeDetector（trend 分类 / predict 对齐 / 家族倾斜加权 / 边界）

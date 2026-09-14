@@ -1,5 +1,5 @@
 """
-test_phase_pm_wiring.py — 验证 PM.S1/S2/PM.5 已接进主线 run_portfolio（不是"库但没生效"）
+test_run_portfolio_wiring.py — 验证 PM.S1/S2/PM.5 已接进主线 run_portfolio（不是"库但没生效"）
 
 - run_portfolio 返回 selection / strategy_verdict / risk_report / drawdown 四个字段
 - 风控**真的改了权本**（集中持仓 → 单票被削），即 PM.5 生效而非旁路

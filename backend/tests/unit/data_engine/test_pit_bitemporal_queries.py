@@ -1,5 +1,5 @@
 """
-test_phase8_pit.py — Phase 8.1 Point-in-Time 数据存储验收
+test_pit_bitemporal_queries.py — Phase 8.1 Point-in-Time 数据存储验收
 
 覆盖验收标准（roadmap §五 Task 8.1）：
   - 修改今日数据不影响昨日 as_of 查询结果（不可变历史 / 双时点语义）

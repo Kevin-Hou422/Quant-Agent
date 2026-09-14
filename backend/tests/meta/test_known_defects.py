@@ -87,6 +87,38 @@ DEFECT_REGISTRY = {
             "后果：hoist/wrap_rank/add_ts_smoothing/replace_subtree/subtree_crossover "
             "五个算子只能在根节点动手，add_ts_smoothing 在根不是数据/窄窗 TS 节点时"
             "是**彻底的空操作**（60 个种子只产出 1 种结果 = 原树）",
+    "D-1":  "financial_interpreter 的取负识别只认 `neg` 节点："
+            "DSL 的一元负号 `-x` 判为 reversion，而语义完全相同的 `(0-x)` "
+            "判为 momentum —— 同一个因子换个等价写法就换了家族，"
+            "GP 会据此配错互补家族与算子偏好",
+    "D-2":  "LocalParquetProvider.available_fields() 对外宣称支持 `returns`，"
+            "但 `returns` 从不落盘（不在 STANDARD_COLUMNS 里）。"
+            "按宣称的字段清单调用 `fetch(fields=[..., 'returns'])` 时，"
+            "列裁剪在 pyarrow 层直接失败 → `_read_ticker` 吞掉异常只发一条 warning → "
+            "**整批数据返回空**（连 close 都没有），而不是只缺 returns 一项。"
+            "调用方拿到 `{}`，看不出是自己要了一个不存在的列",
+    "D-3":  "requirements.txt 写的是 `langchain>=0.2` 没有上界，"
+            "而 langchain 1.x 已把 `AgentExecutor` / `create_tool_calling_agent` "
+            "移出 `langchain.agents`。本机装的 1.2.15 满足该约束，"
+            "于是 `_build_langchain_agent` 的 `except ImportError` 每次都命中，"
+            "QuantAgent 只打一条 warning 就**静默降级到 FallbackOrchestrator** —— "
+            "LLM 研究链路整条不可用，但 /api/chat 照常返回、前端毫无异样。"
+            "而且报错文案是『需要安装 langchain』，实际 langchain 装着，"
+            "真正的原因是大版本不兼容，按文案去装只会再装一遍同样的版本",
+    "D-4":  "系统提示词把 `rank(neg(...))` 当作 **4 个因子家族**"
+            "（反转 / 波动 / 流动性 / 价量相关）的标准 DSL 模板，"
+            "但 `neg` 既不在提示词自己的 AVAILABLE OPERATORS 清单里，"
+            "解析器也**不接受** `neg(x)` 这种函数写法（只认一元负号 `-x`）。"
+            "LLM 照着模板写出来的 DSL 一律解析失败 → "
+            "`_validate_and_fix` 白烧两次修复调用后放弃 → "
+            "六个家族里有四个走模板路径时产出为零，"
+            "对外只表现为『agent 老是生成非法公式』",
+    "D-5":  "系统提示词写 `AlphaPool rejects signal-correlated alphas (corr > 0.9)`，"
+            "而 `AlphaPool.__init__` 的默认 `corr_threshold=0.70`，"
+            "判定用的是 `abs(corr) >= threshold`。"
+            "数字（0.9 vs 0.70）与开闭（> vs >=）两处都对不上 —— "
+            "代码注释自己写着『Lowered from 0.90 to 0.70 (Task 3.5)』，"
+            "提示词没跟着改。LLM 会据此误判哪些因子算『足够正交』",
 }
 
 #: 只是结构/整洁问题，没有可执行的行为断言 —— 记录在案，不设 xfail 用例。
@@ -506,6 +538,244 @@ class TestReplaceNodeIdentity:
 
 
 # ===========================================================================
+# 系统提示词 —— 它写的规则，引擎认不认
+# ===========================================================================
+
+class TestSystemPromptDslExamples:
+
+    @_xfail("D-4")
+    def test_the_documented_factor_patterns_all_parse(self):
+        """
+        提示词的 FINANCIAL FACTOR TAXONOMY 给每个因子家族配了一条
+        `DSL pattern:` —— 那是 LLM 的主要模仿对象。
+
+        其中四条用了 `rank(neg(...))`：
+          反转   rank(neg(ts_delta(close, N)))
+          波动   rank(neg(ts_std(returns, 20)))
+          流动性 rank(neg(ts_mean(volume, 20)))
+          价量   rank(neg(ts_corr(close, volume, 20)))
+
+        而解析器只认一元负号（`-x`），不存在 `neg(x)` 这个函数；
+        `neg` 也不在提示词自己的 AVAILABLE OPERATORS 清单上。
+
+        后果：LLM 照模板产出的公式一律解析失败 →
+        `_validate_and_fix` 白烧两次修复调用后放弃 →
+        六个家族里有四个走模板路径时产出为零，
+        对外只表现为"agent 老是生成非法公式"。
+
+        修法很轻：把模板里的 `neg(x)` 改写成 `-x`
+        （`tests/unit/agent/test_system_prompt_consistency.py::
+        test_the_unary_minus_form_is_what_the_parser_accepts` 已验证这条路通）。
+        """
+        from app.core.alpha_engine.parser import Parser
+
+        parser = Parser()
+        patterns = [
+            "rank(neg(ts_delta(close, 5)))",
+            "rank(neg(ts_std(returns, 20)))",
+            "rank(neg(ts_mean(volume, 20)))",
+            "rank(neg(ts_corr(close, volume, 20)))",
+        ]
+        assert len(patterns) == 4, "四个家族各一条模板"
+        for dsl in patterns:
+            node = parser.parse(dsl)
+            assert node is not None, f"{dsl} 解析出空节点"
+
+    @_xfail("D-4")
+    def test_every_operator_used_in_the_prompt_is_also_declared_there(self):
+        """
+        提示词内部自洽：正文里当范例用的算子，必须出现在它自己的
+        AVAILABLE OPERATORS 清单上。现在 `neg` 只在范例里出现，
+        LLM 拿到的是自相矛盾的两份说明。
+        """
+        import re
+
+        from app.agent._prompts import _SYSTEM_PROMPT as P
+
+        i = P.index("AVAILABLE OPERATORS:")
+        lines = P[i + len("AVAILABLE OPERATORS:"):].splitlines()
+        taken = [lines[0]]
+        for ln in lines[1:]:
+            if not ln.strip() or not ln.startswith((" ", "\t")):
+                break
+            taken.append(ln)
+        declared = {t.strip() for t in " ".join(taken).split(",") if t.strip()}
+
+        assert "neg(" in P, "提示词里已经不用 neg 了 —— 请同步删除缺陷 D-4"
+        assert "neg" in declared, (
+            f"`neg` 在范例里被使用，却不在 AVAILABLE OPERATORS 清单里："
+            f"{sorted(declared)}")
+
+
+class TestSystemPromptThresholds:
+
+    @_xfail("D-5")
+    def test_the_correlation_threshold_matches_the_alpha_pool_default(self):
+        """
+        提示词：`AlphaPool rejects signal-correlated alphas (corr > 0.9)`
+        代码：  `AlphaPool.__init__(corr_threshold: float = 0.70)`，
+                判定是 `abs(corr) >= corr_threshold`
+
+        两处都对不上：数字差 0.2，开闭也相反。
+        `alpha_pool.py` 的注释自己写着
+        "Lowered from 0.90 to 0.70 (Task 3.5)" —— 提示词没跟着改。
+
+        后果：LLM 按 0.9 去判断"这两条因子够不够正交"，
+        而池子实际按 0.70 拒收。它会反复产出自以为合格、
+        实际被静默拒绝的候选，且拿不到任何反馈。
+        """
+        import inspect
+        import re
+
+        from app.agent._prompts import _SYSTEM_PROMPT as P
+        from app.core.gp_engine.alpha_pool import AlphaPool
+
+        m = re.search(r"corr\s*>\s*([\d.]+)", P)
+        assert m, "提示词里找不到相关度阈值"
+        default = inspect.signature(
+            AlphaPool.__init__).parameters["corr_threshold"].default
+        assert float(m.group(1)) == pytest.approx(default), (
+            f"提示词写 corr > {m.group(1)}，代码默认 {default}")
+
+
+# ===========================================================================
+# LangChain 依赖版本 —— LLM 研究链路是否真的在跑
+# ===========================================================================
+
+class TestLangChainWiringIsAlive:
+
+    @_xfail("D-3")
+    def test_the_langchain_agent_can_actually_be_built(self):
+        """
+        `_build_langchain_agent` 在**当前已安装的依赖**下必须能走到
+        `create_tool_calling_agent`，而不是在第一个 import 就掉进
+        `except ImportError`。
+
+        现状：`requirements.txt` 只写了 `langchain>=0.2`，
+        装上的 1.2.15 已经把 `AgentExecutor` / `create_tool_calling_agent`
+        移出 `langchain.agents`。于是这个函数**每次都抛 ImportError**，
+        `QuantAgent.__init__` 打一条 warning 就退到 FallbackOrchestrator。
+
+        对外表现：`/api/chat` 照常工作、前端毫无异样 ——
+        LLM 研究链路整条死掉，却没有任何可见信号。
+        （交易回路本来就不含 LLM，所以不影响下单；影响的是因子发现。）
+
+        这条不碰网络、不需要 API key：只要 import 能成功、
+        能构造出 AgentExecutor，就算通过。
+        """
+        import app.agent._lc_agent as LC
+
+        try:
+            from langchain.agents import AgentExecutor, create_tool_calling_agent  # noqa: F401
+            from langchain.tools import tool as lc_tool                            # noqa: F401
+            from langchain_core.prompts import ChatPromptTemplate                  # noqa: F401
+        except ImportError as exc:          # pragma: no cover - 这正是缺陷本身
+            pytest.fail(
+                f"当前安装的 langchain 无法提供 _lc_agent 需要的符号：{exc}。"
+                f"requirements.txt 的 `langchain>=0.2` 没有上界，"
+                f"装上的大版本与代码不兼容 —— LLM 链路静默降级。")
+
+        assert callable(LC._build_langchain_agent)
+
+    def test_the_import_failure_message_names_a_version_conflict(self):
+        """
+        **钉住现状的另一半**：即使版本冲突短期不修，
+        报错文案也不该把人引向"再装一遍 langchain"。
+
+        这条**不是** xfail —— 它描述的是当前文案，
+        一旦有人把文案改成提到版本，这里会红，提醒同步更新 D-3。
+        """
+        import inspect
+
+        import app.agent._lc_agent as LC
+
+        src = inspect.getsource(LC._build_langchain_agent)
+        assert "pip install langchain" in src, (
+            "报错文案变了 —— 如果已经改成提示版本冲突，请同步更新缺陷 D-3")
+
+
+# ===========================================================================
+# LocalParquetProvider —— 宣称的字段与实际可读的字段
+# ===========================================================================
+
+class TestLocalParquetAdvertisedFields:
+
+    @_xfail("D-2")
+    def test_every_advertised_field_can_actually_be_requested(self, tmp_path):
+        """
+        `available_fields()` 是 provider 对外的**字段契约**，
+        调用方（DataManager / DatasetRegistry）按它决定要什么。
+
+        但 `returns` 只在这份清单里，从来没进过 parquet ——
+        一旦按契约请求它，`_read_ticker` 的列裁剪在 pyarrow 层抛
+        `No match for FieldRef.Name(returns)`，被 `except` 吞成一条 warning，
+        于是**这个 ticker 的所有分区都读不出来**。
+
+        后果不是"少一列 returns"，而是 `fetch` 返回 `{}` ——
+        连 close 都没有。日循环拿到空面板会当成"今天没有数据"。
+        """
+        import warnings
+
+        from app.core.data_engine.local_parquet_provider import LocalParquetProvider
+
+        prov = LocalParquetProvider(tmp_path / "store")
+        idx = pd.bdate_range("2022-01-03", periods=4)
+        prov.write(pd.DataFrame({
+            "timestamp": idx, "ticker": ["AAA"] * 4,
+            "open": [1.0] * 4, "high": [2.0] * 4, "low": [0.5] * 4,
+            "close": [1.5] * 4, "volume": [1e6] * 4, "vwap": [1.4] * 4,
+            "adj_factor": [1.0] * 4,
+        }))
+
+        advertised = prov.available_fields()
+        assert "returns" in advertised, "前提变了：returns 不再被宣称支持"
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ds = prov.fetch(["AAA"], "2022-01-01", "2022-12-31",
+                            fields=["close", "returns"])
+
+        assert "close" in ds, (
+            f"按 available_fields() 的契约请求 returns，结果连 close 都没拿到："
+            f"{sorted(ds)} —— 一个不可读的宣称字段让整批数据归零")
+
+
+# ===========================================================================
+# financial_interpreter —— 因子家族分类
+# ===========================================================================
+
+class TestFinancialInterpreterNegation:
+
+    @_xfail("D-1")
+    def test_both_equivalent_negation_forms_give_the_same_family(self):
+        """
+        `_is_inverted_momentum` 只认 `ArithmeticNode(op="neg")`：
+
+          `-ts_delta(close,5)`      → 解析成 neg  → 判 **reversion** ✅
+          `(0-ts_delta(close,5))`   → 解析成 sub  → 判 **momentum**  ❌
+
+        两者在金融上完全是同一个因子（买跌卖涨的反转信号）。
+        换个等价写法就换了家族，而 `factor_family` 被 GP 消费：
+        `_COMPLEMENTARY_FAMILIES` 决定配什么互补因子、
+        `_FAMILY_WEIGHT_BIASES` 决定算子权重 —— 全都会配错。
+
+        影响面：GP 的种子库与 `mutations.py` 都用 `neg` 形式，主链路没问题；
+        但 Workflow B 吃的是**用户输入的 DSL**，用户完全可能写 `(0-x)`。
+
+        修法：`_is_inverted_momentum` 除了 `op == "neg"`，还要认
+        `op == "sub"` 且左操作数是值为 0 的 ScalarNode 的情形。
+        """
+        from app.core.alpha_engine.financial_interpreter import FinancialInterpreter
+
+        it = FinancialInterpreter()
+        unary = it.interpret("rank(-ts_delta(close,5))").factor_family
+        zero_minus = it.interpret("rank((0-ts_delta(close,5)))").factor_family
+        assert unary == zero_minus, (
+            f"`-x` 判为 {unary}，而语义等价的 `(0-x)` 判为 {zero_minus} —— "
+            f"同一个因子换写法就换了家族")
+
+
+# ===========================================================================
 # 登记表自身的一致性
 # ===========================================================================
 
@@ -548,8 +818,8 @@ def test_the_outstanding_defect_count_is_visible():
     改这个数字必须是有意的：修好了就减，新发现就加。
     """
     outstanding = len(DEFECT_REGISTRY)
-    assert outstanding == 20, (
-        f"未修复的已登记缺陷数变成了 {outstanding}（原为 20）。\n"
+    assert outstanding == 25, (
+        f"未修复的已登记缺陷数变成了 {outstanding}（原为 23）。\n"
         f"修好缺陷时请同时：① 删掉对应 xfail 标记 ② 改掉模块测试里"
         f"『钉住现状』的断言 ③ 更新 MUTATION_LEDGER。\n"
         f"当前清单：\n  " + "\n  ".join(f"{k}: {v}" for k, v in DEFECT_REGISTRY.items()))

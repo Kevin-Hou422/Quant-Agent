@@ -1,5 +1,5 @@
 """
-test_phase2.py — Phase 2 高级评估 + Optuna 优化器测试
+test_optimizer_and_evaluator_chain.py — Phase 2 高级评估 + Optuna 优化器测试
 
 覆盖：
   1. SearchSpace 和 AlphaOptimizer（Optuna）

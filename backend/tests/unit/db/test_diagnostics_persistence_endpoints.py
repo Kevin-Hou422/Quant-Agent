@@ -1,5 +1,5 @@
 """
-test_phase_fetr_endpoints.py — FE-TR 数据源验收（诊断持久化 + 两个只读端点）
+test_diagnostics_persistence_endpoints.py — FE-TR 数据源验收（诊断持久化 + 两个只读端点）
 
 - run_portfolio 的诊断被**持久化**（此前只进日志），且含 trading_context / t3 / 门分级
 - GET /api/portfolio/diagnostics 返回最近若干轮

@@ -1,5 +1,5 @@
 """
-test_phase8_cost_calib.py — Phase 8.2 成本模型校准回路验收
+test_cost_model_calibration_loop.py — Phase 8.2 成本模型校准回路验收
 
 覆盖：
   - calibrate() 用 T+1 开盘价量化隔夜执行缺口，产出有界 impact_coef 建议

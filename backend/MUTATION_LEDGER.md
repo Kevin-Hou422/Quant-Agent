@@ -1313,3 +1313,401 @@ tests/
 | 全量耗时 | 24 分钟 → **11分48秒**（重组后 fixture 局部性变好） |
 
 `20 xfailed` = 已登记但尚未修复的产品缺陷，每次运行都摆在汇总行上。
+
+---
+
+# D 档（任务 2）：给**从未被测量过**的模块补测试
+
+任务 2 的原话是"根据到目前总结的经验去写完全没覆盖的模块的测试，方法和 ABC 一样"。
+范围不是我临时圈的 —— 就是本台账 §「剩余待办」里那份
+**「零测试引用 —— 必须先补测试再测量：19 模块 / 376 点」**。
+
+> **一次范围纠偏**：我一度按"哪些模块没有专属测试文件"重新扫了一遍，
+> 把 `risk_gate` / `paper_broker` / `promotion_gate` / `leak_filter` /
+> `transaction_cost` 也排进了待测队列 —— 这五个全是 A 档已收口的模块
+> （见上文 §「已测量（隔离版工具）」）。用户当场叫停："测试文件夹不是你重构的吗？
+> ABC 不是能扛得住严格审计吗？为什么还要重测？"
+>
+> 他是对的。**根因是我绕过了任务 1 的成果**：那份权威待办清单一直在台账里，
+> 我却重新发明了一个更差的判据（文件名匹配）。
+> 教训：**已经产出的结论就是下一步的输入，不要重新推导。**
+
+## D 档前半程（本轮之前已完成）
+
+| 模块 | 点数 | 首测 → 复测 | 存活处置 |
+|---|---:|---|---|
+| `alpha_engine/financial_interpreter.py` | 50 | 0% → **100%** | 0 |
+| `alpha_engine/financial_diagnostics.py` | 35 | 0% → **100%** | 0 |
+| `data_engine/schema.py` | 11 | 0% → **100%** | 0 |
+| `gp_engine/evaluation_utils.py` | 10 | 0% → **80%** | 2 处等价证明 |
+| `data_engine/base.py` | 5 | 0% → **100%** | 0 |
+
+## D 档后半程（本轮）
+
+| 模块 | 点数 | 首测 → 复测 | 存活处置 |
+|---|---:|---|---|
+| `data_engine/dataset_filters.py` | 54 | 77.8% → **98.1%** | 1 处等价证明 |
+| `backtest_engine/alpha_combiner.py` | 25 | 64.0% → **96.0%** | 1 处等价证明 |
+| `data_engine/multi_dataset.py` | 23 | 78.3% → **95.7%** | 1 处等价证明 |
+| `agent/_data_utils.py` | 22 | 86.4% → **100%** | 0 |
+| `data_engine/local_parquet_provider.py` | 21 | 71.4% → **85.7%** | 3 处等价证明（同一条理由） |
+| `backtest_engine/visualizer.py` | 19 | 73.7% → **100%** | 0 |
+| `backtest_engine/multi_dataset_backtester.py` | 14 | 92.9% → **100%** | 0 |
+| `data_engine/providers/ccxt_provider.py` | 12 | **91.7%** | 1 处等价证明 |
+| `agent/alpha_agent.py` | 10 | 45.5%(11点) → **100%** | 0 |
+| `data_engine/providers/akshare_provider.py` | 9 | **100%** | 0 |
+| `portfolio_manager/strategy_builder.py` | 8 | **100%** | 0 |
+| `portfolio_manager/horizon.py` | 7 | 85.7% → **100%** | 0 |
+| `agent/_lc_agent.py` | 5 | **100%** | 0 |
+| `agent/_prompts.py` | ~~35~~ → **0** | 不适用 | 工具缺陷 #9，见下 |
+
+**首测击杀率最低的三个**：`alpha_agent` 45.5%、`alpha_combiner` 64.0%、
+`local_parquet_provider` 71.4%。三者的共同点是"测试全绿但观察面选错了"，
+下面 §「本轮的三种新花样」逐条记。
+
+### 新增测试文件
+
+| 文件 | 用例数 |
+|---|---:|
+| `unit/data_engine/test_dataset_filters.py` | 125 |
+| `unit/data_engine/test_multi_dataset.py` | 76 |
+| `unit/backtest_engine/test_alpha_combiner.py` | 71 |
+| `unit/agent/test_alpha_agent_loop.py` | 63 |
+| `unit/agent/test_agent_data_utils.py` | 52 |
+| `unit/data_engine/test_local_parquet_provider.py` | 51 |
+| `unit/backtest_engine/test_multi_dataset_backtester.py` | 49 |
+| `unit/data_engine/test_ccxt_provider.py` | 40 |
+| `unit/portfolio_manager/test_strategy_builder_assembly.py` | 39 |
+| `unit/portfolio_manager/test_horizon_band_and_classification.py` | 38 |
+| `unit/data_engine/test_akshare_provider.py` | 35 |
+| `unit/agent/test_lc_agent_wiring.py` | 35 |
+| `unit/agent/test_system_prompt_consistency.py` | 24 |
+| **补强**：`unit/backtest_engine/test_backtest_plot_fidelity.py` | 2 → 40 |
+
+`visualizer` 走的是**补强既有文件**而不是新建 —— 那个文件已经有两条
+"净值曲线逐点等于真实回测"的端到端用例，另起一个新文件就是重复。
+
+---
+
+## 工具缺陷 #9：逐行 tokenize 认不出模块级三引号字符串
+
+`_string_spans(line)` 是**逐行**调用 `tokenize` 的。一个模块级三引号字符串
+（典型例子：`app/agent/_prompts.py` 整个文件就是一个 `_SYSTEM_PROMPT = <三引号串>`）
+的中间各行单独拿去 tokenize 根本不是合法 Python，走进 `except` 之后又找不到引号，
+于是返回空区间 —— **整段散文被当成代码变异了一遍**。
+
+实测后果：
+
+- `_prompts.py` 报出 **35 个"变异点"**，全部是提示词正文里的
+  `not` / `and` / `>` / `*`（`OOS Sharpe > 0.8` 的 `>`、
+  `metrics_json=<backtest JSON>` 里占位符的 `>`……）
+- `alpha_agent.py` 的 `_SYSTEM_PROMPT` 里也混进 1 个
+
+这些"存活"会把击杀率拉低，并**诱使人去为散文写源码文本断言**——
+正是自伤教训 #6 明令禁止的那种。
+
+**修法**：对整份源码做一次 tokenize，把每个跨行字符串在各行上的占位登记下来
+（新增 `_multiline_string_lines`），在 `build_plan` 里与逐行结果合并。
+
+**修完必须验证分母没被误伤**（否则前面所有档的击杀率作废）。
+逐模块对比修复前后的点数：
+
+```
+未变化模块： 109
+变化的模块：
+  app/agent/_prompts.py        35 ->  0   (-35)
+  app/agent/alpha_agent.py     11 -> 10   (-1)
+合计减少 36
+```
+
+只有这两个含散文常量的模块变了，**A/B/C 三档的分母一个没动**。
+
+### `_prompts.py` 改用什么验收
+
+点数归零不等于不用测。这个模块真正会坏、也真正有人吃亏的是一件事：
+**提示词与代码脱节**。提示词里写的每一个算子、字段、工具名、阈值、公式，
+都是 LLM 会照抄的；代码改了而提示词没跟着改，后果不是报错，
+而是 LLM 一直按过时的规则生成 DSL、传参、判断指标 —— 全链路静默走偏。
+
+`tests/unit/agent/test_system_prompt_consistency.py` 的 24 条断言：
+
+- 声明的 7 个字段、22 个算子**逐个真的送进解析器 + 校验器**
+- 提示词里每一条具体 DSL 范例**真的解析 + 校验**
+- 点名的每个 `tool_*` 都在 `QuantTools` 上存在；反向也钉住
+  "未被提示词提及的工具集合"不许变大
+- 适应度公式的三个系数与 `compute_fitness` 源码逐个比对，且三项都必须是减号
+- 过拟合阈值 vs `_OVERFIT_THRESHOLD`、GP 默认参数 vs 接线层签名、
+  变异算子名 vs `mutations.py`、因子家族名 vs `financial_interpreter`
+- 占位符 `<...>` 的语法完整（顺带封住工具在占位符上误报的那批 `>` → `>=`）
+
+**这组断言当场抓出两个真缺陷（D-4、D-5）。**
+
+---
+
+## 本轮的三种新花样（与 C 档 §「三条」不重复）
+
+### 1. 对称的构造让差别恰好抵消
+
+`multi_dataset` 首测 78.3%，两个存活都在同一行：
+
+```python
+if h is not None and l is not None and c is not None:
+    aligned["vwap"] = (h + l + c) / 3.0
+```
+
+我的测试夹具把 `high = close * 1.02`、`low = close * 0.98` —— **对称**的 ±2%。
+于是 `(h + l + c) / 3` **恰好等于 close**。"把 vwap 派生公式改成直接取 close"
+这一类变异因此完全观察不到。改成 +5% / -2% 之后立刻显形。
+
+> 这是 C 档「参数组合恰好让两种取值同解」的变种，但更隐蔽：
+> 那边是参数选得不巧，这边是**夹具的构造本身带了对称性**，
+> 而对称性看起来像"更整洁的测试数据"。
+
+### 2. 尺度不变性把整条比值吸收掉
+
+`alpha_combiner` 首测 64.0%，最贵的一个存活是：
+
+```python
+denom = np.sqrt((rs ** 2).sum() * (rr ** 2).sum())   # * → /
+```
+
+`_ic_ir` 最后算的是 `mean(ics) / std(ics)`。如果**每一天**的 IC 都被同一个
+常数缩放，比值原封不动。而我原来的面板**每天的有效截面宽度都一样**，
+于是 `*` 改成 `/` 只是整体乘了个常数，IC-IR 一点没变。
+
+破法：让每天的有效标的数不同（0/1/2 轮换的 NaN 模式）。缩放因子随 t 变化，
+比值立刻就变了 —— 实测 IC-IR 从 1e9 掉到 2.9。
+
+配套写了一份**独立参考实现**逐位比对（rtol=1e-12），一口气封住
+行数预算、denom 乘除、零守卫、样本量下限四处。
+
+### 3. 只有日志看得见的状态位
+
+`alpha_agent` 首测 45.5%，6 个存活里有 3 个是 `passed_any` 这个布尔：
+
+```python
+passed_any = False        # ← 初值
+...
+passed_any = True         # ← 成功分支
+...
+if not passed_any:
+    logger.info("本轮无 Alpha 通过筛选，hypothesis='%s'", hypothesis)
+```
+
+它**不影响任何返回值**，只决定末尾那一行日志。而那一行正是无人值守跑批时
+**唯一**能告诉操作者"这一轮到底有没有产出"的信号：翻过来之后，
+颗粒无收会悄无声息，或者明明有产出却报"无 Alpha 通过"。
+
+处置：用 `caplog` 钉住这行日志。**日志是产品的一部分**，不是调试残留 ——
+凡是"只有日志看得见"的状态位，都要按契约来测。
+
+---
+
+## 自伤教训 #8：变异测试会把代码跑在你没预期的配置下
+
+**这一条是实测事故，不是假想。**
+
+`visualizer.plot()` 的签名是 `show: bool = False`，为 False 时不调 `fig.show()`。
+变异工具把这个布尔字面量翻成 `True` 之后，
+`test_backtest_plot_fidelity.py` 里**三十多条**"画图然后检查 trace"的用例
+每一条都真的调了 `fig.show()` —— 一次性在使用者的浏览器里弹出几十个标签页。
+
+我当时只在**专门测 `show` 开关的那两条用例**里 monkeypatch 了 `Figure.show`。
+这个判断错在一个隐含前提上：*"这个参数默认是 False，所以别的用例不会触发它"*
+—— 而**这个前提正是变异要破坏的东西**。
+
+**规则**：凡是能对进程外产生可见副作用的行为（弹窗、发信、打开文件关联程序），
+必须在 **conftest 级别全局堵死**，不能只在"相关"用例里堵。
+
+处置（三层）：
+
+| 层 | 位置 |
+|---|---|
+| 总闸 | `tests/conftest.py::_never_open_a_browser` —— session 级 autouse，把 `plotly.graph_objects.Figure.show` 换成只记账的替身 |
+| 用例侧读法 | `figure_show_calls` fixture 读那份记录；需要断言 "show 有没有被调用" 的用例用它，不要自己打补丁 |
+| 防删 | `tests/meta/test_invariants.py::TestNoOutOfProcessSideEffects` 三条：总闸在不在、调 show 是否只记账、两个出图入口的 `show` 默认值是否还是 False |
+
+**验证不是推测**：把当初闯祸的那一个变异原样重跑了一遍 ——
+
+```
+目标 : visualizer.py L56   show: bool = False,  →  show: bool = True,
+结论: [OK] 变异被杀死
+```
+
+没有弹出任何标签页，而且这个变异**从"存活"变成了"被杀死"**。
+
+---
+
+## 本轮新登记的产品缺陷（D-2 ~ D-5，只登记不修）
+
+登记表总数 **21 → 25**（`tests/meta/test_known_defects.py`）。
+
+### D-2　`LocalParquetProvider` 宣称支持一个会让整批数据归零的字段
+
+`available_fields()` 对外宣称支持 `returns`，但 `returns` 从不落盘
+（不在 `STANDARD_COLUMNS` 里）。按宣称的字段清单调用
+`fetch(fields=[..., "returns"])` 时：
+
+1. `_read_ticker` 的列裁剪 `pd.read_parquet(path, columns=cols)` 在 pyarrow 层抛
+   `No match for FieldRef.Name(returns)`
+2. 被 `except Exception: warnings.warn(...)` 吞成一条 warning
+3. **该 ticker 的所有分区都读不出来** → `frames` 空 → 返回 `{}`
+
+后果不是"少一列 returns"，而是**连 close 都没有**。
+日循环拿到空面板会当成"今天没有数据"。
+
+### D-3　`langchain>=0.2` 没有上界，LLM 链路整条静默降级
+
+`requirements.txt` 写的是 `langchain>=0.2`。本机装的 **1.2.15** 满足该约束，
+而 langchain 1.x 已把 `AgentExecutor` / `create_tool_calling_agent`
+移出 `langchain.agents`。于是：
+
+- `_build_langchain_agent` 的 `except ImportError` **每次都命中**
+- `QuantAgent.__init__` 只打一条 `logger.warning("LangChain Agent 构建失败，降级")`
+  就退到 `FallbackOrchestrator`
+- `/api/chat` 照常返回、前端毫无异样 —— **LLM 研究链路整条不可用而无人知晓**
+
+而且报错文案是"需要安装 langchain 和 langchain-openai"，
+实际 langchain 装着，真正的原因是大版本不兼容；
+按文案去装只会再装一遍同样的版本。
+
+（交易回路本来就不含 LLM，所以不影响下单；影响的是因子发现。）
+
+### D-4　提示词把一个解析不了的写法当成 4 个家族的标准模板
+
+系统提示词的 FINANCIAL FACTOR TAXONOMY 给每个因子家族配了一条 `DSL pattern:`，
+其中**四条**用了 `rank(neg(...))`：
+
+```
+反转    rank(neg(ts_delta(close, N)))
+波动    rank(neg(ts_std(returns, 20)))
+流动性  rank(neg(ts_mean(volume, 20)))
+价量    rank(neg(ts_corr(close, volume, 20)))
+```
+
+而解析器**只认一元负号 `-x`**，不存在 `neg(x)` 这个函数；
+`neg` 也不在提示词自己的 `AVAILABLE OPERATORS` 清单上。
+
+LLM 照模板产出的公式一律解析失败 → `_validate_and_fix` 白烧两次修复调用后放弃
+→ 六个家族里有四个走模板路径时产出为零，对外只表现为
+"agent 老是生成非法公式"。
+
+修法很轻：把模板里的 `neg(x)` 改写成 `-x`
+（已由 `test_the_unary_minus_form_is_what_the_parser_accepts` 验证这条路通）。
+
+### D-5　提示词与代码的相关度阈值对不上
+
+提示词：`AlphaPool rejects signal-correlated alphas (corr > 0.9)`
+代码：　`AlphaPool.__init__(corr_threshold: float = 0.70)`，判定 `abs(corr) >= threshold`
+
+数字差 0.2，开闭也相反。`alpha_pool.py` 的注释自己写着
+"Lowered from 0.90 to 0.70 (Task 3.5)" —— 提示词没跟着改。
+LLM 会按 0.9 判断"够不够正交"，而池子实际按 0.70 拒收，
+它拿不到任何反馈。
+
+---
+
+## 等价性证明索引（D 档后半程）
+
+| 模块 | 位置 | 一句话 |
+|---|---|---|
+| `dataset_filters` | L243 `(1+r).cumprod() * 100` 的 `*` → `/` | `spy_close` 只流向 `_detect_regime`，而它对正数缩放完全不变（AST 验证没有第二个消费者） |
+| `alpha_combiner` | L65 `if denom > 0:` → `>=` | `argsort(argsort(x))` 恒给 0..m-1 的排列，去均值平方和 = m(m²-1)/12，而前置守卫保证 m ≥ 5，故 denom 恒 > 0 |
+| `multi_dataset` | L100 `field(repr=False)` → True | `Dataset` 自定义了 `__repr__`，完全取代自动生成的那个，且不引用 `data` |
+| `local_parquet_provider` | L89 / L211 / L140 三处 `ignore_index=True` → False | 三处 concat 的产物都在离开模块前被重建索引：读路径 `SchemaEnforcer.enforce` 无条件 `reset_index`，写路径 `preserve_index=False` 丢弃索引 |
+| `ccxt_provider` | L94 `utc=True` → False | 输入恒为整数毫秒 epoch，`unit="ms"` 的换算基准本来就是 UTC，`tz_localize(None)` 之后两者逐位相同 |
+
+每一条都配了**会随前提变化而变红**的机械验证用例，不是注释里写一句"我认为它们等价"。
+
+> `alpha_agent` 首测的第 6 个"存活"（L39 提示词里的 `and`）**没有进这张表**：
+> 它不是等价变异，是工具缺陷 #9 的误报。工具修好之后该变异点直接消失，
+> 模块点数 11 → 10，复测 10/10 全杀。原处改写成
+> `test_the_whitelist_line_is_prose_inside_a_string_constant` ——
+> 守住"这段仍是散文"这个前提，而不是假装它是个等价变异。
+
+---
+
+## 补测量：四个从未被测量过的模块（审计发现）
+
+D 档收尾时做了一次**全量对账**（扫 `app/**.py` 的变异点数，与所有
+`progress*.json` 的**顶层键**逐个比对），发现 **4 个有变异点的模块从未作为
+测量目标跑过**。它们首测全部 **0.0%** —— 既有测试只是 import 过它们。
+
+| 模块 | 点数 | 首测 → 复测 | 存活处置 |
+|---|---:|---|---|
+| `data_engine/health_report.py` | 32 | 0.0% → **100%** | 0 |
+| `data_engine/sector_mapper.py` | 5 | 0.0% → **100%** | 0 |
+| `agent/_fallback.py` | 4 | 0.0% → **75%** | 1 处等价证明 |
+| `data_engine/yahoo_provider.py` | 3 | 0.0% → **100%** | 0 |
+
+新增 `unit/data_engine/test_health_report.py`(62)、
+`unit/data_engine/test_sector_mapper.py`(41)、
+`unit/data_engine/test_yahoo_provider.py`(23)，
+并补强 `unit/agent/test_agent_fallback.py`（10 → 21）。
+
+### 为什么漏：把**截断过的打印输出**当成了清单
+
+根因在我自己写的清点脚本 `scratchpad/inventory.py`：
+
+```python
+for r in sorted(todo, key=lambda x: -x["mutants"])[:40]:      # ← 只打前 40
+for r in sorted(untested, key=lambda x: -x["mutants"])[:15]:  # ← 只打前 15
+```
+
+实测 `todo` 有 **57** 个、`untested` 有 **26** 个。脚本把全量写进了
+`inventory.json`（83 个模块一个不少），但我抄进台账的是**终端里滚出来的那份**。
+
+- `yahoo_provider`(3 点) 按点数降序排第 **56** 名 → 落在 `[:40]` 之外
+- `_fallback`(4 点) 排第 54 名 → 同上
+- `health_report`(32) 与 `sector_mapper`(5) 在 `untested` 桶里**进了清单**，
+  但 C 轮实际没跑到 —— 另一种漏法：**列了但没执行**
+
+`untested[:15]` 那一处更糟：它连"另有 N 个"的提示都没打
+（`todo` 那边至少有一行 `… 另有 {len(todo)-40} 个模块`），26 个里 11 个静默消失。
+
+被 `[:40]` 切掉的那一段里还有 17 个模块（`parser.py`(13)、`validator.py`(11)、
+`strategy_store.py`(13)、`context.py`(11)、`validation_gate.py`(8)…），
+它们**后来在 C 轮被单独跑到了** —— 那是运气，不是清单保证的。
+
+## 自伤教训 #9：不要把为人眼截断过的输出当成清单
+
+**规则**：任何"待办清单 / 覆盖清单 / 遗漏清单"，必须来自**机器可读的全量产物**
+（json / 对账脚本的返回值），不能来自终端打印。打印是给人看的，
+它可以排序、可以截断、可以省略 —— 而这三件事都会静默丢东西。
+
+配套做法：
+- 清点脚本**同时**写全量 json（`inventory.py` 做到了）——问题出在我没用它
+- 每一轮收尾跑一次**对账**：`app/` 下所有有变异点的模块 vs `progress*.json`
+  的顶层键，差集必须为空
+- 对账判据只认**顶层键**。第一版审计脚本用 `grep` 全文匹配模块名，
+  结果命中的是变异记录里 `code` 字段的代码文本 —— `paper_broker` / `_fallback`
+  被误判成"已测量"，而它们当时一个测过一个没测过。**判据错了比没判据更危险。**
+
+### 顺带查清的一件事：接线检查管不着测量覆盖
+
+`tests/meta/test_invariants.py::test_no_orphan_modules_outside_allowlist`
+做的是**从入口 BFS 走 import 边**的可达性检查。`yahoo_provider` 被
+`data_engine/__init__.py` 与 `dataset_registry.py` import，一直可达、一直通过。
+
+**那个检查没有漏，它也不负责这件事** —— 它回答"有没有接线"，
+不回答"测试有多强"，更不回答"是不是还在被真的调用"。
+
+第三个问题目前**没有任何检查覆盖**：import 可达 ≠ 被调用。
+实例：`multi_dataset.py` 的 `load_us_equity/china_a/crypto/etf` 四个 loader
+在 `app/` 里**零调用点**（只有定义与 `__init__.py` 的再导出），
+却稳稳通过 orphan 检查。这是审计口径的缺口，不是产品缺陷。
+
+### 附带查清的数据源现状（与 `yahoo_provider` 的职责相关）
+
+`settings.price_source` 的**代码默认**是 `"yahoo"`，部署 `.env` 设的是 `moomoo`。
+但 `_fetch_raw` 的 moomoo 分支写死了 `and spec.region == "US"`，于是：
+
+| provider=`yfinance` 的数据集 | region | moomoo 接管 |
+|---|---|---|
+| `us_tech_large` / `us_financials` / `us_healthcare` / `us_energy` / `us_broad_large` | US | ✅ |
+| **`hk_china_tech`** | **HongKong** | ❌ → 仍走 `yahoo_provider` |
+
+所以在"moomoo 是美股唯一源"的前提下，`yahoo_provider` 的合法职责**只剩港股
+`hk_china_tech` 一个数据集**。另有一条 `except` 分支在读 `price_source` 失败时
+把美股静默退回 yahoo（源码注释自己写明这会破坏 TR.2 的研究/执行同源）——
+**登记，本阶段不修**。

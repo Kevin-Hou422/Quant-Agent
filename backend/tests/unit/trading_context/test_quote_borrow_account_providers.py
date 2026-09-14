@@ -1,5 +1,5 @@
 """
-test_phase_tr3_providers.py — Phase TR.3 T3 providers（盘口/借券/账户）验收
+test_quote_borrow_account_providers.py — Phase TR.3 T3 providers（盘口/借券/账户）验收
 
 - SimQuoteProvider：价差来自 Corwin-Schultz 估计（不流动的更宽）、中间价=最近收盘
 - SimBorrowProvider：long-only 时全不可做空；margin+allow_short 时仅流动大盘可空

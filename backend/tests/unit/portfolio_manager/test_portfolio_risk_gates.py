@@ -1,5 +1,5 @@
 """
-test_phase_pm5_risk.py — Phase PM.5 组合级风控门 验收
+test_portfolio_risk_gates.py — Phase PM.5 组合级风控门 验收
 
 - 单票上限：超配名被削到 ≤ 上限
 - 行业集中度：押注单一行业被缩到 ≤ 上限

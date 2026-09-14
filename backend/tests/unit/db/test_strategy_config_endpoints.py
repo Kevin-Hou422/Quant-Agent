@@ -1,5 +1,5 @@
 """
-test_phase_pm7_endpoints.py — Phase PM.7 策略配置端点 + active 配置交易接线
+test_strategy_config_endpoints.py — Phase PM.7 策略配置端点 + active 配置交易接线
 
 - /strategies/pending、/approve(activate)、/reject、/{id}(+谱系) 端点闭环
 - run_portfolio 在有 active 配置时**只交易该配置的成分**

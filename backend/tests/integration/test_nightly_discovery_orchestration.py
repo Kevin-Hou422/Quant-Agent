@@ -1,5 +1,5 @@
 """
-test_phase9_discovery.py — Phase 9.2 自主发现编排器 + 夜间任务验收
+test_nightly_discovery_orchestration.py — Phase 9.2 自主发现编排器 + 夜间任务验收
 
 覆盖：
   - DiscoveryEngine.run 只吃 dataset（无用户假设）→ 观察→GP→存 CANDIDATE

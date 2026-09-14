@@ -1,5 +1,5 @@
 """
-test_phase7_ingest.py — Task 7.1 每日摄取健康门验收（2026-08-02）
+test_daily_ingest_health_gate.py — Task 7.1 每日摄取健康门验收（2026-08-02）
 
 核心验收 A2：数据坏（低健康分 / 加载失败）→ **拒绝当日摄取，绝不静默降级**。
 用 monkeypatch 离线注入 load_registry_dataset / check_dataset_health。

@@ -1,5 +1,5 @@
 """
-test_phase5.py — Phase 5 验收测试
+test_lifecycle_monitor_scheduler_chain.py — Phase 5 验收测试
 
 覆盖：
   Task 5.2  生命周期状态机（合法/非法流转、幂等、终态、历史兼容）

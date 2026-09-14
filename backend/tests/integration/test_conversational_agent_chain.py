@@ -1,5 +1,5 @@
 """
-test_phase3.py — Phase 3 对话式 Quant Agent 测试
+test_conversational_agent_chain.py — Phase 3 对话式 Quant Agent 测试
 
 覆盖：
   1. 模块重组（optimization_engine / portfolio_engine / utils 导入）

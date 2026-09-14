@@ -1,5 +1,5 @@
 """
-test_phase_s_holdout.py — Phase S.1+S.2 验收
+test_holdout_isolation.py — Phase S.1+S.2 验收
 
 S.1：GP 不再按真实 held-out 择优（只在 Validate 段选择）。
 S.2：发现路径给出真 held-out Test（GP 全程不可见，仅汇报）。

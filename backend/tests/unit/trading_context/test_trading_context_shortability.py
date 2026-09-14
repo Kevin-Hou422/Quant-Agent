@@ -1,5 +1,5 @@
 """
-test_phase_tr.py — Phase TR（TradingContext）验收
+test_trading_context_shortability.py — Phase TR（TradingContext）验收
 
 - Corwin-Schultz 价差：宽 H/L 股 > 窄 H/L 股，量级合理
 - long-only（allow_short=False）→ 全不可做空

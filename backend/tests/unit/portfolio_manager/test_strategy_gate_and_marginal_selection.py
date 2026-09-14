@@ -1,5 +1,5 @@
 """
-test_phase_pm_s.py — Phase PM.S1/S2 策略级门 + 边际贡献准入 验收
+test_strategy_gate_and_marginal_selection.py — Phase PM.S1/S2 策略级门 + 边际贡献准入 验收
 
 - StrategyGate：严门加在**组合策略**（分段 OOS + DSR + t），空策略/噪声策略不通过，fail-closed
 - marginal_factor_selection：与已选**高相关的冗余因子被拒**（边际≈0）、**能抬升策略 OOS 的因子被纳入**

@@ -1,5 +1,5 @@
 """
-test_phase9_market_observer.py — Phase 9.1 市场观察引擎验收
+test_market_observer_regime_ranking.py — Phase 9.1 市场观察引擎验收
 
 覆盖：
   - 强趋势市 → 动量/趋势家族排前

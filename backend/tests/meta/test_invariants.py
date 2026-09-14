@@ -9,6 +9,7 @@ test_invariants.py — 系统级**不变量**（不是用例）
 from __future__ import annotations
 
 import ast
+import json
 import inspect
 from pathlib import Path
 
@@ -151,3 +152,165 @@ def test_no_orphan_modules_outside_allowlist():
     orphans = [m for m in orphans if m not in allow and not m.startswith("app.core.utils")]
     assert not orphans, (
         "以下模块从运行入口不可达（写了但没接线，等于没做）：\n  " + "\n  ".join(orphans))
+
+
+# ===========================================================================
+# 测试进程不得对进程外产生可见副作用
+# ===========================================================================
+#
+# 事故（2026-09-14）：`visualizer.plot()` 的 `show: bool = False` 被变异成
+# True 之后，`test_backtest_plot_fidelity.py` 里三十多条"画图并检查 trace"
+# 的用例**每条都真的打开了一个浏览器标签**，一次性在使用者屏幕上弹出几十个。
+#
+# 当时只在专门测 show 开关的那两条用例里 monkeypatch 了 `Figure.show`。
+# 教训：**变异测试会把代码跑在你没预期的配置下** —— 凡是能捅到进程外的
+# 东西（弹窗、发信、打开文件关联程序），必须在 conftest 级别全局堵死。
+#
+# 下面两条守住那个总闸本身，免得它被人当成多余的 fixture 删掉。
+
+class TestNoOutOfProcessSideEffects:
+
+    def test_plotly_figure_show_is_globally_stubbed(self):
+        """
+        `tests/conftest.py::_never_open_a_browser` 必须已经把
+        `plotly.graph_objects.Figure.show` 换成记账替身。
+
+        它被删掉之后，任何一条走到 `show=True` 的用例（包括变异测试
+        造出来的配置）都会真的弹浏览器。
+        """
+        plotly = pytest.importorskip("plotly.graph_objects")
+        show = plotly.Figure.show
+        name = getattr(show, "__name__", "")
+        assert name == "_recording_show", (
+            f"Figure.show 现在是 {name!r} —— conftest 里的 "
+            f"_never_open_a_browser 总闸没生效或被删了，"
+            f"测试有可能真的弹出浏览器窗口")
+
+    def test_calling_show_records_instead_of_opening_a_browser(self,
+                                                              figure_show_calls):
+        """总闸的行为面验证：调用 show 只记账，不产生任何进程外动作。"""
+        plotly = pytest.importorskip("plotly.graph_objects")
+        fig = plotly.Figure()
+        fig.show()
+        assert len(figure_show_calls) == 1, "Figure.show 的调用没有被记录下来"
+
+    def test_the_visualizer_show_flags_default_to_false(self):
+        """
+        源码侧的第二道保险：两个出图入口的 `show` 默认值都必须是 False。
+
+        这条与 `test_backtest_plot_fidelity.py` 里的行为断言互补 ——
+        那边验"默认不调用 show"，这边验"签名里写的就是 False"，
+        任何一侧被改都会红。
+        """
+        import inspect
+
+        vis = pytest.importorskip("app.core.backtest_engine.visualizer")
+        for fn_name in ("plot", "plot_decile_bar"):
+            fn = getattr(vis.BacktestVisualizer, fn_name)
+            default = inspect.signature(fn).parameters["show"].default
+            assert default is False, (
+                f"BacktestVisualizer.{fn_name} 的 show 默认值是 {default!r}，"
+                f"必须是 False —— 否则每次出图都会弹浏览器")
+
+
+# ===========================================================================
+# 每个有变异点的模块都必须被测量过
+# ===========================================================================
+#
+# 来由（自伤教训 #9）：D 档收尾的全量对账发现 4 个模块从未作为测量目标跑过
+# （`health_report` 32 点、`sector_mapper` 5、`_fallback` 4、`yahoo_provider` 3），
+# 首测全部 **0.0%** —— 既有测试只 import 过它们。
+#
+# 根因不是"忘了"，是**我把为人眼截断过的打印输出当成了清单**：
+# 清点脚本里写了 `sorted(todo, ...)[:40]` 和 `sorted(untested, ...)[:15]`，
+# 而实际有 57 / 26 个。按点数降序排在末尾的小模块就这么掉出了清单。
+#
+# 这里把"对账"本身变成一条测试：`app/` 下任何有变异点却不在
+# `measured_modules.json` 里的模块都会让它变红。清单是机器生成的全量产物，
+# 不是打印出来的摘要。
+
+_MEASURED_JSON = Path(__file__).with_name("measured_modules.json")
+
+
+def _mutation_points(src: str) -> int:
+    """
+    调用变异工具自己的 `build_plan` 数变异点 —— 判据必须与测量时完全一致，
+    否则对账会在"我以为的点数"和"工具认的点数"之间漂移。
+    """
+    import sys
+
+    tools = _backend_root() / "tools" / "mutation"
+    if not tools.is_dir():
+        return -1                      # 工具不在（未追踪目录）→ 交由调用方跳过
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    try:
+        import mutate
+    except Exception:
+        return -1
+    return len(mutate.build_plan(src))
+
+
+class TestEveryModuleIsMeasured:
+
+    def _manifest(self) -> dict:
+        assert _MEASURED_JSON.exists(), (
+            f"{_MEASURED_JSON.name} 不存在 —— 变异测量的清单是交付物的一部分，"
+            f"不能删。重新生成见 MUTATION_LEDGER.md §自伤教训 #9。")
+        return json.loads(_MEASURED_JSON.read_text(encoding="utf-8"))
+
+    def test_the_manifest_is_wellformed(self):
+        d = self._manifest()
+        assert d["modules"], "清单里一个模块都没有"
+        for mod, rec in d["modules"].items():
+            assert mod.startswith("app/") and mod.endswith(".py"), f"路径异常：{mod}"
+            for k in ("points", "killed", "survived", "kill_rate"):
+                assert k in rec, f"{mod} 缺字段 {k}"
+            assert rec["killed"] + rec["survived"] == rec["points"], (
+                f"{mod} 的 killed+survived 与 points 对不上：{rec}")
+
+    def test_no_module_with_mutants_is_missing_from_the_manifest(self):
+        """
+        **这条就是防第 9 条教训复发的那道闸。**
+
+        `app/` 下任何有变异点、却不在清单里的模块 = 从没量过测试强度。
+        新增模块时它会红，提示先测量再合入。
+        """
+        d = self._manifest()
+        recorded = set(d["modules"])
+        app = _backend_root() / "app"
+
+        missing = []
+        skipped = False
+        for p in sorted(app.rglob("*.py")):
+            if "__pycache__" in p.parts:
+                continue
+            rel = p.relative_to(_backend_root()).as_posix()
+            n = _mutation_points(p.read_text(encoding="utf-8"))
+            if n < 0:
+                skipped = True
+                break
+            if n > 0 and rel not in recorded:
+                missing.append(f"{rel}（{n} 个变异点）")
+
+        if skipped:
+            pytest.skip("tools/mutation 不在工作区（未追踪目录），无法按同一判据对账")
+        assert not missing, (
+            "以下模块有变异点却从未测量过 —— 测试强度是未知数：\n  "
+            + "\n  ".join(missing)
+            + "\n修法：跑一次 tools/mutation/runner.py，再更新 "
+              "tests/meta/measured_modules.json。")
+
+    def test_the_manifest_does_not_list_modules_that_no_longer_exist(self):
+        """反向：模块被删/改名之后，清单里的僵尸条目要清掉，免得掩盖真实缺口。"""
+        d = self._manifest()
+        root = _backend_root()
+        gone = [m for m in d["modules"] if not (root / m).exists()]
+        assert not gone, f"清单里有已不存在的模块：{gone}"
+
+    def test_the_totals_match_the_per_module_entries(self):
+        d = self._manifest()
+        mods = d["modules"].values()
+        assert d["totals"]["modules_with_mutants"] == len(d["modules"])
+        assert d["totals"]["total_points"] == sum(m["points"] for m in mods)
+        assert d["totals"]["total_survived"] == sum(m["survived"] for m in mods)

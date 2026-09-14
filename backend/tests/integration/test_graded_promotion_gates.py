@@ -1,5 +1,5 @@
 """
-test_phase_tr4_promotion.py — Phase TR.4 分级晋级门 + 阈值配置化 + 实验模式
+test_graded_promotion_gates.py — Phase TR.4 分级晋级门 + 阈值配置化 + 实验模式
 
 - grade_paper_entry：A/B/C 分级；实验模式放行但如实标注等级；关掉实验模式则只放 A
 - check_active_promotion：观测不足 / IC 均值≤0 / t≤阈值 → 不过；强证据 → 过

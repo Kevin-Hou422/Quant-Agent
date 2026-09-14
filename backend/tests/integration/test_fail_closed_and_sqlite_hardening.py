@@ -1,5 +1,5 @@
 """
-test_phase6.py — Phase 6 基础设施加固与正确性修复验收（2026-07-26）
+test_fail_closed_and_sqlite_hardening.py — Phase 6 基础设施加固与正确性修复验收（2026-07-26）
 
 覆盖已实施的 Phase 6 任务：
   6.1  消除静默降级（B5）：真实数据加载失败 → 502，不静默用合成数据冒充

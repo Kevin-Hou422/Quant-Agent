@@ -1,5 +1,5 @@
 """
-test_phase11_incremental.py — Phase 11.1/11.3：真前向增量摄取
+test_incremental_ingest_forward.py — Phase 11.1/11.3：真前向增量摄取
 
 - PIT.latest_timestamp 取最新 bar 日期
 - 空库 → 历史回填(mode=full, forward_from=None → 全部算回放)

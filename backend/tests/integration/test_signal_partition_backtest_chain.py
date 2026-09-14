@@ -1,5 +1,5 @@
 """
-test_phase1_upgrade.py — Phase 1 核心升级测试
+test_signal_partition_backtest_chain.py — Phase 1 核心升级测试
 
 覆盖：
   1. SignalProcessor 4 步管道（截断/衰减/中性化/延迟）

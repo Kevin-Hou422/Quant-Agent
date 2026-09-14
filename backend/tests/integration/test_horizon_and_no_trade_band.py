@@ -1,5 +1,5 @@
 """
-test_phase_pm6_horizon.py — Phase PM.6 horizon 感知 验收
+test_horizon_and_no_trade_band.py — Phase PM.6 horizon 感知 验收
 
 - annualized_turnover / classify_horizon 正确
 - apply_no_trade_band 真的**减少换手**（小漂移被吸收），band=0 不变

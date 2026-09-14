@@ -1,5 +1,5 @@
 """
-test_phase6_reproducibility.py — Task 6.5 可复现性验收（2026-07-30）
+test_gp_reproducibility_and_manifest.py — Task 6.5 可复现性验收（2026-07-30）
 
 覆盖：
   R-N1  GP 全链路确定性：相同 seed + 相同数据 → 相同 GP 输出（best_dsl）

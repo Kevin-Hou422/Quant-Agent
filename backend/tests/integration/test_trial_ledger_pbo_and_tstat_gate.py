@@ -1,5 +1,5 @@
 """
-test_phase_s3.py — Phase S.3 验收：全局 trial 计数 + PBO + t≥3.0 门槛
+test_trial_ledger_pbo_and_tstat_gate.py — Phase S.3 验收：全局 trial 计数 + PBO + t≥3.0 门槛
 
 - TrialLedger 跨实例持久累加
 - PBO：噪声 ≈0.5、真持续信号 → 低

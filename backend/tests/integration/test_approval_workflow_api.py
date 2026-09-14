@@ -1,5 +1,5 @@
 """
-test_phase9_approval.py — Phase 9.4 人工审批工作流验收
+test_approval_workflow_api.py — Phase 9.4 人工审批工作流验收
 
 覆盖：
   - approve: VALIDATED→PAPER，写谱系；非 VALIDATED → 409；不存在 → 404

@@ -1,5 +1,5 @@
 """
-test_phase_tr2_moomoo.py — Phase TR.2 MoomooProvider 验收
+test_moomoo_panel_assembly.py — Phase TR.2 MoomooProvider 验收
 
 离线（不需网关）
   - assemble_panel 把单标的 K 线拼成与 Yahoo 一致结构的 RawDataset（字段/索引/列/vwap/returns 推导）

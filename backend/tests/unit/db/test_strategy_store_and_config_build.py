@@ -1,5 +1,5 @@
 """
-test_phase_pm7_strategy.py — Phase PM.7 策略配置一等实体 验收（核心，端点另测）
+test_strategy_store_and_config_build.py — Phase PM.7 策略配置一等实体 验收（核心，端点另测）
 
 - StrategyStore：save/query/状态机/审批谱系；非法流转报错
 - build_strategy_config：因子集合 → 一份策略配置（成分/配额/verdict/风控/换手）

@@ -1,5 +1,5 @@
 """
-test_phase9_validation_gate.py — Phase 9.3 自动验证门验收
+test_validation_gate_api.py — Phase 9.3 自动验证门验收
 
 覆盖：
   - 强预测信号数据集 → 全折 OOS 为正 → 通过（隔离 DSR 阈值以确定性验证 WalkForward 逻辑）
