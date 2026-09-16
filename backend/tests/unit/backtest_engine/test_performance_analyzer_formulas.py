@@ -45,6 +45,8 @@ STD_D = 0.00967106052947172        # ret.std(ddof=1)
 ANN_RETURN = 0.142004427660126     # (1 + 0.0005) ** TDAYS - 1
 ANN_VOL = 0.15762237415489141      # STD_D * sqrt(TDAYS)
 SHARPE = 0.9009154215668769        # ANN_RETURN / ANN_VOL   (rf = 0)
+# ↓ **钉住当前（错误的）实现**，不是正确答案：年化 SR 配日频 √T，频率不一致。
+#   已登记为缺陷 N-4；修好后这个常量要一起改。见 TestSharpeTStat 的类注释。
 SHARPE_T = 8.32356013267212        # SHARPE * sqrt(120) / sqrt(1 + 0.5 * SHARPE**2)
 SORTINO = 8.639895768446092
 CALMAR = 14.111035246689319
@@ -184,7 +186,21 @@ class TestReturnVolSharpe:
 
 
 class TestSharpeTStat:
-    """t = SR × √T / √(1 + 0.5 × SR²)（Lo 2002）。"""
+    """
+    t = SR × √T / √(1 + 0.5 × SR²)（Lo 2002）。
+
+    **本组断言钉住的是当前实现，不是正确答案。** 外部审计 2026-09-15（N-4）
+    指出：这里的 `SR` 取的是**年化** Sharpe（`ANN_RETURN / ANN_VOL`，
+    TDAYS≈265.6），`√T` 取的却是**日频**观测数 √120 —— 两个频率不一致。
+    同一组收益，按同频日 Sharpe 代入同一分母得 0.5660，单样本 t 参考 0.5664，
+    而产品给出 8.3236；`risk_report.py` 按 1.96 判显著，于是这组收益被显示成
+    "✓显著"，正确口径下是"✗不显著"。
+
+    `SHARPE_T` 这个常量是**照着实现算出来的**（见其行内注释的公式），
+    所以它检测得了"公式被改动"，检测不了"公式本来就错"。
+    应有行为由 `test_known_defects.py::TestSharpeTStatFrequency` 以 xfail 断言，
+    修好之后本组常量必须同步改掉。
+    """
 
     def test_sharpe_tstat_exact(self, pa):
         assert pa.sharpe_tstat() == pytest.approx(SHARPE_T, abs=1e-10)

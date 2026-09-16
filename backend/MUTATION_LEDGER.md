@@ -20,9 +20,22 @@
 
 1. **覆盖**：`app/` 下每个有变异点的模块都被测量过 —— 已达成，见上表第一行。
 2. **强度**：每一个存活变异，要么被新测试杀死，要么有**书面且可机械验证**的
-   等价性证明。"可机械验证"指证明本身也是一条可执行断言
-   （例如 `(limit + tol) - limit != tol` 逐个验证 epsilon 守卫的区分值在浮点上
-   不可构造），而不是在注释里写一句"我认为它们等价"。
+   等价性证明。"可机械验证"指证明本身也是一条可执行断言，而不是在注释里写一句
+   "我认为它们等价"。
+
+   > **这一条曾经举错了例子。** 原文举的是 `(limit + tol) - limit != tol`
+   > ——"逐个验证 epsilon 守卫的区分值在浮点上不可构造"。外部审计 2026-09-15
+   > 给出反例推翻了它：`project_to_capped_l1([[1e-12, 1-1e-12]])` 逐位保留
+   > 1e-12，于是 `> 1e-12` 与 `>= 1e-12` 结论不同。那条断言证的是
+   > **"tol 不能由一次加法还原"**，而到达 `filled[i]` 的值根本不必来自加法。
+   >
+   > 教训：**可执行 ≠ 证对了**。一条跑得起来的断言，证的可能是一个更弱的命题，
+   > 然后被当成结论用。所以第 2 条现在还要求：证明必须说清楚
+   > **"被测的值可能从哪里来"**，并对每条来源给出反驳尝试；
+   > 站不住的证明移入 `REFUTED_EQUIVALENCE`，由
+   > `test_invariants.py::test_refuted_proofs_cannot_quietly_come_back` 看着，
+   > 不许再写回去。
+
 3. **可见**：已知坏掉的东西必须出现在每次运行的汇总行里，而不是躺在 md 里。
 
 ## 判定标准：为什么不看击杀率数字本身
@@ -41,13 +54,29 @@
 | | |
 |---|---|
 | `app/` 下 `.py` | 111 |
-| 其中**有变异点** | **88**（其余 23 个是 `__init__.py` 与纯常量模块） |
-| 变异点合计 | **1980** |
-| 存活合计 | **138**（分布在 44 个模块） |
+| 其中**有变异点** | **89**（旧算子集下是 88；`_sqlite_utils.py` 是算子补齐后新进来的） |
+| **已测量**的变异点 | **1981**（1980 个在 MUTATORS v1 下枚举，+1 个补测） |
+| 存活合计 | **138**（分布在 44 个模块），其中 **2 个的等价性证明已被反例推翻** |
 | 零存活模块 | **44** |
+| **当前算子集下应测的点数** | **2843**（MUTATORS v2） |
+| → **从未测量**的点数 | **862** |
 
-**从未测量**的模块数：**0**。这一条由 `TestEveryModuleIsMeasured` 持续对账 ——
-它是本项目吃过亏的地方（见自伤教训 #9），所以做成了测试而不是一句承诺。
+> **1980 与 2843 的差额必须一直看得见。** 外部审计 2026-09-15 用四个微型探针
+> 证明旧算子集有系统性缺口：`x >= .70`、`x / w`、`a+b` **各 0 个变异点**，
+> `a + b + c` 只变第一个加号。补齐算子（工具缺陷 #11）后同一份源码枚举出
+> 2843 个点 —— 多出来的 863 个从没跑过（其中 1 个已补测，余 862）。
+>
+> 如果只把新总数写进清单、不记差额，交付物看起来只会**更好**，而"这 863 个点
+> 没测过"就消失了。所以差额落在 `measured_modules.json` 的 `measurement_scope`
+> 块里，由 `test_the_unmeasured_scope_stays_visible_and_only_shrinks` 做成
+> **只许减不许增**的棘轮。**欠一次对 2843 个点的重测，本轮未做。**
+
+**从未测量**的**模块**数：**0**。这一条由
+`TestEveryModuleIsMeasured` 持续对账 —— 它是本项目吃过亏的地方
+（见自伤教训 #9），所以做成了测试而不是一句承诺。
+但注意它对账的是**模块**，不是**点数**，也不是**出处** ——
+后两者分别由 `test_the_unmeasured_scope_stays_visible_and_only_shrinks` 与
+`test_every_recorded_test_path_still_exists` 补上，两条都是被审计打脸之后才加的。
 
 ### 仍有存活项的 44 个模块
 
@@ -104,32 +133,60 @@
 
 `agent/_agent.py`、`agent/_chat_history.py`、`agent/_critic.py`、`agent/_data_utils.py`、`agent/_helpers.py`、`agent/_lc_agent.py`、`agent/_memory.py`、`agent/alpha_agent.py`、`api/chat_router.py`、`config.py`、`core/alpha_engine/dsl_executor.py`、`core/alpha_engine/financial_diagnostics.py`、`core/alpha_engine/financial_interpreter.py`、`core/alpha_engine/typed_nodes.py`、`core/alpha_engine/validator.py`、`core/backtest_engine/backtest_engine.py`、`core/backtest_engine/multi_dataset_backtester.py`、`core/backtest_engine/visualizer.py`、`core/data_engine/base.py`、`core/data_engine/dataset_registry.py`、`core/data_engine/health_report.py`、`core/data_engine/providers/akshare_provider.py`、`core/data_engine/providers/moomoo_provider.py`、`core/data_engine/schema.py`、`core/data_engine/sector_mapper.py`、`core/data_engine/yahoo_provider.py`、`core/discovery/discovery_engine.py`、`core/discovery/market_observer.py`、`core/gp_engine/fitness.py`、`core/gp_engine/mutations.py`、`core/gp_engine/population_evolver.py`、`core/ml_engine/alpha_evaluator.py`、`core/monitor/alpha_monitor.py`、`core/portfolio_manager/horizon.py`、`core/portfolio_manager/strategy_builder.py`、`core/trading_context/providers.py`、`db/alpha_lifecycle.py`、`db/chat_store.py`、`main.py`、`tasks/backup.py`、`tasks/cost_calibration.py`、`tasks/daily_ingest.py`、`tasks/reasoning_log.py`、`tasks/scheduler.py`
 
-### 已知未闭合的缺口（只有这一个）
+### 已知未闭合的缺口
 
-138 个存活项的**模块级逐条归属**还没做。已经建立的是：
+外部审计 2026-09-15 之后，这里有 **四** 个，不是原来写的"只有这一个"。
 
-- 88 个模块全部测量过（机器对账）
+**（一）138 个存活项的模块级逐条归属还没做。** 已经建立的是：
+
+- 89 个模块全部测量过（机器对账）
 - 44 个写了证明的文件，条目数与各自声明的存活数**逐个相等**
 - 每条证明说明 ≥40 字、点名的验证用例真实存在（机器检查）
 
-做不到的是把 138 个存活**逐条**对上 97 条证明 —— `PROVEN_EQUIVALENT` 的键是
+做不到的是把 138 个存活**逐条**对上 95 条证明 —— `PROVEN_EQUIVALENT` 的键是
 自由文本（如 `"L124 (weights < -tol) → <="`），不带模块路径；按 import 归属会错判
 （`risk_gate` 的 10 条证明在它自己的文件里，而那个文件并不直接 import 该模块）。
 
 **闭合办法**：把每条键改成 `<模块路径>:L<行号> <变异描述>` 的固定格式，
-再加一条 meta 测试逐条对账。约 97 条键需要改写。
+再加一条 meta 测试逐条对账。约 95 条键需要改写。
 
 这个缺口连同棘轮（证明条数只许增不许减）写在
 `measured_modules.json` 的 `proof_reconciliation` 块里，
 由 `TestEveryModuleIsMeasured::test_the_open_reconciliation_gap_stays_visible` 守着 ——
 删掉那个块或让证明条数变少都会判红。
 
+（证明条数现在是 **95** 不是 97：`paper_broker` 的 L119/L127 两条被反例推翻，
+移进了 `REFUTED_EQUIVALENCE`。**这两个存活点目前既未被杀死也无有效证明。**）
+
+**（二）862 个变异点从未测量。** 见上面「结果总览」。补齐算子后应测 2843 点，
+已测 1981 点。棘轮：`test_the_unmeasured_scope_stays_visible_and_only_shrinks`。
+**欠一次重测。**
+
+> 唯一补上的那个是 `app/db/_sqlite_utils.py`：它在旧算子集下显示"无变异点"
+> （`!=` 当时没有对应变异器），实际是**一条测试都没有**。补测首轮 1 点 / 0 杀死 /
+> **0.0%**，补 `tests/unit/db/test_sqlite_hardening.py` 后用 `verify_mutant.py`
+> 单点复核确认被杀。
+>
+> **这是"算子缺口"造成的漏测的活样本**：不是某个模块测得差，是它**根本不在视野里**，
+> 而清单上它看起来和"无需测量的纯常量模块"没有区别。
+
+**（三）测量出处是"重映射"来的，不是重跑来的。** 审计发现清单里 104 个不重复的
+测试路径在 Task 1 目录重组后已不存在。已按文件名唯一匹配修回（96 条重映射、
+59 条无法映射置空，3 个模块因此完全没有出处记录）。这保证"路径现在能跑"，
+**不保证"当初那一版文件的内容与现在相同"**。消除这个不确定性同样只能靠重测。
+棘轮：`test_every_recorded_test_path_still_exists` + `test_the_provenance_repair_record_stays_visible`。
+
+**（四）击杀率是上界，不是测量值。** 工具缺陷 #10 修复前，超时 / 收集错误 /
+导入失败 / 任何无关的偶发失败都被记成"杀死"。**已测的 1980 个点全部是在那个
+判定器下跑出来的**，所以 138 这个存活数是下界、各模块击杀率是上界。
+修复后的判定器会把这些归入 `inconclusive` 并从分母剔除，但**旧数字没有重跑**。
+
 ---
 
 ## 工具缺陷史（每一条都曾让整批数字作废）
 
 度量工具的缺陷**不报错，只静默缩小分母** —— 这是最危险的一类，
-因为数字看起来完全合理。九条都留在这里，是为了下次"数字看起来合理"时
+因为数字看起来完全合理。十二条都留在这里，是为了下次"数字看起来合理"时
 不要重新相信它。
 
 | # | 缺陷 | 后果 |
@@ -143,6 +200,13 @@
 | 7 | `subprocess.run(timeout=)` 只杀直接子进程 | pytest 的孙进程握着管道，`communicate()` 继续阻塞 → 超时上限形同虚设（`alpha_workflows` 一轮跑了 11.6 小时）。改用 `taskkill /F /T` 杀进程树 |
 | 8 | 改完测试没有重测 | 台账里的存活列表过期，照着它补用例等于在补已经修好的洞 |
 | 9 | `_string_spans` **逐行** tokenize | 模块级三引号字符串的中间各行单独 tokenize 不是合法 Python，走进 `except` 后返回空区间 → **整段散文被当成代码变异**。`_prompts.py` 因此报出 35 个假变异点，`alpha_agent.py` 混进 1 个 |
+| 10 | `run_tests` 把**退出码非 0 一律当成"杀死"**，超时也算，且 `stdout/stderr=DEVNULL` 丢掉全部证据 | 收集错误、导入失败（exit 2/4）、一个测试都没收集到（exit 5、**分母为空**）、超时、以及 `-x` 之下任何无关的偶发失败，统统被记成"断言抓到了"。**偏置方向永远朝着数字更好看。** 已改为按 pytest 退出码分类：只有 exit 1（有测试失败）算杀死，其余归入 `inconclusive` 并从分母剔除；基线不绿直接 `SystemExit`，不再让"根本没测"伪装成"击杀率 0" |
+| 11 | 变异器集合有系统性缺口，且每行每算子**只取第一处**匹配 | 外部审计的四个探针：`x >= .70` / `x / w` / `a+b` 各 **0 个**变异点，`a + b + c` 只变第一个加号。我自查又补两个：`x <= 5`、`a == b` 同样是 0。已补 9 个算子并改为枚举全部匹配位置 → 1980 → **2843** 点。**仍在盲区**：数值常量、对象身份/deepcopy（C-2 那一类）、调用实参、控制流结构 |
+| 12 | `make_sandbox()` 只复制 `backend/`，仓库根的 `.gitignore` 不在沙箱里 | `tests/meta` 里有检查仓库根 `.gitignore` 的用例，于是**只要测试路径包含 `tests/meta`，沙箱里的基线必然是红的** —— 而 `make_plan.py` 给每个模块都加了 `tests/meta`。旧判定器遇到这种情况只打一句「基线就是红的」就 return，模块**静默没测**，从外面看不出与「跑过了」的区别。**这一条是缺陷 #10 的修复（基线不绿就 SystemExit）当场抓出来的** |
+
+**#10/#11 合起来的结论**：`B-1` 的除法归一化错误与 `C-2` 的对象身份错误
+都是**读代码**发现的，不是变异测试发现的。"所选变异全部被处理"
+与"检出能力已证明"从来不是同一个命题 —— 台账此前把它们当成了一回事。
 
 修 #9 之后必须验证分母没被误伤 —— 逐模块对比修复前后的点数：
 **109 个模块不变**，只有那两个含散文常量的变了（`_prompts` 35→0，`alpha_agent` 11→10）。
@@ -165,6 +229,26 @@
 | 7 | **能杀却写了等价证明** —— `alpha_pool.py:204` 只看了 `top_k` 与 `_seen_dsls`，漏了 `all_entries()` 的插入序；`population_evolver.py:637` 的输出被 `[:pop_size]` 截断，换个观察面（数算子调用次数）立刻能杀 | "输出相同"只是没找到对的观察面，不等于"观察不到" | `TestLessonX`：每条证明必须配一条真实存在的可执行验证用例 |
 | 8 | **变异测试会把代码跑在你没预期的配置下** —— `visualizer.plot()` 的 `show: bool = False` 被变异成 `True`，三十多条"画图再检查 trace"的用例**每条都真的打开了一个浏览器标签**，一次性在使用者屏幕上弹出几十个 | 隐含前提"这个参数默认是 False，所以别的用例不会触发它"——而这个前提正是变异要破坏的 | `conftest.py::_never_open_a_browser`（session 级总闸）+ `test_invariants.py::TestNoOutOfProcessSideEffects`（三条：总闸在不在、调用是否只记账、两个出图入口的默认值是否还是 False） |
 | 9 | **把为人眼截断过的打印输出当成清单** —— 清点脚本写了 `sorted(todo,…)[:40]` 和 `[:15]`，实际有 57 / 26 个。按点数降序排在末尾的小模块就这么掉出了清单，4 个模块因此从未测量（首测全部 **0.0%**） | 脚本把全量写进了 json，我用的却是终端里滚出来的摘要 | `test_invariants.py::TestEveryModuleIsMeasured` |
+| 10 | **把"本地全套绿"当成依赖完整的证据** —— CI 的 backend job 自 2026-09-10 起连红三次；本地用同一条命令、在只含已提交文件的干净 clone 上（因而也没有 `.env`）跑了 46 分钟，**3755 passed / 0 failed**。真正的差别是开发机多装了 scikit-learn 1.8.0：`XGBClassifier` 在**构造时**才要求它，而全库没有一行 `import sklearn`，`requirements.txt` 也就一直没声明 | 拿一个"恰好装全了"的环境去验证"依赖声明是否完整"，等于拿被测对象当判据 | `TestLessonC::test_construction_time_deps_are_declared_in_requirements` + `test_xgboost_sklearn_api_is_constructible_not_merely_importable`（后者与环境无关：任何缺 scikit-learn 的机器上都会红） |
+
+| 11 | **期望值是照着实现算出来的** —— `SHARPE_T = 8.32356013267212  # SHARPE * sqrt(120) / sqrt(1+0.5*SHARPE**2)`，注释里那行公式**就是被测代码本身**。产品把年化 Sharpe 配日频样本数，t 被放大约 √TDAYS 倍；同频口径是 0.5660，报告按 1.96 判定时"不显著"被显示成"✓显著" | 判据与被测对象同源。这种断言能检出"公式被改动"，永远检不出"公式本来就错" | 登记为 N-4；`TestSharpeTStatFrequency` 用**同频日 Sharpe** + scipy 单样本 t **双口径交叉验证**后断言应有值，原常量加注"钉住当前错误实现" |
+| 12 | **xfail 的失败原因不受约束** —— A-1 在 `inspect.getsource(di.ingest_incremental)` 处抛 AttributeError（那是 `DailyIngest` 的方法，模块上没有这个属性），C-1 在 `_evaluate_individual()` 签名变更处抛 TypeError。两条都在**碰到目标行为之前**就"失败"了，汇总行里的 `xfailed` 计数一直很好看 | `strict=True` 只保证"意外通过要报错"，对"因为别的原因失败"一无所知。把一个 bit（失败/没失败）当成了"登记的原因仍然成立" | `_xfail(defect_id, raises=...)` 默认限定 `AssertionError`；缺陷本身就是抛异常的显式传类型。前置条件必须拆成**不带 xfail** 的独立用例（D-4 已拆） |
+| 13 | **教训被代码化成"不许变得更糟"，而不是"把现有的查一遍"** —— `TestLessonY` 的源码文本断言棘轮基线定在 65，于是 A-2/A-5 这两条**正是该教训的实例**被永久豁免；`TestEveryModuleIsMeasured` 只对账模块不对账出处，所以目录重组把 104 个出处路径变成死链它完全看不见 | 棘轮只管增量。写棘轮的时候我知道存量有问题，但把"先止血"当成了"已解决" | A-2/A-5 已改成行为断言并把基线降到 63；出处对账补 `test_every_recorded_test_path_still_exists`；点数对账补 `test_the_unmeasured_scope_stays_visible_and_only_shrinks` |
+
+**#11/#12/#13 是同一件事的三个侧面：判据的独立性从来没有被检验过。**
+期望值来自实现（#11）、失败的一个 bit 被当成原因成立（#12）、
+守卫只拦新增不查存量（#13）—— 加上工具缺陷 #10（仪器的异常路径偏向好消息）
+和 #11（算子集合被当成缺陷空间的代理），五条的共同形状是：
+**我验证了"我能想到的那个命题"，没验证"我需要的那个命题"。**
+
+**#10 的复现是对照实验**：同一个 HEAD clone，换本地 venv → `3755 passed`；
+换只按 `requirements.txt` 装的干净 venv → `4 failed, 3751 passed`，
+失败的恰好只有 `test_proxy_model_pruning.py` 那四条，报错一律是
+`ImportError: sklearn needs to be installed in order to use this module`。
+补上声明后同一环境复跑 **22 passed**。
+附带结论：`requirements.txt` 全是 `>=` 无上界，CI 每次装的是当日最新
+（干净装拿到的是 plotly 7.0 / langchain 1.4 / numpy 2.5.3，均高于开发机）——
+这一点已作为 **D-3** 登记在案，本轮未改。
 
 **#8 的验证不是推测**：把当初闯祸的那一个变异原样重跑了一遍 ——
 `visualizer.py L56 show: bool = False → True` 结论 **[OK] 变异被杀死**，
@@ -215,7 +299,7 @@
 
 ---
 
-## 已登记产品缺陷（25 条，只登记不修）
+## 已登记产品缺陷（32 条，只登记不修）
 
 编号、一句话描述、以及断言"应有行为"的 `xfail(strict=True)` 用例，
 全部在 `tests/meta/test_known_defects.py`。**那里是权威**，
@@ -248,6 +332,13 @@
 | D-3 | `langchain>=0.2` 无上界，装上的 1.x 已移除 `AgentExecutor` → LLM 链路整条**静默降级**，只打一条 warning |
 | D-4 | 系统提示词把 `rank(neg(...))` 当作 4 个因子家族的标准模板，而解析器不认 `neg(x)` |
 | D-5 | 提示词写 `corr > 0.9`，`AlphaPool` 实际默认 `0.70` 且用 `>=` |
+| D-6 | `proxy_model._fit()` 的 `except ImportError` 只包住 import，而 sklearn 缺失是 `XGBClassifier(...)` **构造时**才抛 → 异常越过守卫，GP 进化直接崩而非退回 rule-based |
+| N-1 | `strategy_gate._cache_key` 只指纹 close，**不含 high/low/volume/券商配置** → 换掉 high/low 后仍命中旧缓存，拿到别的数据集的成本参数 |
+| N-2 | 全局试验台账读不到时 `n_trials` 退回 1 → DSR 少做多重检验校正、门变**松**；代码注释自己写的是"应当更保守" |
+| N-3 | `strategy_net_returns` 的风控/无交易带对齐被 `except Exception` 兜住，失败后**用未经风控的原始权重继续回测** —— 打破该函数"门评估的账本 == 实际交易的账本"的承诺 |
+| N-4 | `sharpe_tstat` 把**年化** Sharpe 与**日频**样本数混用 → t 放大约 √TDAYS 倍（8.3236 vs 同频 0.5660），`risk_report` 按 1.96 把不显著显示成"✓显著" |
+| N-5 | `PaperBroker.step` 用 `target_w.index` 截断旧持仓 → 目标集合缩小时旧仓既不估值也不平仓，收益与仓位一起消失 |
+| N-6 | （前端，本轮不做）`useQuantWorkspace.switchSession` 在 await 后无条件 `setMessages`，迟到响应覆盖当前会话内容 |
 
 ### 为什么要有 `test_known_defects.py`
 
@@ -290,7 +381,7 @@ python -m pytest tests/ -q -p shuffle_check
 
 ```bash
 cd backend
-python tools/mutation/make_plan.py                    # 生成计划：88 模块 / 1980 点
+python tools/mutation/make_plan.py                    # 生成计划：89 模块 / 2843 点
 python tools/mutation/runner.py plan_full.json --state progress_full.json
 python tools/mutation/runner.py plan_full.json --state progress_full.json --status
 ```

@@ -398,21 +398,36 @@ def test_borrow_cost_is_charged_on_shorts_only(broker):
 # 存活变异的等价性证明
 # ---------------------------------------------------------------------------
 
-PROVEN_EQUIVALENT = {
+#: **已被反例推翻的"等价性证明"** —— 留在这里是为了不让它们被重新写回去。
+#:
+#: 外部审计 2026-09-15 给出的反例：`project_to_capped_l1` 对
+#: `[1e-12, 1-1e-12]` 的输出**逐位保留**了 1e-12（L1 已等于 target、上限不绑定时
+#: 投影是恒等映射）。于是 filled[i] 恰好等于 1e-12 是**可构造的**，
+#: 原证明"投影输出无法精确落在该值上"不成立。
+#:
+#: 我当初的"机械验证"断言的是 `(base + tol) - base != tol`，
+#: 也就是"tol 不能由一次加法还原" —— 而到达 filled[i] 的值根本不必来自加法。
+#: **证明了一个更弱的命题，然后当成结论用了。**
+#: 这两个变异点现在的状态是：既未被杀死，也无有效证明。
+REFUTED_EQUIVALENCE = {
     "L119 `abs(delta[i]) < 1e-12` -> `<=`":
-        "区分值需要 |delta| 恰好等于 1e-12。delta = filled - prev_w，filled 来自 "
-        "water-filling 投影（多轮浮点乘除后归一到 L1=1），无法反解出使其精确等于 "
-        "1e-12 的目标权重；该阈值的用途本就是「小到等于没交易」的模糊带。",
-
-    "L121 `abs(filled) < abs(tgt) - 1e-9` -> `<=`":
-        "区分值需要 |filled| 恰好等于 |tgt| - 1e-9。同上，filled 是投影输出，"
-        "无法构造成与 tgt 相差恰好 1e-9 的值；该容差存在的目的就是让"
-        "「足额成交」的判定对末位浮点误差不敏感。",
+        "反例：prev_w=0、filled=1e-12 时 delta 恰为 1e-12，`<` 判假而 `<=` 判真。"
+        "见 test_the_epsilon_guards_are_reachable_so_the_old_proof_is_void。",
 
     "L127 `abs(filled[i]) > 1e-12` -> `>=`":
-        "区分值需要 |filled| 恰好等于 1e-12。同 L119：投影输出无法精确落在该值上。"
-        "两侧语义连续——比 1e-12 还小的权重在 100 万美元资金上不足 1e-6 美元，"
-        "记不记入持仓没有可观测差别。",
+        "反例：project_to_capped_l1([[1e-12, 1-1e-12]], cap=inf) 的第一项逐位等于 "
+        "1e-12，`>` 判假而 `>=` 判真 —— 前者不记入持仓，后者记入。"
+        "见 test_the_epsilon_guards_are_reachable_so_the_old_proof_is_void。",
+}
+
+PROVEN_EQUIVALENT = {
+    "L121 `abs(filled) < abs(tgt) - 1e-9` -> `<=`":
+        "区分值需要 |filled| 恰好等于 |tgt| - 1e-9。filled 是投影输出，"
+        "无法构造成与 tgt 相差恰好 1e-9 的值；该容差存在的目的就是让"
+        "「足额成交」的判定对末位浮点误差不敏感。"
+        "（注意：L119/L127 的同型证明已被反例推翻，见 REFUTED_EQUIVALENCE；"
+        "这一条与它们的区别是区分值要求的是**两个量之差**恰好等于容差，"
+        "不是某个量本身恰好等于容差，投影的恒等路径给不出这种构造。）",
 
     "L192 `hasattr(d, 'date') and not isinstance(d, date)` -> 删掉 not":
         "该分支对系统实际产生的**每一种**日期形态都不可达：str 与 datetime/Timestamp "
@@ -450,16 +465,50 @@ def test_date_normalisation_branch_is_unreachable_for_real_inputs():
         assert not hasattr(d, "date"), f"{type(d).__name__} 竟然带 .date，L192 可达"
 
 
-def test_epsilon_guards_in_paper_broker_are_unreachable():
-    """L119 / L121 / L127 三条证明的共同机械验证。"""
-    for tol in (1e-12, 1e-9):
-        for base in (0.6, 0.4, 1.0, 0.01):
-            assert (base + tol) - base != tol, (
-                f"base={base} tol={tol} 处容差可精确还原，等价性证明不成立")
+def test_the_epsilon_guards_are_reachable_so_the_old_proof_is_void():
+    """
+    外部审计 2026-09-15 的反例，原样固化下来。
+
+    旧证明写的是"投影输出无法精确落在 1e-12 上"，配的"机械验证"是
+    `(base + tol) - base != tol` —— 那只证明了**tol 不能由一次加法还原**。
+    可是到达 `filled[i]` 的值不必来自加法：`project_to_capped_l1` 在
+    L1 已等于 target、上限不绑定时就是恒等映射，输入里的 1e-12 原样出来。
+
+    这条用例现在断言的是**反例仍然成立**（守卫可达），
+    所以谁也不能再把 L119/L127 写回 PROVEN_EQUIVALENT。
+    """
+    import numpy as np
+
+    from app.core.backtest_engine.transaction_cost import project_to_capped_l1
+
+    w = np.array([[1e-12, 1.0 - 1e-12]])
+    cap = np.array([[np.inf, np.inf]])
+    filled = np.asarray(project_to_capped_l1(w, cap), dtype=float)[0]
+
+    assert filled[0] == 1e-12, (
+        f"投影没有原样保留 1e-12（得到 {filled[0]!r}）—— 反例的构造前提变了，"
+        f"请重新确认 L119/L127 的可达性，不要默认它们又变回等价")
+
+    # L127：记不记入持仓
+    assert bool(abs(filled[0]) > 1e-12) is False, "`>` 不再排除它"
+    assert bool(abs(filled[0]) >= 1e-12) is True, "`>=` 不再纳入它"
+
+    # L119：prev_w = 0 时 delta 恰为 1e-12
+    delta = filled[0] - 0.0
+    assert bool(abs(delta) < 1e-12) is False, "`<` 不再判它为『没交易』之外"
+    assert bool(abs(delta) <= 1e-12) is True, "`<=` 不再把它归进容差带"
 
 
 def test_every_survivor_has_a_written_proof():
-    """存活项要么被用例杀死，要么在此有书面证明；不许有第三种状态。"""
-    assert len(PROVEN_EQUIVALENT) == 5
-    for key, why in PROVEN_EQUIVALENT.items():
-        assert len(why) >= 40, f"{key} 的等价性说明过于敷衍：{why!r}"
+    """
+    存活项要么被用例杀死，要么有书面证明，要么**明确登记为未解决**；
+    不许有第四种状态（"看起来有证明，其实证明是错的"就是第四种）。
+    """
+    assert len(PROVEN_EQUIVALENT) == 3, (
+        f"证明条目数变成 {len(PROVEN_EQUIVALENT)}（原 5，其中 L119/L127 "
+        f"两条已被反例推翻，移入 REFUTED_EQUIVALENCE）")
+    assert len(REFUTED_EQUIVALENCE) == 2, "被推翻的条目不许悄悄消失"
+    overlap = set(PROVEN_EQUIVALENT) & set(REFUTED_EQUIVALENCE)
+    assert not overlap, f"同一个变异点既算已证明又算已推翻：{overlap}"
+    for key, why in list(PROVEN_EQUIVALENT.items()) + list(REFUTED_EQUIVALENCE.items()):
+        assert len(why) >= 40, f"{key} 的说明过于敷衍：{why!r}"

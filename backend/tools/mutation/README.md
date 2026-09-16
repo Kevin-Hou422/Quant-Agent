@@ -19,7 +19,7 @@
 cd backend
 
 # 1) 生成计划（模块清单变了就重新生成，不要手工维护）
-python tools/mutation/make_plan.py                    # 全量：88 模块 / 1980 点
+python tools/mutation/make_plan.py                    # 全量：89 模块 / 2843 点
 python tools/mutation/make_plan.py app/core/gp_engine # 只要某个前缀
 
 # 2) 跑（可续跑：关机重启后再跑一次同样的命令即可接上）
@@ -38,6 +38,34 @@ python tools/mutation/verify_mutant.py app/core/xxx.py 123 "a > b" "a >= b" \
 并由 `tests/meta/test_invariants.py::TestEveryModuleIsMeasured` 对账：
 `app/` 下任何有变异点却不在那份清单里的模块都会让测试变红。
 
+## 这套工具**看不见**什么（先读这一节）
+
+变异器是一组有限的正则规则，**不是对任意产品缺陷的枚举**。
+外部审计 2026-09-15 用四个微型探针戳破过一次：
+
+| 探针 | 修复前 | 修复后 |
+|---|---:|---:|
+| `return x >= .70` | **0** 个变异点 | 1 |
+| `return x / w` | **0** | 1 |
+| `return a+b`（无空格） | **0** | 1 |
+| `return a + b + c` | 1（只第一个加号） | 2 |
+| `return x <= 5`（自查补充） | **0** | 1 |
+| `return a == b`（自查补充） | **0** | 1 |
+
+补齐后 `app/` 的全量点数从 1980 涨到 **2843**。**多出来的 863 个从未测量**，
+差额记在 `tests/meta/measured_modules.json` 的 `measurement_scope` 块里。
+
+**仍在盲区**（下列缺陷这套工具**不可能**发现，别把它的击杀率当成覆盖证明）：
+
+- 数值常量本身（阈值 0.9 写成 0.7、窗口 20 写成 60）
+- 对象身份与 deepcopy 语义 —— 已登记的 **C-2** 就是这一类
+- 调用实参的增删、顺序、关键字名
+- 控制流结构（提前 return、循环边界、异常捕获范围）—— **D-6** 就是这一类
+- 频率/量纲这种"公式整体错了"的问题 —— **N-4** 就是这一类
+
+已登记的 32 条缺陷里，`B-1`（除法归一化）、`C-2`、`N-4` 都是**读代码**发现的。
+**"所选变异全部被处理" ≠ "检出能力已证明"。**
+
 ## 达标标准（不是击杀率本身）
 
 > **每一个存活变异，要么被新测试杀死，要么有书面且可机械验证的等价性证明。**
@@ -45,9 +73,17 @@ python tools/mutation/verify_mutant.py app/core/xxx.py 123 "a > b" "a >= b" \
 击杀率单看会误导：`risk_gate` 76.2% 已达标（剩余 10 处全部证明为等价变异），
 而曾经口头报过的 100% 是工具缺陷造成的假数。
 
-"可机械验证"指证明本身也是一条可执行断言，例如
-`(limit + tol) - limit != tol` 逐个验证 epsilon 守卫的区分值在浮点上不可构造，
-而不是在注释里写一句"我认为它们等价"。
+"可机械验证"指证明本身也是一条可执行断言，而不是在注释里写一句"我认为它们等价"。
+
+**但可执行 ≠ 证对了。** 本文档原来举的例子就是反面教材：
+`(limit + tol) - limit != tol` 曾被当作"epsilon 守卫的区分值在浮点上不可构造"的
+证明，外部审计 2026-09-15 一个反例就推翻了它 ——
+`project_to_capped_l1([[1e-12, 1-1e-12]])` 逐位保留 1e-12，`>` 与 `>=` 结论不同。
+那条断言证的是**"tol 不能由一次加法还原"**，而到达被测值的路径根本不必是加法。
+
+所以证明还必须写清**"被测的值可能从哪里来"**并逐条尝试反驳；
+站不住的移入 `REFUTED_EQUIVALENCE`，由
+`test_invariants.py::test_refuted_proofs_cannot_quietly_come_back` 盯着，不许写回去。
 
 等价性证明写在对应测试文件的 `PROVEN_EQUIVALENT` 字典里，
 并由 `tests/meta/test_lessons_enforced.py::TestLessonX_EquivalenceProofsAreMechanical`
@@ -56,7 +92,7 @@ python tools/mutation/verify_mutant.py app/core/xxx.py 123 "a > b" "a >= b" \
 ## 工具缺陷史（每一条都曾让整批数字作废）
 
 度量工具的缺陷**不报错，只静默缩小分母** —— 这是最危险的一类，
-因为数字看起来完全合理。九条都留在这里，是为了下次"数字看起来合理"时
+因为数字看起来完全合理。十二条都留在这里，是为了下次"数字看起来合理"时
 不要重新相信它。
 
 | # | 缺陷 | 后果 |
@@ -70,6 +106,9 @@ python tools/mutation/verify_mutant.py app/core/xxx.py 123 "a > b" "a >= b" \
 | 7 | `subprocess.run(timeout=)` 只杀直接子进程 | pytest 的孙进程握着管道，`communicate()` 继续阻塞 → 超时上限形同虚设（`alpha_workflows` 一轮跑了 11.6 小时）。改用 `taskkill /F /T` 杀进程树 |
 | 8 | 改完测试没有重测 | 台账里的存活列表过期，照着它补用例等于在补已经修好的洞 |
 | 9 | `_string_spans` **逐行** tokenize | 模块级三引号字符串的中间各行单独 tokenize 不是合法 Python，走进 `except` 后返回空区间 → **整段散文被当成代码变异**。`_prompts.py` 因此报出 35 个假变异点。改为对整份源码 tokenize 一次（`_multiline_string_lines`） |
+| 10 | `return proc.wait(timeout) == 0` —— **退出码非 0 一律算"杀死"**，超时也算，输出还丢进 DEVNULL | 收集错误（exit 2/4）、一个测试都没收集到（exit 5，**分母为空**）、超时、以及 `-x` 之下任何无关的偶发失败，全被记成"断言抓到了"。**偏置方向永远朝着数字更好看。** 已改为按 pytest 退出码分类：只有 exit 1 算杀死，其余进 `inconclusive` 并从分母剔除；基线不绿直接 `SystemExit` |
+| 11 | 算子集合有系统性缺口，且每行每算子**只取第一处**匹配 | 见上面「这套工具看不见什么」。已补 9 个算子 + 枚举全部匹配位置 |
+| 12 | `make_sandbox()` 只复制 `backend/`，仓库根的 `.gitignore` 不在沙箱里 | `tests/meta` 里有检查仓库根 `.gitignore` 的用例，于是**只要测试路径包含 `tests/meta`，沙箱里的基线必然是红的** —— 而 `make_plan.py` 给每个模块都加了 `tests/meta`。旧判定器遇到这种情况只打一句「基线就是红的」就 return，模块**静默没测**，从外面看不出与「跑过了」的区别。**这一条是缺陷 #10 的修复（基线不绿就 SystemExit）当场抓出来的** |
 
 ## 四个必须的保险（对应 #1/#2/#4/#5）
 

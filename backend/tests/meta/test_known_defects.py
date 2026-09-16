@@ -33,6 +33,7 @@
 """
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 
@@ -54,6 +55,9 @@ def _backend_root() -> Path:
 import numpy as np
 import pandas as pd
 import pytest
+from _pytest.outcomes import Failed
+
+from app.core.alpha_engine.parser import ParseError
 
 
 #: 缺陷编号 → 一句话描述。新增/修复缺陷都必须同步这张表。
@@ -61,7 +65,12 @@ DEFECT_REGISTRY = {
     "B-1":  "ts_rank 在 bottleneck 分支的值域是 [-1/w, 1/w]，不是 docstring 承诺的 [0,1]",
     "B-2":  "ts_corr 因 cov(ddof=0)/std(ddof=1) 不配套而系统性偏低 (w-1)/w",
     "B-3":  "cs_rank 的并列处理是序数名次，不是 docstring 声称的平均名次",
-    "B-4":  "ts_entropy(n_bins=1) 静默返回 -0.0，而不是 NaN 或报错",
+    "B-4":  "ts_entropy(n_bins=1) 返回 -0.0 而非 NaN/报错 —— **契约未定**："
+            "普通 Shannon 熵单箱本来就是 0，代码也显式选了分母 1"
+            "（`log_nbins = np.log(n_bins) if n_bins > 1 else 1.0`），"
+            "没有任何外部接口契约要求 NaN。真正的问题只有两点："
+            "① 归一化熵在退化输入上的约定没写下来；② 返回的是 **负零**。"
+            "第 3 阶段要先定约定再谈修不修（外部审计 2026-09-15 要求收窄）",
     "B-5":  "ts_max / ts_min 的 NaN 策略在 bottleneck 与 numpy 分支之间不一致",
     "B-6":  "cs_rank 在含 NaN 的截面上值域越出 [0,1]",
     "B-7":  "面板行数短于窗口时 bottleneck 分支抛 ValueError，而非返回 NaN",
@@ -71,7 +80,12 @@ DEFECT_REGISTRY = {
     "B-11": "data_partitioner 的『OOS 为空』守卫不可达（结构问题，无行为断言）",
     "B-12": "chat_store 的 ORDER BY 没有第二排序键，同一 tick 内的记录顺序反了",
     "A-1":  "ingest_incremental 把增量写进 PIT 两次（ingest() 内一次 + 外层一次）",
-    "A-2":  "strategy_gate 用 `np.nanstd(...) == 0.0` 判零方差，浮点零判不出来，守卫从不触发",
+    "A-2":  "strategy_gate 用 `np.nanstd(...) == 0.0` 判零方差。**指控已收窄**"
+            "（外部审计 2026-09-15）：原写『守卫从不触发』是错的 —— 严格全零序列"
+            "`np.nanstd` 返回精确 0.0，守卫会触发；不触发的是**非零常数**序列"
+            "（`nanstd([0.001]*100) = 2.17e-19`）。而且下游 `_sharpe` 与 t 统计量"
+            "另有容差保护，最终多半仍判 passed=false。因此这是**诊断说错了原因**，"
+            "不是『巨大 Sharpe 被批准』",
     "A-3":  "PerformanceAnalyzer 对近零波动无防护：全常数收益算出年化 Sharpe ≈ 3e16",
     "A-4":  "PerformanceAnalyzer 遇非日期索引先在 _tdays 抛 AttributeError，"
             "max_drawdown 里的整数索引分支不可达，且报错指向内部实现",
@@ -113,20 +127,83 @@ DEFECT_REGISTRY = {
             "`_validate_and_fix` 白烧两次修复调用后放弃 → "
             "六个家族里有四个走模板路径时产出为零，"
             "对外只表现为『agent 老是生成非法公式』",
-    "D-5":  "系统提示词写 `AlphaPool rejects signal-correlated alphas (corr > 0.9)`，"
-            "而 `AlphaPool.__init__` 的默认 `corr_threshold=0.70`，"
-            "判定用的是 `abs(corr) >= threshold`。"
-            "数字（0.9 vs 0.70）与开闭（> vs >=）两处都对不上 —— "
-            "代码注释自己写着『Lowered from 0.90 to 0.70 (Task 3.5)』，"
-            "提示词没跟着改。LLM 会据此误判哪些因子算『足够正交』",
+    "D-5":  "系统提示词写 `AlphaPool rejects signal-correlated alphas (corr > 0.9)`。"
+            "**数字这一半的指控不成立**（外部审计 2026-09-15）：`AlphaPool` 的"
+            "**类默认**确实是 0.70，但生产链路 `PopulationEvolver` 的默认是 0.90 "
+            "并显式传进池子（`AlphaPool(max_size=200, corr_threshold=corr_threshold)`），"
+            "实际对象上就是 0.90 —— 不能拿类默认值去断言链路行为。"
+            "剩下的真实不一致只有一处：提示词说 `corr > 0.9`，代码判的是 "
+            "`abs(corr) >= 0.9` —— **绝对值**（负相关同样被拒）与**边界开闭**两处差异",
+    "D-6":  "ProxyModel._fit 的 `try: from xgboost import XGBClassifier "
+            "except ImportError` 只包住了 **import**，而 XGBClassifier 是在"
+            "**构造时**才检查 scikit-learn（`ImportError: sklearn needs to be "
+            "installed`）。import 成功、构造抛错，异常越过那个 except 直接向上"
+            "冒泡 —— 于是缺 scikit-learn 时 GP 进化**直接崩**，而不是像代码"
+            "注释承诺的那样 warning 一句后退回 rule-based 模式。"
+            "requirements.txt 已补上 scikit-learn（CI 事故 2026-09-10 的根因），"
+            "但这个 except 的覆盖范围本身仍然是错的",
+
+    # ---- 外部审计 2026-09-15 的独立发现（沿用它的编号，便于交叉引用）----
+    "N-1":  "strategy_gate 的成本推导缓存键（`_cache_key`）只含 close 的形状、"
+            "索引端点、首末行 nansum、前 4 个列名与 aum —— **不含 high/low、"
+            "volume、券商配置**。而 Corwin-Schultz 价差正是从 high/low 算的。"
+            "于是 close 相同、high/low 不同的两个数据集命中同一条缓存，"
+            "第二个拿到第一个的成本参数。审计实测：真实值 1919.83 bps "
+            "被缓存里的 37.47 bps 顶替",
+    "N-2":  "StrategyGate 读全局试验台账失败时 `n_trials` 退回 1 —— 而 n_trials 是 "
+            "Deflated Sharpe 的多重检验校正项，退回 1 等于宣称『只试过一个策略』，"
+            "DSR 被高估、门变**松**。代码注释自己写着『门在读不到试验台账时应当"
+            "更保守，而不是更宽松』，实现却相反。审计实测：注入台账不可读后仍得 "
+            "passed=true、reasons=[]、DSR≈0.99997",
+    "N-3":  "strategy_net_returns 里 `PortfolioRiskGate.apply` 与无交易带对齐被 "
+            "`except Exception` 整个兜住，失败后只打一条 warning 就**用未经风控的"
+            "原始权重继续回测**。同一函数的 docstring 明写『门评估的账本 == 实际"
+            "交易的账本』—— 异常路径打破的正是这条保证：验证用的组合和实际会交易的"
+            "组合不再是同一个",
+    "N-4":  "PerformanceAnalyzer.sharpe_tstat 把**年化** Sharpe 与**日频**样本数"
+            "混用：t = SR_年化 × √T_日 / √(1+0.5·SR²)。频率不一致使 t 被放大约 "
+            "√(TDAYS) 倍。同一组 120 日收益：产品 8.3236，同频日口径 0.5660，"
+            "单样本 t 参考 0.5664。risk_report 按 1.96 判显著，于是不显著的策略"
+            "被显示成『✓显著』。与 A-3 的近零波动是两回事",
+    "N-5":  "PaperBroker.step 用 `tickers = list(target_w.index)` 截断旧持仓："
+            "目标资产集合缩小时，不在新目标里的旧持仓既不参与估值（当日收益丢失），"
+            "也不产生平仓成交（仓位凭空消失）。审计实测：A/B 各半仓、次日目标只留 "
+            "B 且 A 涨 10%，gross_ret=0（应为 +5%），成交记录里没有 A 的平仓。"
+            "应以旧持仓与新目标的**并集**估值与交易",
+    "N-6":  "（前端，本轮不做）useQuantWorkspace.switchSession 在 await 之后无条件 "
+            "`setMessages` —— 不检查响应回来时当前会话是否还是发起时那个。"
+            "先切 A 再切 B、B 先返回 A 后返回时，store 里 sessionId=B 而展示内容"
+            "是 A 的消息。已在当前代码上复现",
 }
 
 #: 只是结构/整洁问题，没有可执行的行为断言 —— 记录在案，不设 xfail 用例。
 NO_BEHAVIOUR_ASSERTION = {"B-9", "B-10", "B-11"}
 
+#: 前端缺陷 —— 后端套件里没有可执行断言。**不是豁免，是分工**：
+#: 登记在这里保证它出现在缺陷总数里、不被遗忘；用例欠在前端。
+FRONTEND_ONLY = {"N-6"}
 
-def _xfail(defect_id: str):
-    return pytest.mark.xfail(strict=True,
+
+def _xfail(defect_id: str, raises=AssertionError):
+    """
+    标记"断言应有行为、当前必然失败"的用例。
+
+    `raises` 不是装饰：**没有它，`strict=True` 只保证"意外通过要报错"，
+    完全不保证"失败是因为登记的那个原因"。** 外部审计 2026-09-15 抓到 A-1
+    正是如此 —— `inspect.getsource(di.ingest_incremental)` 因为那个符号
+    早已不存在而先抛 AttributeError，用例在碰到目标行为之前就"失败"了，
+    于是汇总行里的 `xfailed` 计数看着正常，缺陷却从未被验证过。
+    同一轮自查又发现 C-1 是同样的情形（`_evaluate_individual()` 签名变了 →
+    TypeError）。
+
+    限定异常类型后，这两种情形会变成**用例失败**（pytest 对 `raises` 不匹配
+    的 xfail 判 failed），而不是继续伪装成"预期失败"。
+
+    默认 `AssertionError` = "断言了应有行为、断言没过"。缺陷本身就是抛异常的
+    （B-7 抛 ValueError、B-8/A-4 抛 AttributeError、D-6 抛 ImportError），
+    在调用处显式传入对应类型。
+    """
+    return pytest.mark.xfail(strict=True, raises=raises,
                              reason=f"{defect_id}：{DEFECT_REGISTRY[defect_id]}")
 
 
@@ -214,7 +291,7 @@ class TestFastOpsDefects:
         assert np.nanmax(got) == pytest.approx(1.0)
         assert np.nanmin(got) == pytest.approx(0.0)
 
-    @_xfail("B-7")
+    @_xfail("B-7", raises=ValueError)
     def test_short_panels_should_return_nan_not_raise(self):
         """docstring 承诺"不足 window 个有效观测 → NaN"。"""
         import app.core.alpha_engine.fast_ops as F
@@ -228,7 +305,7 @@ class TestFastOpsDefects:
 
 class TestProxyModelDefects:
 
-    @_xfail("B-8")
+    @_xfail("B-8", raises=AttributeError)
     def test_unfitted_model_should_fall_back_to_the_cold_start_rule(self):
         """
         `_fit()` 因单一类别放弃后 `_model` 是 None，`should_prune` 仍走模型分支
@@ -296,24 +373,67 @@ class TestStorageDefects:
         对照见 test_daily_ingest_increment.py::test_pit_only_receives_the_increment，
         那里钉住的是**当前**的 2，这里断言的是**应有**的 1。
         """
-        # 上一版整条就是一句 `pytest.skip(...)` —— **一条断言都没有**，
-        # 于是它既不检查缺陷是否还在，也不会在缺陷被修好时提醒任何人
-        # （test_lessons_enforced 的零断言检查抓到了这一点）。
+        # 这条用例前后错了两次，两次都是"看起来在查，其实没查"：
         #
-        # 这里改成断言**缺陷的成因仍在源码里**：`ingest_incremental` 里
-        # 先调 `ingest(...)`（它内部已把整段增量写过一遍 PIT），
-        # 随后又 `_append_pit(increment)` 写第二遍。
-        # 修好之后这两处不会同时存在 → xfail 变 XPASS → strict 判失败 →
-        # 强制同步更新登记表、台账与钉住现状的那条用例。
-        import inspect
-        from app.tasks import daily_ingest as di
+        #   第一版：整条就是一句 `pytest.skip(...)` —— 零断言。
+        #   第二版：改成 `inspect.getsource(di.ingest_incremental)` 查源码文本。
+        #           但 `ingest_incremental` 是 `DailyIngest` 的**方法**，
+        #           模块上根本没有这个属性 → AttributeError 在碰到目标行为
+        #           之前就抛出来了。`strict=True` 只管 XPASS，对"因为别的原因
+        #           失败"一无所知，于是汇总行里的 xfailed 计数一直很好看，
+        #           而 A-1 从未被验证过（外部审计 2026-09-15 抓到）。
+        #
+        # 现在改成**真的跑一遍摄取、数 PIT 里的 vintage**，
+        # 并由 `_xfail(..., raises=AssertionError)` 保证它只能因断言失败。
+        import importlib.util
 
-        src = inspect.getsource(di.ingest_incremental)
-        writes_twice = ("ingest(" in src) and ("_append_pit(" in src)
-        assert not writes_twice, (
-            "ingest_incremental 仍然是 `ingest(...)` 之后再 `_append_pit(...)` —— "
-            "每个增量日会写进 PIT 两次（两个 vintage）。\n"
-            "当前行为由 tests/test_daily_ingest_increment.py::"
+        spec = importlib.util.spec_from_file_location(
+            "_a1_increment_helpers",
+            _backend_root() / "tests" / "integration" / "test_daily_ingest_increment.py")
+        M = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(M)
+        # 复用集成用例的装配，而不是抄一份：抄的那份会随产品演进而烂掉，
+        # 且没人会同时改两处。装配缺任何一件都在这里立刻报出来。
+        for name in ("_panel", "_stub_loader", "_freeze_today", "TestIncrementWindow"):
+            assert hasattr(M, name), (
+                f"增量集成用例的装配 `{name}` 不在了 —— A-1 的复现脚手架已失效，"
+                f"请同步修本用例，不要让它退回『源码文本断言』")
+
+        W = M.TestIncrementWindow
+        with pytest.MonkeyPatch.context() as mp:
+            tmp = Path(tempfile.mkdtemp(prefix="a1_pit_"))
+            from app.config import settings
+            mp.setattr(settings, "pit_store_dir", str(tmp / "pit"), raising=False)
+            mp.setattr(settings, "paper_start", "2024-01-02", raising=False)
+
+            from app.tasks.daily_ingest import DailyIngest
+            ing = DailyIngest()
+
+            W._inject_clock(mp)
+            panel = W._seed(None, ing, mp, 5)
+            seeded = {d.normalize() for d in panel["close"].index}
+
+            full = M._panel(8)
+            M._stub_loader(mp, full)
+            M._freeze_today(mp, str(full["close"].index[-1].date()))
+            ing.ingest_incremental("px")
+
+            from app.core.data_engine.pit_store import PITStore
+            store = PITStore(settings.pit_store_dir)
+            part = next((store.store_dir / "px").glob("year=*")) / "data.parquet"
+            df = pd.read_parquet(part)
+
+        per_day = df.groupby("timestamp")["as_of"].nunique()
+        increment_days = {pd.Timestamp(ts).normalize(): int(n)
+                          for ts, n in per_day.items()
+                          if pd.Timestamp(ts).normalize() not in seeded}
+        assert increment_days, "没有任何增量日 —— 本用例没测到东西"
+        offenders = {str(d.date()): n for d, n in increment_days.items() if n != 1}
+        assert not offenders, (
+            f"增量日被写进 PIT 多次（日期 → vintage 数）：{offenders}。\n"
+            "成因：`ingest_incremental` 先调 `ingest(...)`（内部已把整段增量窗口"
+            "写过一遍 PIT），随后又 `_append_pit(increment)` 写第二遍。\n"
+            "当前行为由 tests/integration/test_daily_ingest_increment.py::"
             "test_pit_only_receives_the_increment 钉住（那里断言的是 2），"
             "这里断言的是**应有**的 1。")
 
@@ -348,16 +468,34 @@ class TestBacktestAndExecutionDefects:
         算出年化 Sharpe 3e16（见 A-3），报告里显示"高度显著"。
 
         应当改成带容差的判定（如 `< 1e-12`）。
+
+        **登记文字已收窄**（外部审计 2026-09-15）：原先写"守卫从不触发"是错的 ——
+        严格全零序列 `np.nanstd` 返回精确 0.0，守卫会触发。真正不触发的是
+        **非零常数**序列（`np.nanstd([0.001]*100) = 2.17e-19`）。
+        而且后续 `_sharpe` 与 t 统计量另有容差保护，所以最终 `passed` 多数情况
+        仍是 False —— 缺陷在于**诊断说错了原因**，不在于"巨大 Sharpe 被批准"。
+        因此本用例断言的是 `reasons`，不是 `passed`。
+
+        旧版这条是 `assert "...== 0.0" not in src` 的**源码字符串断言**
+        （自伤教训 #6 的形态），改掉实现里任何一处等价写法它都察觉不到。
         """
-        import inspect
         from app.core.portfolio_manager import strategy_gate as sg
 
-        rets = np.full(60, 0.001) + np.linspace(0, 1e-18, 60)
-        assert float(np.nanstd(rets)) != 0.0, "构造的序列方差恰好为零，测不到这个缺陷"
+        idx = pd.bdate_range("2024-01-02", periods=60)
+        rets = pd.Series(np.full(60, 0.001), index=idx)
+        assert float(np.nanstd(rets.values)) != 0.0, (
+            "构造的序列方差恰好为零 —— 那走的是守卫**会**触发的分支，测不到本缺陷")
 
-        src = inspect.getsource(sg)
-        assert "np.nanstd(rets.values)) == 0.0" not in src, (
-            "零方差守卫仍然用 `== 0.0` 判浮点零")
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(sg, "strategy_net_returns",
+                       lambda *a, **kw: (rets, pd.DataFrame()))
+            res = sg.StrategyGate(use_global_trials=False).evaluate(
+                {"f": pd.DataFrame(1.0, index=idx, columns=["A", "B"])},
+                {"close": pd.DataFrame(100.0, index=idx, columns=["A", "B"])})
+
+        assert any("方差为 0" in r for r in res.reasons), (
+            f"浮点意义上恒定的净收益（nanstd={float(np.nanstd(rets.values)):.3e}）"
+            f"没有被零方差守卫认出来，给出的理由是：{res.reasons}")
 
     @_xfail("A-3")
     def test_near_zero_volatility_should_not_produce_an_astronomical_sharpe(self):
@@ -373,7 +511,7 @@ class TestBacktestAndExecutionDefects:
         assert np.isnan(sr) or abs(sr) < 1e3, (
             f"全常数收益算出了 Sharpe={sr}")
 
-    @_xfail("A-4")
+    @_xfail("A-4", raises=AttributeError)
     def test_a_non_datetime_index_should_give_a_clear_error(self):
         """
         `_tdays` 里 `(idx[-1] - idx[0]).days` 对整数索引直接抛 AttributeError，
@@ -391,13 +529,42 @@ class TestBacktestAndExecutionDefects:
         """
         注释写"剔除 NaN 过多的资产（保留其基准权重）"，实现是
         `w_out[t] = row / l1` **整行替换** —— 被剔除的资产拿到 0。
-        注释与实现必须一致（要么改注释，要么改实现）。
+
+        旧版这条是 `assert "保留其基准权重" not in src or ...` 的**源码字符串
+        断言**（外部审计 2026-09-15 点名）：它只能发现"这两句话同时出现在源码
+        里"，改个措辞就静默转绿，而权重仍然是 0。这里改成真的跑一遍构造器、
+        比对被剔除资产的权重。
+
+        **契约尚未裁定**（审计的意见，我同意）：对坏数据资产保留非零仓位
+        是否正确，不能由一句注释决定。本用例钉住的是"注释承诺的行为"，
+        第 3 阶段要先定政策 —— 若结论是"归零才对"，那要改的是注释，
+        同时删掉本用例与 A-5 登记。
         """
-        import inspect
-        from app.core.backtest_engine import portfolio_constructor as pc
-        src = inspect.getsource(pc.MVOPortfolio)
-        assert "保留其基准权重" not in src or "w_out[t] = row / l1" not in src, (
-            "注释仍写着『保留基准权重』，实现仍是整行替换 —— 两者对不上")
+        from app.core.backtest_engine.portfolio_constructor import (
+            MVOPortfolio, SignalWeightedPortfolio)
+
+        T, N, W = 30, 5, 20
+        idx = pd.bdate_range("2024-01-02", periods=T)
+        cols = [f"T{i}" for i in range(N)]
+        rng = np.random.default_rng(7)
+        signal = pd.DataFrame(rng.normal(size=(T, N)), index=idx, columns=cols)
+        returns = pd.DataFrame(rng.normal(0, 0.01, (T, N)), index=idx, columns=cols)
+        # 第 0 列在协方差窗口里 50% 缺失 → `valid` 判 False（阈值 30%），
+        # 其余 4 列干净（`valid.sum() == 4 >= 3`，优化分支照常走）。
+        returns.iloc[::2, 0] = np.nan
+
+        base = SignalWeightedPortfolio(clip_z=3.0).construct(signal)
+        out = MVOPortfolio(cov_window=W, clip_z=3.0).construct(signal, returns)
+
+        optimised = [t for t in range(W, T) if not np.allclose(
+            out.to_numpy()[t], base.to_numpy()[t], atol=1e-12)]
+        assert optimised, (
+            "没有任何一天真的走进优化分支 —— 本用例测不到剔除逻辑")
+
+        t0 = optimised[0]
+        assert out.iloc[t0, 0] == pytest.approx(base.iloc[t0, 0], abs=1e-12), (
+            f"第 {t0} 天：被剔除资产 {cols[0]} 的权重是 {out.iloc[t0, 0]:.6g}，"
+            f"而注释承诺『保留其基准权重』= {base.iloc[t0, 0]:.6g}")
 
     @_xfail("A-6")
     def test_paper_broker_should_not_hardcode_a_unit_gross_target(self):
@@ -454,7 +621,11 @@ class TestGpFitnessRankTies:
             "volume": np.full_like(close, 1e6),
         }
 
-        res = G._evaluate_individual("(close/close)", ds)
+        # `_evaluate_individual` 收的是**一个元组**，不是两个位置参数。
+        # 旧版写成 `G._evaluate_individual("(close/close)", ds)` → TypeError，
+        # 在算到 IC 之前就抛了 —— 和 A-1 同型：xfail 一直"预期失败"，
+        # 但失败原因根本不是 C-1（本轮自查发现，审计未列出这一条）。
+        res = G._evaluate_individual(("(close/close)", ds))
         assert res.ann_return == pytest.approx(0.0, abs=1e-9), (
             f"截面恒定（零信息）的信号算出 mean_IC = {res.ann_return:.4f}，"
             f"不是 0 —— 并列名次被按列顺序摊开了")
@@ -541,9 +712,40 @@ class TestReplaceNodeIdentity:
 # 系统提示词 —— 它写的规则，引擎认不认
 # ===========================================================================
 
+def _prompt_dsl_patterns() -> list:
+    """
+    从 `_SYSTEM_PROMPT` 里抽出所有 `DSL pattern:` 模板，整理成可解析的 DSL。
+
+    **必须从提示词读，不能抄成字面量**：抄下来的字面量在提示词被改对之后
+    仍然是那串旧文本，用例照旧失败，修复识别不到（外部审计 2026-09-15）。
+
+    整理规则（都是提示词自己的书写约定）：
+      - `... where N = 5 to 60` 之类的说明后缀切掉，`N` 用区间下界代入
+      - 一行里用 `or` 并列的多个模板拆开
+    """
+    import re
+
+    from app.agent._prompts import _SYSTEM_PROMPT as P
+
+    out = []
+    for m in re.finditer(r"DSL pattern:\s*(.+)", P):
+        body = m.group(1).strip()
+        low = 5
+        where = re.search(r"\bwhere\s+N\s*=\s*(\d+)", body)
+        if where:
+            low = int(where.group(1))
+        body = re.split(r"\s+where\s+", body)[0]
+        for part in re.split(r"\s+or\s+", body):
+            part = part.strip()
+            if not part:
+                continue
+            out.append(re.sub(r"\bN\b", str(low), part))
+    return out
+
+
 class TestSystemPromptDslExamples:
 
-    @_xfail("D-4")
+    @_xfail("D-4", raises=ParseError)
     def test_the_documented_factor_patterns_all_parse(self):
         """
         提示词的 FINANCIAL FACTOR TAXONOMY 给每个因子家族配了一条
@@ -566,30 +768,26 @@ class TestSystemPromptDslExamples:
         修法很轻：把模板里的 `neg(x)` 改写成 `-x`
         （`tests/unit/agent/test_system_prompt_consistency.py::
         test_the_unary_minus_form_is_what_the_parser_accepts` 已验证这条路通）。
+
+        **被测输入从提示词本身读取，不再抄成字面量。** 外部审计
+        2026-09-15 指出：旧版把 `"rank(neg(ts_delta(close, 5)))"` 写死在用例里，
+        于是把提示词改对之后这条**仍然失败**（它测的是那串已经不存在的文本），
+        修复无法被识别。独立进程实验的结论是 `2 xfailed, 退出码 0`。
         """
         from app.core.alpha_engine.parser import Parser
 
+        patterns = _prompt_dsl_patterns()
+        assert len(patterns) >= 4, (
+            f"只从提示词里抽到 {len(patterns)} 条 DSL 模板 —— "
+            f"抽取规则和提示词格式已经对不上，本用例测不到东西：{patterns}")
+
         parser = Parser()
-        patterns = [
-            "rank(neg(ts_delta(close, 5)))",
-            "rank(neg(ts_std(returns, 20)))",
-            "rank(neg(ts_mean(volume, 20)))",
-            "rank(neg(ts_corr(close, volume, 20)))",
-        ]
-        assert len(patterns) == 4, "四个家族各一条模板"
         for dsl in patterns:
             node = parser.parse(dsl)
             assert node is not None, f"{dsl} 解析出空节点"
 
-    @_xfail("D-4")
-    def test_every_operator_used_in_the_prompt_is_also_declared_there(self):
-        """
-        提示词内部自洽：正文里当范例用的算子，必须出现在它自己的
-        AVAILABLE OPERATORS 清单上。现在 `neg` 只在范例里出现，
-        LLM 拿到的是自相矛盾的两份说明。
-        """
-        import re
-
+    @staticmethod
+    def _declared_operators() -> set:
         from app.agent._prompts import _SYSTEM_PROMPT as P
 
         i = P.index("AVAILABLE OPERATORS:")
@@ -599,9 +797,35 @@ class TestSystemPromptDslExamples:
             if not ln.strip() or not ln.startswith((" ", "\t")):
                 break
             taken.append(ln)
-        declared = {t.strip() for t in " ".join(taken).split(",") if t.strip()}
+        return {t.strip() for t in " ".join(taken).split(",") if t.strip()}
 
-        assert "neg(" in P, "提示词里已经不用 neg 了 —— 请同步删除缺陷 D-4"
+    def test_the_prompt_still_uses_neg_so_d4_is_still_open(self):
+        """
+        **前置条件，不带 xfail。** 旧版把 `assert "neg(" in P` 写在下面那条
+        xfail 用例的**体内**，于是提示词一旦改对，这条前置先失败 → 用例仍是
+        "预期失败" → 修复被吃掉（外部审计 2026-09-15）。
+
+        前置条件必须单独成立，并且在缺陷被修好时**变红**，
+        逼人来删掉 D-4 与这条检查本身。
+        """
+        from app.agent._prompts import _SYSTEM_PROMPT as P
+
+        assert "neg(" in P, (
+            "提示词里已经不用 neg 了 —— D-4 已修复。"
+            "请删除 DEFECT_REGISTRY['D-4']、下面两条 xfail 用例和本条前置检查。")
+
+    @_xfail("D-4")
+    def test_every_operator_used_in_the_prompt_is_also_declared_there(self):
+        """
+        提示词内部自洽：正文里当范例用的算子，必须出现在它自己的
+        AVAILABLE OPERATORS 清单上。现在 `neg` 只在范例里出现，
+        LLM 拿到的是自相矛盾的两份说明。
+
+        前置条件（提示词里确实还在用 `neg`）由
+        `test_the_prompt_still_uses_neg_so_d4_is_still_open` 单独把关，
+        不放在本用例体内。
+        """
+        declared = self._declared_operators()
         assert "neg" in declared, (
             f"`neg` 在范例里被使用，却不在 AVAILABLE OPERATORS 清单里："
             f"{sorted(declared)}")
@@ -609,33 +833,67 @@ class TestSystemPromptDslExamples:
 
 class TestSystemPromptThresholds:
 
-    @_xfail("D-5")
-    def test_the_correlation_threshold_matches_the_alpha_pool_default(self):
+    @staticmethod
+    def _evolver():
+        """构造一个最小 PopulationEvolver —— 只为读它实际建出来的池子。"""
+        from app.core.gp_engine.population_evolver import PopulationEvolver
+        idx = pd.bdate_range("2024-01-02", periods=30)
+        df = pd.DataFrame(100.0, index=idx, columns=["A", "B"])
+        data = {"close": df, "open": df, "high": df * 1.01,
+                "low": df * 0.99, "volume": df * 1e4}
+        return PopulationEvolver(is_data=data, oos_data=data)
+
+    def test_the_production_pool_threshold_is_not_the_class_default(self):
         """
-        提示词：`AlphaPool rejects signal-correlated alphas (corr > 0.9)`
-        代码：  `AlphaPool.__init__(corr_threshold: float = 0.70)`，
-                判定是 `abs(corr) >= corr_threshold`
+        **先把事实钉住，再谈不一致。** 不带 xfail。
 
-        两处都对不上：数字差 0.2，开闭也相反。
-        `alpha_pool.py` 的注释自己写着
-        "Lowered from 0.90 to 0.70 (Task 3.5)" —— 提示词没跟着改。
+        旧版 D-5 用 `AlphaPool.__init__` 的**类默认值** 0.70 去断言"生产链路按
+        0.70 拒收"，外部审计 2026-09-15 指出这一步是错的：真正建池子的是
+        `PopulationEvolver`，它的默认是 0.90 并显式传进去。
+        拿类默认值推断链路行为 = 判据与被测对象不是同一个东西。
 
-        后果：LLM 按 0.9 去判断"这两条因子够不够正交"，
-        而池子实际按 0.70 拒收。它会反复产出自以为合格、
-        实际被静默拒绝的候选，且拿不到任何反馈。
+        这条断言实际对象上的阈值，所以谁改了任何一侧都会在这里看见。
         """
         import inspect
+
+        from app.core.gp_engine.population_evolver import PopulationEvolver
+
+        evolver_default = inspect.signature(
+            PopulationEvolver.__init__).parameters["corr_threshold"].default
+        assert evolver_default == pytest.approx(0.90), (
+            f"PopulationEvolver 的 corr_threshold 默认变成了 {evolver_default} —— "
+            f"D-5 的收窄结论基于它是 0.90，请重新核对")
+
+        ev = self._evolver()
+        assert ev._pool._corr_threshold == pytest.approx(evolver_default), (
+            "PopulationEvolver 没有把自己的 corr_threshold 传给 AlphaPool —— "
+            "那样类默认值才会真的生效，D-5 的原始指控就重新成立了")
+
+    @_xfail("D-5")
+    def test_the_prompt_threshold_matches_the_actual_rejection_rule(self):
+        """
+        收窄后仍然成立的那一半：提示词写 `corr > 0.9`，
+        代码判的是 `abs(corr) >= 0.9`。
+
+          - **绝对值**：ρ = -0.95 的因子会被拒，而提示词的写法读不出这一点
+          - **边界开闭**：ρ 恰好 0.9 时提示词说收、代码拒
+
+        后果：LLM 按提示词判断"这两条够不够正交"，与池子实际的拒收规则不同，
+        它会反复产出自以为合格、实际被静默拒绝的候选，且拿不到反馈。
+        """
         import re
 
         from app.agent._prompts import _SYSTEM_PROMPT as P
-        from app.core.gp_engine.alpha_pool import AlphaPool
 
-        m = re.search(r"corr\s*>\s*([\d.]+)", P)
+        m = re.search(r"corr\s*([<>=]+)\s*([\d.]+)", P)
         assert m, "提示词里找不到相关度阈值"
-        default = inspect.signature(
-            AlphaPool.__init__).parameters["corr_threshold"].default
-        assert float(m.group(1)) == pytest.approx(default), (
-            f"提示词写 corr > {m.group(1)}，代码默认 {default}")
+        op, num = m.group(1), float(m.group(2))
+        thr = self._evolver()._pool._corr_threshold
+
+        assert (op, num) == (">=", thr) and "abs" in P.lower(), (
+            f"提示词写的是 `corr {op} {num}`，实际拒收规则是 "
+            f"`abs(corr) >= {thr}` —— 绝对值与边界开闭两处都没写对"
+            f"（数字本身 {num} vs {thr} 是对的，那一半指控已撤销）")
 
 
 # ===========================================================================
@@ -644,7 +902,7 @@ class TestSystemPromptThresholds:
 
 class TestLangChainWiringIsAlive:
 
-    @_xfail("D-3")
+    @_xfail("D-3", raises=Failed)
     def test_the_langchain_agent_can_actually_be_built(self):
         """
         `_build_langchain_agent` 在**当前已安装的依赖**下必须能走到
@@ -776,6 +1034,240 @@ class TestFinancialInterpreterNegation:
 
 
 # ===========================================================================
+# proxy_model —— 可选依赖的降级路径
+# ===========================================================================
+
+class TestProxyModelOptionalDependency:
+
+    @_xfail("D-6", raises=ImportError)
+    def test_missing_sklearn_degrades_instead_of_crashing(self):
+        """
+        `_fit()` 的 except 只包住 `from xgboost import XGBClassifier`，
+        而 `ImportError: sklearn needs to be installed` 是 **XGBClassifier(...)
+        构造时**抛的 —— 在 except 的作用域之外，直接向上冒泡。
+
+        本用例不依赖真实环境缺不缺 scikit-learn：直接把 XGBClassifier 换成
+        一个"能 import、一构造就抛 ImportError"的替身，精确复刻那条路径。
+        期望行为是 `update()` 正常返回且模型停在未拟合状态（代码注释承诺的
+        『stays in rule-based mode』）；实际会把 ImportError 抛给调用方。
+        """
+        import xgboost
+
+        from app.core.alpha_engine.typed_nodes import DataNode, TimeSeriesNode
+        from app.core.ml_engine.proxy_model import ProxyModel
+
+        def _chain(depth: int):
+            node = DataNode("close")
+            for _ in range(depth):
+                node = TimeSeriesNode("ts_mean", node, 5)
+            return node
+
+        class _NeedsSklearn:
+            def __init__(self, *a, **kw):
+                raise ImportError(
+                    "sklearn needs to be installed in order to use this module")
+
+        original = xgboost.XGBClassifier
+        xgboost.XGBClassifier = _NeedsSklearn
+        try:
+            pm = ProxyModel(cold_start_n=2)
+            for i in range(3):
+                pm.update(_chain(2 + i % 3), failed=bool(i % 2))
+        finally:
+            xgboost.XGBClassifier = original
+
+        assert pm._fitted is False, "构造抛了 ImportError 却自称已拟合"
+
+
+# ===========================================================================
+# 外部审计 2026-09-15 的独立发现
+# ===========================================================================
+
+def _panel_for_gate(days: int = 60, n: int = 4, seed: int = 3) -> dict:
+    """给 strategy_gate 用的最小 WidePanel（close/high/low/volume）。"""
+    rng = np.random.default_rng(seed)
+    idx = pd.bdate_range("2024-01-02", periods=days)
+    cols = [f"T{i}" for i in range(n)]
+    close = pd.DataFrame(
+        100 * np.cumprod(1 + rng.normal(0, 0.01, (days, n)), axis=0),
+        index=idx, columns=cols)
+    return {
+        "close":  close,
+        "high":   close * 1.05,
+        "low":    close * 0.98,
+        "volume": pd.DataFrame(1e6, index=idx, columns=cols),
+    }
+
+
+class TestStrategyGateCacheAndFailurePaths:
+
+    @_xfail("N-1")
+    def test_cost_cache_key_covers_every_input_the_cost_actually_depends_on(self):
+        """
+        `_cache_key` 只指纹了 close。价差用的是 high/low —— 换掉 high/low、
+        close 不变，缓存照样命中，第二个数据集拿到第一个的成本参数。
+
+        本用例不去比 bps 数字（那会把单元测试绑死在成本模型的具体数值上），
+        而是直接问：**清不清缓存，结果是否一样**。一样就说明缓存键漏了输入。
+        """
+        from app.core.portfolio_manager import strategy_gate as sg
+
+        a = _panel_for_gate()
+        b = {**a, "high": a["close"] * 1.60, "low": a["close"] * 0.40}   # 价差大得多
+
+        sg._DERIVE_CACHE.clear()
+        sg.resolve_cost_params(a, 1_000_000.0)
+        cached = sg.resolve_cost_params(b, 1_000_000.0)      # 命中 a 的条目？
+
+        sg._DERIVE_CACHE.clear()
+        fresh = sg.resolve_cost_params(b, 1_000_000.0)       # b 的真实结果
+
+        assert cached == fresh, (
+            f"同一个数据集 b，走缓存与不走缓存得到不同的成本参数 —— "
+            f"缓存键漏掉了它实际依赖的输入（high/low）。\n"
+            f"  命中缓存: {cached}\n  清缓存后: {fresh}")
+
+    @_xfail("N-2")
+    def test_unreadable_trial_ledger_must_not_produce_a_pass(self):
+        """
+        台账读不到 → n_trials 退回 1 → DSR 少做多重检验校正 → 门变松。
+        代码注释自己写的是"应当更保守"。这里断言：读不到必要数据时，
+        结论**不能**是 passed（要么拒绝，要么明确标注验证不完整）。
+        """
+        from app.core.portfolio_manager import strategy_gate as sg
+
+        idx = pd.bdate_range("2024-01-02", periods=120)
+        rng = np.random.default_rng(11)
+        rets = pd.Series(rng.normal(0.004, 0.004, 120), index=idx)   # 稳定盈利
+
+        class _Broken:
+            def __init__(self):
+                raise RuntimeError("试验台账不可读（注入）")
+
+        with pytest.MonkeyPatch.context() as mp:
+            import app.db.trial_ledger as tl
+            mp.setattr(tl, "TrialLedger", _Broken)
+            mp.setattr(sg, "strategy_net_returns",
+                       lambda *a, **kw: (rets, pd.DataFrame()))
+            res = sg.StrategyGate(use_global_trials=True).evaluate(
+                {"f": pd.DataFrame(1.0, index=idx, columns=["A", "B"])},
+                _panel_for_gate(days=120, n=2))
+
+        assert not (res.passed and not res.reasons), (
+            f"全局试验台账读不到，门仍然给出无保留的通过："
+            f"passed={res.passed} n_trials={res.n_trials} reasons={res.reasons}")
+
+    @_xfail("N-3")
+    def test_risk_gate_failure_must_not_silently_fall_back_to_raw_weights(self):
+        """
+        风控/无交易带对齐抛异常后，产品用**原始权重**继续回测，
+        于是"验证的组合"与"会去交易的组合"不再是同一个 ——
+        而这正是该函数 docstring 承诺的东西。
+
+        断言：必要风控失败时不得继续产出净收益（应当抛出或明确标记未验证）。
+        """
+        from app.core.portfolio_manager import strategy_gate as sg
+
+        class _Boom:
+            def __init__(self, *a, **kw):
+                pass
+
+            def apply(self, *a, **kw):
+                raise RuntimeError("风控注入故障")
+
+        with pytest.MonkeyPatch.context() as mp:
+            import app.core.portfolio_manager.risk_gate as rg
+            mp.setattr(rg, "PortfolioRiskGate", _Boom)
+            ds = _panel_for_gate(days=90, n=4)
+            sig = {"f": pd.DataFrame(
+                np.linspace(-1, 1, 4 * 90).reshape(90, 4),
+                index=ds["close"].index, columns=ds["close"].columns)}
+            produced = None
+            try:
+                produced, _ = sg.strategy_net_returns(sig, ds, apply_risk=True)
+            except Exception:
+                produced = None
+
+        assert produced is None, (
+            f"风控 apply() 抛错之后仍然产出了 {len(produced)} 天净收益 —— "
+            f"这段收益对应的是**未经风控**的权重，与实际会交易的组合不是同一个")
+
+
+class TestSharpeTStatFrequency:
+
+    @_xfail("N-4")
+    def test_sharpe_tstat_uses_a_consistent_frequency(self):
+        """
+        t = SR × √T / √(1 + 0.5·SR²) 里 SR 与 T 必须同频。
+        产品用年化 SR 配日频 T，t 被放大约 √TDAYS 倍。
+
+        参考值用**同频日 Sharpe** 代入同一个 Lo(2002) 分母得到；
+        再与 scipy 的单样本 t 交叉验证（两者对这组样本应当很接近），
+        避免"参考值也是照着实现算的"这种同源判据。
+        """
+        from scipy import stats
+
+        from app.core.backtest_engine.performance_analyzer import PerformanceAnalyzer
+
+        idx = pd.bdate_range("2023-01-02", periods=120)
+        ret = pd.Series(([0.012, -0.008, 0.008, -0.010] * 30), index=idx)
+
+        sr_d = float(ret.mean() / ret.std(ddof=1))
+        expected = sr_d * np.sqrt(len(ret)) / np.sqrt(1.0 + 0.5 * sr_d ** 2)
+        crosscheck = float(stats.ttest_1samp(ret, 0.0).statistic)
+        assert abs(expected - crosscheck) < 0.01, (
+            f"同频参考值 {expected:.6f} 与单样本 t {crosscheck:.6f} 相差太大 —— "
+            f"参考口径本身有问题，先修参考值再谈产品")
+
+        got = PerformanceAnalyzer(self._result(ret)).sharpe_tstat()
+        assert got == pytest.approx(expected, rel=1e-6), (
+            f"sharpe_tstat() = {got:.6f}，同频口径应为 {expected:.6f}（单样本 t "
+            f"{crosscheck:.6f}）。产品把**年化** Sharpe 与**日频**样本数混用，"
+            f"t 被放大约 √TDAYS 倍 → 按 1.96 判定时不显著的结果显示为『✓显著』")
+
+    _result = staticmethod(TestBacktestAndExecutionDefects._result)
+
+
+class TestPaperBrokerShrinkingUniverse:
+
+    @_xfail("N-5")
+    def test_positions_outside_the_new_target_are_still_valued_and_closed(self):
+        """
+        第 1 天 A/B 各半仓；第 2 天目标只留 B，而 A 从 100 涨到 110。
+        A 的那半仓当天应当贡献 +5% 毛收益，并产生一笔平仓成交。
+
+        产品先用 `target_w.index` 截断旧持仓，于是 A 既不估值也不平仓 ——
+        仓位和收益一起消失。
+        """
+        import tempfile as _tf
+
+        from app.core.execution.paper_broker import PaperBroker
+        from app.db.position_store import PositionStore
+
+        tmp = Path(_tf.mkdtemp(prefix="n5_"))
+        b = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp/'n5.db'}"),
+                        initial_capital=1_000_000.0)
+        both = ["A", "B"]
+        b.step(alpha_id=1, date="2024-01-02",
+               target_w=pd.Series([0.5, 0.5], index=both),
+               prices_t=pd.Series([100.0, 100.0], index=both),
+               prices_prev=pd.Series([100.0, 100.0], index=both),
+               adv_usd=pd.Series([1e12, 1e12], index=both),
+               daily_vol=pd.Series([0.02, 0.02], index=both))
+
+        pnl = b.step(alpha_id=1, date="2024-01-03",
+                     target_w=pd.Series([1.0], index=["B"]),
+                     prices_t=pd.Series([110.0, 100.0], index=both),
+                     prices_prev=pd.Series([100.0, 100.0], index=both),
+                     adv_usd=pd.Series([1e12, 1e12], index=both),
+                     daily_vol=pd.Series([0.02, 0.02], index=both))
+
+        assert pnl.gross_ret == pytest.approx(0.05, abs=1e-9), (
+            f"昨仓 A 占 50% 且当日 +10%，毛收益应为 +5%，实际 {pnl.gross_ret:.6f} —— "
+            f"不在新目标里的旧持仓被 `target_w.index` 截掉了，既没估值也没平仓")
+
+
+# ===========================================================================
 # 登记表自身的一致性
 # ===========================================================================
 
@@ -810,7 +1302,7 @@ def test_every_behavioural_defect_has_an_xfail_case():
         if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_xfail":
             if node.args and isinstance(node.args[0], ast.Constant):
                 covered.add(node.args[0].value)
-    expected = set(DEFECT_REGISTRY) - NO_BEHAVIOUR_ASSERTION
+    expected = set(DEFECT_REGISTRY) - NO_BEHAVIOUR_ASSERTION - FRONTEND_ONLY
     missing = expected - covered
     assert not missing, (
         f"以下已登记缺陷没有对应的 xfail 用例：{sorted(missing)}")
@@ -822,8 +1314,9 @@ def test_the_outstanding_defect_count_is_visible():
     改这个数字必须是有意的：修好了就减，新发现就加。
     """
     outstanding = len(DEFECT_REGISTRY)
-    assert outstanding == 25, (
-        f"未修复的已登记缺陷数变成了 {outstanding}（原为 23）。\n"
+    assert outstanding == 32, (
+        f"未修复的已登记缺陷数变成了 {outstanding}"
+        f"（原为 26；外部审计 2026-09-15 新增 N-1..N-6）。\n"
         f"修好缺陷时请同时：① 删掉对应 xfail 标记 ② 改掉模块测试里"
         f"『钉住现状』的断言 ③ 更新 MUTATION_LEDGER。\n"
         f"当前清单：\n  " + "\n  ".join(f"{k}: {v}" for k, v in DEFECT_REGISTRY.items()))

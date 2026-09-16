@@ -10,6 +10,12 @@ lark>=1.1
 # ── ML / Surrogate Model ─────────────────────────────────────────────────
 xgboost>=2.0
 optuna>=3.0
+# xgboost 的 **sklearn API**（`XGBClassifier`）在构造时才检查 scikit-learn，
+# 缺失时抛 `ImportError: sklearn needs to be installed`。代码里没有一处
+# `import sklearn`，所以任何"扫描 import 语句"的检查都发现不了这条依赖 ——
+# 它只能由干净环境跑一遍暴露出来（CI 事故 2026-09-10 → 09-14 连续三次红，
+# 开发机恰好装了 scikit-learn 1.8.0 所以本地一直绿）。
+scikit-learn>=1.3
 
 # ── Database / ORM ───────────────────────────────────────────────────────
 sqlalchemy>=2.0

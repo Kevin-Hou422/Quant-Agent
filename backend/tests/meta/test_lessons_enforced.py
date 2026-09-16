@@ -637,6 +637,12 @@ class TestLessonC_ImportedDepsMustBeDeclared:
     但 requirements.txt 从未声明它。缺失时**静默退回** pd.bdate_range —— 节假日被
     当成交易日、拿不到 DST/半日市收盘时间，且没有任何报错。开发机恰好装了，
     换台机器就悄悄错。
+
+    第二种形态（CI 事故 2026-09-10）：**代码里根本没有那行 import**。
+    `XGBClassifier` 由已声明的 xgboost 提供，但它在*构造时*才要求 scikit-learn。
+    于是"扫 import 语句 → 查 requirements"这套办法对它是绿的，而开发机上
+    恰好装着 scikit-learn，全套件也是绿的 —— 只有干净环境（即 CI）会红。
+    结论：**本地全绿不是依赖完整的证据**，只有干净装一遍才是。
     """
 
     #: 会**静默降级**的第三方依赖（不是硬 import，缺了不报错）→ 必须显式声明
@@ -644,10 +650,20 @@ class TestLessonC_ImportedDepsMustBeDeclared:
         "pandas_market_calendars": "app/core/data_engine/market_calendar.py",
     }
 
-    def test_silently_optional_deps_are_declared_in_requirements(self):
+    #: **没有任何一行 `import <它>`** 的依赖 —— 由已声明的库在*构造对象时*才要求。
+    #: 扫描 import 语句的检查（含上面那条）对这一类永远是绿的，只有真去构造一次
+    #: 才能暴露。CI 事故 2026-09-10 → 09-14 连红三次就是这一类。
+    CONSTRUCTION_TIME_DEPS = {
+        "scikit_learn": "xgboost.XGBClassifier（app/core/ml_engine/proxy_model.py:152）",
+    }
+
+    def _declared(self) -> str:
         req = (BACKEND / "requirements.txt")
         assert req.exists(), "requirements.txt 不存在"
-        declared = _src(req).replace("-", "_").lower()
+        return _src(req).replace("-", "_").lower()
+
+    def test_silently_optional_deps_are_declared_in_requirements(self):
+        declared = self._declared()
         missing = [
             f"{mod}（{where}）" for mod, where in self.SILENT_FALLBACK_DEPS.items()
             if mod.replace("-", "_").lower() not in declared
@@ -656,6 +672,31 @@ class TestLessonC_ImportedDepsMustBeDeclared:
             "以下依赖会在缺失时**静默降级**（不报错、结果悄悄变错），"
             "却未在 requirements.txt 中声明：\n  " + "\n  ".join(missing)
         )
+
+    def test_construction_time_deps_are_declared_in_requirements(self):
+        declared = self._declared()
+        missing = [
+            f"{mod}（{where}）" for mod, where in self.CONSTRUCTION_TIME_DEPS.items()
+            if mod.replace("-", "_").lower() not in declared
+        ]
+        assert not missing, (
+            "以下依赖没有任何一行 `import`，靠别的库在构造时才要求，"
+            "却未在 requirements.txt 中声明：\n  " + "\n  ".join(missing)
+        )
+
+    def test_xgboost_sklearn_api_is_constructible_not_merely_importable(self):
+        """
+        `from xgboost import XGBClassifier` 会成功，`XGBClassifier(...)` 才会抛
+        `ImportError: sklearn needs to be installed`。proxy_model.py 的
+        try/except 只包住了 import —— 声明缺失时 GP 进化直接崩，而不是像注释
+        承诺的那样退回 rule-based 模式。
+
+        这条断言的价值在于它**与环境无关**：任何缺 scikit-learn 的机器上都会红，
+        这正是本地一直绿、CI 连红三次的那个盲区。
+        """
+        from xgboost import XGBClassifier
+        model = XGBClassifier(n_estimators=2, max_depth=2, verbosity=0)
+        assert hasattr(model, "fit"), "XGBClassifier 构造成功却没有 fit()"
 
     def test_calendar_is_actually_using_the_real_exchange_calendar(self):
         """
@@ -1219,8 +1260,14 @@ class TestLessonX_EquivalenceProofsAreMechanical:
 
 class TestLessonY_SourceSubstringAssertionsDoNotGrow:
 
-    #: 2026-09-15 基线。只许降不许升；降了就把这个数一起改小。
-    BASELINE = 65
+    #: 2026-09-16 基线（原 65）。只许降不许升；降了就把这个数一起改小。
+    #:
+    #: **棘轮的盲区**（外部审计 2026-09-15，自伤教训 #13）：它只拦增量。
+    #: 定基线 65 的时候，`test_known_defects.py` 里 A-2 与 A-5 这两条
+    #: **正是这条教训的实例**——用 `assert "保留其基准权重" not in src` 这种
+    #: 写法充当缺陷验证——被基线一起豁免了，于是"已登记缺陷"里最该用行为断言的
+    #: 两条，反而靠源码文本活着。两条已改成真的跑一遍产品代码再断言，基线降到 63。
+    BASELINE = 63
 
     @classmethod
     def _sites(cls):

@@ -52,12 +52,16 @@ def main() -> None:
     print(f"变异 : {mutated.strip()}")
     try:
         print("基线 ...", flush=True)
-        if not run_tests(sandbox, tests):
-            print("!! 基线就是红的，本次验证无效")
+        base = run_tests(sandbox, tests)
+        if base["verdict"] != "survived":
+            print(f"!! 基线不是绿的：verdict={base['verdict']} "
+                  f"exit={base['exit_code']}，本次验证无效")
+            print(base["output"][-1200:])
             return
         print("基线绿。施加变异 ...", flush=True)
         target.write_text(src, encoding="utf-8")
-        survived = run_tests(sandbox, tests)
+        res = run_tests(sandbox, tests)
+        survived = res["verdict"] == "survived"
     finally:
         shutil.rmtree(sandbox.parent, ignore_errors=True)
 

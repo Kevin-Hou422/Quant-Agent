@@ -251,6 +251,20 @@ def _mutation_points(src: str) -> int:
     return len(mutate.build_plan(src))
 
 
+def _current_plan_points():
+    """按**当前**变异器集合重算 app/ 的全量变异点；工具不在时返回 None。"""
+    total = 0
+    app = _backend_root() / "app"
+    for p in sorted(app.rglob("*.py")):
+        if "__pycache__" in p.parts:
+            continue
+        n = _mutation_points(p.read_text(encoding="utf-8"))
+        if n < 0:
+            return None
+        total += n
+    return total
+
+
 class TestEveryModuleIsMeasured:
 
     def _manifest(self) -> dict:
@@ -295,11 +309,34 @@ class TestEveryModuleIsMeasured:
 
         if skipped:
             pytest.skip("tools/mutation 不在工作区（未追踪目录），无法按同一判据对账")
-        assert not missing, (
-            "以下模块有变异点却从未测量过 —— 测试强度是未知数：\n  "
-            + "\n  ".join(missing)
-            + "\n修法：跑一次 tools/mutation/runner.py，再更新 "
-              "tests/meta/measured_modules.json。")
+
+        # 补齐变异器（工具缺陷 #11）之后，有模块是**新进入范围**的 ——
+        # 它们确实从未测量，但这件事已经在 measurement_scope 里明示并上了棘轮。
+        # 允许它们存在，但**必须逐个列名**：不许靠"反正清单里没有"蒙混过去。
+        declared = set(d.get("measurement_scope", {})
+                       .get("newly_in_scope_modules", []))
+        undeclared = [m for m in missing if m.split("（")[0] not in declared]
+        assert not undeclared, (
+            "以下模块有变异点却从未测量过，且没有登记在 "
+            "measurement_scope.newly_in_scope_modules 里：\n  "
+            + "\n  ".join(undeclared)
+            + "\n修法：跑一次 tools/mutation/runner.py 并更新 "
+              "tests/meta/measured_modules.json；\n"
+              "暂时测不了就把它写进 newly_in_scope_modules 并说明原因 —— "
+              "**不许什么都不做**。")
+
+    def test_newly_in_scope_modules_are_really_still_unmeasured(self):
+        """
+        棘轮的另一侧：`newly_in_scope_modules` 是"欠测清单"，不是豁免名单。
+        某个模块一旦真的测了（进了 modules），就必须从这里划掉，
+        否则这份清单会慢慢退化成一句永远够用的免责声明。
+        """
+        d = self._manifest()
+        declared = d.get("measurement_scope", {}).get("newly_in_scope_modules", [])
+        already = [m for m in declared if m in d["modules"]]
+        assert not already, (
+            f"这些模块已经测量并进了清单，却还挂在『欠测』名单上：{already} —— "
+            f"请从 measurement_scope.newly_in_scope_modules 删掉")
 
     def test_the_manifest_does_not_list_modules_that_no_longer_exist(self):
         """反向：模块被删/改名之后，清单里的僵尸条目要清掉，免得掩盖真实缺口。"""
@@ -314,6 +351,82 @@ class TestEveryModuleIsMeasured:
         assert d["totals"]["modules_with_mutants"] == len(d["modules"])
         assert d["totals"]["total_points"] == sum(m["points"] for m in mods)
         assert d["totals"]["total_survived"] == sum(m["survived"] for m in mods)
+
+    def test_the_unmeasured_scope_stays_visible_and_only_shrinks(self):
+        """
+        **已测量的点数是在旧变异器集合下枚举的**，补齐算子后同一份源码的点数更多，
+        多出来的从未测量。这条把差额钉在台面上，并做成只许减不许增的棘轮。
+
+        为什么必须有这条：外部审计 2026-09-15 指出那套算子有系统性缺口
+        （`x >= .70` / `x / w` / `a+b` 各 0 个变异点）。补齐算子之后，
+        如果只把新的总点数写进清单、不记差额，交付物看起来只会**更好**，
+        而"这 863 个点从没跑过"这件事就消失了 —— 这正是本项目反复踩的那种坑。
+        """
+        d = self._manifest()
+        scope = d.get("measurement_scope")
+        assert scope, (
+            "measured_modules.json 的 measurement_scope 块被删了 —— "
+            "『测过的范围』与『现在该测的范围』不一致，这件事必须保持可见")
+        for k in ("measured_points", "measured_under", "current_plan_points",
+                  "current_plan_under", "unmeasured_points", "still_blind", "owed"):
+            assert scope.get(k) is not None, f"measurement_scope 缺字段 {k}"
+
+        measured = sum(m["points"] for m in d["modules"].values())
+        assert scope["measured_points"] == measured, (
+            f"measurement_scope.measured_points={scope['measured_points']} 与"
+            f"逐模块之和 {measured} 对不上")
+
+        planned = _current_plan_points()
+        if planned is None:
+            pytest.skip("tools/mutation 不在工作区，无法按同一判据重算计划点数")
+        gap = planned - measured
+        assert gap == scope["unmeasured_points"], (
+            f"未测量点数实际是 {gap}，清单里写的是 {scope['unmeasured_points']} —— "
+            f"改了变异器却没同步这个数字，差额会在下一份报告里消失")
+        ceiling = d["proof_reconciliation"]["ratchet"]["unmeasured_points_max"]
+        assert gap <= ceiling, (
+            f"未测量的变异点从 {ceiling} 涨到 {gap} —— 只许通过重测来减少。"
+            f"若确实新增了变异器，请连同『欠一次重测』一起写进 measurement_scope.owed。")
+
+    def test_every_recorded_test_path_still_exists(self):
+        """
+        清单里记的**测试出处**必须指向真实存在的文件。
+
+        外部审计 2026-09-15 抓到的：Task 1 把 `tests/test_X.py` 挪进了
+        `tests/<层>/<包>/`，而本清单记的还是旧扁平路径 —— **104 个不重复路径
+        全部不存在**。点数没错，错的是出处：照着清单跑不回"当初是哪些测试
+        测的它"，等于交付物里最关键的可复核性没了。
+
+        `TestEveryModuleIsMeasured` 之前只对账**模块**，不对账**出处**，
+        所以目录重组对它是透明的。这条补上另一半。
+        """
+        d = self._manifest()
+        root = _backend_root()
+        missing = sorted({t for rec in d["modules"].values()
+                          for t in rec.get("tests", [])
+                          if not (root / t).exists()})
+        assert not missing, (
+            f"清单记录的测试出处有 {len(missing)} 个已不存在：\n  "
+            + "\n  ".join(missing[:20])
+            + "\n修法：文件只是挪了位置就重映射路径；真的没了就置空并在 "
+              "_provenance_repair 里说明，不要留下指不到的路径。")
+
+    def test_the_provenance_repair_record_stays_visible(self):
+        """
+        出处是**重映射**来的，不是重测来的 —— 这个区别必须留在交付物里。
+        按文件名映射保证"路径现在能跑"，不保证"当初那一版内容与现在相同"。
+        """
+        d = self._manifest()
+        rec = d.get("_provenance_repair")
+        assert rec, "_provenance_repair 块被删了 —— 出处是修补来的，这件事不能消失"
+        for k in ("method", "caveat", "dropped_unmappable",
+                  "modules_with_no_surviving_provenance", "modules_list"):
+            assert rec.get(k) is not None, f"_provenance_repair 缺字段 {k}"
+        lost = rec["modules_list"]
+        assert len(lost) == rec["modules_with_no_surviving_provenance"], (
+            "出处已丢失的模块清单与它自己声明的条数对不上")
+        assert all(m in d["modules"] for m in lost), (
+            "出处丢失清单里有不在模块清单中的条目")
 
     def test_the_open_reconciliation_gap_stays_visible(self):
         """
@@ -339,16 +452,43 @@ class TestEveryModuleIsMeasured:
             f"要么有证明被删（而存活项并没被杀死），"
             f"要么该模块被真正收口了：后者请把 ratchet.proof_entries_min 调低并说明。")
 
+    def test_refuted_proofs_cannot_quietly_come_back(self):
+        """
+        **证明会是错的** —— 这是原棘轮没设想过的第三种情况。
 
-def _count_proof_entries() -> int:
-    """全库 PROVEN_EQUIVALENT 的条目总数。"""
-    total = 0
+        它只防"证明被删"，不防"证明本身站不住"。外部审计 2026-09-15 用一个
+        反例推翻了 paper_broker 的两条 epsilon 证明；那两条现在登记在
+        `REFUTED_EQUIVALENCE` 里，状态是**既未被杀死也无有效证明**。
+
+        这条断言两件事：被推翻的条目只许增不许减，且不许同时出现在
+        `PROVEN_EQUIVALENT` 里（那等于把推翻掉的东西又写了回去）。
+        """
+        d = self._manifest()
+        rec = d["proof_reconciliation"]
+        refuted = rec.get("refuted_by_counterexample")
+        assert refuted and refuted.get("count"), (
+            "proof_reconciliation.refuted_by_counterexample 被删了 —— "
+            "被推翻的等价性证明必须保持可见")
+
+        found = _collect_dict_entries("REFUTED_EQUIVALENCE")
+        proven = _collect_dict_entries("PROVEN_EQUIVALENT")
+        floor = rec["ratchet"].get("refuted_entries_min", 0)
+        assert len(found) >= floor, (
+            f"被反例推翻的条目从 {floor} 条降到 {len(found)} 条 —— "
+            f"若确已重新证明或杀死，请连同反例用例一起处理再调低下限")
+        back = sorted(set(found) & set(proven))
+        assert not back, f"这些键既登记为已推翻又登记为已证明：{back}"
+
+
+def _collect_dict_entries(var_name: str) -> list:
+    """全库某个模块级 dict 常量（如 PROVEN_EQUIVALENT）的所有键。"""
+    keys = []
     tests = _backend_root() / "tests"
     for p in tests.rglob("test_*.py"):
         if "__pycache__" in p.parts:
             continue
         src = p.read_text(encoding="utf-8", errors="replace")
-        if "PROVEN_EQUIVALENT" not in src:
+        if var_name not in src:
             continue
         try:
             tree = ast.parse(src)
@@ -356,8 +496,13 @@ def _count_proof_entries() -> int:
             continue
         for node in tree.body:
             if isinstance(node, ast.Assign) and any(
-                    getattr(t, "id", None) == "PROVEN_EQUIVALENT"
-                    for t in node.targets):
+                    getattr(t, "id", None) == var_name for t in node.targets):
                 if isinstance(node.value, ast.Dict):
-                    total += len(node.value.keys)
-    return total
+                    keys += [k.value for k in node.value.keys
+                             if isinstance(k, ast.Constant)]
+    return keys
+
+
+def _count_proof_entries() -> int:
+    """全库 PROVEN_EQUIVALENT 的条目总数。"""
+    return len(_collect_dict_entries("PROVEN_EQUIVALENT"))

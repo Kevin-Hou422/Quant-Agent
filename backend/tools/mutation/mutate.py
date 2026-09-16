@@ -68,6 +68,22 @@ MUTATORS = [
     (r"np\.minimum\(",                  "np.maximum(", "minimum -> maximum"),
     (r"\.cumprod\(",                    ".cumsum(",    "cumprod -> cumsum"),
     (r"np\.abs\(",                      "(",           "删掉 np.abs    丢符号"),
+    # ---- 工具缺陷 #11（外部审计 2026-09-15）补上的九个 ----
+    # 审计用四个微型探针指出：`x >= .70`、`x / w`、`a+b` 都是 **0 个变异点**，
+    # `a + b + c` 只变第一个加号。也就是说"所选变异全部被处理"与"检出能力已证明"
+    # 从来不是同一个命题 —— B-1 的除法归一化错误、C-2 的对象身份错误，
+    # 本来就不在这套算子能表达的范围里。
+    # 下面补的是**能表达**的那部分；对象身份、数值常量仍在盲区（见 README）。
+    (r"(?<![<>=!])>=(?!=)",             ">",     ">= -> >        边界收紧"),
+    (r"(?<![<>=!])<=(?!=)",             "<",     "<= -> <        边界收紧"),
+    (r"(?<![<>=!])==(?!=)",             "!=",    "== -> !=       相等取反"),
+    (r"(?<![<>=!])!=(?!=)",             "==",    "!= -> ==       相等取反"),
+    (r"(?<=[\w\)\]])\s/\s(?=[\w\(])",   " * ",   "/ -> *         量纲反转"),
+    # 无空格写法：`a+b` / `w/total` 这类此前一个变异点都没有
+    (r"(?<=[\w\)\]])\+(?=[\w\(])",      "-",     "+ -> -（无空格）"),
+    (r"(?<=[\w\)\]])-(?=[\w\(])",       "+",     "- -> +（无空格）"),
+    (r"(?<=[\w\)\]])\*(?=[\w\(])",      "/",     "* -> /（无空格）"),
+    (r"(?<=[\w\)\]])/(?=[\w\(])",       "*",     "/ -> *（无空格）"),
 ]
 
 
@@ -79,11 +95,27 @@ def _ignore(dirpath, names):
     return out
 
 
+#: 仓库根目录下、测试会读到的文件。**必须一并复制进沙箱。**
+#:
+#: 工具缺陷 #12：沙箱只复制 `backend/`，而 `tests/meta` 里有检查仓库根
+#: `.gitignore` 的用例（`TestLessonV::test_mutbak_is_gitignored`）。
+#: 于是只要测试路径包含 `tests/meta`，**基线在沙箱里必然是红的** ——
+#: 而 `make_plan.py` 给每个模块都加了 `tests/meta`。
+#: 旧判定器遇到这种情况只打一句"基线就是红的"就 return，模块**静默没测**，
+#: 外面看不出与"跑过了"的区别。这条是新的基线守卫（缺陷 #10 的修复）抓出来的。
+REPO_ROOT_FILES = (".gitignore",)
+
+
 def make_sandbox() -> Path:
     """把 backend/ 复制到临时目录；返回副本根路径。"""
     tmp = Path(tempfile.mkdtemp(prefix="mut_sandbox_"))
     dst = tmp / "backend"
     shutil.copytree(REAL_BACKEND, dst, ignore=_ignore)
+    repo_root = REAL_BACKEND.parent
+    for name in REPO_ROOT_FILES:
+        src = repo_root / name
+        if src.is_file():
+            shutil.copy2(src, tmp / name)
     return dst
 
 
@@ -233,23 +265,23 @@ def build_plan(src: str):
         spans = _string_spans(line) + ml.get(lineno, [])
         seen = set()
         for pat, rep, desc in MUTATORS:
-            m = None
-            for cand in re.finditer(pat, line):
-                if not _in_string(cand.start(), spans):
-                    m = cand
-                    break
-            if m is None:
-                continue
-            # 直接按位置替换整段匹配文本。
-            # 【不要改回 re.sub(pat, rep, m.group(0))】：m.group(0) 不含 lookaround
-            # 消耗的字符，把它单独送进 re.sub，**正向**后顾断言 (?<=[\w\)\]]) 前面
-            # 没有字符必然失配 → 原样返回 → mutated == line → 被静默记成"无可变异"。
-            # 三个算术变异器（* + -）因此从未生效过，存活列表里全是比较符。
-            mutated = line[:m.start()] + rep + line[m.end():]
-            if mutated == line or mutated in seen:
-                continue
-            seen.add(mutated)
-            plan.append((lineno, line, desc, mutated))
+            # 工具缺陷 #11（外部审计 2026-09-15）：旧版对每个变异器**只取本行
+            # 第一处匹配**（找到就 break）。于是 `return a + b + c` 只有第一个
+            # 加号被测过，第二个改坏了不会有任何变异点覆盖它。
+            # 现在枚举全部出现位置，各算一个变异点。
+            for m in re.finditer(pat, line):
+                if _in_string(m.start(), spans):
+                    continue
+                # 直接按位置替换整段匹配文本。
+                # 【不要改回 re.sub(pat, rep, m.group(0))】：m.group(0) 不含
+                # lookaround 消耗的字符，把它单独送进 re.sub，**正向**后顾断言
+                # (?<=[\w\)\]]) 前面没有字符必然失配 → 原样返回 → mutated == line
+                # → 被静默记成"无可变异"。三个算术变异器（* + -）因此从未生效过。
+                mutated = line[:m.start()] + rep + line[m.end():]
+                if mutated == line or mutated in seen:
+                    continue
+                seen.add(mutated)
+                plan.append((lineno, line, desc, mutated, m.start()))
     return plan
 
 
@@ -282,12 +314,37 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         pass
 
 
-def run_tests(sandbox: Path, test_paths, timeout: int = DEFAULT_TIMEOUT) -> bool:
-    """
-    在副本里跑测试；True = 全过（变异存活）。
+#: pytest 的退出码语义（`_pytest.config.ExitCode`）。
+#: **只有 1（有测试失败）才算「断言抓到了」。**
+_VERDICT_BY_EXITCODE = {
+    0: "survived",        # 全过 → 改坏了没人发现
+    1: "killed",          # 有测试失败 → 断言抓到了
+    2: "interrupted",     # 收集期中断 / KeyboardInterrupt
+    3: "internal_error",  # pytest 内部错误
+    4: "usage_error",     # 命令行用法错（测试路径不存在等）
+    5: "no_tests",        # 一个测试都没收集到 —— 分母是空的
+}
 
-    超时 → False（记为击杀），并把整棵进程树杀干净再返回，
-    否则残留的 pytest 孙进程会拖垮后续每一个变异点。
+
+def run_tests(sandbox: Path, test_paths, timeout: int = DEFAULT_TIMEOUT) -> dict:
+    """
+    在副本里跑测试，返回 `{"verdict": ..., "exit_code": ..., "output": ...}`。
+
+    工具缺陷 #10（外部审计 2026-09-15 指出）
+    ----------------------------------------
+    旧版是 `return proc.wait(timeout) == 0`：**退出码只要非 0 就当成「杀死」**，
+    超时也 `return False`（同样算杀死），而且 `stdout/stderr=DEVNULL` 把证据全丢了。
+    于是这些都会被记成「断言抓到了」：
+
+      - 收集错误 / 导入失败（exit 2、4）——变异让模块 import 不了
+      - 一个测试都没收集到（exit 5）——测试路径写错时分母为空
+      - 超时（环境卡住、死循环）
+      - 与本变异无关的偶发失败（还叠加了 `-x`：第一个失败就停）
+
+    **它们的共同点是都让击杀率变好看。** 度量工具的偏置方向永远朝着
+    「结果更漂亮」，这是本项目第 10 次踩同一类坑（见 #1、#2、#5、#9）。
+
+    现在按退出码分类，非 1 的一律**不算杀死**，并保留输出尾部供复核。
     """
     popen_kw = {}
     if os.name == "nt":
@@ -298,18 +355,23 @@ def run_tests(sandbox: Path, test_paths, timeout: int = DEFAULT_TIMEOUT) -> bool
     proc = subprocess.Popen(
         [sys.executable, "-m", "pytest", *test_paths, "-x", "-q",
          "-p", "no:randomly", "--no-header", "-W", "ignore"],
-        cwd=sandbox, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        **popen_kw,
+        cwd=sandbox, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, errors="replace", **popen_kw,
     )
     try:
-        return proc.wait(timeout=timeout) == 0
+        out, _ = proc.communicate(timeout=timeout)
+        code = proc.returncode
     except subprocess.TimeoutExpired:
         _kill_tree(proc)
         try:
-            proc.wait(timeout=60)
+            out, _ = proc.communicate(timeout=60)
         except subprocess.TimeoutExpired:
-            pass
-        return False
+            out = ""
+        return {"verdict": "timeout", "exit_code": None,
+                "output": (out or "")[-2000:]}
+
+    return {"verdict": _VERDICT_BY_EXITCODE.get(code, "unknown"),
+            "exit_code": code, "output": (out or "")[-2000:]}
 
 
 def _load_state(path: Path | None) -> dict:
@@ -369,18 +431,28 @@ def main() -> None:
     plan = build_plan(original)
     print(f"副本: {sandbox}\n变异点: {len(plan)}")
     print("先确认基线为绿 ...", flush=True)
-    if not run_tests(sandbox, tests, timeout):
-        print("!! 基线就是红的，无法做变异测试")
+    base = run_tests(sandbox, tests, timeout)
+    if base["verdict"] != "survived":
+        # 基线必须是 exit 0。旧版只判 `!= 0` 就打印一句提示后 return，
+        # 调用方（runner.py）看不出区别 —— 收集错误、路径写错（exit 4/5）
+        # 与"测试真的红了"混成一件事，而后两者意味着**整轮测量的分母是空的**。
+        print(f"!! 基线不是绿的：verdict={base['verdict']} "
+              f"exit={base['exit_code']}，无法做变异测试")
+        print(base["output"][-1200:])
         shutil.rmtree(sandbox.parent, ignore_errors=True)
-        return
+        raise SystemExit(
+            f"基线失败（{base['verdict']}）—— 拒绝在不可信的基线上测量。"
+            f"这不是『本模块击杀率为 0』，是**根本没测**。")
 
     state[rel_target]["tests"] = tests
     state[rel_target]["planned"] = len(plan)
     invalid = 0
     t0 = time.time()
     try:
-        for lineno, line, desc, mutated in plan:
-            key = f"L{lineno}|{desc.split()[0]}"
+        for lineno, line, desc, mutated, col in plan:
+            # key 里必须带列号：同一行同一个变异器可能有多处匹配（工具缺陷 #11
+            # 修复后），不带列号会让第二处覆盖第一处的结论。
+            key = f"L{lineno}|c{col}|{desc.split()[0]}"
             if key in verdicts:
                 continue
             if not mutated.endswith("\n"):
@@ -392,12 +464,19 @@ def main() -> None:
                 invalid += 1
                 continue
             target.write_text(cand_src, encoding="utf-8")
-            alive = run_tests(sandbox, tests, timeout)
-            verdicts[key] = {"verdict": "survived" if alive else "killed",
+            r = run_tests(sandbox, tests, timeout)
+            verdicts[key] = {"verdict": r["verdict"], "exit_code": r["exit_code"],
                              "desc": desc, "code": line.strip()[:96]}
+            if r["verdict"] not in ("survived", "killed"):
+                # 超时 / 收集错误 / 没收集到测试 —— **既不算杀死也不算存活**。
+                # 旧版把它们全算成"杀死"，击杀率因此系统性偏高（工具缺陷 #10）。
+                verdicts[key]["output_tail"] = r["output"][-600:]
             _save_state(state_path, state)          # 逐个落盘 → 断电可续
-            if alive:
+            if r["verdict"] == "survived":
                 print(f"  存活 L{lineno:<5d} {desc}  |  {line.strip()[:56]}", flush=True)
+            elif r["verdict"] != "killed":
+                print(f"  ?? L{lineno:<5d} {desc}  |  {r['verdict']} "
+                      f"(exit={r['exit_code']})", flush=True)
             target.write_text(original, encoding="utf-8")     # 立即还原副本
     finally:
         shutil.rmtree(sandbox.parent, ignore_errors=True)      # 副本用完即毁
