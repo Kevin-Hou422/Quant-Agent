@@ -414,20 +414,20 @@ class TestSeedSelection:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L254 `fwd_ret = (close[1:] - close[:-1]) / close[:-1]` → `+`":
+    "app/core/gp_engine/gp_engine.py ×1 — L254 `fwd_ret = (close[1:] - close[:-1]) / close[:-1]` → `+`":
         "`(P_t+1 + P_t)/P_t = 2 + r`，是真实收益 r 的**严格单调增变换**。"
         "而 fwd_ret 在本模块里**只**被送进 Spearman 秩相关 —— 秩相关只看次序，"
         "单调变换不改变任何一行的秩，因此 IC 序列逐位相同。"
         "实测同一面板下差式与和式的 mean_IC 都是 -0.7552。"
         "见 test_sum_form_is_a_monotone_transform_of_the_return。",
 
-    "L258 `T_ic = min(fwd_ret.shape[0], sig_arr.shape[0] - 1)` → `+ 1`":
+    "app/core/gp_engine/gp_engine.py ×1 — L258 `T_ic = min(fwd_ret.shape[0], sig_arr.shape[0] - 1)` → `+ 1`":
         "signal 由 Executor 按 dataset 的索引求值，行数与 close **恒等**（都是 T）。"
         "于是 `fwd_ret.shape[0] = T-1`，而 `sig.shape[0] ∓ 1` 是 T-1 或 T+1；"
         "两种取值下 `min(...)` 都取 T-1。差别取不到。"
         "见 test_signal_and_close_always_have_the_same_row_count。",
 
-    "L272 `if denom > 0:` → `>=`":
+    "app/core/gp_engine/gp_engine.py ×1 — L272 `if denom > 0:` → `>=`":
         "`rs`/`rr` 都是 `argsort(argsort(x))` 的结果，也就是 0..n-1 的**排列**"
         "（并列值按数组位置分到不同名次，见下面的缺陷 D-19）。去中心化后"
         "平方和恒为 n(n²-1)/12；进到这里时 `n_valid >= 5`，所以"
@@ -435,7 +435,7 @@ PROVEN_EQUIVALENT = {
         "`>` 与 `>=` 的判定结果对所有可达输入都相同。"
         "见 test_the_rank_denominator_can_never_be_zero。",
 
-    "L171 `if mapped and mapped in _SEED_DSLS_BY_FAMILY:` → `or`":
+    "app/core/gp_engine/gp_engine.py ×1 — L171 `if mapped and mapped in _SEED_DSLS_BY_FAMILY:` → `or`":
         "`mapped = _ALIAS.get(family, \"\")`。已知家族 → mapped 非空且必在种子表里"
         "（实测 _ALIAS 的每个目标值都是 _SEED_DSLS_BY_FAMILY 的键），两种取值都为真；"
         "未知家族 → mapped 是空串，`\"\" and ...` 与 `\"\" or (\"\" in dict)` 都为假。"

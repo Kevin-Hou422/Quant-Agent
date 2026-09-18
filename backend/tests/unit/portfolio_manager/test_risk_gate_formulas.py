@@ -380,25 +380,25 @@ def test_check_handles_empty_weight_frame():
 #: 隔离版变异测量在 risk_gate.py 上的最终存活项，逐条给出等价性证明。
 #: 不允许用"大概等价"搪塞：每条都要能被下面的用例机械验证。
 PROVEN_EQUIVALENT = {
-    "L89  port_vol_ann > 1e-9 → >=":
+    "app/core/portfolio_manager/risk_gate.py ×1 — L89  port_vol_ann > 1e-9 → >=":
         "仅在 vol 恰好 == 1e-9 时结论不同；该分支前已有 `port_vol_ann and` 短路排除 0，"
         "且 1e-9 量级的年化波动无任何业务含义。",
-    "L117 gross > max_gross + tol → >=":
+    "app/core/portfolio_manager/risk_gate.py ×1 — L117 gross > max_gross + tol → >=":
         "仅在 gross 恰好 == max_gross + 1e-6 时不同。浮点上 (limit+tol) - limit != tol，"
         "该值无法精确构造；tol 的存在本身就是为了让边界附近不敏感。",
-    "L119 |net| > max_net + tol → >=":
+    "app/core/portfolio_manager/risk_gate.py ×1 — L119 |net| > max_net + tol → >=":
         "同 L117 的构造：仅在 |net| 恰好 == max_net + 1e-6 时结论不同，该值浮点不可达。",
-    "L122 maxname > cap + tol → >=":
+    "app/core/portfolio_manager/risk_gate.py ×1 — L122 maxname > cap + tol → >=":
         "同 L117 的构造：仅在单票权重恰好 == cap + 1e-6 时不同，该值浮点不可达。",
-    "L131 sec_abs.max() > sec_cap + tol → >=":
+    "app/core/portfolio_manager/risk_gate.py ×1 — L131 sec_abs.max() > sec_cap + tol → >=":
         "同 L117 的构造：仅在行业敞口恰好 == sec_cap + 1e-6 时不同，该值浮点不可达。",
-    "L179 |a| > cap + 1e-12 → >=":
+    "app/core/portfolio_manager/risk_gate.py ×1 — L179 |a| > cap + 1e-12 → >=":
         "同 L117 的构造，且 tol 小到 1e-12，边界值比 1e-6 情形更不可能被精确命中。",
-    "L202 sec_gross > sec_cap + 1e-12 → >=":
+    "app/core/portfolio_manager/risk_gate.py ×1 — L202 sec_gross > sec_cap + 1e-12 → >=":
         "同 L117 的构造：仅在行业绝对敞口恰好 == sec_cap + 1e-12 时不同，浮点不可达。",
-    "L208 g > max_gross + 1e-12 → >=":
+    "app/core/portfolio_manager/risk_gate.py ×1 — L208 g > max_gross + 1e-12 → >=":
         "同 L117 的构造：仅在 gross 恰好 == max_gross + 1e-12 时不同，浮点不可达。",
-    "L124 (weights < -tol) → <=":
+    "app/core/portfolio_manager/risk_gate.py ×1 — L124 (weights < -tol) → <=":
         "`long_only` 下判负权重：`(weights < -tol).any().any()`，tol = 1e-6。"
         "两种取值只在**权重恰好等于 -1e-6** 这一个点上不同。"
         "而进入这一行的权重来自 `PortfolioManager.build_book` 的合成结果 —— "
@@ -409,7 +409,7 @@ PROVEN_EQUIVALENT = {
         "（见 test_epsilon_guarded_boundaries_are_provably_unreachable）。"
         "且即便构造成功，后果也只是『恰好 -1e-6 的做空敞口』被放行或拦下 —— "
         "该量级远小于任何真实下单的最小变动单位。",
-    "L174 np.where(a < 0.0, 0.0, a) → <=":
+    "app/core/portfolio_manager/risk_gate.py ×1 — L174 np.where(a < 0.0, 0.0, a) → <=":
         "a==0 时 `<` 保留 0、`<=` 写入 0，结果都是 0；a==-0.0 同理。"
         "对全部浮点边界值（0, -0.0, ±1e-300）输出完全一致 —— 真正的等价变异。",
 }

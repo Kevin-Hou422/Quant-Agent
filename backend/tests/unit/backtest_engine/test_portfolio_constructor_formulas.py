@@ -446,22 +446,22 @@ class TestBetaNeutral:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L84/L85 `if n_long > 0` / `if n_short > 0` → `>=`":
+    "app/core/backtest_engine/portfolio_constructor.py ×2 — L84/L85 `if n_long > 0` / `if n_short > 0` → `>=`":
         "两个条件恒为真，false 分支不可达：hi_cut 与 lo_cut 都是 vals 的分位数，"
         "必然落在 [min(vals), max(vals)] 内，于是 `row >= hi_cut` 至少命中最大值、"
         "`row <= lo_cut` 至少命中最小值，n_long 与 n_short 恒 >= 1。"
         "见 test_leg_sizes_are_never_zero_when_the_row_is_traded。",
 
-    "L139 `zp = np.where(z > 0.0, z, 0.0)` → `>=`":
+    "app/core/backtest_engine/portfolio_constructor.py ×1 — L139 `zp = np.where(z > 0.0, z, 0.0)` → `>=`":
         "两侧输出逐元素相同：区分点只有 z == 0，而 `where` 在该点取 z（=0）"
         "与取常量 0.0 是同一个值。见 test_zero_zscore_gives_zero_weight_either_way。",
 
-    "L242 `if l1 > 1e-12` → `>=`":
+    "app/core/backtest_engine/portfolio_constructor.py ×1 — L242 `if l1 > 1e-12` → `>=`":
         "区分值需要 `np.abs(row).sum()` 恰好等于 1e-12。row 来自 "
         "`np.linalg.solve` 的输出（多步浮点运算），无法反解出使其 L1 精确等于 "
         "1e-12 的输入；且上游 `if not np.any(s): continue` 已经排除了全零信号。",
 
-    "L355 `if var_m < 1e-12` → `<=`":
+    "app/core/backtest_engine/portfolio_constructor.py ×1 — L355 `if var_m < 1e-12` → `<=`":
         "区分值需要市场收益的 `np.nanvar` 恰好等于 1e-12。方差是平方和除以 n "
         "的浮点结果，常数市场给出的是精确 0.0、真实市场是 1e-4 量级，"
         "两侧都离 1e-12 极远，无法构造。",

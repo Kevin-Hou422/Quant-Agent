@@ -372,7 +372,7 @@ class TestSeedGeneration:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L179 `if td not in seen_set:` 的 not 删除":
+    "app/agent/_fallback.py ×1 — L179 `if td not in seen_set:` 的 not 删除":
         "`seen_set` 初值是 `set(_expand_for_optimization(user_dsl, 8))`，"
         "随后逐个加入 `_targeted_mutations(user_dsl, init_metrics)` 的产物。"
         "实测这两个函数的产物**从不相交**，且 targeted 自身也**从不含重复** —— "

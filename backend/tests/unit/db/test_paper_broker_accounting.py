@@ -421,7 +421,7 @@ REFUTED_EQUIVALENCE = {
 }
 
 PROVEN_EQUIVALENT = {
-    "L121 `abs(filled) < abs(tgt) - 1e-9` -> `<=`":
+    "app/core/execution/paper_broker.py ×1 — L121 `abs(filled) < abs(tgt) - 1e-9` -> `<=`":
         "区分值需要 |filled| 恰好等于 |tgt| - 1e-9。filled 是投影输出，"
         "无法构造成与 tgt 相差恰好 1e-9 的值；该容差存在的目的就是让"
         "「足额成交」的判定对末位浮点误差不敏感。"
@@ -429,13 +429,13 @@ PROVEN_EQUIVALENT = {
         "这一条与它们的区别是区分值要求的是**两个量之差**恰好等于容差，"
         "不是某个量本身恰好等于容差，投影的恒等路径给不出这种构造。）",
 
-    "L192 `hasattr(d, 'date') and not isinstance(d, date)` -> 删掉 not":
+    "app/core/execution/paper_broker.py ×1 — L192 `hasattr(d, 'date') and not isinstance(d, date)` -> 删掉 not":
         "该分支对系统实际产生的**每一种**日期形态都不可达：str 与 datetime/Timestamp "
         "在前两个 if 就已返回；datetime.date 没有 `.date` 属性（hasattr 为假）。"
         "条件恒为假，改不改 not 都返回 d。见 "
         "test_date_normalisation_branch_is_unreachable_for_real_inputs。",
 
-    "L192 `hasattr(...) and not isinstance(...)` -> `or`":
+    "app/core/execution/paper_broker.py ×1 — L192 `hasattr(...) and not isinstance(...)` -> `or`":
         "同上：对四种实际输入形态条件恒为假。date 对象走 hasattr 假 + not isinstance 假，"
         "or 之后仍是假；其余三种在更早的分支已返回，根本走不到这一行。",
 }
@@ -463,6 +463,154 @@ def test_date_normalisation_branch_is_unreachable_for_real_inputs():
     for d in reached:
         # 能走到 L192 的形态里，date 没有 `.date` 属性 → 条件恒为假
         assert not hasattr(d, "date"), f"{type(d).__name__} 竟然带 .date，L192 可达"
+
+
+class TestSubEpsilonPositionsAreADeliberatePolicy:
+    """
+    L119 / L127 的两个 epsilon 守卫**可达**（见下面那条反例用例），所以它们不是
+    等价变异，必须由断言杀死。
+
+    这里钉住的是**当前的处置政策**，并且这个政策是有意的：
+
+      - 权重恰好 1e-12 的名字 **不进持仓**（L127 用 `>`）——
+        100 万美元资金上折合 1e-6 美元，记进持仓只会在账本里留噪声
+      - 但它 **要留一条成交记录**（L119 的 `and` 短路）——
+        因为确实发生了一次（极小的）目标变动，审计链路不该凭空少一行
+
+    两条合起来的意思是"小到不计入仓位，但不假装没发生过"。
+    改成 `>=` 或 `<=` 会分别翻转这两个决定，下面两条断言各杀一个。
+
+    构造：`project_to_capped_l1` 在 L1 已等于 target、ADV 上限不绑定时是恒等映射，
+    于是目标权重里的 1e-12 **逐位**原样出现在 `filled` 里。
+    """
+
+    @staticmethod
+    def _run(broker):
+        tk = ["A", "B"]
+        broker.step(
+            alpha_id=77, date="2024-01-02",
+            target_w=_series([1e-12, 1.0 - 1e-12], tk),
+            prices_t=_series([100.0, 100.0], tk),
+            prices_prev=_series([100.0, 100.0], tk),
+            adv_usd=_series([1e15, 1e15], tk),          # 上限远大于目标 → 不绑定
+            daily_vol=_series([0.02, 0.02], tk),
+        )
+        return (broker.store.latest_positions(77),
+                broker.store.fills_on(77, "2024-01-02"))
+
+    def test_a_position_of_exactly_one_picoweight_is_not_recorded(self, broker):
+        """L127 `abs(filled[i]) > 1e-12` —— 改成 `>=` 会把这个名字记进持仓。"""
+        pos, _ = self._run(broker)
+        assert "A" not in pos, (
+            f"权重恰好 1e-12 的名字进了持仓：{ {k: repr(v) for k, v in pos.items()} } —— "
+            f"L127 的守卫被放宽成 `>=` 了（100 万美元上折合 1e-6 美元的噪声仓位）")
+        assert pos.get("B") == pytest.approx(1.0 - 1e-12, abs=1e-15), (
+            "另一腿的权重被改动了，说明构造没有落在预期的那一格上")
+
+    def test_that_same_picoweight_still_produces_a_fill_record(self, broker):
+        """
+        L119 `abs(delta[i]) < 1e-12 and abs(filled[i]) < 1e-12: continue`
+        —— 首日 prev_w=0，delta 恰好等于 1e-12，`<` 判假使 `and` 短路，成交记录保留。
+        改成 `<=` 后两侧都成立 → `continue` → A 的成交记录消失。
+        """
+        _, fills = self._run(broker)
+        names = sorted(f.ticker for f in fills)
+        assert "A" in names, (
+            f"权重 1e-12 的调仓没有留下成交记录（本日成交：{names}）—— "
+            f"L119 的守卫被放宽成 `<=` 了：仓位不记、成交也不记，"
+            f"这次目标变动在账本里彻底消失")
+
+    #: `nextafter(1e-12, +inf)` —— 比阈值**大一个 ulp**，所以 L127 会把它存进持仓。
+    #: 这是能让 `prev_w` 落在"非 0 且 |v| 只比 1e-12 大一点点"的唯一办法。
+    _PREV = float(np.nextafter(1e-12, np.inf))
+    #: 选它是因为 `_FILL - _PREV` 在浮点上**恰好**等于 -1e-12（穷举搜出来的，不是估的），
+    #: 同时 `|_FILL| < 1e-12` 成立 —— 两者必须同时满足才能区分 L119 的第一个比较符。
+    _FILL = 2.0194839173657902e-28
+
+    def test_a_pico_trade_off_a_pico_position_still_leaves_a_fill_record(self, broker):
+        """
+        L119 第一个比较符 `abs(delta[i]) < 1e-12` → `<=`。
+
+        **为什么需要这么刁钻的构造**：`and` 会短路。第一天用 1e-12 建仓时
+        `delta == filled`，两个条件永远同真同假，改任何一个都被另一个挡住 ——
+        我第一版就是这么写的，`verify_mutant` 当场判 **[X] 变异存活**。
+
+        真正能区分的那一格要求：`|delta|` **恰好** 1e-12，而 `|filled|` 严格小于它。
+        由 `delta = filled - prev_w` 且 `prev_w` 只能取 0 或 `|v| > 1e-12`
+        （L127 决定的），prev_w=0 时 delta≡filled 必然同真同假，
+        所以只剩"prev_w 比阈值大一个 ulp"这一条路。穷举浮点找到了
+        `prev = nextafter(1e-12, ∞)`、`filled = 2.0194839173657902e-28`
+        这一对，`filled - prev` 逐位等于 `-1e-12`。
+
+        改成 `<=` 之后两个条件同时成立 → `continue` → 这笔调仓在成交记录里消失。
+        """
+        tk = ["A", "B"]
+        common = dict(prices_t=_series([100.0, 100.0], tk),
+                      prices_prev=_series([100.0, 100.0], tk),
+                      adv_usd=_series([1e15, 1e15], tk),
+                      daily_vol=_series([0.02, 0.02], tk))
+        broker.step(alpha_id=78, date="2024-01-02",
+                    target_w=_series([self._PREV, 1.0 - self._PREV], tk), **common)
+        prev = broker.store.latest_positions(78).get("A")
+        assert prev == self._PREV, (
+            f"昨仓没有逐位保留 {self._PREV!r}（实际 {prev!r}）—— "
+            f"构造前提变了，本用例区分不了 L119")
+        assert (self._FILL - self._PREV) == -1e-12, (
+            "delta 不再逐位等于 -1e-12 —— 请重新穷举区分值，不要让这条用例空转")
+
+        broker.step(alpha_id=78, date="2024-01-03",
+                    target_w=_series([self._FILL, 1.0 - self._FILL], tk), **common)
+        names = sorted(f.ticker for f in broker.store.fills_on(78, "2024-01-03"))
+        assert "A" in names, (
+            f"|delta| 恰好 1e-12、|filled| 小于 1e-12 的调仓没有留下成交记录"
+            f"（本日成交：{names}）—— L119 的第一个守卫被放宽成 `<=` 了")
+
+    def test_a_sub_ulp_trim_down_to_exactly_one_picoweight_still_records_a_fill(self, broker):
+        """
+        L119 **第二个**比较符 `abs(filled[i]) < 1e-12` → `<=`。
+
+        和上一条是**互补**的一格，必须分开写：上一条要 `|delta|` 恰好 1e-12、
+        `|filled|` 更小；这一条要反过来 —— `|filled|` **恰好** 1e-12，
+        而 `|delta|` 严格小于它。
+
+        构造：昨仓 = `nextafter(1e-12, ∞)`（比阈值大一个 ulp，所以存得下），
+        今日目标 = 1e-12 整。于是 `delta` 只有一个 ulp，`filled` 正好压在阈值上。
+
+          - 原式：`|delta| < 1e-12` 真、`|filled| < 1e-12` **假** → 不 continue → 有成交记录
+          - 变异：两者皆真 → continue → 这笔"削掉一个 ulp"的调仓凭空消失
+
+        `verify_mutant` 对 L119 的两个比较符各跑一次，两条都要判 [OK] 才算处置完。
+        """
+        tk = ["A", "B"]
+        common = dict(prices_t=_series([100.0, 100.0], tk),
+                      prices_prev=_series([100.0, 100.0], tk),
+                      adv_usd=_series([1e15, 1e15], tk),
+                      daily_vol=_series([0.02, 0.02], tk))
+        broker.step(alpha_id=79, date="2024-01-02",
+                    target_w=_series([self._PREV, 1.0 - self._PREV], tk), **common)
+        prev = broker.store.latest_positions(79).get("A")
+        assert prev == self._PREV, f"昨仓没有逐位保留 {self._PREV!r}（实际 {prev!r}）"
+
+        delta = 1e-12 - self._PREV
+        assert 0 < abs(delta) < 1e-12, (
+            f"delta={delta!r} 不在 (0, 1e-12) 内 —— 这一格构造不出来，本用例会空转")
+
+        broker.step(alpha_id=79, date="2024-01-03",
+                    target_w=_series([1e-12, 1.0 - 1e-12], tk), **common)
+        names = sorted(f.ticker for f in broker.store.fills_on(79, "2024-01-03"))
+        assert "A" in names, (
+            f"|filled| 恰好压在 1e-12 上、|delta| 只有一个 ulp 的调仓没有成交记录"
+            f"（本日成交：{names}）—— L119 的第二个守卫被放宽成 `<=` 了")
+
+    def test_the_two_guards_disagree_on_purpose(self, broker):
+        """
+        把上面两条的关系钉死：**同一个名字**、**同一天**，
+        成交记录里有、持仓里没有。任何一侧被改宽都会破坏这个组合。
+        """
+        pos, fills = self._run(broker)
+        assert ("A" in [f.ticker for f in fills]) and ("A" not in pos), (
+            f"『记成交但不记仓位』这个组合被破坏了："
+            f"成交={sorted(f.ticker for f in fills)} 持仓={sorted(pos)}")
 
 
 def test_the_epsilon_guards_are_reachable_so_the_old_proof_is_void():

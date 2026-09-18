@@ -8,7 +8,9 @@ on:
 
 jobs:
   backend:
-    name: Backend (pytest)
+    # 阻塞任务：装**逐位钉死**的 requirements.lock。
+    # 同一份 lock 永远装出同一套版本 —— "这批结果是用哪套版本跑的"因此可复现。
+    name: Backend (pytest, locked deps)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -19,17 +21,42 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install dependencies
+      - name: Install dependencies (pinned)
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.lock
           pip install ruff
       - name: Lint (ruff, non-blocking)
         run: ruff check app || true
       - name: Run tests
-        # 排除 performance（慢）；legacy 文件已修复，无需 --ignore
-        # 全部测试使用合成数据，无需网络
-        run: python -m pytest tests/ --ignore=tests/performance -q
+        # performance 也跑：它此前被排除，而里面的 API 用例长期在量一个 422 的
+        # 延迟（n_days=50 违反接口的 ge=60），改对之后这组才真的在测东西。
+        # 全部测试使用合成数据，无需网络。
+        run: python -m pytest tests/ -q
+
+  backend-latest-deps:
+    # 非阻塞任务：装 requirements.txt（下界无上界 → 当日最新）。
+    # 存在的理由：**依赖漂移要被看见，而不是被 lock 掩盖**。
+    # CI 事故 2026-09-10 就是"本地装了 scikit-learn、声明里没有"，
+    # 只有干净环境才会暴露；lock 装法能复现，却再也发现不了新的这类缺口。
+    name: Backend (latest deps, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies (unpinned)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run tests
+        run: python -m pytest tests/ -q
 
   frontend:
     name: Frontend (vitest + tsc)

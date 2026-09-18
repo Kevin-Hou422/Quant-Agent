@@ -371,23 +371,23 @@ class TestWalkForwardAggregation:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L274 `Executor(validate=False)` → True（RealisticBacktester.__init__）":
+    "app/core/backtest_engine/realistic_backtester.py ×1 — L274 `Executor(validate=False)` → True（RealisticBacktester.__init__）":
         "这一处与 daily_trading_loop 的同名开关不同：本类在 `run()` 里**已经**"
         "显式调用过 `self._validator.validate(node)`，DSL 走到 executor 时必然已通过"
         "同一套校验，再验一次结果相同（只多一次遍历）。"
         "见 test_validation_happens_before_execution。",
 
-    "L374 `n_trimmed = int((proc_signal.index < first_valid).sum())` → `<=`":
+    "app/core/backtest_engine/realistic_backtester.py ×1 — L374 `n_trimmed = int((proc_signal.index < first_valid).sum())` → `<=`":
         "n_trimmed **只用于日志文本和下一行的 >0 判定**，实际裁剪用的是 "
         "`proc_signal.loc[first_valid:]`，与这个计数无关。把 `<` 放宽成 `<=` "
         "只会让日志里多报一行，回测结果逐点不变。",
 
-    "L375 `if n_trimmed > 0:` → `>=`":
+    "app/core/backtest_engine/realistic_backtester.py ×1 — L375 `if n_trimmed > 0:` → `>=`":
         "n_trimmed == 0 时进入该分支所做的事（`proc_signal.loc[first_valid:]` 与"
         "同范围的 dataset 切片）都是**恒等操作**，只多打一行日志。"
         "见 test_burn_in_trim_is_idempotent_when_nothing_to_trim。",
 
-    "L656 `if abs(is_s) > 1e-9 else 0.0` → `>=`":
+    "app/core/backtest_engine/realistic_backtester.py ×1 — L656 `if abs(is_s) > 1e-9 else 0.0` → `>=`":
         "区分值需要 |is_s| **恰好等于** 1e-9。is_s 是 `_f(is_r.sharpe_ratio)` 的输出，"
         "由整段回测的均值/标准差算出，无法反解出使其精确等于 1e-9 的输入；"
         "而它唯一容易取到的特殊值 0.0 在两侧都走 else 分支。",

@@ -1,3 +1,16 @@
+# requirements.txt —— **允许哪些版本**（约束），不是"用的哪些版本"。
+#
+# 两个安装入口，分工明确（外部审计 2026-09-15 要求写清楚）：
+#   · requirements.lock —— CI **阻塞**任务装它，逐位钉死，可复现
+#   · requirements.txt  —— CI **非阻塞**任务装它（当日最新），提前看见依赖漂移
+#
+# 这里的每一个包都必须同时出现在 lock 里，由
+# tests/meta/test_lessons_enforced.py::TestLessonC
+# ::test_every_declared_requirement_appears_in_the_lock_file 强制。
+#
+# 下界基本都没有上界（已登记为缺陷 D-3）：CI 的非阻塞任务因此装的是当日最新，
+# 这是**有意的** —— 漂移要被看见，而不是被 lock 掩盖。
+
 # ── Core Scientific Stack ─────────────────────────────────────────────────
 numpy>=1.24
 pandas>=2.0

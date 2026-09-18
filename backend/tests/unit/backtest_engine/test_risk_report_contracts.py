@@ -180,12 +180,12 @@ class TestInsufficientSample:
 
 
 PROVEN_EQUIVALENT = {
-    "L270 `if min_obs > 0 and n < min_obs:` → `>=`":
+    "app/core/backtest_engine/risk_report.py ×1 — L270 `if min_obs > 0 and n < min_obs:` → `>=`":
         "`min_obs >= 0` 只在 min_obs == 0 时与原式不同，而此时右侧 `n < 0` 恒为假"
         "（n 是长度，非负），`and` 短路后整体仍为假。两侧对**所有** min_obs 取值"
         "行为一致。见 test_min_obs_zero_never_blanks_regardless_of_the_comparison。",
 
-    "L192 `if var_m > 1e-12:` → `>=`":
+    "app/core/backtest_engine/risk_report.py ×1 — L192 `if var_m > 1e-12:` → `>=`":
         "唯一的区分点是 var_m **恰好等于** 1e-12。我一度以为常数基准（var_m=0）"
         "能区分 —— **判错了**：`0.0 >= 1e-12` 同样为假，两侧都跳过除法。"
         "var_m = float(np.var(x)) 是平方和除以 n 的浮点结果，无法构造成精确的 1e-12。"

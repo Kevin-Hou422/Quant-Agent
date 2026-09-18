@@ -56,7 +56,7 @@
 | `app/` 下 `.py` | 111 |
 | 其中**有变异点** | **89**（旧算子集下是 88；`_sqlite_utils.py` 是算子补齐后新进来的） |
 | **已测量**的变异点 | **1981**（1980 个在 MUTATORS v1 下枚举，+1 个补测） |
-| 存活合计 | **138**（分布在 44 个模块），其中 **2 个的等价性证明已被反例推翻** |
+| 存活合计 | **136**（分布在 43 个模块） |
 | 零存活模块 | **44** |
 | **当前算子集下应测的点数** | **2843**（MUTATORS v2） |
 | → **从未测量**的点数 | **862** |
@@ -91,7 +91,7 @@
 | `core/data_engine/data_partitioner.py` | 54 | 18.5% → **83.3%** | 9 |
 | `core/backtest_engine/portfolio_constructor.py` | 37 | 32.4% → **86.5%** | 5 |
 | `core/data_engine/pit_store.py` | 24 | 70.8% → **79.2%** | 5 |
-| `core/execution/paper_broker.py` | 26 | **80.8%** | 5 |
+| `core/execution/paper_broker.py` | 26 | 80.8% → **88.5%** | 3 |
 | `core/workflows/alpha_workflows.py` | 69 | 20.3% → **92.8%** | 5 |
 | `core/backtest_engine/performance_analyzer.py` | 92 | 30.4% → **95.7%** | 4 |
 | `core/backtest_engine/realistic_backtester.py` | 37 | 32.4% → **89.2%** | 4 |
@@ -136,31 +136,85 @@
 ### 已知未闭合的缺口
 
 外部审计 2026-09-15 之后，这里有 **四** 个，不是原来写的"只有这一个"。
+（第一个已从"没对账"变成"对完账、缺口已量化并锁住"。）
 
-**（一）138 个存活项的模块级逐条归属还没做。** 已经建立的是：
+**（一）22 个存活变异既未被杀死，也没有书面证明。**
 
-- 89 个模块全部测量过（机器对账）
-- 44 个写了证明的文件，条目数与各自声明的存活数**逐个相等**
-- 每条证明说明 ≥40 字、点名的验证用例真实存在（机器检查）
+这一条以前写的是"逐条归属还没做"。**归属已经做完了**（2026-09-16）：
+97 条证明的键全部改写成 `<模块路径> ×<覆盖点数> — <描述>`，
+由 `test_every_proof_key_declares_its_module_and_point_count` 强制格式、
+`test_survivor_disposition_reconciles_per_module` 逐模块对账。
 
-做不到的是把 138 个存活**逐条**对上 95 条证明 —— `PROVEN_EQUIVALENT` 的键是
-自由文本（如 `"L124 (weights < -tol) → <="`），不带模块路径；按 import 归属会错判
-（`risk_gate` 的 10 条证明在它自己的文件里，而那个文件并不直接 import 该模块）。
+对完账才看清真正的问题不是"对不上"，而是**账本身是缺的**：
 
-**闭合办法**：把每条键改成 `<模块路径>:L<行号> <变异描述>` 的固定格式，
-再加一条 meta 测试逐条对账。约 95 条键需要改写。
+| 模块 | 存活 | 有证明 | **未处置** |
+|---|---:|---:|---:|
+| `tasks/daily_trading_loop.py` | 10 | 0 | **10** |
+| `core/data_engine/data_partitioner.py` | 9 | 5 | **4** |
+| `core/alpha_engine/fast_ops.py` | 18 | 15 | **3** |
+| `core/backtest_engine/transaction_cost.py` | 9 | 6 | **3** |
+| `core/strategies/baselines.py` | 2 | 0 | **2** |
+| 合计 | 136 | 114 | **22** |
 
-这个缺口连同棘轮（证明条数只许增不许减）写在
-`measured_modules.json` 的 `proof_reconciliation` 块里，
-由 `TestEveryModuleIsMeasured::test_the_open_reconciliation_gap_stays_visible` 守着 ——
-删掉那个块或让证明条数变少都会判红。
+`daily_trading_loop` 与 `baselines` 是**一条证明都没有**。
 
-（证明条数现在是 **95** 不是 97：`paper_broker` 的 L119/L127 两条被反例推翻，
-移进了 `REFUTED_EQUIVALENCE`。**这两个存活点目前既未被杀死也无有效证明。**）
+**此前为什么没发现**：旧的自洽检查是"每个证明文件的条目数 == 它自己声明的存活数"
+—— **文件内自洽，跨文件汇总从未对过账**。44 个文件各自都"对得上"，
+加起来却少了 22 个。这是自伤教训 #13 的又一个实例：判据只覆盖了局部。
+
+顺带修掉的另一个判据盲区：`_count_proof_entries()` 只扫模块级 `tree.body`，
+**写在类里的 `PROVEN_EQUIVALENT` 它看不见**（`position_store`、`strategy_store`
+各一条）。棘轮下限因此一直比真实值小，那两条从来不受保护。
+
+**闭合办法**：逐模块补用例杀死（首选），或写可机械验证的等价性证明并附反驳尝试。
+棘轮 `survivor_disposition.ratchet.unproven_max = 22`，只许减不许增。
+
+**（零）依赖安装入口已定死（原来是模糊的）。**
+
+外部审计 2026-09-15 指出仓库有**两个**安装入口且互不一致：CI 装
+`requirements.txt`，仓库里还躺着一份 `requirements.lock`。实测两边都有洞 ——
+txt 漏了 `scikit-learn`（CI 连红三次的根因），而 2026-07-30 那版 lock
+**漏了 `pandas_market_calendars`**，照它安装会让 `market_calendar.py`
+静默退回 `pd.bdate_range`（外部审计 #6 的原始现场）。**两个入口各自复现了
+同一类缺陷，而没有任何检查会发现这件事。**
+
+现在的分工写进了两份文件的头部，并由测试强制：
+
+| 入口 | 谁用 | 作用 |
+|---|---|---|
+| `requirements.lock` | CI **阻塞**任务 | 逐位钉死 → "这批结果是用哪套版本跑的"可复现 |
+| `requirements.txt` | CI **非阻塞**任务 | 装当日最新 → **依赖漂移要被看见，而不是被 lock 掩盖** |
+
+- lock 已用跑通完整套件的那个干净环境重新生成（101 个包，含头部的生成步骤）
+- `TestLessonC::test_every_declared_requirement_appears_in_the_lock_file`
+  逐条核对"txt 里声明的每个包都在 lock 里"，漏一个判红
+- CI 不再排除 `tests/performance`：那组此前长期在量一个 422 的延迟
+  （`n_days=50` 违反接口的 `ge=60`），改对之后才真的在测东西
 
 **（二）862 个变异点从未测量。** 见上面「结果总览」。补齐算子后应测 2843 点，
 已测 1981 点。棘轮：`test_the_unmeasured_scope_stays_visible_and_only_shrinks`。
 **欠一次重测。**
+
+**重测的实测代价**（不是估计：各包测试目录的真实耗时 × 各自的变异点数）：
+
+| 方案 | 机器时间 | 说明 |
+|---|---:|---|
+| 全量 2843 点，按当前选路（包目录 + `tests/meta`） | **206 小时** | 最严格，`tests/meta` 单次就要 ~210s，乘在每个点上 |
+| 全量 2843 点，不含 `tests/meta` | **40 小时** | 放弃"变异把某个已登记缺陷修好 → xfail 变 XPASS → 判杀"这一类击杀 |
+| 仅新增的 862 点，不含 `tests/meta` | **12 小时** | 已测的 1981 点仍停留在旧判定器口径（击杀率是上界） |
+
+三个方案的严格性不同，**选哪个是取舍不是优化**，需要人来定。
+本轮没有启动任何一个 —— 跑起来会占住机器数小时到数天。
+
+命令（可续跑，关机重启后再跑同一条即可接上；全程在隔离副本里，不动工作区）：
+
+```bash
+cd backend
+python tools/mutation/make_plan.py                 # 89 模块 / 2843 点
+python tools/mutation/runner.py plan_full.json --state progress_full.json
+python tools/mutation/runner.py plan_full.json --state progress_full.json --status   # 只看进度
+```
+
 
 > 唯一补上的那个是 `app/db/_sqlite_utils.py`：它在旧算子集下显示"无变异点"
 > （`!=` 当时没有对应变异器），实际是**一条测试都没有**。补测首轮 1 点 / 0 杀死 /
@@ -299,7 +353,19 @@
 
 ---
 
-## 已登记产品缺陷（32 条，只登记不修）
+## 已登记产品缺陷（**28 条行为缺陷** + 3 条技术债 + 1 条前端，只登记不修）
+
+**分三类数，不混成一个数**（外部审计 2026-09-15 的判定）：
+
+| 类别 | 条数 | 含义 |
+|---|---:|---|
+| 行为缺陷 | **28** | 有复现、有"应有行为"的 `xfail(strict=True)` 断言 |
+| 技术债 | 3 | B-9 / B-10 / B-11 —— 只有结构证据，**没有"产品结果是错的"的复现** |
+| 前端 | 1 | N-6 —— 已在当前代码上复现，但后端套件里没有可执行断言 |
+
+混成一个数会让它读起来比实际严重，也会稀释真正该优先修的那几条
+（A-6 把敞口放大到 L1=1、N-3 风控失败后继续回测、N-4 不显著显示成显著）。
+由 `test_the_outstanding_defect_count_is_visible` 三类分别锁住。
 
 编号、一句话描述、以及断言"应有行为"的 `xfail(strict=True)` 用例，
 全部在 `tests/meta/test_known_defects.py`。**那里是权威**，

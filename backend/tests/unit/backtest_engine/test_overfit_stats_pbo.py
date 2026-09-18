@@ -240,12 +240,12 @@ class TestPboSemantics:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L28 `np.where(sd > 1e-12, mu/sd, 0.0)` -> `>=`":
+    "app/core/backtest_engine/overfit_stats.py ×1 — L28 `np.where(sd > 1e-12, mu/sd, 0.0)` -> `>=`":
         "区分值需要 sd 恰好等于 1e-12。sd = np.nanstd(block, axis=0) 是浮点均方根，"
         "无法反解出精确等于 1e-12 的输入；它真正会取到的特殊值是 0.0（常数列），"
         "而 `0.0 >= 1e-12` 为假，两侧都取 0.0。",
 
-    "L72 `omega = min(max(omega, 1e-6), 1 - 1e-6)` 的 `1 - 1e-6` -> `1 + 1e-6`":
+    "app/core/backtest_engine/overfit_stats.py ×1 — L72 `omega = min(max(omega, 1e-6), 1 - 1e-6)` 的 `1 - 1e-6` -> `1 + 1e-6`":
         "上界永不触发：rank <= N，故 omega = rank/(N+1) <= N/(N+1) < 1 - 1e-6"
         "（差距至少 1/(N+1)）。min 的第二个参数取 1-1e-6 还是 1+1e-6 都不改变结果。"
         "见 test_upper_clip_never_binds。",

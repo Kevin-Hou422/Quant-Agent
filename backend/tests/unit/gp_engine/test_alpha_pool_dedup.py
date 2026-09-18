@@ -358,7 +358,7 @@ def test_whitening_matches_the_reference_formula_to_full_precision():
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L170 `mat_clean.mean(axis=0, keepdims=True)` → `keepdims=False`":
+    "app/core/gp_engine/alpha_pool.py ×1 — L170 `mat_clean.mean(axis=0, keepdims=True)` → `keepdims=False`":
         "`mu` 只被用在下一行的 `X = mat_clean - mu`。keepdims=True 给 (1, T)，"
         "False 给 (T,)。numpy 广播按**尾轴对齐**：(n, T) 减 (T,) 与减 (1, T) "
         "展开成完全相同的元素级运算，结果逐位相同。"

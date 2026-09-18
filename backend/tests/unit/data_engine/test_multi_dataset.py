@@ -884,7 +884,7 @@ class TestLocalLoaderWiring:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L100 `data: Dict[str, pd.DataFrame] = field(repr=False)` 的 False → True":
+    "app/core/data_engine/multi_dataset.py ×1 — L100 `data: Dict[str, pd.DataFrame] = field(repr=False)` 的 False → True":
         "`Dataset` **自己定义了 `__repr__`**（源码 L117-121），"
         "它完全取代了 dataclass 自动生成的那一个。"
         "`field(repr=...)` 只影响自动生成的 `__repr__`，"

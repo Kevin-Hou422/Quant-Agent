@@ -823,7 +823,7 @@ class TestKnownDefectsPinnedAsIs:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L37 `_HAS_BN = False` → True（**已被杀死，此条保留为记录**）":
+    "app/core/alpha_engine/fast_ops.py ×0 — L37 `_HAS_BN = False` → True（**已被杀死，此条保留为记录**）":
         "原本判定为等价：该行在 `except ImportError:` 块内，只有 bottleneck "
         "**导入失败**时才执行，而本环境已安装 bottleneck。复测把它杀死了 —— "
         "H 节的 test_bottleneck_rolling_ops_raise_when_the_panel_is_shorter_than_window "
@@ -833,12 +833,12 @@ PROVEN_EQUIVALENT = {
         "等价性的直觉判断不可靠，必须以复测结果为准。"
         "机械验证仍保留在 test_has_bn_false_line_is_inside_the_import_failure_branch。",
 
-    "L247 / L257 `if window < T:` → `<=`（ts_delta / ts_delay）":
+    "app/core/alpha_engine/fast_ops.py ×2 — L247 / L257 `if window < T:` → `<=`（ts_delta / ts_delay）":
         "两种取值只在 window == T 时分道：此时 `x[window:]` 与 `x[:-window]` 都是"
         "形状 (0,N) 的空切片，`out[window:] = 空 - 空` 是一次空赋值，对 out 没有"
         "任何写入，结果与不进分支完全相同。见 test_delta_at_window_equal_t_is_a_noop。",
 
-    "L58 / L80 / L99 / L463 `shape = (T - window + 1, window, N)` 的两个符号，"
+    "app/core/alpha_engine/fast_ops.py ×10 — L58 / L80 / L99 / L463 `shape = (T - window + 1, window, N)` 的两个符号，"
     "以及 L341/L342/L370/L371/L470/L471 的 `keepdims=True`":
         "这十处全部落在 `try:` 块内，而 `except Exception:` 里是一份**独立的纯循环"
         "实现**。改坏 shape 会让 `out[window-1:] = result` 形状不匹配抛 ValueError，"
@@ -852,14 +852,14 @@ PROVEN_EQUIVALENT = {
         "『向量化实现写错了』和『这台机器的内存布局不支持 as_strided』"
         "变成同一件事，前者永远不会被发现。",
 
-    "L434 `dx, dy = wx - mu_x, wy - mu_y` → `+`（ts_corr）"
+    "app/core/alpha_engine/fast_ops.py ×2 — L434 `dx, dy = wx - mu_x, wy - mu_y` → `+`（ts_corr）"
     "与 L472 `cov = np.sum((wx - mu_x) * (wy - mu_y), ...)` → `+`":
         "协方差只需要**一侧**去中心化：E[(X+μx)(Y−μy)] = E[(X−μx)(Y−μy)] + 2μx·E[Y−μy]，"
         "而 E[Y−μy] 恒为 0（μy 就是该窗口 Y 的均值），所以多出来的那一项恒等于 0。"
         "两种写法在任何输入上给出**逐位相同**的结果，是数学恒等而非测试盲区。"
         "见 test_centring_one_side_is_enough_for_covariance。",
 
-    "L411 `counts[counts > 0]` → `>=`（ts_entropy，仅在无空桶时）":
+    "app/core/alpha_engine/fast_ops.py ×1 — L411 `counts[counts > 0]` → `>=`（ts_entropy，仅在无空桶时）":
         "np.histogram 的 counts 是非负整数；`>0` 与 `>=0` 只在**存在空桶**时不同，"
         "而 E 节的 test_entropy_skips_empty_bins 用必然产生空桶的输入把这一差别"
         "钉成了「有限值 vs NaN」，该变异在那条用例下被杀死，不属于等价变异。"

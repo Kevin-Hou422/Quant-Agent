@@ -262,7 +262,7 @@ class TestDateCoercion:
         assert _to_date(value) == _date(2024, 3, 5)
 
     PROVEN_EQUIVALENT = {
-        "L100 `sessionmaker(..., expire_on_commit=False)` → True":
+        "app/db/position_store.py ×1 — L100 `sessionmaker(..., expire_on_commit=False)` → True":
             "本类所有返回 ORM 对象的方法（fills_on / fills_in_range / pnl_history）"
             "用的都是**只读** session —— 没有 commit，就不会触发过期；"
             "而所有 commit 的方法（record_day）不把对象返回给调用方。"

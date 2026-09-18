@@ -185,20 +185,20 @@ class TestAppendSemantics:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L201/L208 `dataset_dir.mkdir(parents=True)` / `part_dir.mkdir(parents=True)`":
+    "app/core/data_engine/pit_store.py ×2 — L201/L208 `dataset_dir.mkdir(parents=True)` / `part_dir.mkdir(parents=True)`":
         "这两处的父目录**必然已存在**：`store_dir` 在 `__init__` 里已建，"
         "`dataset_dir = store_dir/name` 只深一层；`part_dir = dataset_dir/year=…` "
         "紧跟在 dataset_dir 建好之后。`parents` 取何值都不影响结果。"
         "只有 `__init__` 里那一处真的需要 parents（已由 "
         "test_store_dir_is_created_with_parents 杀死）。",
 
-    "L217/L268 `pd.concat([...], ignore_index=True)` → False":
+    "app/core/data_engine/pit_store.py ×2 — L217/L268 `pd.concat([...], ignore_index=True)` → False":
         "两处 concat 之后都不再使用行索引：L217 紧接着 `drop_duplicates(subset=…)`、"
         "`sort_values`、`reset_index(drop=True)`，索引被重建；L268 之后只做"
         "布尔掩码过滤与 `pivot(index=\"timestamp\")`，用的是**列值**不是行索引。"
         "重复的索引标签因此不可观测。",
 
-    "L227 `group.to_parquet(..., index=False)` → True":
+    "app/core/data_engine/pit_store.py ×1 — L227 `group.to_parquet(..., index=False)` → True":
         "写入前刚做过 `reset_index(drop=True)`，索引是标准 RangeIndex。"
         "pyarrow 对 RangeIndex 只写元数据、不写数据列，`pd.read_parquet` "
         "读回来仍是同一个 0..n-1 索引，列集合与取值都不变。"

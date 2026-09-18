@@ -325,13 +325,13 @@ class TestIsValid:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L166 `arglist = args[1] if len(args) > 1 else []` → `>=`":
+    "app/core/alpha_engine/parser.py ×1 — L166 `arglist = args[1] if len(args) > 1 else []` → `>=`":
         "文法把 func_call 定义成 `IDENT \"(\" arglist \")\"`，而 `arglist : arg (\",\" arg)*` "
         "**至少要一个 arg** —— 零参调用在词法层就报 Syntax error，走不到这行 Python。"
         "因此 func_call 收到的 args 恒为 2 个（IDENT + arglist），`len(args) > 1` 与 "
         "`>= 1` 恒同真。见 test_func_call_always_receives_exactly_two_children。",
 
-    "L295 `if len(arglist) > 1 and isinstance(arglist[1], ScalarNode)` → `or`（winsorize）":
+    "app/core/alpha_engine/parser.py ×0 — L295 `if len(arglist) > 1 and isinstance(arglist[1], ScalarNode)` → `or`（winsorize）":
         "`or` 的短路让第一个子式为真时就不再看第二个 —— 但两个子式的真值在本行"
         "**同向**：只有 len>1 时 arglist[1] 才存在，len<=1 时 isinstance 会 IndexError。"
         "Python 的 `or` 仍然按顺序求值，len<=1 时第一个子式为 False，"

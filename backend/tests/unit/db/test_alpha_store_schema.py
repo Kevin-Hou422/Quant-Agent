@@ -268,7 +268,7 @@ class TestExport:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L154 `if cols and \"is_forward\" not in cols:` → `or`":
+    "app/db/alpha_store.py ×1 — L154 `if cols and \"is_forward\" not in cols:` → `or`":
         "左操作数 `cols` 恒为真：`_migrate_add_columns()` 在 "
         "`_Base.metadata.create_all(self._engine)` **之后**调用，"
         "`PRAGMA table_info(alpha_ic_history)` 必然返回非空列集。"

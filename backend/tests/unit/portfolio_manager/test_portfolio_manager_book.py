@@ -216,13 +216,13 @@ class TestCapacity:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L52 `if abs(wi) < 1e-9: continue` → `<=`":
+    "app/core/portfolio_manager/manager.py ×1 — L52 `if abs(wi) < 1e-9: continue` → `<=`":
         "区分值需要 |wi| **恰好等于** 1e-9。wi 来自 water-filling 投影后的权重"
         "（多步浮点乘除并归一到 L1=1），无法反解出精确等于 1e-9 的输入；"
         "且该阈值的用途就是「小到等于没有持仓」的模糊带 —— 1e-9 权重在 10 万美元"
         "账户上不足 0.0001 美元。",
 
-    "L128 `cap_w > 0.0` → `>=`":
+    "app/core/portfolio_manager/manager.py ×1 — L128 `cap_w > 0.0` → `>=`":
         "`np.where(cond, cap_w, 0.0)` 在 cap_w == 0.0 时两侧取值相同："
         "条件为真取 cap_w（=0.0），为假取常量 0.0。唯一的区分点上输出一致。"
         "见 test_zero_capacity_is_zero_either_way。",

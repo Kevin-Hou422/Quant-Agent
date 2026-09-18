@@ -254,12 +254,12 @@ class TestAbdiRanaldi:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L44 `S = np.where(S < 0.0, 0.0, S)` → `<=`":
+    "app/core/trading_context/spread.py ×1 — L44 `S = np.where(S < 0.0, 0.0, S)` → `<=`":
         "两侧输出逐元素相同：唯一的区分点是 S == 0.0，而此时"
         "条件为真取常量 0.0、为假取 S（=0.0），是同一个值。"
         "见 test_zero_spread_is_zero_either_way。",
 
-    "L35 `np.where((H > 0) & (L > 0), H / L, np.nan)` → `>=`":
+    "app/core/trading_context/spread.py ×1 — L35 `np.where((H > 0) & (L > 0), H / L, np.nan)` → `>=`":
         "0 价在两种取值下都得到 NaN，只是路径不同：`>` 直接取 np.nan；"
         "`>=` 取 H/L 后 `np.log(0)` = -inf → beta = inf → "
         "alpha = inf - inf = NaN → 随后 `np.where(np.isfinite(S), S, np.nan)` "
@@ -268,11 +268,11 @@ PROVEN_EQUIVALENT = {
         "连警告都不会发出 —— 没有任何可观测差别。"
         "见 test_zero_price_yields_nan_through_either_branch。",
 
-    "L40 `np.where((Hmax > 0) & (Lmin > 0), Hmax / Lmin, np.nan)` → `>=`":
+    "app/core/trading_context/spread.py ×1 — L40 `np.where((Hmax > 0) & (Lmin > 0), Hmax / Lmin, np.nan)` → `>=`":
         "与 L35 完全同构：gamma 走 -inf 后在 alpha 里变成 NaN，"
         "最终被 isfinite 过滤，两侧输出一致。",
 
-    "L68 `np.log(high.where(high > 0))` 等三处 → `>=`":
+    "app/core/trading_context/spread.py ×1 — L68 `np.log(high.where(high > 0))` 等三处 → `>=`":
         "Abdi-Ranaldi 的同一模式：`where` 保留 0 后 `np.log(0)` = -inf，"
         "eta = (-inf + -inf)/2 = -inf，x = (c - eta)·(c' - eta) 含 inf-inf → NaN，"
         "`s2.clip(lower=0)` 与 `sqrt` 之后仍是 NaN，被 skipna 平均忽略。",

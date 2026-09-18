@@ -222,7 +222,7 @@ class TestActivePromotionBoundaries:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L118 `sd > 1e-12` → `>=`":
+    "app/core/lifecycle/promotion_gate.py ×1 — L118 `sd > 1e-12` → `>=`":
         "区分值需要 sd **恰好等于** 1e-12。sd = np.std(x, ddof=1) 是对 n 个浮点数"
         "做平方和、除以 n-1、再开方的结果，无法反解出使其精确等于 1e-12 的输入；"
         "且该阈值的用途就是「标准差小到不可用时把 t 记为 0」，边界两侧行为连续："

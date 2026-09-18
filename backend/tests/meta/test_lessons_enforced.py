@@ -684,6 +684,46 @@ class TestLessonC_ImportedDepsMustBeDeclared:
             "却未在 requirements.txt 中声明：\n  " + "\n  ".join(missing)
         )
 
+    @staticmethod
+    def _declared_names(path) -> list:
+        """从一份 requirements 文件里取出顶层包名（归一化：小写、`-`→`_`、去 extras）。"""
+        import re
+        names = []
+        for ln in _src(path).splitlines():
+            ln = ln.split("#")[0].strip()
+            if not ln or ln.startswith("-"):
+                continue
+            m = re.match(r"^([A-Za-z0-9_.\-\[\]]+)", ln)
+            if m:
+                names.append(m.group(1).split("[")[0].replace("-", "_").lower())
+        return names
+
+    def test_every_declared_requirement_appears_in_the_lock_file(self):
+        """
+        `requirements.txt` 里声明的每一个包，都必须出现在 `requirements.lock` 里。
+
+        **这条是被打脸之后才有的。** 外部审计 2026-09-15 指出仓库有两个安装入口
+        （CI 用 txt、仓库里还躺着一份 lock），而两者不一致却无人核对。
+        实测下来 lock（2026-07-30 那版）**漏了 `pandas_market_calendars`** ——
+        照它安装会让 `market_calendar.py` 静默退回 `pd.bdate_range`：
+        把节假日当交易日、拿不到 DST/半日市收盘时间，且没有任何报错。
+        那正是外部审计 #6 的原始现场，等于两个入口各自复现了同一个缺陷。
+
+        方向只查这一边（txt ⊆ lock）：lock 是 `pip freeze` 的全量快照，
+        必然包含传递依赖，反向包含不成立。
+        """
+        req = BACKEND / "requirements.txt"
+        lock = BACKEND / "requirements.lock"
+        assert lock.exists(), (
+            "requirements.lock 不存在 —— 它是 CI 阻塞任务的安装入口，不能删")
+        locked = set(self._declared_names(lock))
+        missing = [n for n in self._declared_names(req) if n not in locked]
+        assert not missing, (
+            f"以下包在 requirements.txt 里声明了，却不在 requirements.lock 里："
+            f"{missing}\n"
+            f"两个安装入口装出来的环境不同，其中一个会缺依赖 —— "
+            f"重新生成 lock（步骤写在 lock 文件头部），不要手工补一行了事。")
+
     def test_xgboost_sklearn_api_is_constructible_not_merely_importable(self):
         """
         `from xgboost import XGBClassifier` 会成功，`XGBClassifier(...)` 才会抛
@@ -1142,23 +1182,36 @@ class TestLessonX_EquivalenceProofsAreMechanical:
                 tree = ast.parse(src)
             except SyntaxError:
                 continue
-            proofs = {}
-            for node in tree.body:
-                if not isinstance(node, ast.Assign):
+            # **必须 ast.walk，不能只看 tree.body**（2026-09-16 自查）：
+            # 写在**类里**的 PROVEN_EQUIVALENT（test_position_store_schema.py、
+            # test_strategy_store_schema.py 各一条）此前对整个 §X 都是隐形的 ——
+            # 说明字数、点名的验证用例是否存在、声明条数对不对，一条都没查过。
+            # 与 test_invariants.py::_collect_dict_entries 是同一个盲区，同期一并修。
+            proofs, declares = {}, False
+            for node in ast.walk(tree):
+                d = None
+                if isinstance(node, ast.Assign) and any(
+                        getattr(t, "id", None) == "PROVEN_EQUIVALENT"
+                        for t in node.targets):
+                    d = node.value
+                elif (isinstance(node, ast.AnnAssign)
+                      and getattr(node.target, "id", None) == "PROVEN_EQUIVALENT"):
+                    d = node.value
+                if not isinstance(d, ast.Dict):
                     continue
-                if not any(getattr(t, "id", None) == "PROVEN_EQUIVALENT"
-                           for t in node.targets):
-                    continue
-                if not isinstance(node.value, ast.Dict):
-                    continue
-                for k, v in zip(node.value.keys, node.value.values):
+                declares = True
+                for k, v in zip(d.keys, d.values):
                     try:
                         proofs[ast.literal_eval(k)] = ast.literal_eval(v)
                     except Exception:
                         continue
             funcs = {n.name for n in ast.walk(tree)
                      if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-            if proofs:
+            # **空字典也要产出**：原来 `if proofs:` 把它们跳过了，于是
+            # "这个模块零存活" 与 "忘了写声明" 在检查里没有区别。
+            # 但只产出**真的有赋值语句**的文件 —— meta 套件里那两个文件只是
+            # 在*检查*证明（正文里出现这个名字），不是在声明证明。
+            if declares:
                 yield p, proofs, funcs
 
     @staticmethod
@@ -1240,6 +1293,47 @@ class TestLessonX_EquivalenceProofsAreMechanical:
             + "\n修法：加一条 test_every_survivor_has_a_written_proof，"
               "断言 len(PROVEN_EQUIVALENT) 等于复测后的存活数。")
 
+    def test_the_declared_count_actually_matches_the_entries(self):
+        """
+        上一条**只检查那条用例存不存在**，不检查它断言的数字对不对 ——
+        又一个"查了形式没查内容"（外部审计 2026-09-15 对 TestLessonX 的原话）。
+
+        2026-09-16 当场踩到：拆 `trial_ledger` / `diagnostics_store` 那条证明时
+        条目从 3 变成 4，文件里的 `assert len(PROVEN_EQUIVALENT) == 3` 没跟着改。
+        它是被**全量跑**抓到的，而不是被守卫抓到的 —— 守卫查的是名字。
+
+        这条把数字本身也纳入：文件里声明的数必须等于实际条目数。
+        """
+        import re
+
+        mismatched, undeclared = [], []
+        for path, _proofs, _funcs in self._proof_files():
+            src = _src(path)
+            actual = 0
+            for node in ast.walk(ast.parse(src)):
+                d = None
+                if isinstance(node, ast.Assign) and any(
+                        getattr(t, "id", None) == "PROVEN_EQUIVALENT" for t in node.targets):
+                    d = node.value
+                elif (isinstance(node, ast.AnnAssign)
+                      and getattr(node.target, "id", None) == "PROVEN_EQUIVALENT"):
+                    d = node.value
+                if isinstance(d, ast.Dict):
+                    actual += len(d.keys)
+            m = re.search(r"len\((?:self\.)?PROVEN_EQUIVALENT\)\s*==\s*(\d+)", src)
+            if not m:
+                undeclared.append(f"{_rel(path)}（实际 {actual} 条）")
+            elif int(m.group(1)) != actual:
+                mismatched.append(
+                    f"{_rel(path)}：声明 {m.group(1)} 条，实际 {actual} 条")
+        assert not mismatched, (
+            "以下文件声明的证明条数与实际对不上：\n  " + "\n  ".join(mismatched))
+        assert not undeclared, (
+            "以下文件没有写出 `assert len(PROVEN_EQUIVALENT) == N`：\n  "
+            + "\n  ".join(undeclared)
+            + "\n条目为空也要显式写 `== 0` —— 『没有存活项』和『忘了声明』"
+              "必须在代码里分得开。")
+
 
 # ===========================================================================
 # §Y 源码子串断言不得增长
@@ -1314,6 +1408,66 @@ class TestLessonY_SourceSubstringAssertionsDoNotGrow:
         n = len(self._sites())
         assert n >= self.BASELINE - 5, (
             f"源码子串断言已降到 {n} 处（基线 {self.BASELINE}）—— "
+            f"请把 BASELINE 改成 {n}，让棘轮继续收紧。")
+
+
+class TestLessonZ_UnitTestsDoNotQuietlyBecomeIntegrationTests:
+    """
+    外部审计 2026-09-15 §五.6：**部分所谓 unit 测试真实跑完整 GP / Optuna**，
+    却只为了检查"DSL 非空"或"输出是不是 DataFrame"。
+
+    代价是双份的：
+      · 耗时与超时噪声跑进了本该最快的那一层（变异测试按模块重跑 N 次，
+        这个代价被乘上 N —— `alpha_workflows` 一轮跑了 11.6 小时就有它的份）
+      · 断言强度与运行开销**不成比例**：花了集成测试的钱，买的是类型检查
+
+    这里不搬家 —— 一次性重排这些用例的风险大于收益，而且会丢掉现有覆盖。
+    做成**棘轮**：存量允许，禁止增长。新写的重引擎用例请放进 `tests/integration/`，
+    unit 层用可控输入验证局部契约。
+    """
+
+    #: 触发"这不是 unit 测试"的调用：真的跑演化 / 调参搜索。
+    HEAVY_CALLS = {"evolve", "optimize", "run_generation", "run_evolution",
+                   "search", "fit_predict"}
+    HEAVY_CTORS = {"PopulationEvolver", "GPEngine", "AlphaOptimizer",
+                   "GenerationWorkflow"}
+    #: 2026-09-16 基线。只许降不许升。
+    BASELINE = 62
+
+    @classmethod
+    def _sites(cls):
+        out = []
+        unit = TESTS / "unit"
+        for p in sorted(unit.rglob("test_*.py")):
+            if "__pycache__" in p.parts:
+                continue
+            try:
+                tree = ast.parse(_src(p))
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                f = node.func
+                name = getattr(f, "attr", None) or getattr(f, "id", None)
+                if name in cls.HEAVY_CALLS or name in cls.HEAVY_CTORS:
+                    out.append((_rel(p), node.lineno, name))
+        return out
+
+    def test_heavy_engine_calls_in_unit_tests_do_not_grow(self):
+        sites = self._sites()
+        assert len(sites) <= self.BASELINE, (
+            f"tests/unit 里的重引擎调用从 {self.BASELINE} 处涨到了 {len(sites)} 处。\n"
+            f"跑完整 GP/Optuna 的用例属于 tests/integration/；"
+            f"unit 层请用可控输入验证局部契约。\n"
+            f"新增位置见：\n  "
+            + "\n  ".join(f"{f}:{ln}  {nm}()" for f, ln, nm in sites[-8:]))
+
+    def test_the_baseline_is_not_stale(self):
+        """存量降下去之后要把基线一起调小，否则它会变成永远够用的松口子。"""
+        n = len(self._sites())
+        assert n >= self.BASELINE - 5, (
+            f"重引擎调用已降到 {n} 处（基线 {self.BASELINE}）—— "
             f"请把 BASELINE 改成 {n}，让棘轮继续收紧。")
 
 

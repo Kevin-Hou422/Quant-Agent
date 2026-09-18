@@ -633,7 +633,7 @@ from types import SimpleNamespace                                   # noqa: E402
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L1423 `opend_up = False`（初值）→ `True`":
+    "app/api/router.py ×1 — L1423 `opend_up = False`（初值）→ `True`":
         "这个初值在任何可达路径上都会被**立即覆盖**："
         "紧接着的 `try: s.connect(...); opend_up = True` 成功则置 True，"
         "抛异常则 `except: opend_up = False`。"

@@ -267,7 +267,7 @@ class TestFeatureExtraction:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L110 `self._fitted = False` → True / L163 `self._fitted = True` → False":
+    "app/core/ml_engine/proxy_model.py ×2 — L110 `self._fitted = False` → True / L163 `self._fitted = True` → False":
         "`_fitted` 在整个代码库里**只被写、从不被读** —— should_prune 判断的是 "
         "`len(self._X) < cold_start_n` 与 `self._model`，与该标志无关。"
         "两次赋值都是死存储，取值不影响任何可观测行为。"
@@ -275,7 +275,7 @@ PROVEN_EQUIVALENT = {
         "一旦有人开始读 _fitted，该测试会红，这个点就要重新补用例）。"
         "顺带登记：这是一个**无人读取的状态字段**，属于误导性残留。",
 
-    "L155 `use_label_encoder=False` → True":
+    "app/core/ml_engine/proxy_model.py ×1 — L155 `use_label_encoder=False` → True":
         "xgboost 自 2.0 起已移除 use_label_encoder，3.x（本环境 3.2.0）对两种取值"
         "都只是忽略，不告警、不改变训练结果。实测两种取值训出的模型对同一输入"
         "给出逐位相同的 predict_proba。见 test_label_encoder_flag_is_ignored_by_xgboost。"

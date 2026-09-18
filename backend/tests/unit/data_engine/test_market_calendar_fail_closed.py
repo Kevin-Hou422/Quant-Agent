@@ -208,13 +208,13 @@ class TestTimestampCoercion:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L55 `allow = False`（进入 try 之前的初值）":
+    "app/core/data_engine/market_calendar.py ×1 — L55 `allow = False`（进入 try 之前的初值）":
         "该初值**必被覆盖**：紧随其后的 `try` 里无论成功（走 getattr 赋值）"
         "还是失败（走 except 的 `allow = False`），都会重新给 allow 赋值。"
         "它是一条死赋值，取何值都观察不到差别。"
         "见 test_pre_try_allow_initialiser_is_always_overwritten。",
 
-    "L107 `return days[0] if len(days) else ts + pd.Timedelta(days=1)` 的 `+`":
+    "app/core/data_engine/market_calendar.py ×1 — L107 `return days[0] if len(days) else ts + pd.Timedelta(days=1)` 的 `+`":
         "该兜底分支不可达：`days = trading_days(ts+1天, ts+14天)`，"
         "真实日历与工作日启发式在任意连续 14 天里都至少包含一个交易日"
         "（美股最长休市不超过 4 个连续日历日）。"

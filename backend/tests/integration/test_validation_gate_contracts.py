@@ -291,21 +291,28 @@ class TestTrialLedger:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L115 `res = ValidationResult(passed=False, ...)` 的初值":
+    "app/core/lifecycle/validation_gate.py ×1 — L115 `res = ValidationResult(passed=False, ...)` 的初值":
         "该初值必被覆盖：`evaluate()` 的每一条路径最后都执行 "
         "`res.passed = len(reasons) == 0`（没有提前 return），"
         "构造时传 False 还是 True 都观察不到差别。"
         "见 test_passed_is_always_recomputed_before_returning。",
 
-    "L198 `t_stat = (mu/sd) * sqrt(n) if sd > 1e-12 else 0.0` -> `>=`":
+    "app/core/lifecycle/validation_gate.py ×1 — L198 `t_stat = (mu/sd) * sqrt(n) if sd > 1e-12 else 0.0` -> `>=`":
         "区分值需要 sd 恰好等于 1e-12。sd = np.std(rets, ddof=1) 是浮点均方根，"
         "无法反解出精确等于 1e-12 的收益序列；而零方差的情形在更早的 "
         "`float(np.nanstd(...)) == 0.0` 处就已抛错，根本走不到这一行。",
 
-    "trial_ledger L49 / diagnostics_store L50 `expire_on_commit=False` -> True":
-        "两处的 commit 方法都在**同一个 session 内**读取需要的字段"
-        "（`add()` 读 row.total、`save()` 读 rec.id，过期后会自动 refresh），"
-        "读方法走的是只读 session，不触发过期。两种取值都观察不到差别。",
+    # 这一条原本一句话盖了两个模块，逐模块对账时会把两个点都算到 trial_ledger 上。
+    # 拆开写 —— 键里的模块前缀是对账的唯一依据，不允许一条横跨两个模块。
+    "app/db/trial_ledger.py ×1 — L49 `sessionmaker(..., expire_on_commit=False)` -> True":
+        "`add()` 在**同一个 session 内**读 row.total（过期后会自动 refresh 拿得到），"
+        "`total()` 走的是只读 session、不 commit 因此不触发过期。"
+        "两种取值在本模块的任何调用路径上都观察不到差别。",
+
+    "app/db/diagnostics_store.py ×1 — L50 `sessionmaker(..., expire_on_commit=False)` -> True":
+        "同型：`save()` 在同一个 session 内读 rec.id（过期后自动 refresh），"
+        "查询方法只读不 commit。两种取值观察不到差别。"
+        "与 trial_ledger L49 是同一个论证，但落在不同模块，必须分开登记。",
 }
 
 
@@ -337,6 +344,9 @@ def test_ledger_and_diagnostics_read_inside_their_sessions():
 
 
 def test_every_survivor_has_a_written_proof():
-    assert len(PROVEN_EQUIVALENT) == 3
+    # 3 → 4：原来有一条键一句话同时盖了 trial_ledger L49 与 diagnostics_store L50，
+    # 逐模块对账时两个点会一起算到 trial_ledger 头上。已拆成两条 ——
+    # 键里的模块前缀是对账的唯一依据，不允许一条横跨两个模块。
+    assert len(PROVEN_EQUIVALENT) == 4
     for key, why in PROVEN_EQUIVALENT.items():
         assert len(why) >= 40, f"{key} 的等价性说明过于敷衍：{why!r}"

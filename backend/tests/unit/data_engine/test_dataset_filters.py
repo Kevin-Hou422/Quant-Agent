@@ -1586,7 +1586,7 @@ class TestValidateFilterConfig:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L243 `spy_close = (1 + spy_returns.fillna(0)).cumprod() * 100` 的 `*` → `/`":
+    "app/core/data_engine/dataset_filters.py ×1 — L243 `spy_close = (1 + spy_returns.fillna(0)).cumprod() * 100` 的 `*` → `/`":
         "`spy_close` 这个局部变量**只**流向 `self._detect_regime(spy_close)`，"
         "再无第二个消费者（它不进 metrics、不进 notes、不返回）。"
         "而 `_detect_regime` 对正数缩放完全不变："

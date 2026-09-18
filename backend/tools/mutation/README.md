@@ -52,8 +52,13 @@ python tools/mutation/verify_mutant.py app/core/xxx.py 123 "a > b" "a >= b" \
 | `return x <= 5`（自查补充） | **0** | 1 |
 | `return a == b`（自查补充） | **0** | 1 |
 
-补齐后 `app/` 的全量点数从 1980 涨到 **2843**。**多出来的 863 个从未测量**，
-差额记在 `tests/meta/measured_modules.json` 的 `measurement_scope` 块里。
+补齐后 `app/` 的全量点数从 1980 涨到 **2843**。**多出来的 862 个从未测量**
+（1 个已补测，见 `_sqlite_utils.py`），差额记在
+`tests/meta/measured_modules.json` 的 `measurement_scope` 块里，并上了只减不增的棘轮。
+
+重测不是"跑一下"：全量 2843 点按当前选路要 **~206 小时**（每个点都要跑一遍
+包测试目录 + `tests/meta`，后者单次就 ~210s）。不含 `tests/meta` 约 40 小时，
+只测新增的 862 点约 12 小时。三者严格性不同，**选哪个是取舍**。
 
 **仍在盲区**（下列缺陷这套工具**不可能**发现，别把它的击杀率当成覆盖证明）：
 

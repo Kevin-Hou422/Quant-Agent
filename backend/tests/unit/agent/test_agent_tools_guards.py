@@ -526,7 +526,7 @@ class TestOutputEncoding:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L476 `if mutation_type_hint and mutation_type_hint in weights:` → `or`":
+    "app/agent/_tools.py ×1 — L476 `if mutation_type_hint and mutation_type_hint in weights:` → `or`":
         "`mutation_type_hint` 来自 `_llm_guide_mutation`，它的返回值域是 "
         "`{None, 'point', 'hoist', 'param'}`（函数体里只有这三个 key 的循环）。"
         "而 `weights` 来自 `mutation_weights_from_metrics`，其键集合恒含这三个。"

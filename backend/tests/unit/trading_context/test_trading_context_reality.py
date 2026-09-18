@@ -244,7 +244,7 @@ class TestCostAndBand:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L142 `tradable.reindex(close.columns).fillna(False)` → True":
+    "app/core/trading_context/context.py ×1 — L142 `tradable.reindex(close.columns).fillna(False)` → True":
         "该 fillna 不可达：`tradable = (px > min_price) & (adv_usd > min_adv_usd)`，"
         "px 的索引就是 close.columns，adv_usd 的索引是 close 与 volume 列的并集"
         "（⊇ close.columns），两者按并集对齐后再 reindex 回 close.columns，"

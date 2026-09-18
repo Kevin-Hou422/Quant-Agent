@@ -989,7 +989,7 @@ class TestMinVarianceAgainstReference:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L65 `if denom > 0:` 的 `>` → `>=`":
+    "app/core/backtest_engine/alpha_combiner.py ×1 — L65 `if denom > 0:` 的 `>` → `>=`":
         "`denom = sqrt((rs**2).sum() * (rr**2).sum())`，而 rs / rr 都是 "
         "`argsort(argsort(x))` 的产物 —— 无论输入有没有并列，"
         "它给出的**永远是 0..m-1 的一个排列**（序数名次，不做并列平均；"

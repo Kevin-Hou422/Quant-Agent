@@ -520,7 +520,7 @@ class TestOptimizeContract:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L223 `if self._use_walkforward and self._is_late:` → `or`":
+    "app/core/ml_engine/alpha_optimizer.py ×1 — L223 `if self._use_walkforward and self._is_late:` → `or`":
         "两个子式在 `__init__` 里是**同一个 if/else 的两条分支**同时赋的："
         "`late_days >= _MIN_LATE_DAYS` 成立 → `_is_late = {非空}` 且 "
         "`_use_walkforward = True`；否则 `_is_late = {}` 且 `_use_walkforward = False`。"

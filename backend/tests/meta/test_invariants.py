@@ -9,7 +9,9 @@ test_invariants.py — 系统级**不变量**（不是用例）
 from __future__ import annotations
 
 import ast
+import collections
 import json
+import re
 import inspect
 from pathlib import Path
 
@@ -452,6 +454,76 @@ class TestEveryModuleIsMeasured:
             f"要么有证明被删（而存活项并没被杀死），"
             f"要么该模块被真正收口了：后者请把 ratchet.proof_entries_min 调低并说明。")
 
+    def test_every_proof_key_declares_its_module_and_point_count(self):
+        """
+        证明键的格式：`<模块路径> ×<覆盖点数> — <原描述>`。
+
+        **为什么必须写进键里**：外部审计 2026-09-15 指出，旧键是自由文本
+        （`"L124 (weights < -tol) → <="`），不带模块路径，于是"138 个存活
+        逐条对上 97 条证明"这件事只能靠模糊匹配去猜。实测猜的结果有错
+        （按 import 归属会把 risk_gate 的证明记到别的模块上），
+        而**判据错了比没判据更危险**。
+
+        `×N` 是这条证明覆盖几个变异点 —— 一条论证常常同时盖住好几处
+        （`fast_ops` 有一条一口气盖了 10 个 shape/keepdims 点），
+        不声明就没法做数量对账。已被杀死、只作为记录保留的条目写 `×0`。
+        """
+        bad = []
+        for key in _collect_dict_entries("PROVEN_EQUIVALENT"):
+            m = re.match(r"^(app/\S+\.py) ×(\d+) — \S", key)
+            if not m:
+                bad.append(f"格式不符：{key[:70]}")
+            elif not (_backend_root() / m.group(1)).exists():
+                bad.append(f"模块不存在：{m.group(1)}")
+        assert not bad, (
+            "以下等价性证明的键不合规（应为 `<模块路径> ×<点数> — <描述>`）：\n  "
+            + "\n  ".join(bad))
+
+    def test_survivor_disposition_reconciles_per_module(self):
+        """
+        **逐模块对账**：每个模块的存活数 vs 以该模块为前缀的证明所声明的点数。
+
+        这就是台账里挂了很久的那个"已知未闭合缺口"。它现在闭合的方式**不是**
+        "全都有证明了"，而是"**差多少、差在哪，逐模块写下来并锁住**"：
+
+          - 声明数 > 存活数 → 直接判红（证明盖住了并不存在的存活点）
+          - 声明数 < 存活数 → 差额必须与清单里登记的**逐模块**数字一致
+          - 差额总数只许减不许增
+
+        当前真实状态：136 个存活，114 个有书面证明，**22 个既未被杀死也无证明**。
+        这 22 个此前被"每个文件条目数 == 自己声明的存活数"这条自洽检查掩盖了 ——
+        文件内自洽，跨文件汇总却对不上。
+        """
+        d = self._manifest()
+        surv = {m: r["survived"] for m, r in d["modules"].items() if r["survived"]}
+        declared = collections.Counter()
+        for key in _collect_dict_entries("PROVEN_EQUIVALENT"):
+            m = re.match(r"^(app/\S+\.py) ×(\d+) — ", key)
+            if m:
+                declared[m.group(1)] += int(m.group(2))
+
+        over = {m: (declared[m], surv.get(m, 0))
+                for m in declared if declared[m] > surv.get(m, 0)}
+        assert not over, (
+            f"以下模块的等价性证明声明的点数**多于**实测存活数 "
+            f"（模块: 声明/存活）：{over} —— 要么证明盖住了已被杀死的点"
+            f"（那条应改成 ×0 并注明），要么模块归属写错了")
+
+        disp = d.get("survivor_disposition")
+        assert disp, (
+            "measured_modules.json 的 survivor_disposition 块被删了 —— "
+            "『还有多少存活项没处置』必须留在交付物里")
+        recorded = disp["unproven_by_module"]
+        actual = {m: surv[m] - declared.get(m, 0)
+                  for m in surv if surv[m] - declared.get(m, 0) > 0}
+        assert actual == recorded, (
+            f"逐模块未处置数与清单登记的对不上。\n"
+            f"  实测：{actual}\n  清单：{recorded}\n"
+            f"补了证明或杀了变异之后，请同步改小 survivor_disposition。")
+        assert sum(actual.values()) <= disp["ratchet"]["unproven_max"], (
+            f"未处置的存活项从 {disp['ratchet']['unproven_max']} 涨到 "
+            f"{sum(actual.values())} —— 只许通过『补证明』或『写用例杀掉』来减少")
+
     def test_refuted_proofs_cannot_quietly_come_back(self):
         """
         **证明会是错的** —— 这是原棘轮没设想过的第三种情况。
@@ -481,7 +553,15 @@ class TestEveryModuleIsMeasured:
 
 
 def _collect_dict_entries(var_name: str) -> list:
-    """全库某个模块级 dict 常量（如 PROVEN_EQUIVALENT）的所有键。"""
+    """
+    全库某个 dict 常量（如 PROVEN_EQUIVALENT）的所有键。
+
+    **必须 `ast.walk` 而不是只看 `tree.body`。** 上一版只扫模块级赋值，
+    于是写在**类里**的 `PROVEN_EQUIVALENT`（`test_position_store_schema.py`、
+    `test_strategy_store_schema.py` 各一条）从来没被计入 —— 棘轮的下限
+    因此一直比真实值小，"证明条数只许增不许减"这条守卫对它们完全无效。
+    2026-09-16 自查发现，与自伤教训 #13 同型：判据没覆盖全，却被当成覆盖全了。
+    """
     keys = []
     tests = _backend_root() / "tests"
     for p in tests.rglob("test_*.py"):
@@ -494,12 +574,17 @@ def _collect_dict_entries(var_name: str) -> list:
             tree = ast.parse(src)
         except SyntaxError:
             continue
-        for node in tree.body:
+        for node in ast.walk(tree):
             if isinstance(node, ast.Assign) and any(
                     getattr(t, "id", None) == var_name for t in node.targets):
                 if isinstance(node.value, ast.Dict):
                     keys += [k.value for k in node.value.keys
                              if isinstance(k, ast.Constant)]
+            elif (isinstance(node, ast.AnnAssign)
+                  and getattr(node.target, "id", None) == var_name
+                  and isinstance(node.value, ast.Dict)):
+                keys += [k.value for k in node.value.keys
+                         if isinstance(k, ast.Constant)]
     return keys
 
 

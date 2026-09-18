@@ -360,7 +360,7 @@ class TestUnfitted:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L103 `.rolling(w).apply(np.prod, raw=True)` → `raw=False`":
+    "app/core/data_engine/regime_detector.py ×1 — L103 `.rolling(w).apply(np.prod, raw=True)` → `raw=False`":
         "`raw` 只决定 pandas 传给 apply 的是 ndarray 还是 Series。"
         "`np.prod` 对两者返回同一个标量，因此滚动累计收益逐位相同 —— "
         "差别只在性能（raw=False 每个窗口多构造一个 Series）。"

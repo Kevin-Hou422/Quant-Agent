@@ -266,7 +266,7 @@ class TestProgressTextSecondCopy:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L573 `if is_data and set(is_signals) == set(signals):` → `or`":
+    "app/core/workflows/alpha_workflows.py ×1 — L573 `if is_data and set(is_signals) == set(signals):` → `or`":
         "两个子式**不可能独立取值**。`is_signals` 只在 `if is_data:` 内部写入，"
         "且求值失败时 `signals` 与 `is_signals` 被**成对 pop**，"
         "所以：is_data 为真 ⇒ 两个字典键集恒等 ⇒ 第二子式恒真，`and`/`or` 同为真；"
@@ -275,14 +275,14 @@ PROVEN_EQUIVALENT = {
         "键集必不相等 ⇒ 第二子式恒假，`and`/`or` 同为假。"
         "见 test_the_two_operands_cannot_vary_independently。",
 
-    "L603 `if denom > 0:` → `>=`":
+    "app/core/workflows/alpha_workflows.py ×1 — L603 `if denom > 0:` → `>=`":
         "与 gp_engine L272 同源：`rs`/`rr` 都是 `argsort(argsort(x))` 的结果，"
         "即 0..n-1 的排列，去中心化平方和恒为 n(n²−1)/12；"
         "进到这里时 `mask.sum() >= 5`，所以 denom ≥ 10 > 0，"
         "`>` 与 `>=` 对所有可达输入判定相同。"
         "见 test_the_rank_denominator_is_bounded_away_from_zero。",
 
-    "`_try_add` 的三个 return（L335 False / L338 False / L342 True）":
+    "app/core/workflows/alpha_workflows.py ×0 — `_try_add` 的三个 return（L335 False / L338 False / L342 True）":
         "两个调用点都是独立语句，返回值被丢弃；函数的全部作用通过闭包里的 "
         "`valid_nodes` / `valid_dsls` / `seen` 副作用完成。"
         "见 test_alpha_workflows_round2.py::"

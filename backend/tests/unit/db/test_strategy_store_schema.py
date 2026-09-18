@@ -186,7 +186,7 @@ class TestTransitions:
         assert rows[0].actor == "human", "决策主体默认应为 human（人批准）"
 
     PROVEN_EQUIVALENT = {
-        "L108 `sessionmaker(..., expire_on_commit=False)` → True":
+        "app/db/strategy_store.py ×1 — L108 `sessionmaker(..., expire_on_commit=False)` → True":
             "所有 commit 的方法（save / update_status / record_decision）都在"
             "**同一个 session 内**读取需要的字段（过期后自动 refresh 仍拿得到）；"
             "get / latest_active / get_decisions 走只读 session，不触发过期。"

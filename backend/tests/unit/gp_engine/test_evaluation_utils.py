@@ -379,14 +379,14 @@ class TestAgainstAReferenceImplementation:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L68 `fwd[:-1] = (cls[1:] - cls[:-1]) / cls[:-1]` 的 `-` → `+`":
+    "app/core/gp_engine/evaluation_utils.py ×1 — L68 `fwd[:-1] = (cls[1:] - cls[:-1]) / cls[:-1]` 的 `-` → `+`":
         "`(P₁ + P₀)/P₀ = 2 + r`，是真实收益 r 的**严格单调增变换**"
         "（对每个格子都加同一个常数 2）。而 `fwd` 在本模块里**只**被送进"
         "`argsort(argsort(...))` 的秩相关 —— 秩只看次序，"
         "整体平移不改变任何一行的秩，因此 IC 序列逐位相同、ic_ir 相同。"
         "见 test_the_sum_form_is_rank_invariant。",
 
-    "L85 `if denom > 0:` → `>=`":
+    "app/core/gp_engine/evaluation_utils.py ×1 — L85 `if denom > 0:` → `>=`":
         "`rs`/`rr` 都是 `argsort(argsort(x))` 的结果，即 0..n-1 的**排列**，"
         "去中心化后平方和恒为 n(n²−1)/12；进到这里时 `n_valid >= 5`，"
         "所以 denom = n(n²−1)/12 ≥ 10 > 0，`== 0` 那一档永远取不到。"

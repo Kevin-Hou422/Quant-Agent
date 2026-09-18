@@ -327,5 +327,8 @@ PROVEN_EQUIVALENT: dict = {}
 
 
 def test_every_survivor_has_a_written_proof():
+    # 显式写 `== 0`：**"这个模块零存活"与"忘了写声明"必须在代码里分得开**。
+    # 原来只有一个空循环 —— 对空字典的全称断言恒真，等于什么都没查。
+    assert len(PROVEN_EQUIVALENT) == 0
     for key, why in PROVEN_EQUIVALENT.items():
         assert len(why) >= 40, f"{key} 的等价性说明过于敷衍：{why!r}"

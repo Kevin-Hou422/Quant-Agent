@@ -579,7 +579,7 @@ class TestProgressText:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "`_try_add` 的三个 return（L335 False / L338 False / L342 True）":
+    "app/core/workflows/alpha_workflows.py ×3 — `_try_add` 的三个 return（L335 False / L338 False / L342 True）":
         "`_try_add` 在 `_generate_diverse_seeds` 里只被调用两次，"
         "**两次都是独立语句**（Layer 1 的 `for d in llm_dsls: _try_add(d)` 与 "
         "Layer 2 的 `for d in _hypothesis_templates(...): _try_add(d)`），"

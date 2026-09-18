@@ -621,7 +621,7 @@ class TestYfinanceFallback:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L94 `pd.to_datetime(df['ts'], unit='ms', utc=True).dt.tz_localize(None)` 的 True → False":
+    "app/core/data_engine/providers/ccxt_provider.py ×1 — L94 `pd.to_datetime(df['ts'], unit='ms', utc=True).dt.tz_localize(None)` 的 True → False":
         "这一行的输入 `df['ts']` 恒为**整数毫秒 epoch**（ccxt 的 OHLCV "
         "第 0 列规范如此，且上游 `_fetch_all_candles` 拿它与 "
         "`start_ms`/`end_ms` 做整数比较）。对整数 epoch 而言，"

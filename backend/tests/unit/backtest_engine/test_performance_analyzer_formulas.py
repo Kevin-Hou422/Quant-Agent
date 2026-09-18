@@ -853,23 +853,23 @@ def test_summarize_records_which_ic_method_was_used(pa):
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L151 `int(trough_idx - peak_idx)` → `+`（max_drawdown 的非日期索引分支）":
+    "app/core/backtest_engine/performance_analyzer.py ×1 — L151 `int(trough_idx - peak_idx)` → `+`（max_drawdown 的非日期索引分支）":
         "该分支不可达：`__init__` 里先取 `self._tdays`，而 `_tdays` 无条件执行 "
         "`(idx[-1] - idx[0]).days`，非日期索引在那一步就抛 AttributeError，"
         "根本走不到 max_drawdown。见 "
         "test_non_datetime_index_is_rejected_before_reaching_the_fallback。",
 
-    "L495 `if cur > max_consec:` → `>=`（最长连亏计数）":
+    "app/core/backtest_engine/performance_analyzer.py ×1 — L495 `if cur > max_consec:` → `>=`（最长连亏计数）":
         "两侧结果恒等：`>` 只在 cur 严格更大时赋值，`>=` 在相等时也赋值，"
         "而相等时赋的是同一个值。max_consec 的最终取值与比较符无关。"
         "见 test_consecutive_loss_counter_is_insensitive_to_the_comparison。",
 
-    "L428 `beta = ... if var_bench > 1e-12 else 0.0` → `>=`":
+    "app/core/backtest_engine/performance_analyzer.py ×1 — L428 `beta = ... if var_bench > 1e-12 else 0.0` → `>=`":
         "唯一的区分点是 var_bench **恰好等于** 1e-12。我一度以为常数基准"
         "（var=0）能区分 —— 判错了：`0.0 >= 1e-12` 同样为假，两侧都走 else。"
         "var_bench 来自 np.cov 的浮点结果，无法构造成精确的 1e-12。",
 
-    "L437 `ir = alpha/te if te > 1e-9 else nan` → `>=`":
+    "app/core/backtest_engine/performance_analyzer.py ×1 — L437 `ir = alpha/te if te > 1e-9 else nan` → `>=`":
         "同上：区分点是 te **恰好等于** 1e-9。te = std(active_ret)·√tdays，"
         "是多步浮点运算的结果；实际取到的特殊值是 0.0，而 `0.0 >= 1e-9` 为假，"
         "两侧都返回 NaN。",

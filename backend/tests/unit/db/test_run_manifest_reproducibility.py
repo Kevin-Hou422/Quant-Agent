@@ -278,12 +278,12 @@ class TestJsonPayloads:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L64 `hash_pandas_object(v.index, index=False)` → True":
+    "app/db/run_manifest.py ×1 — L64 `hash_pandas_object(v.index, index=False)` → True":
         "`index` 参数只对 Series / DataFrame 有意义（决定要不要把行索引一并哈希）；"
         "传入的是 **Index 对象**，pandas 对它忽略该参数，两种取值返回完全相同的"
         "哈希数组。见 test_hash_of_an_index_ignores_the_index_flag。",
 
-    "L117 `sessionmaker(..., expire_on_commit=False)` → True":
+    "app/db/run_manifest.py ×1 — L117 `sessionmaker(..., expire_on_commit=False)` → True":
         "本类唯一 commit 的方法是 `record()`，它在**同一个 session 内**读取 "
         "`rec.id`（过期后会自动 refresh，仍然拿得到）；`get()` / `list()` 走的是"
         "只读 session，不触发过期。两种取值都观察不到差别。",

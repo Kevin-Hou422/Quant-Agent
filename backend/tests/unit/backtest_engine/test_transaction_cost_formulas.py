@@ -267,30 +267,30 @@ class TestTradeRecordExactness:
 # 复测口径：41 个变异点 / 杀死 35 / 存活 6 / 击杀率 85.4%（2026-09-09）
 # 下面 6 条 == 复测后仍然存活的 6 条，一一对应，不多不少。
 PROVEN_EQUIVALENT = {
-    "L89  `) * np.ones_like(trade_abs)` → `/`":
+    "app/core/backtest_engine/transaction_cost.py ×1 — L89  `) * np.ones_like(trade_abs)` → `/`":
         "np.ones_like 返回全 1 数组，x * 1 与 x / 1 在 IEEE754 下逐元素完全相同"
         "（包括 ±0、inf、nan 的行为），无任何输入可区分。见 "
         "test_dividing_by_ones_equals_multiplying_by_ones。",
 
-    "L132 `np.abs(deficit) < tol` → `<=`（tol=1e-12）":
+    "app/core/backtest_engine/transaction_cost.py ×1 — L132 `np.abs(deficit) < tol` → `<=`（tol=1e-12）":
         "仅在 |deficit| 恰好 == 1e-12 时不同。deficit 由 row_target 减两个 nansum "
         "得到，是多次浮点加减的残差，无法构造使其精确等于 1e-12；且 tol 的存在本身"
         "就是为了让该邻域内的判定不敏感。",
 
-    "L135 `free_mass > tol` → `>=`（tol=1e-12）":
+    "app/core/backtest_engine/transaction_cost.py ×1 — L135 `free_mass > tol` → `>=`（tol=1e-12）":
         "同上：free_mass 是 nansum 的浮点结果，恰好 == 1e-12 不可构造。"
         "且该分支的两侧在 free_mass≈tol 时结果连续（safe_free 取 free_mass 与 1.0 "
         "的差异只影响 scale 的分母，而此时 deficit 也已趋近 0）。",
 
-    "L136 `free_mass > tol` → `>=`（tol=1e-12）":
+    "app/core/backtest_engine/transaction_cost.py ×1 — L136 `free_mass > tol` → `>=`（tol=1e-12）":
         "与 L135 是同一个条件的第二次出现，同一份证明。两处必须同时改才可能有差异，"
         "单点变异下更不可能被区分。",
 
-    "L268 `direction = \"BUY\" if dw > 0 else \"SELL\"` → `>=`":
+    "app/core/backtest_engine/transaction_cost.py ×1 — L268 `direction = \"BUY\" if dw > 0 else \"SELL\"` → `>=`":
         "仅在 dw == 0 时不同，而 dw == 0 在上一行 `if abs(dw) < 1e-10: continue` "
         "就已被跳过（abs(0.0)=0.0 < 1e-10 成立，-0.0 同理），该分支不可达。",
 
-    "L270 `1 if dw > 0 else -1` → `>=`":
+    "app/core/backtest_engine/transaction_cost.py ×1 — L270 `1 if dw > 0 else -1` → `>=`":
         "与 L268 同一原因：dw == 0 不可达，因为 L266 已经 continue。",
 }
 

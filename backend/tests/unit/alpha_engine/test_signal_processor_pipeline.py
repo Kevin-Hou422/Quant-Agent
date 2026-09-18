@@ -285,14 +285,14 @@ class TestTruncation:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L107 `if self.cfg.decay_window > 1:` → `>=`":
+    "app/core/alpha_engine/signal_processor.py ×1 — L107 `if self.cfg.decay_window > 1:` → `>=`":
         "两种取值只在 `decay_window == 1` 时分道：此时走进 `_decay` 会调用 "
         "`ts_decay_linear(arr, 1)`，其权重为 `arange(1,2)/1 = [1.0]`、窗口长度 1，"
         "逐行等于原值，且 `out[0:]` 覆盖整个数组（无 burn-in NaN）。"
         "也就是说该分支在 window=1 时是**恒等变换**，跑与不跑结果逐位相同。"
         "见 test_decay_with_window_one_is_the_identity。",
 
-    "L115 `if self.cfg.delay > 0:` → `>=`":
+    "app/core/alpha_engine/signal_processor.py ×1 — L115 `if self.cfg.delay > 0:` → `>=`":
         "两种取值只在 `delay == 0` 时分道：`_delay` 返回 `df.shift(0)`，"
         "pandas 的 shift(0) 返回内容与索引完全相同的副本，是恒等变换。"
         "见 test_shift_by_zero_is_the_identity。",

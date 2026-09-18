@@ -240,13 +240,13 @@ def test_threshold_boundary_excludes_equality(ds):
 # ---------------------------------------------------------------------------
 
 PROVEN_EQUIVALENT = {
-    "L44 `cs_var < 1e-12` → `<=`":
+    "app/core/lifecycle/leak_filter.py ×1 — L44 `cs_var < 1e-12` → `<=`":
         "区分值需要 cs_var **恰好等于** 1e-12。cs_var = raw.var(axis=1).median()，"
         "是逐日截面方差再取中位数的浮点结果；真正的退化信号给出的是精确 0.0，"
         "正常信号给出的是 1e-2 量级，两侧都离 1e-12 极远，"
         "无法构造使其落在这一个浮点值上。",
 
-    "L58 `sd > 1e-12` → `>=`":
+    "app/core/lifecycle/leak_filter.py ×1 — L58 `sd > 1e-12` → `>=`":
         "同理，区分值需要 net_returns 的样本标准差恰好等于 1e-12。"
         "该守卫的用途是「波动小到无法定义夏普时记 0」，边界两侧行为连续，"
         "且实测收益序列的 sd 在 1e-3 量级。",

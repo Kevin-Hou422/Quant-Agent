@@ -179,6 +179,18 @@ DEFECT_REGISTRY = {
 #: 只是结构/整洁问题，没有可执行的行为断言 —— 记录在案，不设 xfail 用例。
 NO_BEHAVIOUR_ASSERTION = {"B-9", "B-10", "B-11"}
 
+#: **技术债，不是已证明的产品行为故障。**
+#:
+#: 外部审计 2026-09-15 的判定：B-9（`use_label_encoder=False` 对 xgboost 3.x
+#: 已无意义）、B-10（`except Exception` 兜得太宽）、B-11（不可达的冗余守卫）
+#: 三条只有"代码结构不好"的依据，没有任何一条给出了**产品结果是错的**的复现。
+#: 把它们和 B-1（值域错）、A-6（敞口被放大）算在同一个"缺陷数"里，
+#: 会让那个数字读起来比实际严重，也让真正该优先修的被稀释。
+#:
+#: 于是拆开计数：`behavioural_defect_count()` 只数有行为依据的，
+#: 技术债单列。两边都不许悄悄消失 —— 见 test_the_outstanding_defect_count_is_visible。
+TECHNICAL_DEBT = {"B-9", "B-10", "B-11"}
+
 #: 前端缺陷 —— 后端套件里没有可执行断言。**不是豁免，是分工**：
 #: 登记在这里保证它出现在缺陷总数里、不被遗忘；用例欠在前端。
 FRONTEND_ONLY = {"N-6"}
@@ -1312,11 +1324,25 @@ def test_the_outstanding_defect_count_is_visible():
     """
     把"还欠多少个修复"变成一条会被读到的断言。
     改这个数字必须是有意的：修好了就减，新发现就加。
+
+    **分三类数，不混成一个数**（外部审计 2026-09-15 的判定）：
+
+      · 有行为依据的产品缺陷 —— 有复现、有"应有行为"的断言
+      · 技术债 —— 只有结构证据，没有"产品结果是错的"的复现
+      · 前端 —— 后端套件里没有可执行断言，欠一条前端用例
+
+    混成一个数会让它读起来比实际严重，也会稀释真正该优先修的那几条。
     """
-    outstanding = len(DEFECT_REGISTRY)
-    assert outstanding == 32, (
-        f"未修复的已登记缺陷数变成了 {outstanding}"
-        f"（原为 26；外部审计 2026-09-15 新增 N-1..N-6）。\n"
+    behavioural = set(DEFECT_REGISTRY) - TECHNICAL_DEBT - FRONTEND_ONLY
+    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (28, 3, 1), (
+        f"缺陷分类计数变了：行为缺陷 {len(behavioural)} / 技术债 "
+        f"{len(TECHNICAL_DEBT)} / 前端 {len(FRONTEND_ONLY)}"
+        f"（登记总数 {len(DEFECT_REGISTRY)}，此前 28/3/1）。\n"
         f"修好缺陷时请同时：① 删掉对应 xfail 标记 ② 改掉模块测试里"
         f"『钉住现状』的断言 ③ 更新 MUTATION_LEDGER。\n"
         f"当前清单：\n  " + "\n  ".join(f"{k}: {v}" for k, v in DEFECT_REGISTRY.items()))
+    assert TECHNICAL_DEBT <= set(DEFECT_REGISTRY) and FRONTEND_ONLY <= set(DEFECT_REGISTRY), (
+        "技术债/前端分类里有不在登记表中的编号")
+    assert TECHNICAL_DEBT == NO_BEHAVIOUR_ASSERTION, (
+        "技术债与『无行为断言』两个集合分叉了 —— 它们指的是同一批条目，"
+        "分开维护迟早对不上")

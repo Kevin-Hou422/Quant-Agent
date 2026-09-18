@@ -5,8 +5,8 @@
   "totals": {
     "modules_with_mutants": 89,
     "total_points": 1981,
-    "total_survived": 138,
-    "total_killed": 1843
+    "total_survived": 136,
+    "total_killed": 1845
   },
   "modules": {
     "app/agent/_agent.py": {
@@ -751,12 +751,18 @@
     },
     "app/core/execution/paper_broker.py": {
       "points": 26,
-      "killed": 21,
-      "survived": 5,
-      "kill_rate": 80.8,
-      "tests": [],
+      "killed": 23,
+      "survived": 3,
+      "kill_rate": 88.5,
+      "tests": [
+        "tests/unit/db/test_paper_broker_accounting.py"
+      ],
       "source": "MUTATION_LEDGER.md（A 档收口表）",
-      "state_file_missing": true
+      "state_file_missing": true,
+      "note": "L119（两个比较符）与 L127 原登记为等价变异，2026-09-15 外部审计给出反例推翻。2026-09-16 补 TestSubEpsilonPositionsAreADeliberatePolicy（5 条），逐个 verify_mutant 复核：三条全部 [OK] 变异被杀死。",
+      "all_runs": [
+        88.5
+      ]
     },
     "app/core/gp_engine/alpha_pool.py": {
       "points": 22,
@@ -1352,16 +1358,16 @@
   "proof_reconciliation": {
     "_doc": "存活变异的处置对账状态。这是本轮交付**已知未闭合**的唯一缺口，写在这里是为了它不会被忘掉。",
     "modules_with_survivors": 44,
-    "total_survivors": 138,
+    "total_survivors": 136,
     "proof_files_in_suite": 44,
-    "proof_entries_in_suite": 95,
+    "proof_entries_in_suite": 97,
     "per_file_accounting": "自洽：44 个文件的 PROVEN_EQUIVALENT 条目数与各自声明的存活数逐个相等（由 test_lessons_enforced.py::TestLessonX 强制）",
-    "module_level_attribution": "未逐条对账",
+    "module_level_attribution": "已逐模块对账（2026-09-16）：见 survivor_disposition",
     "why_not": "PROVEN_EQUIVALENT 的键是自由文本（如 'L124 (weights < -tol) → <='），不带模块路径；按 import 归属会错判（risk_gate 的 10 条证明在它自己的文件里，而那个文件并不直接 import 该模块）。所以无法机械地把 138 个存活逐条对上 97 条证明。",
     "what_is_established": "① app/ 下 88 个有变异点的模块全部测量过（本文件对账）；② 每个写了证明的文件，条目数与它声明的存活数一致；③ 每条证明说明 ≥40 字、点名的验证用例真实存在。 ④ 已被反例推翻的证明单独登记在 REFUTED_EQUIVALENCE，并配一条固化反例的可执行用例。",
-    "how_to_close": "把每条证明的键改成 '<模块路径>:L<行号> <变异描述>' 的固定格式，再加一条 meta 测试：每个模块的存活数 == 以该模块路径为前缀的证明条数。约 97 条键需要改写。",
+    "how_to_close": "已完成：97 条键全部改写成 `<模块路径> ×<覆盖点数> — <描述>`，由 test_every_proof_key_declares_its_module_and_point_count 强制格式，由 test_survivor_disposition_reconciles_per_module 逐模块对账。遗留的不是『对不上账』，而是『22 个存活项确实没处置』，见 survivor_disposition。",
     "ratchet": {
-      "proof_entries_min": 95,
+      "proof_entries_min": 97,
       "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
       "refuted_entries_min": 2,
       "unmeasured_points_max": 862
@@ -1369,7 +1375,8 @@
     "refuted_by_counterexample": {
       "count": 2,
       "where": "tests/unit/db/test_paper_broker_accounting.py :: REFUTED_EQUIVALENCE",
-      "_doc": "paper_broker L119/L127 的两条『等价性证明』已被反例推翻（外部审计 2026-09-15）：project_to_capped_l1([[1e-12, 1-1e-12]]) 逐位保留 1e-12，于是 `>` 与 `>=` 结论不同。原『机械验证』断言的是 (base+tol)-base != tol，证的是更弱的命题。这两个存活点现在既未被杀死也无有效证明。"
+      "_doc": "paper_broker L119/L127 的两条『等价性证明』已被反例推翻（外部审计 2026-09-15）：project_to_capped_l1([[1e-12, 1-1e-12]]) 逐位保留 1e-12，于是 `>` 与 `>=` 结论不同。原『机械验证』断言的是 (base+tol)-base != tol，证的是更弱的命题。这两个存活点现在既未被杀死也无有效证明。",
+      "resolved": "已处置：三个变异点（L119 的两个比较符 + L127）全部由 TestSubEpsilonPositionsAreADeliberatePolicy 杀死，verify_mutant 逐个复核确认。REFUTED_EQUIVALENCE 保留为历史记录 —— 那两条证明本身是错的，不许再写回去。"
     }
   },
   "_provenance_repair": {
@@ -1706,5 +1713,24 @@
     "what_this_means": "『所选变异全部被处理』≠『检出能力已证明』。B-1 的除法归一化错误与 C-2 的对象身份错误都是**读代码**发现的，不是变异测试发现的。",
     "owed": "对 2843 个点重跑一遍测量。本轮未做。",
     "_closed": "app/db/_sqlite_utils.py 已补测：它是算子补齐后唯一新进入范围的模块，此前一条测试都没有。首测 0.0% → 补 tests/unit/db/test_sqlite_hardening.py → verify_mutant 单点复核确认被杀。其余 862 个点仍未测。"
+  },
+  "survivor_disposition": {
+    "_doc": "存活变异的**逐模块**处置对账。外部审计 2026-09-15 指出原来的『每个文件条目数 == 自己声明的存活数』只是文件内自洽，跨文件汇总从未对过账。现在证明键带模块前缀与覆盖点数（`<模块> ×N — 描述`），可以逐模块机械对账。",
+    "total_survivors": 136,
+    "proven_points": 114,
+    "unproven_points": 22,
+    "unproven_by_module": {
+      "app/core/alpha_engine/fast_ops.py": 3,
+      "app/core/backtest_engine/transaction_cost.py": 3,
+      "app/core/data_engine/data_partitioner.py": 4,
+      "app/core/strategies/baselines.py": 2,
+      "app/tasks/daily_trading_loop.py": 10
+    },
+    "what_unproven_means": "这些变异点既没有被任何用例杀死，也没有书面的等价性证明 —— 改坏了不会有人知道，而且我们连『为什么可以不管它』都没写下来。两个模块（baselines / daily_trading_loop）是**一条证明都没有**。",
+    "how_to_close": "逐模块：要么补用例杀死（首选），要么写可机械验证的等价性证明并配反驳尝试。闭合一个就把 unproven_by_module 里对应的数字改小；test_survivor_disposition_reconciles_per_module 会逐模块核对。",
+    "ratchet": {
+      "unproven_max": 22,
+      "_doc": "未处置数只许减不许增。声明数多于存活数会直接判红（证明盖住了不存在的点）。"
+    }
   }
 }

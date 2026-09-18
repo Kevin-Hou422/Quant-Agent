@@ -642,7 +642,7 @@ class TestWriterFlags:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L89 / L211 / L140 三处 `pd.concat(..., ignore_index=True)` 的 True → False":
+    "app/core/data_engine/local_parquet_provider.py ×3 — L89 / L211 / L140 三处 `pd.concat(..., ignore_index=True)` 的 True → False":
         "三处 concat 的产物都在**离开本模块之前**被重建了行索引，"
         "所以保不保留原下标观察不到：\n"
         "  · L211 `_read_ticker` 的结果只流向 L89 的 concat；\n"

@@ -642,14 +642,14 @@ class TestWalkForwardOosWindowBoundary:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L181 `all_bdays[is_count] if oos_ratio > 0 and is_count < total_days else None`"
+    "app/core/data_engine/data_partitioner.py ×1 — L181 `all_bdays[is_count] if oos_ratio > 0 and is_count < total_days else None`"
     " 的三处（`>`→`>=`、`<`→`<=`、`and`→`or`）":
         "`oos_ratio == 0` 时 `is_count = total_days`，两个子式分别是 False 与 False；"
         "`oos_ratio > 0` 时 `is_count <= usable - 1 <= total_days - 1`，两个子式都是 True。"
         "也就是说两个子式在整个可达参数空间里**同真同假** —— `and`/`or` 等价，"
         "两个不等号各自的边界也永远取不到。",
 
-    "L183 `if self._split_date is not None and embargo_days > 0:`"
+    "app/core/data_engine/data_partitioner.py ×1 — L183 `if self._split_date is not None and embargo_days > 0:`"
     " 的两处（`>`→`>=`、`and`→`or`）":
         "`embargo_days == 0` 时进入分支会算出 `oos_actual_idx = is_count`，"
         "随后 `_oos_start = all_bdays[is_count]`，与 else 分支的 `_oos_start = _split_date` "
@@ -657,18 +657,18 @@ PROVEN_EQUIVALENT = {
         "进入分支后 `is_count + embargo >= total_days` 必然成立 → `_oos_start = None`，"
         "同样与 else 分支一致。两种取值观察不到差别。",
 
-    "L185 `if oos_actual_idx < total_days:` → `<=`":
+    "app/core/data_engine/data_partitioner.py ×1 — L185 `if oos_actual_idx < total_days:` → `<=`":
         "见 E 节：`is_count + embargo <= total_days - 1` 恒成立，"
         "`<` 与 `<=` 的分界点取不到。",
 
-    "L435 `if oos_start_idx >= n or oos_start_idx > oos_end_idx:` → `>=`":
+    "app/core/data_engine/data_partitioner.py ×1 — L435 `if oos_start_idx >= n or oos_start_idx > oos_end_idx:` → `>=`":
         "两种取值只在某折 OOS 恰好 1 天（start == end）时分道。"
         "`oos_start <= n - opf <= n - 5`（因为 opf >= 5 已被上一道门槛保证），"
         "而 `oos_end = min(oos_start + opf - 1, n - 1) >= oos_start + 4`，"
         "所以 end 恒严格大于 start，1 天的折不可构造。"
         "见 test_no_fold_can_have_a_one_day_oos_window。",
 
-    "L414 `if n < min_train_days + embargo_days + n_splits:` 的两处"
+    "app/core/data_engine/data_partitioner.py ×1 — L414 `if n < min_train_days + embargo_days + n_splits:` 的两处"
     "（`<`→`<=`、`+`→`-`）":
         "这道门槛后面还有第二道 `oos_per_fold < 5`，而 "
         "`oos_per_fold = max(1, (n - min_train - embargo) // n_splits) >= 5` "

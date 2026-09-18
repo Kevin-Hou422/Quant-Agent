@@ -692,12 +692,12 @@ class TestMarginalSelection:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "L177 `_sharpe` 里 `if sd < 1e-12: return 0.0` → `<=`":
+    "app/core/portfolio_manager/strategy_gate.py ×1 — L177 `_sharpe` 里 `if sd < 1e-12: return 0.0` → `<=`":
         "区分值需要 sd **恰好等于** 1e-12。sd = np.std(r, ddof=1) 是平方和/(n-1) "
         "再开方的浮点结果，无法反解出精确等于 1e-12 的样本；"
         "而它真正会取到的特殊值是 0.0（常数收益），两侧都返回 0.0。",
 
-    "L310 `tstat = ... if sd > 1e-12 else 0.0` → `>=`":
+    "app/core/portfolio_manager/strategy_gate.py ×1 — L310 `tstat = ... if sd > 1e-12 else 0.0` → `>=`":
         "同上：区分点是 sd 恰好等于 1e-12。零方差时 `0.0 >= 1e-12` 为假，"
         "两侧都走 else 返回 0.0，行为一致。",
 }
