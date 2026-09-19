@@ -719,3 +719,96 @@ def test_every_survivor_has_a_written_proof():
     assert len(PROVEN_EQUIVALENT) == 2
     for key, why in PROVEN_EQUIVALENT.items():
         assert len(why) >= 40, f"{key} 的等价性说明过于敷衍：{why!r}"
+
+
+# ---- N-1：成本推导缓存键必须覆盖它实际依赖的输入 --------------------------
+
+class TestCostCacheKeyCoversItsInputs:
+    """
+    **缺陷 N-1，2026-09-20 已修。**
+
+    `_cache_key` 原来只给 `close` 做指纹 —— 而 Corwin-Schultz 价差算的是
+    **high/low**，市场冲击用的是 **volume**。于是 close 相同、high/low 不同的
+    两个数据集命中同一条缓存：外部审计实测**真实值 1919.83 bps 被缓存里的
+    37.47 bps 顶替**（差 51 倍），调用方完全看不出来。
+
+    两条一起守：字段清单要与实际读取对得上（静态），换了输入不能命中旧条目（行为）。
+    """
+
+    @staticmethod
+    def _panel(days=60, n=4, seed=3, hl=(1.05, 0.98)):
+        rng = np.random.default_rng(seed)
+        idx = pd.bdate_range("2024-01-02", periods=days)
+        cols = [f"T{i}" for i in range(n)]
+        close = pd.DataFrame(
+            100 * np.cumprod(1 + rng.normal(0, 0.01, (days, n)), axis=0),
+            index=idx, columns=cols)
+        return {"close": close, "high": close * hl[0], "low": close * hl[1],
+                "volume": pd.DataFrame(1e6, index=idx, columns=cols)}
+
+    def test_the_key_lists_every_field_the_derivation_reads(self):
+        """
+        静态对账：`_COST_INPUT_FIELDS` 必须涵盖成本推导真正读到的每个字段。
+
+        判据用 AST 从 `trading_context` 里抽 `dataset["x"]` / `dataset.get("x")`，
+        **不是**在测试里再抄一份字段名 —— 抄的那份和实现同源，
+        实现多读一个字段时它不会红（自伤教训 #11 的形态）。
+        """
+        import ast
+        from pathlib import Path
+
+        from app.core.portfolio_manager.strategy_gate import _COST_INPUT_FIELDS
+
+        root = Path(__file__).resolve()
+        while not (root / "app").is_dir():
+            root = root.parent
+        read = set()
+        for p in (root / "app" / "core" / "trading_context").rglob("*.py"):
+            for node in ast.walk(ast.parse(p.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+                    if getattr(node.value, "id", "") in {"dataset", "panel"}:
+                        read.add(node.slice.value)
+                elif (isinstance(node, ast.Call)
+                      and getattr(node.func, "attr", "") == "get"
+                      and getattr(getattr(node.func, "value", None), "id", "") in {"dataset", "panel"}
+                      and node.args and isinstance(node.args[0], ast.Constant)):
+                    read.add(node.args[0].value)
+        missing = sorted(f for f in read if f not in _COST_INPUT_FIELDS)
+        assert not missing, (
+            f"成本推导读了 {missing}，但缓存键的 _COST_INPUT_FIELDS 没覆盖 —— "
+            f"改动这些字段不会让缓存失效，会拿到别的数据集的成本参数")
+
+    def test_changing_high_low_invalidates_the_cache(self):
+        """
+        行为对账：close 不变、只改 high/low（价差的唯一来源），
+        走缓存的结果必须与清缓存后重算一致。
+        """
+        from app.core.portfolio_manager import strategy_gate as sg
+
+        a = self._panel()
+        b = {**a, "high": a["close"] * 1.60, "low": a["close"] * 0.40}
+
+        sg._DERIVE_CACHE.clear()
+        sg.resolve_cost_params(a, 1_000_000.0)
+        cached = sg.resolve_cost_params(b, 1_000_000.0)
+
+        sg._DERIVE_CACHE.clear()
+        fresh = sg.resolve_cost_params(b, 1_000_000.0)
+        assert cached == fresh, (
+            f"同一个数据集 b，走缓存与不走缓存拿到不同的成本参数：\n"
+            f"  命中缓存: {cached}\n  清缓存后: {fresh}")
+
+    def test_the_cache_still_hits_on_an_identical_dataset(self):
+        """
+        反向保护：修完键之后缓存不能变成"永远不命中" ——
+        那样 O(n²) 的边际选择会从 ~5 分钟退回 100 分钟（DEV_LESSONS 有记录）。
+        """
+        from app.core.portfolio_manager import strategy_gate as sg
+
+        a = self._panel()
+        sg._DERIVE_CACHE.clear()
+        sg.resolve_cost_params(a, 1_000_000.0)
+        n_after_first = len(sg._DERIVE_CACHE)
+        sg.resolve_cost_params(a, 1_000_000.0)
+        assert len(sg._DERIVE_CACHE) == n_after_first, (
+            "同一个数据集第二次调用又写了一条新缓存 —— 键里混进了不稳定的东西")

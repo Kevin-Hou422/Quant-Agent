@@ -90,16 +90,27 @@ DEFECT_REGISTRY = {
     "A-4":  "PerformanceAnalyzer 遇非日期索引先在 _tdays 抛 AttributeError，"
             "max_drawdown 里的整数索引分支不可达，且报错指向内部实现",
     "A-5":  "MVOPortfolio 注释写『剔除的资产保留基准权重』，实现是整行替换 → 拿到 0",
-    "A-6":  "【前半已于 2026-09-18 修复】PaperBroker.step 曾写死 target=1.0，"
-            "把目标总敞口强行放大到 L1=1 —— 已改为 `|tgt|` 之和，由 "
-            "TestGrossExposureFollowsTheTarget 钉住。\n"
-            "**剩下的后半仍未修**：ADV 上限削掉某只票之后，water-filling 把亏空"
-            "**摊到其余名字**以凑满目标 gross。实测 [0.9, -0.1] 在 A 只能买 0.01 时"
-            "落账 [0.01, -0.99] —— 10% 的空头变成 99%，这已经不是同一个组合。"
-            "改法牵涉设计取舍：`project_to_capped_l1` 的 water-filling 是 Task 6.6 "
-            "**有意**的（用来修旧的『clip→整体归一化』缺陷），且回测引擎与 "
-            "PortfolioManager 走同一条路（`test_replay_matches_backtest_engine` "
-            "以 1e-9 对账两者）。只改执行侧会让两个引擎在限流场景下分家",
+    "A-6":  "【执行层已于 2026-09-18/19/20 修复，回测引擎侧未动】"
+            "PaperBroker 曾同时犯两个错：① `target=1.0` 写死，把目标总敞口强行"
+            "放大到 L1=1（实测日循环**目标持仓**总敞口 0.27–0.30 → 0.90–1.00，"
+            "3.33×；**成交名义额** 1.54×）；② 用 water-filling 裁剪**目标持仓**"
+            "冒充成交，A 被削掉后亏空摊给 B（[0.9,-0.1] → [0.01,-0.99]）。"
+            "执行层已改为 `simulate_partial_fills`：按**交易差额**逐名部分成交、"
+            "不再分配、组合级净敞口回查、未成交量如实记账。"
+            "**仍未完成的是引擎统一**：`BacktestEngine` 走的还是 "
+            "`LiquidityConstraint` 的 water-filling **持仓**裁剪，于是两个引擎在"
+            "限流场景下语义已经分家 —— `test_replay_matches_backtest_engine` 的 "
+            "1e-9 对账目前只在『上限不绑定』的数据上成立，绑定时会分叉。"
+            "统一之后历史回测收益会变，需要前后对比与差异解释",
+    "A-7":  "`project_to_capped_l1(..., target=1.0)` 的字面量在**另外三处**仍然写死："
+            "`realistic_backtester.py`（单票权重上限）、`transaction_cost.py` 的 "
+            "`LiquidityConstraint.apply`、`manager.py` 的 `apply_capacity`。"
+            "这三处都是**构建层**，water-filling 本身合理，错的是 target："
+            "上游 gross≠1 时会被整体放大回 1。`apply_capacity` 尤其自相矛盾 —— "
+            "它的 docstring 写着『容量不足时 gross<1』，却传 `target=1.0`。"
+            "五个调用点里只有 `risk_gate.py` 传了真实 target。"
+            "（`project_to_capped_l1` 已支持逐行 target，改法是传 "
+            "`np.abs(w).sum(axis=1)`，但每处都要单独确认上游口径）",
     "C-1":  "GP 适应度的截面秩用 argsort(argsort(x)) 算，不处理并列："
             "截面恒定（零信息）的信号被按**列顺序**摊成 0..n-1，"
             "IC 成了『ticker 在面板里的位置 vs 未来收益』的伪相关而非 0",
@@ -152,27 +163,11 @@ DEFECT_REGISTRY = {
             "但这个 except 的覆盖范围本身仍然是错的",
 
     # ---- 外部审计 2026-09-15 的独立发现（沿用它的编号，便于交叉引用）----
-    "N-1":  "strategy_gate 的成本推导缓存键（`_cache_key`）只含 close 的形状、"
-            "索引端点、首末行 nansum、前 4 个列名与 aum —— **不含 high/low、"
-            "volume、券商配置**。而 Corwin-Schultz 价差正是从 high/low 算的。"
-            "于是 close 相同、high/low 不同的两个数据集命中同一条缓存，"
-            "第二个拿到第一个的成本参数。审计实测：真实值 1919.83 bps "
-            "被缓存里的 37.47 bps 顶替",
     "N-2":  "StrategyGate 读全局试验台账失败时 `n_trials` 退回 1 —— 而 n_trials 是 "
             "Deflated Sharpe 的多重检验校正项，退回 1 等于宣称『只试过一个策略』，"
             "DSR 被高估、门变**松**。代码注释自己写着『门在读不到试验台账时应当"
             "更保守，而不是更宽松』，实现却相反。审计实测：注入台账不可读后仍得 "
             "passed=true、reasons=[]、DSR≈0.99997",
-    "N-3":  "strategy_net_returns 里 `PortfolioRiskGate.apply` 与无交易带对齐被 "
-            "`except Exception` 整个兜住，失败后只打一条 warning 就**用未经风控的"
-            "原始权重继续回测**。同一函数的 docstring 明写『门评估的账本 == 实际"
-            "交易的账本』—— 异常路径打破的正是这条保证：验证用的组合和实际会交易的"
-            "组合不再是同一个",
-    "N-4":  "PerformanceAnalyzer.sharpe_tstat 把**年化** Sharpe 与**日频**样本数"
-            "混用：t = SR_年化 × √T_日 / √(1+0.5·SR²)。频率不一致使 t 被放大约 "
-            "√(TDAYS) 倍。同一组 120 日收益：产品 8.3236，同频日口径 0.5660，"
-            "单样本 t 参考 0.5664。risk_report 按 1.96 判显著，于是不显著的策略"
-            "被显示成『✓显著』。与 A-3 的近零波动是两回事",
     "N-5":  "PaperBroker.step 用 `tickers = list(target_w.index)` 截断旧持仓："
             "目标资产集合缩小时，不在新目标里的旧持仓既不参与估值（当日收益丢失），"
             "也不产生平仓成交（仓位凭空消失）。审计实测：A/B 各半仓、次日目标只留 "
@@ -586,50 +581,75 @@ class TestBacktestAndExecutionDefects:
             f"第 {t0} 天：被剔除资产 {cols[0]} 的权重是 {out.iloc[t0, 0]:.6g}，"
             f"而注释承诺『保留其基准权重』= {base.iloc[t0, 0]:.6g}")
 
-    @_xfail("A-6")
-    def test_an_adv_capped_name_does_not_inflate_the_others(self):
+    @_xfail("A-7")
+    def test_construction_layer_projections_keep_the_upstream_gross(self):
         """
-        A-6 的**后半**（前半已修，见 `TestGrossExposureFollowsTheTarget`）。
+        构建层的三处 `project_to_capped_l1(..., target=1.0)`：上游 gross≠1 时
+        会被整体放大回 1，把每一个降敞口的决定抹掉（A-6 的同型）。
 
-        A 想要 90% 但 ADV 只允许 1%，B 想要 -10%。执行侧该做的是"能成交多少
-        成交多少" —— 落账 `[0.01, -0.10]`，总敞口不足是**事实**，不该被掩盖。
-        产品当前用 water-filling 把 89% 的亏空摊给 B，落账 `[0.01, -0.99]`：
-        一个 10% 的对冲腿变成 99% 的方向性空头，**这已经不是同一个组合**。
+        这里挑 `manager.apply_capacity` 作代表 —— 它**自相矛盾**得最明显：
+        docstring 写着"容量不足时 gross<1"，传的却是 `target=1.0`。
+        喂一份 gross=0.3 的权重、容量充足（上限不绑定），输出 gross 必须还是 0.3。
+        """
+        from app.core.portfolio_manager.manager import PortfolioManager
 
-        这里断言"其余名字不被放大"，而不是断言最终 gross —— 后者取决于
-        补不补的设计取舍，前者是无论怎么取舍都不该发生的。
+        idx = pd.bdate_range("2024-01-02", periods=30)
+        cols = ["A", "B"]
+        w = pd.DataFrame([[0.2, -0.1]] * 30, index=idx, columns=cols)   # gross 0.3
+        px = pd.DataFrame(100.0, index=idx, columns=cols)
+        vol = pd.DataFrame(1e9, index=idx, columns=cols)                # 容量远超需求
 
-        旧版这条是 `assert "target=1.0" not in src` 的**源码字符串断言**
-        （自伤教训 #6）：把字面量换成同值变量它就静默转绿，而行为分毫未变。
+        pm = PortfolioManager(aum=1_000_000.0)
+        out = pm.apply_capacity(w, px, vol)
+        got = float(out.abs().sum(axis=1).iloc[-1])
+        assert got == pytest.approx(0.3, abs=1e-9), (
+            f"容量不绑定时 gross 应原样保持 0.3，实际 {got:.4f} —— "
+            f"`target=1.0` 写死把上游的降敞口决定抹掉了")
+
+    @_xfail("A-6")
+    def test_the_two_engines_agree_when_liquidity_binds(self):
+        """
+        A-6 的**剩余部分**：执行层已改成"按交易差额部分成交、不再分配"，
+        而 `BacktestEngine` 走的还是 `LiquidityConstraint` 的 water-filling
+        **持仓**裁剪 —— 两个引擎在限流场景下语义已经分家。
+
+        `test_replay_matches_backtest_engine` 的 1e-9 对账用的是成交量充足的数据
+        （上限不绑定），所以它**看不见**这个分叉。这里把成交量压到上限真的绑定，
+        再对同一份权重跑两个引擎。
+
+        ⚠️ 这条**不是**"两边一样就算对"。正确性由各自的独立断言守
+        （执行侧见 `test_paper_broker_accounting.py::TestGrossExposureFollowsTheTarget`
+        与 `Test*PartialFill*`）；这条只守"统一"这一半 ——
+        两者都对且彼此一致，才算完成。
         """
         import tempfile as _tf
 
+        from app.core.backtest_engine.backtest_engine import BacktestEngine
         from app.core.execution.paper_broker import PaperBroker
         from app.db.position_store import PositionStore
 
-        tmp = Path(_tf.mkdtemp(prefix="a6_"))
-        cap_pct = PaperBroker(store=PositionStore(db_url="sqlite:///:memory:")
-                              ).params.adv_cap_pct
-        capital = 1_000_000.0
-        adv_a = 0.01 * capital / cap_pct        # 让 A 的上限恰好是 1% 权重
+        T, N = 30, 3
+        idx = pd.bdate_range("2024-01-02", periods=T)
+        cols = ["A", "B", "C"]
+        rng = np.random.default_rng(5)
+        prices = pd.DataFrame(
+            100 * np.cumprod(1 + rng.normal(0, 0.01, (T, N)), axis=0),
+            index=idx, columns=cols)
+        # 成交量压得很低 → ADV 上限**真的绑定**
+        volume = pd.DataFrame(2_000.0, index=idx, columns=cols)
+        weights = pd.DataFrame([[0.5, -0.3, 0.2]] * T, index=idx, columns=cols)
+        signal = pd.DataFrame(0.0, index=idx, columns=cols)
 
-        b = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp/'a6.db'}"),
-                        initial_capital=capital)
-        tk = ["A", "B"]
-        b.step(alpha_id=1, date="2024-01-02",
-               target_w=pd.Series([0.9, -0.1], index=tk),
-               prices_t=pd.Series([100.0, 100.0], index=tk),
-               prices_prev=pd.Series([100.0, 100.0], index=tk),
-               adv_usd=pd.Series([adv_a, 1e15], index=tk),
-               daily_vol=pd.Series([0.02, 0.02], index=tk))
-        pos = b.store.latest_positions(1)
+        eq_bt = BacktestEngine().run(weights, prices, volume, signal).equity_curve
+        tmp = Path(_tf.mkdtemp(prefix="a6eng_"))
+        pb = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp/'e.db'}"))
+        eq_pb = pb.replay(1, weights, prices, volume)
 
-        assert pos.get("A", 0.0) == pytest.approx(0.01, abs=1e-9), (
-            f"A 应被 ADV 上限削到 1%，实际 {pos.get('A', 0.0)} —— 构造前提变了")
-        assert abs(pos.get("B", 0.0)) == pytest.approx(0.10, abs=1e-9), (
-            f"B 的目标是 -10%，落账 {pos.get('B', 0.0):.4f} —— "
-            f"A 被限流后的亏空被摊到了 B 头上，对冲腿变成了方向性头寸")
-
+        gap = float(np.max(np.abs(eq_bt.to_numpy() - eq_pb.to_numpy())))
+        assert gap < 1e-9, (
+            f"限流绑定时两个引擎的净值最大相差 {gap:.3e} —— "
+            f"回测仍用 water-filling 裁剪目标持仓（会把 A 的未成交额度摊给 B），"
+            f"执行层已改成按成交量部分成交。语义未统一")
 
 # ===========================================================================
 # gp_engine —— GP 适应度
@@ -1145,32 +1165,6 @@ def _panel_for_gate(days: int = 60, n: int = 4, seed: int = 3) -> dict:
 
 class TestStrategyGateCacheAndFailurePaths:
 
-    @_xfail("N-1")
-    def test_cost_cache_key_covers_every_input_the_cost_actually_depends_on(self):
-        """
-        `_cache_key` 只指纹了 close。价差用的是 high/low —— 换掉 high/low、
-        close 不变，缓存照样命中，第二个数据集拿到第一个的成本参数。
-
-        本用例不去比 bps 数字（那会把单元测试绑死在成本模型的具体数值上），
-        而是直接问：**清不清缓存，结果是否一样**。一样就说明缓存键漏了输入。
-        """
-        from app.core.portfolio_manager import strategy_gate as sg
-
-        a = _panel_for_gate()
-        b = {**a, "high": a["close"] * 1.60, "low": a["close"] * 0.40}   # 价差大得多
-
-        sg._DERIVE_CACHE.clear()
-        sg.resolve_cost_params(a, 1_000_000.0)
-        cached = sg.resolve_cost_params(b, 1_000_000.0)      # 命中 a 的条目？
-
-        sg._DERIVE_CACHE.clear()
-        fresh = sg.resolve_cost_params(b, 1_000_000.0)       # b 的真实结果
-
-        assert cached == fresh, (
-            f"同一个数据集 b，走缓存与不走缓存得到不同的成本参数 —— "
-            f"缓存键漏掉了它实际依赖的输入（high/low）。\n"
-            f"  命中缓存: {cached}\n  清缓存后: {fresh}")
-
     @_xfail("N-2")
     def test_unreadable_trial_ledger_must_not_produce_a_pass(self):
         """
@@ -1201,14 +1195,16 @@ class TestStrategyGateCacheAndFailurePaths:
             f"全局试验台账读不到，门仍然给出无保留的通过："
             f"passed={res.passed} n_trials={res.n_trials} reasons={res.reasons}")
 
-    @_xfail("N-3")
-    def test_risk_gate_failure_must_not_silently_fall_back_to_raw_weights(self):
+    def test_risk_gate_failure_refuses_to_produce_returns(self):
         """
-        风控/无交易带对齐抛异常后，产品用**原始权重**继续回测，
-        于是"验证的组合"与"会去交易的组合"不再是同一个 ——
-        而这正是该函数 docstring 承诺的东西。
+        **缺陷 N-3，2026-09-20 已修**（本用例已转正，不再是 xfail）。
 
-        断言：必要风控失败时不得继续产出净收益（应当抛出或明确标记未验证）。
+        `apply_risk=True` 是调用方**明确要求**过风控。原先风控 `apply()` 抛错后
+        只打一条 warning 就**用未经风控的原始权重继续回测** —— 于是这段"策略
+        净收益"对应的组合，和会去交易的组合不是同一个，而该函数 docstring
+        承诺的恰恰是「门评估的账本 == 实际交易的账本」。
+
+        现在做不到就抛，让调用方知道。
         """
         from app.core.portfolio_manager import strategy_gate as sg
 
@@ -1226,51 +1222,34 @@ class TestStrategyGateCacheAndFailurePaths:
             sig = {"f": pd.DataFrame(
                 np.linspace(-1, 1, 4 * 90).reshape(90, 4),
                 index=ds["close"].index, columns=ds["close"].columns)}
-            produced = None
-            try:
-                produced, _ = sg.strategy_net_returns(sig, ds, apply_risk=True)
-            except Exception:
-                produced = None
+            with pytest.raises(RuntimeError, match="拒绝用未经风控的权重回测"):
+                sg.strategy_net_returns(sig, ds, apply_risk=True)
 
-        assert produced is None, (
-            f"风控 apply() 抛错之后仍然产出了 {len(produced)} 天净收益 —— "
-            f"这段收益对应的是**未经风控**的权重，与实际会交易的组合不是同一个")
-
-
-class TestSharpeTStatFrequency:
-
-    @_xfail("N-4")
-    def test_sharpe_tstat_uses_a_consistent_frequency(self):
+    def test_the_gate_reports_a_failure_instead_of_a_verdict(self):
         """
-        t = SR × √T / √(1 + 0.5·SR²) 里 SR 与 T 必须同频。
-        产品用年化 SR 配日频 T，t 被放大约 √TDAYS 倍。
-
-        参考值用**同频日 Sharpe** 代入同一个 Lo(2002) 分母得到；
-        再与 scipy 的单样本 t 交叉验证（两者对这组样本应当很接近），
-        避免"参考值也是照着实现算的"这种同源判据。
+        端到端另一半：抛出去之后**调用方要接住并判不通过**，
+        而不是让异常冒到更上层、或者被谁吞掉又变成一个"通过"。
         """
-        from scipy import stats
+        from app.core.portfolio_manager import strategy_gate as sg
 
-        from app.core.backtest_engine.performance_analyzer import PerformanceAnalyzer
+        class _Boom:
+            def __init__(self, *a, **kw):
+                pass
 
-        idx = pd.bdate_range("2023-01-02", periods=120)
-        ret = pd.Series(([0.012, -0.008, 0.008, -0.010] * 30), index=idx)
+            def apply(self, *a, **kw):
+                raise RuntimeError("风控注入故障")
 
-        sr_d = float(ret.mean() / ret.std(ddof=1))
-        expected = sr_d * np.sqrt(len(ret)) / np.sqrt(1.0 + 0.5 * sr_d ** 2)
-        crosscheck = float(stats.ttest_1samp(ret, 0.0).statistic)
-        assert abs(expected - crosscheck) < 0.01, (
-            f"同频参考值 {expected:.6f} 与单样本 t {crosscheck:.6f} 相差太大 —— "
-            f"参考口径本身有问题，先修参考值再谈产品")
+        idx = pd.bdate_range("2024-01-02", periods=120)
+        with pytest.MonkeyPatch.context() as mp:
+            import app.core.portfolio_manager.risk_gate as rg
+            mp.setattr(rg, "PortfolioRiskGate", _Boom)
+            res = sg.StrategyGate(use_global_trials=False).evaluate(
+                {"f": pd.DataFrame(1.0, index=idx, columns=["A", "B"])},
+                _panel_for_gate(days=120, n=2))
 
-        got = PerformanceAnalyzer(self._result(ret)).sharpe_tstat()
-        assert got == pytest.approx(expected, rel=1e-6), (
-            f"sharpe_tstat() = {got:.6f}，同频口径应为 {expected:.6f}（单样本 t "
-            f"{crosscheck:.6f}）。产品把**年化** Sharpe 与**日频**样本数混用，"
-            f"t 被放大约 √TDAYS 倍 → 按 1.96 判定时不显著的结果显示为『✓显著』")
-
-    _result = staticmethod(TestBacktestAndExecutionDefects._result)
-
+        assert res.passed is False, "风控失败却给出了通过结论"
+        assert any("回测失败" in r or "风控" in r for r in res.reasons), (
+            f"拒绝的理由里看不出是风控失败：{res.reasons}")
 
 class TestPaperBrokerShrinkingUniverse:
 
@@ -1366,10 +1345,10 @@ def test_the_outstanding_defect_count_is_visible():
     混成一个数会让它读起来比实际严重，也会稀释真正该优先修的那几条。
     """
     behavioural = set(DEFECT_REGISTRY) - TECHNICAL_DEBT - FRONTEND_ONLY
-    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (28, 3, 1), (
+    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (26, 3, 1), (
         f"缺陷分类计数变了：行为缺陷 {len(behavioural)} / 技术债 "
         f"{len(TECHNICAL_DEBT)} / 前端 {len(FRONTEND_ONLY)}"
-        f"（登记总数 {len(DEFECT_REGISTRY)}，此前 28/3/1）。\n"
+        f"（登记总数 {len(DEFECT_REGISTRY)}，此前 26/3/1；N-1/N-3/N-4 已于 2026-09-20 修复）。\n"
         f"修好缺陷时请同时：① 删掉对应 xfail 标记 ② 改掉模块测试里"
         f"『钉住现状』的断言 ③ 更新 MUTATION_LEDGER。\n"
         f"当前清单：\n  " + "\n  ".join(f"{k}: {v}" for k, v in DEFECT_REGISTRY.items()))

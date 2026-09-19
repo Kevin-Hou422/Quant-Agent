@@ -45,16 +45,22 @@ _DERIVE_CACHE: Dict[tuple, object] = {}
 _CACHE_MAX = 64
 
 
-def _cache_key(kind: str, dataset: WidePanel, aum: float) -> tuple:
-    """
-    内容指纹，**不用 id()**：CPython 会在对象被回收后复用地址，于是
-    "同 shape + 同 aum + 恰好复用了地址" 的另一个数据集会命中旧条目 ——
-    缓存里存的是**成本参数与无交易带**，串号意味着 A 数据集的成本被用到 B 的回测上。
-    （实测表现为全量跑时 test_phase_pm_s 偶发失败，单独跑必过。）
-    取首末行的和 + 索引端点，O(N) 而非 O(T×N)，足够区分。
-    """
-    c = dataset["close"]
-    arr = c.to_numpy()
+#: 成本推导**实际读取**的字段。缓存键必须覆盖它们全部。
+#:
+#: 【缺陷 N-1，2026-09-20 修】原来的指纹只取 `close` —— 而 Corwin-Schultz 价差
+#: 用的是 **high/low**，市场冲击用的是 **volume**。于是 close 相同、high/low 不同的
+#: 两个数据集命中同一条缓存：外部审计实测真实值 1919.83 bps 被缓存里的 37.47 bps
+#: 顶替（差 51 倍），而调用方完全看不出来。
+#:
+#: 这里显式列字段，而不是"对整个 dataset 求指纹"：后者会把与成本无关的字段
+#: （sector、returns…）也算进去，缓存命中率无谓地掉。字段增删时这张表要同步 ——
+#: 由 `test_cost_cache_key_covers_every_field_the_derivation_reads` 机械核对。
+_COST_INPUT_FIELDS = ("close", "high", "low", "volume")
+
+
+def _panel_fingerprint(df) -> tuple:
+    """单张面板的 O(N) 指纹：形状 + 索引端点 + 首末行和 + 前 4 个列名。"""
+    arr = df.to_numpy()
     try:
         head = float(np.nansum(arr[0])) if len(arr) else 0.0
         tail = float(np.nansum(arr[-1])) if len(arr) else 0.0
@@ -62,10 +68,32 @@ def _cache_key(kind: str, dataset: WidePanel, aum: float) -> tuple:
         # 指纹退化只会削弱缓存区分度（不会致错），但仍记录，避免"缓存突然总不命中"无从查起
         logger.debug("[strategy_gate] 缓存指纹计算失败，退化为形状级键: %s", exc)
         head = tail = 0.0
-    idx = c.index
-    return (kind, c.shape, str(idx[0]) if len(idx) else "",
-            str(idx[-1]) if len(idx) else "", round(head, 6), round(tail, 6),
-            tuple(map(str, c.columns[:4])), float(aum))
+    idx = df.index
+    return (df.shape, str(idx[0]) if len(idx) else "",
+            str(idx[-1]) if len(idx) else "",
+            round(head, 6), round(tail, 6), tuple(map(str, df.columns[:4])))
+
+
+def _cache_key(kind: str, dataset: WidePanel, aum: float) -> tuple:
+    """
+    内容指纹，**不用 id()**：CPython 会在对象被回收后复用地址，于是
+    "同 shape + 同 aum + 恰好复用了地址" 的另一个数据集会命中旧条目 ——
+    缓存里存的是**成本参数与无交易带**，串号意味着 A 数据集的成本被用到 B 的回测上。
+    （实测表现为全量跑时 test_phase_pm_s 偶发失败，单独跑必过。）
+
+    指纹覆盖 `_COST_INPUT_FIELDS` 的**每一张**面板，外加**券商档位**
+    —— 后者决定佣金与最小票面费，换个券商成本就不同，原来也不在键里。
+    """
+    from app.config import settings
+
+    parts: List[tuple] = []
+    for name in _COST_INPUT_FIELDS:
+        df = dataset.get(name)
+        parts.append((name,) + (_panel_fingerprint(df) if df is not None else ("absent",)))
+    broker = str(getattr(settings, "trading_broker_profile", "")
+                 or getattr(settings, "broker_profile", ""))
+    acct = str(getattr(settings, "trading_account_type", ""))
+    return (kind, float(aum), broker, acct, tuple(parts))
 
 
 def _cache_put(key: tuple, val):
@@ -152,6 +180,7 @@ def strategy_net_returns(factor_signals: Signals, dataset: WidePanel,
 
             limits = RiskLimits(
                 max_gross=float(getattr(settings, "risk_max_gross", 1.0)),
+                max_net=float(getattr(settings, "risk_max_net", 1.0)),
                 max_name_weight=float(getattr(settings, "risk_max_name_weight", 0.10)),
                 max_sector_weight=float(getattr(settings, "risk_max_sector_weight", 0.30)),
                 target_vol_ann=(float(getattr(settings, "risk_target_vol_ann", 0.0)) or None),
@@ -161,7 +190,23 @@ def strategy_net_returns(factor_signals: Signals, dataset: WidePanel,
             weights, _ = PortfolioRiskGate(limits).apply(weights, sectors=sectors)
             weights = apply_no_trade_band(weights, resolve_band(dataset, aum))
         except Exception as exc:
-            logger.warning("[strategy_gate] 风控/调仓对齐失败，用原始权重: %s", exc)
+            # 【缺陷 N-3，2026-09-20 修】原先这里是
+            #     logger.warning("风控/调仓对齐失败，用原始权重: %s", exc)
+            # 然后**继续往下跑回测** —— 于是这段"策略净收益"对应的是**未经风控**
+            # 的权重，而本函数 docstring 承诺的恰恰是
+            # 「门评估的账本 == 实际交易的账本」。验证用的组合和会去交易的组合
+            # 不再是同一个，门却照样给出结论。
+            #
+            # `apply_risk=True` 是调用方**明确要求**过风控。做不到就必须让调用方
+            # 知道，而不是换一套账本继续算。三个调用方都已 fail-closed：
+            # `StrategyGate.evaluate` 判不通过并写明理由，
+            # `_oos` 视为 -inf，PBO 那条会让该因子落选。
+            logger.error(
+                "[strategy_gate] 风控/调仓对齐失败 → **拒绝**给出策略净收益"
+                "（继续用原始权重会让门评估的账本与实际交易的账本不一致）: %s", exc)
+            raise RuntimeError(
+                f"apply_risk=True 但风控/调仓对齐失败，拒绝用未经风控的权重回测: {exc}"
+            ) from exc
 
     engine = BacktestEngine(cost_params=cp, initial_capital=aum)
     result = engine.run(weights, prices, volume, book.composite)

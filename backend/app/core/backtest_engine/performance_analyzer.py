@@ -93,16 +93,37 @@ class PerformanceAnalyzer:
         """
         Sharpe 比率的 t 统计量（Lo 2002 公式）。
 
-        t = SR × √T / √(1 + 0.5 × SR²)
+        t = SR_d × √T / √(1 + 0.5 × SR_d²)
 
-        T = 实际净收益观测天数。
-        t > 1.96 → 在 5% 显著性水平下统计显著。
+        **SR_d 与 T 必须同频**：T 是观测期数，SR_d 就必须是**同一频率**上的
+        Sharpe（这里是日频）。
+
+        【缺陷 N-4，2026-09-20 修】原实现取的是 `self.sharpe_ratio()` ——
+        那是**年化** Sharpe（`annualized_return / annualized_volatility`，
+        年化系数 `_tdays` 实测约 265.6），却乘**日频**观测数 `√T`。
+        频率不一致使 t 被放大约 √_tdays ≈ 16 倍。
+
+        同一组 120 日收益的实测：
+
+          · 旧实现          t = 8.3236   → 按 1.96 判定"✓显著"
+          · 同频日口径      t = 0.5660   → "✗不显著"
+          · 单样本 t 参考   t = 0.5664   （scipy.stats.ttest_1samp，独立口径）
+
+        也就是说 `risk_report` 会把一组**不显著**的收益显示成显著。
+        修的是**频率口径**，不是显著性阈值 —— 1.96 本身没错。
+
+        无风险利率同样按日频扣：`self.rf` 是日频值（`rf_annual / _tdays`）。
         """
-        sr = self.sharpe_ratio()
-        if np.isnan(sr):
-            return np.nan
-        T = float(max(len(self._ret.dropna()), 1))
-        return float(sr * np.sqrt(T) / np.sqrt(1.0 + 0.5 * sr ** 2))
+        r = self._ret.dropna()
+        T = int(len(r))
+        if T < 2:
+            return float("nan")
+        sd = float(r.std(ddof=1))
+        if not np.isfinite(sd) or sd <= 1e-15:
+            # 近零波动：Sharpe 本身就没有意义（见缺陷 A-3），不要算出天文数字
+            return float("nan")
+        sr_d = float((r.mean() - self.rf) / sd)          # **日频** Sharpe
+        return float(sr_d * np.sqrt(T) / np.sqrt(1.0 + 0.5 * sr_d ** 2))
 
     def deflated_sharpe_ratio(
         self,

@@ -45,9 +45,12 @@ STD_D = 0.00967106052947172        # ret.std(ddof=1)
 ANN_RETURN = 0.142004427660126     # (1 + 0.0005) ** TDAYS - 1
 ANN_VOL = 0.15762237415489141      # STD_D * sqrt(TDAYS)
 SHARPE = 0.9009154215668769        # ANN_RETURN / ANN_VOL   (rf = 0)
-# ↓ **钉住当前（错误的）实现**，不是正确答案：年化 SR 配日频 √T，频率不一致。
-#   已登记为缺陷 N-4；修好后这个常量要一起改。见 TestSharpeTStat 的类注释。
-SHARPE_T = 8.32356013267212        # SHARPE * sqrt(120) / sqrt(1 + 0.5 * SHARPE**2)
+SHARPE_D = 0.05170063805063506     # **日频** Sharpe = MEAN_D / STD_D（rf=0）
+# 缺陷 N-4 修复后（2026-09-20）：SR 与 T 同频。
+#   t = SR_d * sqrt(120) / sqrt(1 + 0.5 * SR_d**2)
+# 旧值 8.32356013267212 是**年化 SR 配日频 √T** 算出来的，已作废 ——
+# 它让这组不显著的收益（单样本 t = 0.5664）被 risk_report 显示成"✓显著"。
+SHARPE_T = 0.5659740343172954
 SORTINO = 8.639895768446092
 CALMAR = 14.111035246689319
 MAX_DD = -0.010063360000000183
@@ -189,23 +192,48 @@ class TestSharpeTStat:
     """
     t = SR × √T / √(1 + 0.5 × SR²)（Lo 2002）。
 
-    **本组断言钉住的是当前实现，不是正确答案。** 外部审计 2026-09-15（N-4）
-    指出：这里的 `SR` 取的是**年化** Sharpe（`ANN_RETURN / ANN_VOL`，
-    TDAYS≈265.6），`√T` 取的却是**日频**观测数 √120 —— 两个频率不一致。
-    同一组收益，按同频日 Sharpe 代入同一分母得 0.5660，单样本 t 参考 0.5664，
-    而产品给出 8.3236；`risk_report.py` 按 1.96 判显著，于是这组收益被显示成
-    "✓显著"，正确口径下是"✗不显著"。
+    **缺陷 N-4 已于 2026-09-20 修复。** 此前 `SR` 取的是**年化** Sharpe
+    （`ANN_RETURN / ANN_VOL`，TDAYS≈265.6），`√T` 取的却是**日频**观测数 √120，
+    两个频率不一致使 t 被放大约 √TDAYS ≈ 16 倍：产品给 8.3236，
+    而 `risk_report.py` 按 1.96 判显著 —— 一组不显著的收益被显示成"✓显著"。
 
-    `SHARPE_T` 这个常量是**照着实现算出来的**（见其行内注释的公式），
-    所以它检测得了"公式被改动"，检测不了"公式本来就错"。
-    应有行为由 `test_known_defects.py::TestSharpeTStatFrequency` 以 xfail 断言，
-    修好之后本组常量必须同步改掉。
+    修的是**频率口径**，不是显著性阈值：1.96 本身没错。
+
+    下面第二条断言刻意用**独立的**统计基准（`scipy.stats.ttest_1samp`）而不是
+    重算一遍产品公式 —— 期望值照着实现算，只检测得了"公式被改动"，
+    检测不了"公式本来就错"（自伤教训 #11 就是这么来的）。
     """
 
     def test_sharpe_tstat_exact(self, pa):
         assert pa.sharpe_tstat() == pytest.approx(SHARPE_T, abs=1e-10)
         assert pa.sharpe_tstat() == pytest.approx(
-            SHARPE * np.sqrt(N) / np.sqrt(1.0 + 0.5 * SHARPE ** 2), abs=1e-10)
+            SHARPE_D * np.sqrt(N) / np.sqrt(1.0 + 0.5 * SHARPE_D ** 2), abs=1e-10)
+
+    def test_sharpe_tstat_agrees_with_an_independent_t_statistic(self, pa):
+        """
+        **独立同频基准**：单样本 t 检验（scipy）完全不经过被测代码。
+
+        Lo(2002) 的 `√(1 + 0.5·SR²)` 修正项使两者不会逐位相等，
+        但在 SR_d≈0.05 这种量级上差异应在 1e-3 以内。
+        频率若再次搞错，差距会是 16 倍量级 —— 这条立刻红。
+        """
+        from scipy import stats
+        ref = float(stats.ttest_1samp(RET, 0.0).statistic)
+        got = pa.sharpe_tstat()
+        assert got == pytest.approx(ref, abs=2e-3), (
+            f"sharpe_tstat()={got:.6f} 与独立的单样本 t={ref:.6f} 相差过大 —— "
+            f"SR 与 T 的频率大概率又对不上了")
+
+    def test_the_verdict_matches_the_independent_baseline(self, pa):
+        """
+        口径对不对，最终体现在**结论**上：这组收益按独立基准是不显著的，
+        产品按 1.96 判也必须是不显著。旧实现在这里给"显著"。
+        """
+        from scipy import stats
+        ref = float(stats.ttest_1samp(RET, 0.0).statistic)
+        assert abs(ref) < 1.96, "构造的样本本来就显著，这条对照没意义"
+        assert abs(pa.sharpe_tstat()) < 1.96, (
+            f"独立基准 t={ref:.4f} 不显著，产品 t={pa.sharpe_tstat():.4f} 却判显著")
 
     def test_sharpe_tstat_denominator_sign(self, pa):
         """
