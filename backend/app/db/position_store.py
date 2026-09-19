@@ -51,6 +51,11 @@ class PaperFill(_Base):
     fill_price:    float  = Column(Float, default=0.0)
     cost_usd:      float  = Column(Float, default=0.0)
     reject_reason: str    = Column(String(64), default="")
+    # 2026-09-19：区分**持仓**与**成交**两个口径（用户决策 #2/#3）。
+    # `filled_weight` 是成交后的持仓，看不出这一笔实际成交了多少；
+    # 未成交的减仓/平仓必须按真实未成交状态记账，不能只留一个持仓数字。
+    traded_weight:   float = Column(Float, default=0.0)   # 本日实际成交的权重变动（有符号）
+    unfilled_weight: float = Column(Float, default=0.0)   # 想交易但没成交的部分（有符号）
 
 
 class PaperDailyPnL(_Base):
@@ -127,6 +132,8 @@ class PositionStore:
                     fill_price=float(f.get("fill_price", 0.0)),
                     cost_usd=float(f.get("cost_usd", 0.0)),
                     reject_reason=str(f.get("reject_reason", "")),
+                    traded_weight=float(f.get("traded_weight", 0.0)),
+                    unfilled_weight=float(f.get("unfilled_weight", 0.0)),
                 ))
             s.add(PaperDailyPnL(
                 alpha_id=alpha_id, date=d,

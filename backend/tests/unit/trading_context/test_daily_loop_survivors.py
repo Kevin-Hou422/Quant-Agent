@@ -474,8 +474,17 @@ def test_portfolio_broker_uses_grounded_cost_params(tmp_path, monkeypatch):
     变异测试证实该用例在场而 L271 存活。
 
     改法：把 grounded 成本参数换成一个**极端可辨识**的值（fixed_bps=500），
-    再看落账的 cost_bps。用了 grounded → 成本量级 ~180bps；
-    退回默认 broker → 仍是 ~0.8bps，相差 200 倍。
+    再看落账的 cost_bps —— 用了 grounded 与退回默认相差两个数量级。
+
+    ⚠️ 判据用**比值**不用绝对值（2026-09-18 改）。上一版写的是
+    `assert got > 100.0`，那个 100 是照着**当时的** cost_bps 量级标定的，
+    而 cost_bps 正比于下单名义额。修掉缺陷 A-6（PaperBroker 把目标总敞口
+    强行放大到 L1=1）之后，本链路的真实敞口是 **0.30**、不再是被放大的 1.0，
+    于是同一套成本参数落账 57.5bps 而不是 ~180bps，绝对阈值当场判红。
+
+    **它测的是"grounded 参数有没有生效"，不是"成本有多大"** ——
+    绝对阈值把一个无关的量（敞口）绑进了判据里。比值不受敞口影响：
+    两边用的是同一条链路、同一份权重，只有成本参数不同。
     """
     import app.core.trading_context.context as ctx
     from app.core.backtest_engine.transaction_cost import CostParams
@@ -499,8 +508,11 @@ def test_portfolio_broker_uses_grounded_cost_params(tmp_path, monkeypatch):
     assert out.get("days_processed", 0) > 0
     got = float(np.mean([h.cost_bps for h in
                          loop.broker.store.pnl_history(PORTFOLIO_BOOK_ID, limit=300)]))
-    assert got > 100.0, (
-        f"grounded 成本参数没有生效：平均 cost_bps={got:.2f}（基线 {base:.2f}）—— "
+    assert base > 0.0, "基线成本为 0，比不出倍数"
+    ratio = got / base
+    assert ratio > 50.0, (
+        f"grounded 成本参数没有生效：平均 cost_bps={got:.2f}，基线 {base:.2f}，"
+        f"只差 {ratio:.1f} 倍 —— fixed_bps 从默认拉到 500 应当差两个数量级，"
         f"组合账本疑似退回了默认 broker")
     assert abs(float(out.get("aum", aum)) - aum) < 1e-6
 
@@ -671,3 +683,72 @@ def test_average_ranks_loop_bound_mutation_is_equivalent():
         # 原来这里写成 `if len(x): assert ...`，空数组那一例就什么都没查 —— §A。
         assert np.array_equal(a, _average_ranks(x)), (
             f"复刻实现与生产实现在 {x} 上不一致：{a} vs {_average_ranks(x)}")
+
+
+# ---- 组合级净敞口上限的接线（用户决策 2026-09-20）--------------------------
+
+class TestPortfolioNetLimitIsWired:
+    """
+    执行层的部分成交会破坏对冲比例，所以成交后净敞口必须按组合级上限回查。
+    这一组守的是**接线**本身 —— 上限算得再对，没接到执行层也等于没有。
+
+    两条边都要守：
+      · 组合账本（实际意图组合）**必须**拿到非 None 的上限
+      · 逐 alpha 影子账本**明确不限制**，且这是判断结果不是配置缺失
+        （两类账本用的是同一份资金基数，不是一个账户的两块切片；
+         把整体限额逐 alpha 套上去会扭曲"这条 alpha 表现如何"的测量）
+    """
+
+    def test_settings_declares_a_net_limit(self):
+        """配置项必须存在 —— 缺失时 `getattr(..., 1.0)` 会静默兜底，看不出没接线。"""
+        from app.config import Settings
+        assert "risk_max_net" in Settings.model_fields, (
+            "settings 没有 risk_max_net —— 组合级净敞口上限没有配置入口，"
+            "run_portfolio 会落到 RiskLimits 的 dataclass 默认，等于没接线")
+
+    def test_the_portfolio_book_receives_a_net_limit(self, tmp_path, monkeypatch):
+        """
+        跑一次 run_portfolio，断言组合账本的 broker 拿到了**非 None** 的净敞口上限，
+        且数值与 settings 的配置一致（经 RiskLimits 的 long_only 收紧后）。
+        """
+        from app.config import settings
+        from app.core.portfolio_manager import RiskLimits
+
+        import app.core.execution.paper_broker as pbm
+
+        monkeypatch.setattr(settings, "risk_max_net", 0.35, raising=False)
+        monkeypatch.setattr(settings, "risk_max_gross", 1.0, raising=False)
+
+        # 断言**实际撮合时收到的值**，不是某个对象的属性 ——
+        # 属性设对了但没传到撮合里，接线一样是断的。
+        seen = []
+        real = pbm.simulate_partial_fills
+        monkeypatch.setattr(pbm, "simulate_partial_fills",
+                            lambda *a, **kw: (seen.append(kw.get("max_net")),
+                                              real(*a, **kw))[1])
+        loop, _ = _make_loop(tmp_path, tag="netlimit")
+        loop.run_portfolio(_dataset(n_days=60, seed=8), aum=10_000.0)
+
+        expected = RiskLimits(max_gross=1.0, max_net=0.35).max_net
+        assert seen, "run_portfolio 一次撮合都没做，测不到接线"
+        assert all(v is not None for v in seen), (
+            "组合账本的执行层收到的 max_net 是 None —— 部分成交后无人回查净敞口，"
+            "对冲腿被打残也不会有任何提示")
+        assert all(v == pytest.approx(expected, abs=1e-12) for v in set(seen)), (
+            f"撮合时收到的上限是 {sorted(set(seen))}，配置应给出 {expected}")
+
+    def test_a_shadow_book_is_deliberately_unconstrained(self, tmp_path):
+        """
+        逐 alpha 影子账本不带组合级上限 —— 这是**明确选择**，不是忘了传。
+
+        判据用默认构造：`PaperBroker()` 的 max_net 必须是 None，
+        于是"没接线"和"明确不限制"在代码里是同一个写法，
+        靠上一条（组合账本必须非 None）把两者分开。
+        """
+        from app.core.execution.paper_broker import PaperBroker
+        from app.db.position_store import PositionStore
+
+        b = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp_path/'s.db'}"))
+        assert b.max_net is None, (
+            "PaperBroker 默认带上了净敞口上限 —— 影子账本会被一个它并不占用的"
+            "组合预算约束，量出来的 alpha 表现不再是这条 alpha 自己的")

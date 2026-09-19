@@ -390,7 +390,7 @@ python tools/mutation/runner.py plan_full.json --state progress_full.json --stat
 | A-3 | `PerformanceAnalyzer` 对近零波动无防护：全常数收益算出年化 Sharpe ≈ 3e16 |
 | A-4 | `PerformanceAnalyzer` 遇非日期索引先在 `_tdays` 抛 AttributeError，且报错指向内部实现 |
 | A-5 | `MVOPortfolio` 注释写「剔除的资产保留基准权重」，实现是整行替换 → 拿到 0 |
-| A-6 | `PaperBroker.step` 写死 `target=1.0`，把目标总敞口强行放大到 L1=1 |
+| A-6 | **前半已修（2026-09-18）**：`PaperBroker.step` 曾写死 `target=1.0`，把目标总敞口强行放大到 L1=1 —— 实测日循环的组合**目标持仓**总敞口 0.27–0.30，被放大到 0.90–1.00（**3.33×**）；**成交名义额** `sum|Δw|` 另行实测为 **1.54×**（120 天合计 46.0 → 29.9）。两个口径不同，不可混用 —— 成交额是差分，不随持仓等比缩放（我起初把持仓口径写成了成交口径，用户指出后补测更正）。已改为 `\|tgt\|` 之和。**后半未修**：ADV 削掉某只票后 water-filling 把亏空摊给其余名字（`[0.9,-0.1]` → `[0.01,-0.99]`），改法牵涉设计取舍，见登记表 |
 | C-1 | GP 适应度的截面秩用 `argsort(argsort(x))`，不处理并列 → 零信息信号被按**列顺序**摊开，IC 成了伪相关 |
 | C-2 | `mutations._replace_node` 先 deepcopy 再按 `id(target)` 找节点 → 除非 target 是 root，替换**永远静默失败**；`add_ts_smoothing` 在多数情况下是彻底的空操作 |
 | D-1 | `financial_interpreter` 只认 `neg` 节点：`-x` 判 reversion，语义相同的 `(0-x)` 判 momentum |

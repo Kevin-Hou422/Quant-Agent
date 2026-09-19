@@ -11,7 +11,7 @@ Transaction Cost & Liquidity Model
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Tuple
+from typing import List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -31,7 +31,17 @@ class CostParams:
     spread_bps             : 买卖价差（bps）
     impact_coef            : 市场冲击系数（平方根法则）
     adv_window             : ADV 计算窗口（交易日）
-    adv_cap_pct            : 单标的持仓上限 = adv_cap_pct × 20日ADV（USD）
+    adv_cap_pct            : **持仓容量**上限 = adv_cap_pct × ADV（USD）。
+                             这是**组合构建层**的约束（"这只票最多能装多少钱"），
+                             容量不足时允许把额度换到别的票上（water-filling）。
+    max_participation_pct  : **单日成交量**上限 = max_participation_pct × ADV（USD）。
+                             这是**执行层**的约束（"今天最多能成交多少"），
+                             约束的是 prev→target 的**交易差额**，不是目标持仓；
+                             买不到**不得**把额度分配给别的票。
+
+    ⚠️ 这两个参数在 2026-09-19 之前是**同一个**（`adv_cap_pct`）：文档与实现都写
+    "持仓上限"，却被 PaperBroker 拿去裁剪目标持仓并生成带 `reject_reason="adv_cap"`
+    的成交记录 —— 用持仓裁剪冒充部分成交。拆开是用户决策 #3。
     slippage_model         : 'sqrt'（平方根法则）或 'linear'（简化线性）
     short_borrow_annual_bps: 做空借券年化成本（bps）。每日从空头持仓净值扣除。
                              典型值：易借券 30–100bps，难借券可达 1000bps+。
@@ -43,6 +53,7 @@ class CostParams:
     impact_coef:             float = 0.1
     adv_window:              int   = 20
     adv_cap_pct:             float = 0.10
+    max_participation_pct:   float = 0.10
     slippage_model:          Literal["sqrt", "linear"] = "sqrt"
     short_borrow_annual_bps: float = 50.0
 
@@ -100,12 +111,12 @@ class SlippageModel:
 def project_to_capped_l1(
     w:        np.ndarray,   # (T, N) 有符号权重
     cap:      np.ndarray,   # (T, N) 每名 |权重| 上限（>=0，可为 inf）
-    target:   float = 1.0,  # 目标 L1 范数
+    target:   "float | np.ndarray" = 1.0,   # 目标 L1 范数；标量或逐行 (T,) / (T,1)
     max_iter: int   = 32,
     tol:      float = 1e-12,
 ) -> np.ndarray:
     """
-    带上限的 L1 投影（Task 6.6，water-filling）。
+    带上限的 L1 投影（Task 6.6，water-filling）。**这是组合构建层的原语。**
 
     对每一行求解：|w_i| <= cap_i 且 sum_i |w_i| == target（当预算 sum_i cap_i >= target
     时可行）；若预算不足则**保持 sum |w_i| = 预算 < target**，绝不通过整体放大把
@@ -113,14 +124,27 @@ def project_to_capped_l1(
 
     算法：迭代 water-filling —— 反复将自由名按比例放大以补足亏空，任何被放大到
     超过 cap 的名固定在 cap 并移出自由集，直到收敛或达 max_iter。方向（符号）保留。
+
+    ⚠️ **不要用它来模拟成交。** 它的 water-filling 会把某只票被削掉的额度
+    **再分配**给其他票 —— 在构建目标时这是对的（容量不足就换个票装），
+    在执行时这是错的（券商不会因为 A 买不到就多买 B）。
+    执行侧请用 `simulate_partial_fills()`。
+
+    `target` 支持**逐行**给值：`apply_capacity` 这类按 (T,N) 批处理的调用
+    必须传 `np.abs(w).sum(axis=1)`，否则 gross≠1 的输入会被整体放大到 1
+    （缺陷 A-6 的形态）。
     """
     sign = np.sign(w)
     a    = np.abs(w).astype(float)
     cap  = np.abs(cap).astype(float)
 
+    tgt = np.asarray(target, dtype=float)
+    if tgt.ndim == 1:
+        tgt = tgt.reshape(-1, 1)                                  # (T,) → (T,1)
+
     # 每行可达的最大 L1 = min(target, 预算)
     budget    = np.nansum(np.where(np.isfinite(cap), cap, a), axis=1, keepdims=True)
-    row_target = np.minimum(target, budget)                       # (T, 1)
+    row_target = np.minimum(tgt, budget)                          # (T, 1)
 
     a = np.minimum(a, cap)                                         # 初始截断
     for _ in range(max_iter):
@@ -138,6 +162,130 @@ def project_to_capped_l1(
         a = np.minimum(a, cap)                                    # 放大后可能触顶，再截断
 
     return sign * a
+
+
+@dataclass
+class FillResult:
+    """一次撮合的结果。`desired_d = filled_d + unfilled_d` 恒成立（逐名）。"""
+    filled_w:   np.ndarray   # 成交后的**持仓**权重
+    filled_d:   np.ndarray   # 实际成交的权重变动（有符号）
+    desired_d:  np.ndarray   # 想要的权重变动（有符号）
+    unfilled_d: np.ndarray   # 未成交的部分（有符号）
+    group_frac: np.ndarray   # 每名所属订单组的**共同可执行比例** φ ∈ [0,1]
+    scaled_by:  float        # 为满足组合级约束对**全部**交易的整体缩放 μ ∈ [0,1]
+    deferred:   bool         # μ == 0 且确实有交易意图（整组暂缓）
+    #: 目标账本自身就违反组合约束 —— 这是**构建层**的问题，执行层补不了。
+    target_violates: bool = False
+    #: 连"什么都不交易"都仍然违规（昨仓已超限）—— 必须由构建层产出新目标。
+    book_non_compliant: bool = False
+
+
+def _largest_feasible_scale(n0: float, s: float, limit: float,
+                            tol: float = 1e-9) -> "float | None":
+    """
+    求 `|n0 + mu*s| <= limit` 在 `mu in [0,1]` 上的**最大**可行解；无解返回 None。
+
+    `n0 + mu*s` 对 mu 是线性的，约束区间也就是一段区间，与 [0,1] 取交后取右端点。
+    独立成函数是为了能被单独测：它决定"部分成交到什么程度才不留下超限敞口"。
+    """
+    if abs(s) <= tol:                       # 交易不改变净敞口
+        return 1.0 if abs(n0) <= limit + tol else None
+    lo_raw = (-limit - n0) / s
+    hi_raw = (limit - n0) / s
+    lo, hi = (lo_raw, hi_raw) if s > 0 else (hi_raw, lo_raw)
+    lo, hi = max(lo, 0.0), min(hi, 1.0)
+    return hi if hi >= lo - tol else None
+
+
+def simulate_partial_fills(
+    prev_w:      np.ndarray,       # (N,) 昨仓权重
+    target_w:    np.ndarray,       # (N,) 目标持仓权重
+    cap_trade_w: np.ndarray,       # (N,) 本日**可成交量**上限（权重口径，>=0，可为 inf）
+    *,
+    max_net:     "float | None" = None,   # 组合净敞口上限（|sum w|）。None = 明确不限制
+    groups:      "Sequence | None" = None,  # (N,) 订单组标签；同组必须按**原始比例**成交
+    net_tol:     float = 1e-9,
+) -> FillResult:
+    """
+    执行层撮合：**逐名按可成交量部分成交，绝不把未成交额度分配给别的标的。**
+
+    分工（2026-09-19 定，用户决策 #1）：
+
+      · 组合构建层：容量不足时可以 water-filling **换个票装**，产出的是**新目标**，
+        并且要重新过风控。
+      · 执行层（本函数）：**一个标的受限，不得擅自扩大另一个标的的目标**。
+        买不到就是买不到，未成交量如实记账。
+
+    三步：
+
+      1. **订单组的共同可执行比例 φ**（用户决策 #2 之二）。
+         对明确要求保持比例的订单组，φ 从**原始订单**算：
+         `φ_g = min_i(cap_i / |desired_i|)`，全组同乘 φ_g。
+         未分组的名各自独立（等价于逐名裁剪）。
+
+         为什么不能"先逐名裁剪再整体乘 λ"：那样保持的是**裁剪后**的比例。
+         `[+0.90, -0.10]` 被裁成 `[+0.01, -0.10]` 时 9:1 已经反转成 0.1:1，
+         之后再怎么等比缩放都救不回来。
+
+      2. **组合级约束 μ**。对**全部**交易（含减仓）整体缩放。
+
+         为什么减仓不能豁免（用户决策 #2 之一）：**单标的减仓 ≠ 组合降风险**。
+         `[+0.30, -0.20]`（net +0.10）平掉空头是逐名"降风险"，
+         但组合净敞口升到 +0.30 —— 上一版把减仓当基准无条件放行，
+         于是 `max_net=0.15` 被突破而 λ 还报 1.0。
+
+      3. **区分"谁的问题"**。`|sum(target)| > max_net` 说明**构建层**产出的目标
+         本身就违规，执行层补不了 → `target_violates`；
+         连不交易都仍超限（昨仓已违规）→ `book_non_compliant`。
+         两种都必须由构建层产出新目标并重新过风控，不是靠执行层少成交来掩盖。
+
+    ⚠️ **净敞口约束不能代替对冲比例约束**：上例 `[+0.01, -0.10]` 的 `|net|=0.09`
+    满足 `max_net=0.10`，但比例已经反转。要保比例就必须传 `groups`。
+    """
+    prev_w = np.asarray(prev_w, dtype=float)
+    target_w = np.asarray(target_w, dtype=float)
+    cap = np.abs(np.asarray(cap_trade_w, dtype=float))
+    n = prev_w.shape[0]
+
+    desired = target_w - prev_w
+
+    # ---- 1) 逐组共同可执行比例 φ（未分组 = 各自独立）----
+    labels = list(groups) if groups is not None else [None] * n
+    assert len(labels) == n, "groups 长度必须与权重向量一致"
+    phi = np.ones(n, dtype=float)
+    buckets: dict = {}
+    for i, g in enumerate(labels):
+        buckets.setdefault(("_solo", i) if g is None else ("_grp", g), []).append(i)
+    for key, idx in buckets.items():
+        ratios = [cap[i] / abs(desired[i]) for i in idx if abs(desired[i]) > net_tol]
+        f = min(ratios) if ratios else 1.0
+        phi[idx] = min(1.0, max(0.0, f))
+    f0 = phi * desired
+
+    # ---- 2) 组合级约束 μ（作用于**全部**交易）----
+    mu, target_violates, non_compliant = 1.0, False, False
+    if max_net is not None:
+        target_violates = abs(float(np.sum(target_w))) > max_net + net_tol
+        got = _largest_feasible_scale(float(np.sum(prev_w)), float(np.sum(f0)),
+                                      max_net, net_tol)
+        if got is None:
+            mu = 0.0
+            non_compliant = abs(float(np.sum(prev_w))) > max_net + net_tol
+        else:
+            mu = got
+
+    filled_d = mu * f0
+    return FillResult(
+        filled_w=prev_w + filled_d,
+        filled_d=filled_d,
+        desired_d=desired,
+        unfilled_d=desired - filled_d,
+        group_frac=phi,
+        scaled_by=float(mu),
+        deferred=bool(mu == 0.0 and np.any(np.abs(desired) > net_tol)),
+        target_violates=bool(target_violates),
+        book_non_compliant=bool(non_compliant),
+    )
 
 
 class LiquidityConstraint:

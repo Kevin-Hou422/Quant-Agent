@@ -31,7 +31,7 @@ import numpy as np
 import pandas as pd
 
 from ..backtest_engine.transaction_cost import (
-    CostParams, LiquidityConstraint, TransactionCostEngine, project_to_capped_l1,
+    CostParams, LiquidityConstraint, TransactionCostEngine, simulate_partial_fills,
 )
 from ...db.position_store import DailyPnL, PositionStore
 
@@ -44,10 +44,14 @@ class PaperBroker:
         store:           Optional[PositionStore] = None,
         cost_params:     Optional[CostParams] = None,
         initial_capital: float = 1_000_000.0,
+        max_net:         Optional[float] = None,
     ) -> None:
         self.store           = store or PositionStore()
         self.params          = cost_params or CostParams()
         self.initial_capital = initial_capital
+        # 部分成交会破坏对冲比例 → 成交后净敞口要回查（用户决策 #2）。
+        # None = 不约束；显式给值时，超限就整组缩减新增订单，缩不动就暂缓。
+        self.max_net         = max_net
         self._liq            = LiquidityConstraint(self.params)
         self._tc             = TransactionCostEngine(self.params)
 
@@ -91,15 +95,34 @@ class PaperBroker:
         daily_borrow = self.params.short_borrow_annual_bps * 1e-4 / max(tdays_per_year, 1.0)
         borrow_ret = float(np.sum(np.maximum(-prev_w, 0.0)) * daily_borrow)
 
-        # 3) ADV 上限投影（与 BacktestEngine 一致：以 initial_capital 计）
+        # 3) 撮合：按**单日可成交量**部分成交，不做任何再分配
+        #
+        # 【缺陷 A-6，2026-09-18/19 两步修完】
+        #
+        # 旧实现是 `project_to_capped_l1(tgt, adv_cap_pct×ADV/capital, target=1.0)`，
+        # 两处都错：
+        #   ① `target=1.0` 写死 —— 上游每一个降敞口的决定（波动率目标、max_gross、
+        #      无交易带）在这一步被抹掉。实测日循环的**目标持仓**总敞口 0.27–0.30
+        #      被放大到 0.90–1.00（3.33×），**成交名义额** 1.54×。
+        #   ② 用 water-filling 裁剪**目标持仓**来冒充成交：A 被 ADV 削掉后，
+        #      亏空被摊给 B —— [0.9, -0.1] 落账 [0.01, -0.99]，
+        #      10% 的对冲腿变成 99% 的方向性空头。
+        #
+        # 现在：执行层**只按交易差额撮合**（prev → target 的 Δ），
+        # 一个标的受限不得扩大另一个标的的目标；未成交量如实记账。
+        # 需要再分配时，必须由组合构建层产出新目标并重新过风控（用户决策 #1）。
+        #
+        # `adv_cap_pct`（持仓容量）与 `max_participation_pct`（单日成交量）
+        # 已拆成两个参数 —— 前者属于构建层，后者才是这里该用的（用户决策 #3）。
         if self.initial_capital > 0:
-            cap_w = adv * self.params.adv_cap_pct / self.initial_capital
+            cap_trade_w = adv * self.params.max_participation_pct / self.initial_capital
         else:
-            cap_w = np.full_like(adv, np.inf)
-        filled = project_to_capped_l1(tgt[np.newaxis, :], cap_w[np.newaxis, :], target=1.0)[0]
+            cap_trade_w = np.full_like(adv, np.inf)
 
-        # 4) 调仓成本
-        delta = filled - prev_w
+        fr = simulate_partial_fills(prev_w, tgt, cap_trade_w, max_net=self.max_net)
+        filled, delta = fr.filled_w, fr.filled_d
+
+        # 4) 调仓成本 —— 基于**实际成交量**，不是想要的量
         cost_w, _cost_usd_total, _ = self._tc.compute(
             date=date, delta_w=delta, prices=p_t, adv_usd=adv, daily_vol=vol,
             portfolio_val=equity * self.initial_capital, tickers=tickers,
@@ -118,11 +141,24 @@ class PaperBroker:
         for i, tk in enumerate(tickers):
             if abs(delta[i]) < 1e-12 and abs(filled[i]) < 1e-12:
                 continue
-            reject = "adv_cap" if abs(filled[i]) < abs(tgt[i]) - 1e-9 else ""
+            # 未成交的原因必须分得开（用户决策 #2）：
+            #   · participation —— 这一名自己的成交量打满了上限
+            #   · net_exposure  —— 这一名本身没打满，是**整组新增订单**被缩减/暂缓，
+            #                      因为部分成交会把净敞口推出限额（留下未授权的方向性头寸）
+            # 旧实现一律写 "adv_cap"，而且判据是 `|filled| < |target|`
+            # —— 那是**持仓**口径，与"这笔单成交了多少"无关。
+            unfilled = float(fr.unfilled_d[i])
+            if abs(unfilled) <= 1e-12:
+                reject = ""
+            elif abs(delta[i]) >= abs(cap_trade_w[i]) - 1e-12:
+                reject = "participation"
+            else:
+                reject = "net_exposure_defer" if fr.deferred else "net_exposure_scaled"
             fills.append({
                 "ticker": tk, "target_weight": float(tgt[i]),
                 "filled_weight": float(filled[i]), "fill_price": float(p_t[i]),
                 "cost_usd": float(cost_w[i] * pv), "reject_reason": reject,
+                "traded_weight": float(delta[i]), "unfilled_weight": unfilled,
             })
         positions = {tk: float(filled[i]) for i, tk in enumerate(tickers) if abs(filled[i]) > 1e-12}
 

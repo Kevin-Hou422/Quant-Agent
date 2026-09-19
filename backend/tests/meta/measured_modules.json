@@ -4,9 +4,9 @@
   "_note_state_file_missing": "标了 state_file_missing 的模块：A 档确实测量过（台账有逐条存活分析），但当时的 progress 状态文件后来被清理，数字取自台账而非状态文件。重跑一次即可回到自动生成的口径。",
   "totals": {
     "modules_with_mutants": 89,
-    "total_points": 1981,
+    "total_points": 1982,
     "total_survived": 136,
-    "total_killed": 1845
+    "total_killed": 1846
   },
   "modules": {
     "app/agent/_agent.py": {
@@ -750,16 +750,16 @@
       ]
     },
     "app/core/execution/paper_broker.py": {
-      "points": 26,
-      "killed": 23,
+      "points": 27,
+      "killed": 24,
       "survived": 3,
-      "kill_rate": 88.5,
+      "kill_rate": 88.9,
       "tests": [
         "tests/unit/db/test_paper_broker_accounting.py"
       ],
       "source": "MUTATION_LEDGER.md（A 档收口表）",
       "state_file_missing": true,
-      "note": "L119（两个比较符）与 L127 原登记为等价变异，2026-09-15 外部审计给出反例推翻。2026-09-16 补 TestSubEpsilonPositionsAreADeliberatePolicy（5 条），逐个 verify_mutant 复核：三条全部 [OK] 变异被杀死。",
+      "note": "L119（两个比较符）与 L127 原登记为等价变异，2026-09-15 外部审计给出反例推翻。2026-09-16 补 TestSubEpsilonPositionsAreADeliberatePolicy（5 条），逐个 verify_mutant 复核：三条全部 [OK] 变异被杀死。 2026-09-18 修 A-6 前半（target=1.0 → |tgt| 之和）新引入 1 个变异点（L108 `np.abs(` 删除 → 总敞口变净敞口），由新增的多空用例 [0.3,-0.3] 当场覆盖，verify_mutant 复核 [OK] 被杀死。",
       "all_runs": [
         88.5
       ]
@@ -1396,9 +1396,9 @@
   },
   "measurement_scope": {
     "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
-    "measured_points": 1981,
+    "measured_points": 1982,
     "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-    "current_plan_points": 2843,
+    "current_plan_points": 2844,
     "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
     "unmeasured_points": 862,
     "newly_in_scope_modules": [],
@@ -1712,7 +1712,8 @@
     ],
     "what_this_means": "『所选变异全部被处理』≠『检出能力已证明』。B-1 的除法归一化错误与 C-2 的对象身份错误都是**读代码**发现的，不是变异测试发现的。",
     "owed": "对 2843 个点重跑一遍测量。本轮未做。",
-    "_closed": "app/db/_sqlite_utils.py 已补测：它是算子补齐后唯一新进入范围的模块，此前一条测试都没有。首测 0.0% → 补 tests/unit/db/test_sqlite_hardening.py → verify_mutant 单点复核确认被杀。其余 862 个点仍未测。"
+    "_closed": "app/db/_sqlite_utils.py 已补测：它是算子补齐后唯一新进入范围的模块，此前一条测试都没有。首测 0.0% → 补 tests/unit/db/test_sqlite_hardening.py → verify_mutant 单点复核确认被杀。其余 862 个点仍未测。",
+    "_product_fix_policy": "修产品代码会引入新的变异点，而新点默认是未测量的 —— 棘轮会立刻判红（2026-09-18 修 A-6 时实际发生）。规矩：**修完立刻用 verify_mutant 逐个复核新点**，杀掉就记进本清单、未测量数不变；杀不掉就当场补用例。不许靠调高 unmeasured_points_max 放行。"
   },
   "survivor_disposition": {
     "_doc": "存活变异的**逐模块**处置对账。外部审计 2026-09-15 指出原来的『每个文件条目数 == 自己声明的存活数』只是文件内自洽，跨文件汇总从未对过账。现在证明键带模块前缀与覆盖点数（`<模块> ×N — 描述`），可以逐模块机械对账。",

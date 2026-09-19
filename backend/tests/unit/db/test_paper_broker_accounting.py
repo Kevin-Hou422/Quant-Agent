@@ -343,16 +343,84 @@ def test_fully_filled_order_is_not_flagged_as_adv_capped(broker):
     assert fills["B"].reject_reason == ""
 
 
-def test_adv_capped_order_is_flagged(broker):
-    """对照组：真被 ADV 上限削掉时必须标出来，否则上一条可能只是'永远不标'。"""
+def test_participation_capped_order_is_flagged_and_booked_as_unfilled(broker):
+    """
+    对照组：真被**单日成交量**上限削掉时必须标出来，否则上一条可能只是"永远不标"。
+
+    2026-09-19 的口径变更（用户决策 #2/#3）：
+
+      · `reject_reason` 从 `adv_cap` 改成 `participation` —— 约束的是**成交量**，
+        不是持仓容量，旧名字把两个概念混在一起
+      · 未成交的部分必须**如实记账**：`traded + unfilled == desired`，
+        而不是只留一个成交后的持仓数字（那看不出这笔单成交了多少）
+    """
     tk = ["A", "B"]
     broker.step(alpha_id=34, date="2024-02-06",
                 target_w=_series([0.9, -0.1], tk), prices_t=_series([100.0, 50.0], tk),
                 prices_prev=_series([100.0, 50.0], tk),
                 adv_usd=_series([1e5, 1e12], tk), daily_vol=_series([0.02, 0.02], tk))
     fills = {f.ticker: f for f in broker.store.fills_on(34, "2024-02-06")}
-    assert fills["A"].reject_reason == "adv_cap"
-    assert abs(fills["A"].filled_weight) < abs(fills["A"].target_weight)
+    a = fills["A"]
+    assert a.reject_reason == "participation"
+    assert abs(a.filled_weight) < abs(a.target_weight)
+    # 未成交量如实记账：想要 0.9（昨仓 0）→ 成交 + 未成交 == 0.9
+    assert a.traded_weight + a.unfilled_weight == pytest.approx(0.9, abs=1e-12), (
+        f"成交 {a.traded_weight} + 未成交 {a.unfilled_weight} 对不上意图 0.9")
+    assert abs(a.unfilled_weight) > 1e-9, "被限流却没有记下未成交量"
+
+
+def test_a_constrained_name_does_not_enlarge_the_others(broker):
+    """
+    **用户决策 #1 的核心断言**：执行层不得因为一个标的受限，就擅自扩大另一个标的。
+
+    A 想要 90% 但当日成交量上限只允许 1%，B 想要 -10%。
+    旧实现用 water-filling 把 89% 的亏空摊给 B → 落账 [0.01, -0.99]，
+    10% 的对冲腿变成 99% 的方向性空头。
+    """
+    tk = ["A", "B"]
+    cap_pct = broker.params.max_participation_pct
+    adv_a = 0.01 * CAPITAL / cap_pct              # A 当日最多成交 1% 权重
+    broker.step(alpha_id=36, date="2024-02-07",
+                target_w=_series([0.9, -0.1], tk),
+                prices_t=_series([100.0, 100.0], tk),
+                prices_prev=_series([100.0, 100.0], tk),
+                adv_usd=_series([adv_a, 1e15], tk),
+                daily_vol=_series([0.02, 0.02], tk))
+    pos = broker.store.latest_positions(36)
+    assert pos.get("A", 0.0) == pytest.approx(0.01, abs=1e-9), (
+        f"A 应被成交量上限削到 1%，实际 {pos.get('A', 0.0)}")
+    assert pos.get("B", 0.0) == pytest.approx(-0.10, abs=1e-9), (
+        f"B 的目标是 -10%，落账 {pos.get('B', 0.0):.4f} —— "
+        f"A 的未成交额度被摊到了 B 头上")
+
+
+def test_a_reduction_that_cannot_fill_is_booked_at_its_true_state(broker):
+    """
+    **用户决策 #2 的后半**：已有持仓的减仓/平仓失败，要按真实未成交状态记账。
+
+    第 1 天建 20% 多头（成交量充足）；第 2 天想清零，但当日成交量只够 5%。
+    落账必须是"还剩 15%"，且未成交量记为 -0.15 —— 不能假装已清仓。
+    """
+    tk = ["A"]
+    cap_pct = broker.params.max_participation_pct
+    broker.step(alpha_id=37, date="2024-02-08",
+                target_w=_series([0.20], tk), prices_t=_series([100.0], tk),
+                prices_prev=_series([100.0], tk), adv_usd=_series([1e15], tk),
+                daily_vol=_series([0.02], tk))
+    assert broker.store.latest_positions(37)["A"] == pytest.approx(0.20, abs=1e-12)
+
+    adv_small = 0.05 * CAPITAL / cap_pct          # 当日最多成交 5% 权重
+    broker.step(alpha_id=37, date="2024-02-09",
+                target_w=_series([0.0], tk), prices_t=_series([100.0], tk),
+                prices_prev=_series([100.0], tk), adv_usd=_series([adv_small], tk),
+                daily_vol=_series([0.02], tk))
+    pos = broker.store.latest_positions(37)
+    assert pos.get("A", 0.0) == pytest.approx(0.15, abs=1e-9), (
+        f"只成交了 5%，应还剩 15%，实际 {pos.get('A', 0.0)} —— 平仓失败被当成了已平")
+    f = {x.ticker: x for x in broker.store.fills_on(37, "2024-02-09")}["A"]
+    assert f.traded_weight == pytest.approx(-0.05, abs=1e-9)
+    assert f.unfilled_weight == pytest.approx(-0.15, abs=1e-9), (
+        f"未成交的减仓量记成了 {f.unfilled_weight}，应为 -0.15")
 
 
 def test_cost_bps_is_consistent_with_gross_minus_net(broker):
@@ -463,6 +531,61 @@ def test_date_normalisation_branch_is_unreachable_for_real_inputs():
     for d in reached:
         # 能走到 L192 的形态里，date 没有 `.date` 属性 → 条件恒为假
         assert not hasattr(d, "date"), f"{type(d).__name__} 竟然带 .date，L192 可达"
+
+
+class TestGrossExposureFollowsTheTarget:
+    """
+    缺陷 **A-6 的前半**（2026-09-18 修）：`project_to_capped_l1(..., target=1.0)`
+    的字面量写死，不看 `tgt` 实际要多少总敞口。
+
+    上游每一个**降敞口**的决定都会在这一步被抹掉：
+    `risk_target_vol_ann` 把 gross 缩到 0.5、`max_gross` 拦到 0.6、
+    无交易带压掉换手 —— 落到券商全部被拉回 1.0，**实际下的单是意图的两倍**。
+
+    这一组断言的是"上游要多少就下多少"。ADV 上限不绑定时（本组都给了极大 ADV），
+    投影是恒等映射，填单权重必须**逐位**等于目标。
+    """
+
+    @staticmethod
+    def _fill(broker, weights, alpha_id):
+        tk = [f"T{i}" for i in range(len(weights))]
+        broker.step(
+            alpha_id=alpha_id, date="2024-01-02",
+            target_w=_series(weights, tk),
+            prices_t=_series([100.0] * len(tk), tk),
+            prices_prev=_series([100.0] * len(tk), tk),
+            adv_usd=_series([1e15] * len(tk), tk),      # 上限不绑定
+            daily_vol=_series([0.02] * len(tk), tk),
+        )
+        return broker.store.latest_positions(alpha_id)
+
+    @pytest.mark.parametrize("weights,gross", [
+        ([0.25, 0.25], 0.5),        # 波动率目标把敞口缩了一半
+        ([0.3, -0.3], 0.6),         # 多空各 30%
+        ([0.1, 0.05, -0.05], 0.2),  # 明显低敞口
+    ])
+    def test_the_filled_gross_equals_the_requested_gross(self, broker, weights, gross):
+        pos = self._fill(broker, weights, alpha_id=hash(tuple(weights)) % 10000)
+        got = sum(abs(v) for v in pos.values())
+        assert got == pytest.approx(gross, abs=1e-12), (
+            f"目标总敞口 {gross}，落账 {got:.6f} —— "
+            f"写死 target=1.0 会把它拉回 1.0，上游的降敞口决定被抹掉")
+
+    def test_each_name_is_filled_exactly_as_requested(self, broker):
+        """不只总量对，**逐名**都要对 —— 总量对而分布被改写同样是错的。"""
+        w = [0.25, 0.25]
+        pos = self._fill(broker, w, alpha_id=4242)
+        assert [pos["T0"], pos["T1"]] == pytest.approx(w, abs=1e-12), (
+            f"逐名填单与目标不符：{pos}")
+
+    def test_a_unit_gross_target_is_unchanged(self, broker):
+        """
+        回归保护：上游给 L1=1 时新旧行为必须**逐位相同** ——
+        `test_paper_broker_replay_parity.py::test_replay_matches_backtest_engine`
+        的 1e-9 对账依赖这一点。
+        """
+        pos = self._fill(broker, [0.6, -0.4], alpha_id=4243)
+        assert sum(abs(v) for v in pos.values()) == pytest.approx(1.0, abs=1e-12)
 
 
 class TestSubEpsilonPositionsAreADeliberatePolicy:

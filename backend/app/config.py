@@ -120,6 +120,11 @@ class Settings(BaseSettings):
     tr_enforce_active_gate:   bool  = False
     # 组合风控（PM.5）—— 风险偏好，务必按你的意愿设定
     risk_max_gross:          float = 1.0     # 总敞口上限（Σ|w|）
+    #: 净敞口上限（|Σw|）。**生产链路必须显式带上**：执行层的部分成交会破坏
+    #: 对冲比例，成交后净敞口要按这个值回查（用户决策 2026-09-20）。
+    #: `RiskLimits.__post_init__` 在 long_only 下会把它收紧到 max_gross。
+    #: 配置缺失时用这里的默认值，**不得静默降级为「不限制」**。
+    risk_max_net:            float = 1.0
     risk_max_name_weight:    float = 0.10    # 单票 ≤ 10% NAV
     risk_max_sector_weight:  float = 0.30    # 单行业 ≤ 30% NAV
     risk_target_vol_ann:     float = 0.0     # 目标年化波动（0=关闭 vol targeting）

@@ -267,8 +267,18 @@ class DailyTradingLoop:
             ).analyze(dataset).to_dict()
         except Exception as exc:
             logger.warning("[portfolio] TradingContext 摘要失败（不阻断）: %s", exc)
-        pf_broker = PaperBroker(store=self.broker.store, cost_params=gp, initial_capital=aum) \
-            if gp is not None else self.broker
+        # 组合账本**始终用独立的 broker 实例**。
+        #
+        # 原先是 `... if gp is not None else self.broker` —— 拿不到 grounded 成本参数
+        # 时直接复用 `self.broker`，而那正是**逐 alpha 影子账本**用的同一个对象。
+        # 组合级净敞口上限一旦设在它身上，就会泄漏到影子账本
+        # （用户 2026-09-20 明确警告的"把整体限额简单逐 alpha 套用"）。
+        # 这个泄漏是给上限接线时被 TestPortfolioNetLimitIsWired 当场抓到的。
+        pf_broker = PaperBroker(
+            store=self.broker.store,
+            cost_params=gp if gp is not None else self.broker.params,
+            initial_capital=aum,
+        )
 
         # ── PM.S1：对**组合策略**跑策略级验证门（分段 OOS + DSR 去膨胀 + 夏普 t），记录 verdict。
         #    严门加在真正交易的策略上、不加单因子。默认只记录不阻断（paper 期先收前向证据）。
@@ -303,6 +313,10 @@ class DailyTradingLoop:
         from app.core.portfolio_manager import PortfolioRiskGate, RiskLimits
         limits = RiskLimits(
             max_gross=float(getattr(settings, "risk_max_gross", 1.0)),
+            # 净敞口上限：**生产链路必须显式带上**。执行层的部分成交会破坏对冲比例，
+            # 成交后净敞口要按它回查（用户决策 2026-09-20）。此前这里没传，
+            # 落到 RiskLimits 的 dataclass 默认，等于配置项根本没接线。
+            max_net=float(getattr(settings, "risk_max_net", 1.0)),
             max_name_weight=float(getattr(settings, "risk_max_name_weight", 0.10)),
             max_sector_weight=float(getattr(settings, "risk_max_sector_weight", 0.30)),
             target_vol_ann=(float(getattr(settings, "risk_target_vol_ann", 0.0)) or None),
@@ -342,6 +356,21 @@ class DailyTradingLoop:
             except Exception as exc:
                 logger.error("[portfolio] PM.5 组合波动估计失败，目标波动本轮不生效: %s", exc)
                 port_vol_ann = None
+
+        # ── 把组合级净敞口上限接到**组合账本的执行层**（用户决策 2026-09-20）。
+        #
+        # 为什么只给组合账本、不逐 alpha 套：实测两类账本用的是**同一份资金基数**
+        # （都取 `settings.paper_aum`），所以它们不是一个账户的两块切片 ——
+        #   · 组合账本 `book_id=0`：多因子净持仓 + 容量 + 风控，是**实际意图组合**
+        #     （实测 gross 0.27 / |net| 0.27，long-only）
+        #   · 逐 alpha 账本 `id=N`：每条 alpha 按**全额 AUM** 独立模拟的**影子账本**
+        #     （实测 gross 0.90 / |net| 0.00，市场中性）。它的用途是量这条 alpha
+        #     自己的衰减与已实现 IC，**不授权资金**
+        #
+        # 把整体限额套到影子账本上，等于让"这条 alpha 表现如何"取决于一个它并不
+        # 占用的组合预算 —— 测量会被扭曲。所以影子账本**明确选择不限制**，
+        # 这是判断结果，不是配置缺失后的静默降级。
+        pf_broker.max_net = float(limits.max_net)
 
         weights, risk_report = PortfolioRiskGate(limits).apply(
             weights, sectors=sectors, port_vol_ann=port_vol_ann)

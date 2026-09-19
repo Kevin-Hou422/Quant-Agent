@@ -90,8 +90,16 @@ DEFECT_REGISTRY = {
     "A-4":  "PerformanceAnalyzer 遇非日期索引先在 _tdays 抛 AttributeError，"
             "max_drawdown 里的整数索引分支不可达，且报错指向内部实现",
     "A-5":  "MVOPortfolio 注释写『剔除的资产保留基准权重』，实现是整行替换 → 拿到 0",
-    "A-6":  "PaperBroker.step 写死 target=1.0：把目标总敞口强行放大到 L1=1，"
-            "且 ADV 削减后把亏空摊到其余名字（10% 空头变 99%）",
+    "A-6":  "【前半已于 2026-09-18 修复】PaperBroker.step 曾写死 target=1.0，"
+            "把目标总敞口强行放大到 L1=1 —— 已改为 `|tgt|` 之和，由 "
+            "TestGrossExposureFollowsTheTarget 钉住。\n"
+            "**剩下的后半仍未修**：ADV 上限削掉某只票之后，water-filling 把亏空"
+            "**摊到其余名字**以凑满目标 gross。实测 [0.9, -0.1] 在 A 只能买 0.01 时"
+            "落账 [0.01, -0.99] —— 10% 的空头变成 99%，这已经不是同一个组合。"
+            "改法牵涉设计取舍：`project_to_capped_l1` 的 water-filling 是 Task 6.6 "
+            "**有意**的（用来修旧的『clip→整体归一化』缺陷），且回测引擎与 "
+            "PortfolioManager 走同一条路（`test_replay_matches_backtest_engine` "
+            "以 1e-9 对账两者）。只改执行侧会让两个引擎在限流场景下分家",
     "C-1":  "GP 适应度的截面秩用 argsort(argsort(x)) 算，不处理并列："
             "截面恒定（零信息）的信号被按**列顺序**摊成 0..n-1，"
             "IC 成了『ticker 在面板里的位置 vs 未来收益』的伪相关而非 0",
@@ -579,24 +587,48 @@ class TestBacktestAndExecutionDefects:
             f"而注释承诺『保留其基准权重』= {base.iloc[t0, 0]:.6g}")
 
     @_xfail("A-6")
-    def test_paper_broker_should_not_hardcode_a_unit_gross_target(self):
+    def test_an_adv_capped_name_does_not_inflate_the_others(self):
         """
-        `project_to_capped_l1(..., target=1.0)` 里的字面量 1.0 写死，
-        不看传进来的 `tgt` 实际总敞口。后果有两个：
+        A-6 的**后半**（前半已修，见 `TestGrossExposureFollowsTheTarget`）。
 
-          1. 目标 gross 0.5 落账变成 1.0 —— 上游所有降敞口决定
-             （波动率目标、max_gross、无交易带）被这一步抹掉
-          2. 某只票被 ADV 上限削掉时，water-filling 把亏空摊到其余名字
-             以凑满 L1=1 —— 实测 [0.9, -0.1] 在 A 只能买 0.01 时
-             落账 [0.01, -0.99]，10% 的空头变成 99%
+        A 想要 90% 但 ADV 只允许 1%，B 想要 -10%。执行侧该做的是"能成交多少
+        成交多少" —— 落账 `[0.01, -0.10]`，总敞口不足是**事实**，不该被掩盖。
+        产品当前用 water-filling 把 89% 的亏空摊给 B，落账 `[0.01, -0.99]`：
+        一个 10% 的对冲腿变成 99% 的方向性空头，**这已经不是同一个组合**。
 
-        应当把 target 设成 `np.abs(tgt).sum()`（保持上游意图的总敞口）。
+        这里断言"其余名字不被放大"，而不是断言最终 gross —— 后者取决于
+        补不补的设计取舍，前者是无论怎么取舍都不该发生的。
+
+        旧版这条是 `assert "target=1.0" not in src` 的**源码字符串断言**
+        （自伤教训 #6）：把字面量换成同值变量它就静默转绿，而行为分毫未变。
         """
-        import inspect
-        from app.core.execution import paper_broker as pb
-        src = inspect.getsource(pb.PaperBroker.step)
-        assert "target=1.0" not in src, (
-            "PaperBroker.step 仍然写死 target=1.0")
+        import tempfile as _tf
+
+        from app.core.execution.paper_broker import PaperBroker
+        from app.db.position_store import PositionStore
+
+        tmp = Path(_tf.mkdtemp(prefix="a6_"))
+        cap_pct = PaperBroker(store=PositionStore(db_url="sqlite:///:memory:")
+                              ).params.adv_cap_pct
+        capital = 1_000_000.0
+        adv_a = 0.01 * capital / cap_pct        # 让 A 的上限恰好是 1% 权重
+
+        b = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp/'a6.db'}"),
+                        initial_capital=capital)
+        tk = ["A", "B"]
+        b.step(alpha_id=1, date="2024-01-02",
+               target_w=pd.Series([0.9, -0.1], index=tk),
+               prices_t=pd.Series([100.0, 100.0], index=tk),
+               prices_prev=pd.Series([100.0, 100.0], index=tk),
+               adv_usd=pd.Series([adv_a, 1e15], index=tk),
+               daily_vol=pd.Series([0.02, 0.02], index=tk))
+        pos = b.store.latest_positions(1)
+
+        assert pos.get("A", 0.0) == pytest.approx(0.01, abs=1e-9), (
+            f"A 应被 ADV 上限削到 1%，实际 {pos.get('A', 0.0)} —— 构造前提变了")
+        assert abs(pos.get("B", 0.0)) == pytest.approx(0.10, abs=1e-9), (
+            f"B 的目标是 -10%，落账 {pos.get('B', 0.0):.4f} —— "
+            f"A 被限流后的亏空被摊到了 B 头上，对冲腿变成了方向性头寸")
 
 
 # ===========================================================================
