@@ -74,11 +74,9 @@ DEFECT_REGISTRY = {
     "B-5":  "ts_max / ts_min 的 NaN 策略在 bottleneck 与 numpy 分支之间不一致",
     "B-6":  "cs_rank 在含 NaN 的截面上值域越出 [0,1]",
     "B-7":  "面板行数短于窗口时 bottleneck 分支抛 ValueError，而非返回 NaN",
-    "B-8":  "ProxyModel 在 _fit() 放弃之后仍走模型分支 → AttributeError",
     "B-9":  "use_label_encoder=False 对 xgboost 3.x 已无意义（仅代码整洁，无行为影响）",
     "B-10": "fast_ops 的向量化分支被 except Exception 完全兜住（结构问题，无行为断言）",
     "B-11": "data_partitioner 的『OOS 为空』守卫不可达（结构问题，无行为断言）",
-    "B-12": "chat_store 的 ORDER BY 没有第二排序键，同一 tick 内的记录顺序反了",
     "A-1":  "ingest_incremental 把增量写进 PIT 两次（ingest() 内一次 + 外层一次）",
     "A-2":  "strategy_gate 用 `np.nanstd(...) == 0.0` 判零方差。**指控已收窄**"
             "（外部审计 2026-09-15）：原写『守卫从不触发』是错的 —— 严格全零序列"
@@ -86,9 +84,6 @@ DEFECT_REGISTRY = {
             "（`nanstd([0.001]*100) = 2.17e-19`）。而且下游 `_sharpe` 与 t 统计量"
             "另有容差保护，最终多半仍判 passed=false。因此这是**诊断说错了原因**，"
             "不是『巨大 Sharpe 被批准』",
-    "A-3":  "PerformanceAnalyzer 对近零波动无防护：全常数收益算出年化 Sharpe ≈ 3e16",
-    "A-4":  "PerformanceAnalyzer 遇非日期索引先在 _tdays 抛 AttributeError，"
-            "max_drawdown 里的整数索引分支不可达，且报错指向内部实现",
     "A-5":  "MVOPortfolio 注释写『剔除的资产保留基准权重』，实现是整行替换 → 拿到 0",
     "A-6":  "【执行层已于 2026-09-18/19/20 修复，回测引擎侧未动】"
             "PaperBroker 曾同时犯两个错：① `target=1.0` 写死，把目标总敞口强行"
@@ -153,16 +148,6 @@ DEFECT_REGISTRY = {
             "实际对象上就是 0.90 —— 不能拿类默认值去断言链路行为。"
             "剩下的真实不一致只有一处：提示词说 `corr > 0.9`，代码判的是 "
             "`abs(corr) >= 0.9` —— **绝对值**（负相关同样被拒）与**边界开闭**两处差异",
-    "D-6":  "ProxyModel._fit 的 `try: from xgboost import XGBClassifier "
-            "except ImportError` 只包住了 **import**，而 XGBClassifier 是在"
-            "**构造时**才检查 scikit-learn（`ImportError: sklearn needs to be "
-            "installed`）。import 成功、构造抛错，异常越过那个 except 直接向上"
-            "冒泡 —— 于是缺 scikit-learn 时 GP 进化**直接崩**，而不是像代码"
-            "注释承诺的那样 warning 一句后退回 rule-based 模式。"
-            "requirements.txt 已补上 scikit-learn（CI 事故 2026-09-10 的根因），"
-            "但这个 except 的覆盖范围本身仍然是错的",
-
-    # ---- 外部审计 2026-09-15 的独立发现（沿用它的编号，便于交叉引用）----
     "N-6":  "（前端，本轮不做）useQuantWorkspace.switchSession 在 await 之后无条件 "
             "`setMessages` —— 不检查响应回来时当前会话是否还是发起时那个。"
             "先切 A 再切 B、B 先返回 A 后返回时，store 里 sessionId=B 而展示内容"
@@ -310,7 +295,31 @@ class TestFastOpsDefects:
 
 class TestProxyModelDefects:
 
-    @_xfail("B-8", raises=AttributeError)
+    def test_an_unfitted_model_falls_back_to_the_cold_start_rule(self):
+        """
+        **缺陷 B-8，2026-09-20 已修**（本用例已转正）。
+
+        `_fit()` 放弃（标签单一类 / 缺 xgboost-sklearn）时 `self._model` 仍是 None，
+        而 `should_prune` 只看样本数就走模型分支 → `None.predict_proba` →
+        AttributeError 打断整轮 GP。**样本够 ≠ 模型就绪。**
+        """
+        pytest.importorskip("xgboost")
+        from app.core.alpha_engine.typed_nodes import DataNode, TimeSeriesNode
+        from app.core.ml_engine.proxy_model import ProxyModel
+
+        def _chain(depth):
+            node = DataNode("close")
+            for _ in range(depth):
+                node = TimeSeriesNode("ts_mean", node, 5)
+            return node
+
+        pm = ProxyModel(cold_start_n=4)
+        for i in range(6):
+            pm.update(_chain(2 + i % 3), failed=True)      # 标签全 1 → 放弃拟合
+        assert pm._model is None, "构造前提变了：这里本应没训出模型"
+        assert pm.should_prune(_chain(1)) is True
+        assert pm.should_prune(_chain(3)) is False
+
     def test_unfitted_model_should_fall_back_to_the_cold_start_rule(self):
         """
         `_fit()` 因单一类别放弃后 `_model` 是 None，`should_prune` 仍走模型分支
@@ -339,7 +348,77 @@ class TestProxyModelDefects:
 
 class TestStorageDefects:
 
-    @_xfail("B-12")
+    def test_sessions_with_equal_timestamps_keep_newest_first(self):
+        """
+        **缺陷 B-12，2026-09-20 已修**（本用例已转正）。
+
+        `list_sessions()` 原来是 `ORDER BY created_at DESC` 且**没有第二排序键**。
+        `created_at` 并列时 SQLite 按插入顺序返回 —— 最老的排最前，与契约相反。
+
+        第二排序键不能用主键：`ChatSession.id` 是 **UUID 字符串**，
+        按它排是随机序、不是插入序。所以另开了一列单调递增的 `seq`。
+        （`ChatMessage.id` 本来就是自增整数，消息侧直接用它。）
+        """
+        import tempfile
+        from datetime import datetime
+        from pathlib import Path
+
+        import app.db.chat_store as mod
+        from app.db.chat_store import ChatStore
+
+        base = datetime(2026, 1, 1)
+
+        class _Frozen(datetime):
+            @classmethod
+            def utcnow(cls):
+                return base
+
+        real = mod.datetime
+        try:
+            mod.datetime = _Frozen
+            d = Path(tempfile.mkdtemp())
+            st = ChatStore(db_url=f"sqlite:///{d / 't.db'}")
+            st.create_session("A")
+            bsess = st.create_session("B")
+            c = st.create_session("C")
+            got = [x.id for x in st.list_sessions()]
+            assert got[0] == c.id and got[1] == bsess.id, (
+                f"同一时间戳下应按插入序倒排（C,B,A），实际 {got}")
+        finally:
+            mod.datetime = real
+
+    def test_messages_with_equal_timestamps_keep_insertion_order(self):
+        """
+        消息侧的另一半：一问一答落在同一秒时，**必须先问后答**。
+        排反了在前端就是"AI 先答、用户后问"。
+        """
+        import tempfile
+        from datetime import datetime
+        from pathlib import Path
+
+        import app.db.chat_store as mod
+        from app.db.chat_store import ChatStore
+
+        base = datetime(2026, 1, 1)
+
+        class _Frozen(datetime):
+            @classmethod
+            def utcnow(cls):
+                return base
+
+        real = mod.datetime
+        try:
+            mod.datetime = _Frozen
+            d = Path(tempfile.mkdtemp())
+            st = ChatStore(db_url=f"sqlite:///{d / 'm.db'}")
+            sid = st.create_session("S").id
+            for role, text in (("user", "问"), ("assistant", "答"), ("user", "再问")):
+                st.save_message(sid, role, text)
+            got = [m.content for m in st.get_history(sid)]
+            assert got == ["问", "答", "再问"], f"同一时间戳下消息顺序错了：{got}"
+        finally:
+            mod.datetime = real
+
     def test_sessions_with_equal_timestamps_should_keep_newest_first(self):
         """
         `list_sessions()` 是 ORDER BY created_at DESC，没有第二排序键。
@@ -502,32 +581,48 @@ class TestBacktestAndExecutionDefects:
             f"浮点意义上恒定的净收益（nanstd={float(np.nanstd(rets.values)):.3e}）"
             f"没有被零方差守卫认出来，给出的理由是：{res.reasons}")
 
-    @_xfail("A-3")
-    def test_near_zero_volatility_should_not_produce_an_astronomical_sharpe(self):
+    def test_near_zero_volatility_is_reported_as_meaningless(self):
         """
-        `return ... / vol if vol > 0 else np.nan` —— 全常数收益的年化波动是
-        1.06e-17，`vol > 0` 成立，于是算出年化 Sharpe ≈ 3e16、t ≈ 15.5，
-        在报告里显示为"高度显著"。近零波动应当判为无意义。
+        **缺陷 A-3，2026-09-20 已修**（本用例已转正）。
+
+        `return ... / vol if vol > 0 else np.nan` —— 全常数收益（每日恰好 +0.1%）
+        的 `std(ddof=1)` 不是 0 而是 **6.5e-19** 的浮点求和残渣，`vol > 0` 成立，
+        于是算出年化 Sharpe ≈ **3e16**、t ≈ 15.5，在报告里显示为"高度显著"。
+
+        现在用**相对**判据（`sd > 1e-12 × 收益自身量级`）—— 相对而非绝对，
+        是为了不把低波动但真实的策略误杀。
         """
         from app.core.backtest_engine.performance_analyzer import PerformanceAnalyzer
         idx = pd.bdate_range("2024-01-02", periods=120)
-        rets = pd.Series(np.full(120, 0.001), index=idx)
-        sr = PerformanceAnalyzer(self._result(rets)).sharpe_ratio()
-        assert np.isnan(sr) or abs(sr) < 1e3, (
-            f"全常数收益算出了 Sharpe={sr}")
 
-    @_xfail("A-4", raises=AttributeError)
-    def test_a_non_datetime_index_should_give_a_clear_error(self):
+        flat = PerformanceAnalyzer(self._result(pd.Series(np.full(120, 0.001), index=idx)))
+        assert np.isnan(flat.sharpe_ratio()), (
+            f"全常数收益算出了 Sharpe={flat.sharpe_ratio()}")
+        assert np.isnan(flat.sharpe_tstat()), "同一序列的 t 统计量也必须是 NaN"
+
+        # 对照：**真实**低波动序列不得被误杀 —— 否则这个修复就是把功能砍掉
+        rng = np.random.default_rng(3)
+        tiny = PerformanceAnalyzer(self._result(
+            pd.Series(0.001 + rng.normal(0, 1e-6, 120), index=idx)))
+        assert np.isfinite(tiny.sharpe_ratio()), (
+            "日波动 1e-6（真实但很小）被误判成了『没有波动』")
+
+    def test_a_non_datetime_index_gives_a_clear_error(self):
         """
-        `_tdays` 里 `(idx[-1] - idx[0]).days` 对整数索引直接抛 AttributeError，
-        报错指向内部实现而非"索引类型不对"；而 `max_drawdown` 里那条
-        按序号相减的 else 分支因此**永远走不到**。
+        **缺陷 A-4，2026-09-20 已修**（本用例已转正）。
+
+        `_tdays` 无条件做 `(idx[-1] - idx[0]).days` —— 整数索引抛
+        `AttributeError: 'int' object has no attribute 'days'`，
+        报错指向**内部实现**，调用方看不出真正的问题是"索引类型不对"。
+        现在提前判类型并给出可操作的说明。
         """
         from app.core.backtest_engine.performance_analyzer import PerformanceAnalyzer
         rets = pd.Series(np.full(60, 0.001), index=range(60))
-        with pytest.raises((TypeError, ValueError)) as exc:
+        with pytest.raises(TypeError) as exc:
             PerformanceAnalyzer(self._result(rets)).sharpe_ratio()
-        assert "index" in str(exc.value).lower() or "索引" in str(exc.value)
+        msg = str(exc.value)
+        assert "DatetimeIndex" in msg, f"报错没说清楚要什么索引：{msg}"
+        assert "net_returns" in msg, f"报错没指出是哪个字段的索引：{msg}"
 
     @_xfail("A-5")
     def test_dropped_assets_should_keep_their_benchmark_weight(self):
@@ -1093,7 +1188,45 @@ class TestFinancialInterpreterNegation:
 
 class TestProxyModelOptionalDependency:
 
-    @_xfail("D-6", raises=ImportError)
+    def test_missing_sklearn_degrades_instead_of_crashing(self):
+        """
+        **缺陷 D-6，2026-09-20 已修**（本用例已转正）。
+
+        `XGBClassifier` 是 xgboost 的 sklearn API：import 成功、**构造时**才抛
+        `ImportError: sklearn needs to be installed`。原来的 try 只包住 import，
+        那个异常越过守卫直接冒泡 —— 缺依赖时 GP 进化**直接崩**，
+        而不是像 warning 承诺的那样退回 rule-based。
+
+        用替身精确复刻那条路径：能 import、一构造就抛 ImportError。
+        """
+        import xgboost
+
+        from app.core.alpha_engine.typed_nodes import DataNode, TimeSeriesNode
+        from app.core.ml_engine.proxy_model import ProxyModel
+
+        def _chain(depth):
+            node = DataNode("close")
+            for _ in range(depth):
+                node = TimeSeriesNode("ts_mean", node, 5)
+            return node
+
+        class _NeedsSklearn:
+            def __init__(self, *a, **kw):
+                raise ImportError(
+                    "sklearn needs to be installed in order to use this module")
+
+        original = xgboost.XGBClassifier
+        xgboost.XGBClassifier = _NeedsSklearn
+        try:
+            pm = ProxyModel(cold_start_n=2)
+            for i in range(3):
+                pm.update(_chain(2 + i % 3), failed=bool(i % 2))
+        finally:
+            xgboost.XGBClassifier = original
+
+        assert pm._fitted is False, "构造抛了 ImportError 却自称已拟合"
+        assert pm.should_prune(_chain(3)) is False, "未拟合时应退回冷启动规则"
+
     def test_missing_sklearn_degrades_instead_of_crashing(self):
         """
         `_fit()` 的 except 只包住 `from xgboost import XGBClassifier`，
@@ -1262,7 +1395,7 @@ def test_the_outstanding_defect_count_is_visible():
     混成一个数会让它读起来比实际严重，也会稀释真正该优先修的那几条。
     """
     behavioural = set(DEFECT_REGISTRY) - TECHNICAL_DEBT - FRONTEND_ONLY
-    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (24, 3, 1), (
+    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (19, 3, 1), (
         f"缺陷分类计数变了：行为缺陷 {len(behavioural)} / 技术债 "
         f"{len(TECHNICAL_DEBT)} / 前端 {len(FRONTEND_ONLY)}"
         f"（登记总数 {len(DEFECT_REGISTRY)}，此前 24/3/1；N-1/N-2/N-3/N-4/N-5 已于 2026-09-20 修复）。\n"

@@ -70,6 +70,17 @@ class PerformanceAnalyzer:
         idx = self._ret.index
         if len(idx) < 2:
             return _FALLBACK_TDAYS
+        # 【缺陷 A-4，2026-09-20 修】原来直接 `(idx[-1] - idx[0]).days`。
+        # 索引若不是日期（整数序号、字符串…），两者相减得到 int/str，
+        # `.days` 抛 `AttributeError: 'int' object has no attribute 'days'` ——
+        # 报错指向**内部实现**，调用方看不出真正的问题是"索引类型不对"。
+        # 而且 `max_drawdown` 里那条"按序号相减"的 else 分支因此**永远走不到**。
+        if not isinstance(idx, pd.DatetimeIndex):
+            raise TypeError(
+                f"PerformanceAnalyzer 需要 net_returns 带 DatetimeIndex 才能算年化系数，"
+                f"当前 index 是 {type(idx).__name__}"
+                f"（首元素 {idx[0]!r} 类型 {type(idx[0]).__name__}）。"
+                f"请在构造 BacktestResult 时把收益序列的索引设成交易日日期。")
         calendar_years = max((idx[-1] - idx[0]).days / 365.25, 1.0 / 365.25)
         return float(len(idx)) / calendar_years
 
@@ -85,7 +96,30 @@ class PerformanceAnalyzer:
     def annualized_volatility(self) -> float:
         return float(self._ret.std(ddof=1) * np.sqrt(self._tdays))
 
+    #: 日频标准差低于「收益自身量级 × 这个系数」就判为**没有真实波动** ——
+    #: 那只是浮点求和残渣，不是市场波动。
+    #:
+    #: 【缺陷 A-3，2026-09-20 修】原判据是 `vol > 0`。全常数收益序列
+    #: （如每日恰好 +0.1%）的 `std(ddof=1)` 不是 0 而是 **1.06e-17** 量级的残渣，
+    #: `> 0` 成立 → 年化 Sharpe 算出 **3e16**、t 统计量 15.5，
+    #: 在 `risk_report` 里显示成"高度显著"。用**相对**量级而不是绝对阈值，
+    #: 是为了不把低波动但真实的策略误杀（阈值随收益自身尺度缩放）。
+    _VOL_FLOOR_REL = 1e-12
+
+    def _has_meaningful_variation(self) -> bool:
+        """收益序列是否存在**真实**波动（而非浮点残渣）。"""
+        r = self._ret.dropna()
+        if len(r) < 2:
+            return False
+        sd = float(r.std(ddof=1))
+        if not np.isfinite(sd) or sd <= 0.0:
+            return False
+        scale = max(1e-12, float(np.abs(r).mean()))
+        return sd > self._VOL_FLOOR_REL * scale
+
     def sharpe_ratio(self) -> float:
+        if not self._has_meaningful_variation():
+            return float("nan")
         vol = self.annualized_volatility()
         return float((self.annualized_return() - self.rf_annual) / vol) if vol > 0 else np.nan
 
@@ -114,14 +148,13 @@ class PerformanceAnalyzer:
 
         无风险利率同样按日频扣：`self.rf` 是日频值（`rf_annual / _tdays`）。
         """
+        # 近零波动共用 `_has_meaningful_variation`（缺陷 A-3 的判据）——
+        # 此前这里另写了一份 `sd <= 1e-15`，两处判据迟早分叉。
+        if not self._has_meaningful_variation():
+            return float("nan")
         r = self._ret.dropna()
         T = int(len(r))
-        if T < 2:
-            return float("nan")
         sd = float(r.std(ddof=1))
-        if not np.isfinite(sd) or sd <= 1e-15:
-            # 近零波动：Sharpe 本身就没有意义（见缺陷 A-3），不要算出天文数字
-            return float("nan")
         sr_d = float((r.mean() - self.rf) / sd)          # **日频** Sharpe
         return float(sr_d * np.sqrt(T) / np.sqrt(1.0 + 0.5 * sr_d ** 2))
 

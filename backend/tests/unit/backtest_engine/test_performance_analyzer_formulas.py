@@ -286,19 +286,25 @@ class TestDrawdown:
         assert s.iloc[0] == pytest.approx(0.0, abs=1e-15)
         assert s.min() == pytest.approx(MAX_DD, abs=1e-12)
 
-    def test_non_datetime_index_is_rejected_before_reaching_the_fallback(self):
+    def test_non_datetime_index_is_rejected_with_a_clear_message(self):
         """
-        `max_drawdown` 里有一条 else 分支 `int(trough_idx - peak_idx)`，
-        用意是"索引不是日期时按序号相减"。**这条分支实际不可达**：
-        `__init__` 里就会取 `self._tdays`，而它无条件做 `(idx[-1] - idx[0]).days`，
-        整数索引在那里先抛 AttributeError。
+        **缺陷 A-4，2026-09-20 已修。**
 
-        这条用例把"不可达"钉成事实——L151 的 `-` → `+` 因此是等价变异。
-        同时它也是一份缺陷记录：非日期索引下报错信息指向 `_tdays` 的内部实现，
-        而不是"索引必须是 DatetimeIndex"。（产品问题，登记在 MUTATION_LEDGER。）
+        `max_drawdown` 里有一条 else 分支 `int(trough_idx - peak_idx)`，
+        用意是"索引不是日期时按序号相减"。**这条分支仍然不可达** ——
+        `__init__` 里就会取 `self._tdays`，非日期索引在那里被拒。
+        变的只是**怎么拒**：
+
+          旧：`AttributeError: 'int' object has no attribute 'days'`
+              —— 报错指向 `_tdays` 的内部实现，调用方看不出真正的问题
+          新：`TypeError: ... 需要 net_returns 带 DatetimeIndex ...`
+              —— 说清楚是什么不对、该怎么改
+
+        L151 的 `-` → `+` 因此**仍然**是等价变异（不可达），
+        等价性证明里的措辞已同步更新。
         """
         ret = pd.Series([0.10, -0.20, 0.05, 0.02], index=[0, 1, 2, 3])
-        with pytest.raises(AttributeError, match="days"):
+        with pytest.raises(TypeError, match="DatetimeIndex"):
             PerformanceAnalyzer(_result(ret))
 
     def test_calmar_is_annual_return_over_abs_drawdown(self, pa):
@@ -883,9 +889,10 @@ def test_summarize_records_which_ic_method_was_used(pa):
 PROVEN_EQUIVALENT = {
     "app/core/backtest_engine/performance_analyzer.py ×1 — L151 `int(trough_idx - peak_idx)` → `+`（max_drawdown 的非日期索引分支）":
         "该分支不可达：`__init__` 里先取 `self._tdays`，而 `_tdays` 无条件执行 "
-        "`(idx[-1] - idx[0]).days`，非日期索引在那一步就抛 AttributeError，"
+        "`(idx[-1] - idx[0]).days`，非日期索引在那一步就被拒（2026-09-20 修 A-4 后"
+        "抛的是带说明的 TypeError，此前是 AttributeError；**可达性未变**），"
         "根本走不到 max_drawdown。见 "
-        "test_non_datetime_index_is_rejected_before_reaching_the_fallback。",
+        "test_non_datetime_index_is_rejected_with_a_clear_message。",
 
     "app/core/backtest_engine/performance_analyzer.py ×1 — L495 `if cur > max_consec:` → `>=`（最长连亏计数）":
         "两侧结果恒等：`>` 只在 cur 严格更大时赋值，`>=` 在相等时也赋值，"

@@ -29,7 +29,7 @@ from typing import List, Optional
 
 from sqlalchemy import (
     Column, DateTime, ForeignKey, Integer, String, Text,
-    create_engine, select,
+    create_engine, func, select,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
 
@@ -54,12 +54,23 @@ class ChatSession(_ChatBase):
     id         = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     title      = Column(String(256), nullable=False, default="New Session")
     created_at = Column(DateTime, default=datetime.utcnow)
+    #: 【缺陷 B-12，2026-09-20 修】单调递增的**插入序**。
+    #:
+    #: `created_at` 的分辨率是秒，同一秒创建的多个会话在 `ORDER BY created_at DESC`
+    #: 下顺序不确定，实测会把最老的排最前（与"最近的在前"这个契约相反）。
+    #: 主键 `id` 是 **UUID 字符串**，按它排序是随机序、不是插入序，当不了第二排序键
+    #: —— 所以另开一列自增序号。
+    seq        = Column(Integer, index=True, default=0)
 
     messages = relationship(
         "ChatMessage",
         back_populates="session",
         cascade="all, delete-orphan",
-        order_by="ChatMessage.created_at",
+        # 【缺陷 B-12，2026-09-20 修】只按 created_at 排序**没有稳定的第二排序键**。
+        # `created_at` 的分辨率是秒（datetime.utcnow()），同一秒内插入的多条消息
+        # 顺序由数据库返回顺序决定 —— 实测会出现**倒序**：一问一答被显示成
+        # 先答后问。自增主键 `id` 是天然的插入序，作第二键。
+        order_by="ChatMessage.created_at, ChatMessage.id",
     )
 
 
@@ -126,6 +137,12 @@ class ChatStore:
             created_at = datetime.utcnow(),
         )
         with self._Session() as db:
+            # `seq` 在**同一个事务里**取 max+1（缺陷 B-12）。
+            # `autoincrement=True` 只对整型主键生效，这里主键是 UUID 字符串，
+            # 所以自己算。SQLite 写事务是串行的，同一事务内 max+1 不会撞号；
+            # 换成并发写的后端时应改为数据库序列（Sequence/IDENTITY）。
+            nxt = db.execute(select(func.coalesce(func.max(ChatSession.seq), 0))).scalar()
+            sess.seq = int(nxt or 0) + 1
             db.add(sess)
             db.commit()
         return sess
@@ -135,7 +152,9 @@ class ChatStore:
         with self._Session() as db:
             stmt = (
                 select(ChatSession)
-                .order_by(ChatSession.created_at.desc())
+                # 第二排序键：同一秒创建的会话必须有确定顺序（缺陷 B-12）。
+                # 倒序列表里 id 也要倒序，才与 created_at 的方向一致。
+                .order_by(ChatSession.created_at.desc(), ChatSession.seq.desc())
                 .limit(limit)
             )
             return list(db.scalars(stmt))
@@ -198,7 +217,8 @@ class ChatStore:
             stmt = (
                 select(ChatMessage)
                 .where(ChatMessage.session_id == session_id)
-                .order_by(ChatMessage.created_at.asc())
+                # 第二排序键：同一秒内的消息按插入序（缺陷 B-12）。
+                .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
             )
             return list(db.scalars(stmt))
 

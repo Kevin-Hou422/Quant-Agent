@@ -113,7 +113,15 @@ class ProxyModel:
         """返回 True 表示该 Alpha 应被剪枝（跳过回测）。"""
         depth = node.depth()
 
-        if len(self._X) < self.cold_start_n:
+        # 【缺陷 B-8，2026-09-20 修】原判据只看样本数：
+        #     if len(self._X) < self.cold_start_n: return 规则分支
+        # 但 `_fit()` 有两条**放弃**路径 —— 标签只有一类（`len(set(y)) < 2`）、
+        # 或 xgboost/scikit-learn 不可用 —— 放弃时 `self._model` 仍是 None。
+        # 样本数够了就无条件走模型分支，于是
+        #     AttributeError: 'NoneType' object has no attribute 'predict_proba'
+        # 把整条 GP 评估打断。样本够 ≠ 模型就绪，两件事必须分开判。
+        if (len(self._X) < self.cold_start_n
+                or not self._fitted or self._model is None):
             return depth < 2 or depth > 10
 
         feat = extract_features(node).reshape(1, -1)
@@ -137,25 +145,42 @@ class ProxyModel:
             self._fit()
 
     def _fit(self) -> None:
-        try:
-            from xgboost import XGBClassifier
-        except ImportError:
-            warnings.warn("xgboost not installed; ProxyModel stays in rule-based mode.")
-            return
-
         X = np.stack(self._X)
         y = np.array(self._y)
 
         if len(set(y)) < 2:
             return
 
-        model = XGBClassifier(
-            n_estimators=50,
-            max_depth=4,
-            use_label_encoder=False,
-            eval_metric="logloss",
-            verbosity=0,
-        )
+        # 【缺陷 D-6，2026-09-20 修】原来的 try 只包住 `from xgboost import ...`：
+        #
+        #     try:
+        #         from xgboost import XGBClassifier
+        #     except ImportError:
+        #         warnings.warn(...); return
+        #     ...
+        #     model = XGBClassifier(...)          # ← 在 try 之外
+        #
+        # 而 `XGBClassifier` 是 xgboost 的 **sklearn API**，缺 scikit-learn 时
+        # import 成功、**构造时**才抛 `ImportError: sklearn needs to be installed`。
+        # 那个异常越过守卫直接冒泡 —— 缺依赖时 GP 进化**直接崩**，
+        # 而不是像下面这句 warning 承诺的那样退回 rule-based 模式。
+        # （这正是 CI 事故 2026-09-10 的第二层：requirements 漏声明是第一层。）
+        #
+        # 现在 import 与构造**一起**包进来。
+        try:
+            from xgboost import XGBClassifier
+
+            model = XGBClassifier(
+                n_estimators=50,
+                max_depth=4,
+                use_label_encoder=False,
+                eval_metric="logloss",
+                verbosity=0,
+            )
+        except ImportError as exc:
+            warnings.warn(
+                f"ProxyModel 无法构造 XGBClassifier，保持 rule-based 模式: {exc}")
+            return
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             model.fit(X, y)

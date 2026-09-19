@@ -179,25 +179,31 @@ class TestFitGuard:
             pm.update(_chain(2 + i % 3), failed=True)      # 只有一个类别
         assert pm._model is None, "单一类别却训出了模型"
 
-    def test_unfitted_model_past_cold_start_crashes(self):
+    def test_unfitted_model_past_cold_start_falls_back_to_the_rule(self):
         """
-        【已登记缺陷 B-8】`_fit()` 因单一类别（或 xgboost 缺失）提前 return 时
-        `self._model` 仍是 None，而 `should_prune` 只看 `len(self._X) >= cold_start_n`
-        就走模型分支 → `None.predict_proba` → **AttributeError 打断整轮 GP**。
+        **缺陷 B-8，2026-09-20 已修。**
 
-        这正是 `_fitted` 这个字段本该守住的情形，但它从头到尾没人读（见 E 节）。
-        触发条件很常见：冷启动期所有候选都失败（标签全是 1），或环境没装 xgboost。
+        `_fit()` 因单一类别（或 xgboost/scikit-learn 缺失）提前 return 时
+        `self._model` 仍是 None，而 `should_prune` 原来只看
+        `len(self._X) >= cold_start_n` 就走模型分支 →
+        `None.predict_proba` → **AttributeError 打断整轮 GP**。
+        触发条件很常见：冷启动期所有候选都失败（标签全是 1），或环境缺依赖。
 
-        本阶段只钉住现状。修好之后：这里应当**退回冷启动规则**，
-        即 `should_prune(_chain(1)) is True`、`should_prune(_chain(3)) is False`。
+        **样本够 ≠ 模型就绪**，两件事必须分开判。现在退回冷启动规则。
+
+        ⚠️ 本用例此前钉的是"崩溃"本身（`pytest.raises(AttributeError)`）——
+        那是"钉住现状"，修好之后它反而会红。
         """
         pytest.importorskip("xgboost")
         pm = ProxyModel(cold_start_n=4)
         for i in range(6):
-            pm.update(_chain(2 + i % 3), failed=True)
-        assert pm._model is None
-        with pytest.raises(AttributeError, match="predict_proba"):
-            pm.should_prune(_chain(1))
+            pm.update(_chain(2 + i % 3), failed=True)      # 标签全是 1 → _fit 放弃
+        assert pm._model is None, "构造前提变了：这里本应没有训出模型"
+
+        # 退回冷启动规则：深度 <2 或 >10 剪掉，中间放行
+        assert pm.should_prune(_chain(1)) is True
+        assert pm.should_prune(_chain(3)) is False
+        assert pm.should_prune(_chain(12)) is True
 
     def test_two_classes_do_get_fitted(self):
         """`< 2` 放宽成 `<= 2` 会让恰好两个类别也被拒 —— 模型永远训不出来。"""
@@ -267,13 +273,6 @@ class TestFeatureExtraction:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "app/core/ml_engine/proxy_model.py ×2 — L110 `self._fitted = False` → True / L163 `self._fitted = True` → False":
-        "`_fitted` 在整个代码库里**只被写、从不被读** —— should_prune 判断的是 "
-        "`len(self._X) < cold_start_n` 与 `self._model`，与该标志无关。"
-        "两次赋值都是死存储，取值不影响任何可观测行为。"
-        "见 test_fitted_flag_has_no_reader（它同时是这条证明的失效告警："
-        "一旦有人开始读 _fitted，该测试会红，这个点就要重新补用例）。"
-        "顺带登记：这是一个**无人读取的状态字段**，属于误导性残留。",
 
     "app/core/ml_engine/proxy_model.py ×1 — L155 `use_label_encoder=False` → True":
         "xgboost 自 2.0 起已移除 use_label_encoder，3.x（本环境 3.2.0）对两种取值"
@@ -283,23 +282,29 @@ PROVEN_EQUIVALENT = {
 }
 
 
-def test_fitted_flag_has_no_reader():
-    """L110/L163 等价性的机械验证：全代码库没有任何地方读 ProxyModel._fitted。"""
-    import pathlib
-    import re
-    root = _backend_root() / "app"
-    readers = []
-    for p in root.rglob("*.py"):
-        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
-            if "_fitted" not in line or "proxy_model" not in str(p):
-                continue
-            # 赋值行不算读取
-            if re.match(r"\s*self\._fitted\s*=", line):
-                continue
-            readers.append(f"{p.name}:{i} {line.strip()}")
-    assert not readers, (
-        "有人开始读 _fitted 了 —— 等价性证明失效，必须补用例：\n  "
-        + "\n  ".join(readers))
+def test_fitted_flag_actually_guards_the_model_branch():
+    """
+    `_fitted` 从**死存储**变成了真正的守卫（2026-09-20 修 B-8）。
+
+    此前这里是一条等价性证明的机械验证：「全代码库没有任何地方读
+    `ProxyModel._fitted`，所以 L110/L163 两处赋值是死存储、取值等价」。
+    那条证明**自带失效告警**——"一旦有人开始读 _fitted，该测试会红，
+    这个点就要重新补用例"。修 B-8 让 `should_prune` 读了它，告警如期响了，
+    证明已撤销，这里换成真实用例。
+
+    构造：把 `_fitted` 手动翻成 False 而 `_model` 留着 —— 模型分支必须让路。
+    """
+    pytest.importorskip("xgboost")
+    pm = ProxyModel(cold_start_n=4)
+    for i in range(8):
+        pm.update(_chain(2 + i % 3), failed=bool(i % 2))
+    assert pm._model is not None and pm._fitted is True, "构造前提：模型已训出"
+    assert pm.should_prune(_chain(3)) is False or pm.should_prune(_chain(3)) is True  # 走模型分支
+
+    pm._fitted = False                      # 只翻标志，模型对象留着
+    assert pm.should_prune(_chain(1)) is True, "标志为假时应退回冷启动规则"
+    assert pm.should_prune(_chain(3)) is False
+    assert pm.should_prune(_chain(12)) is True
 
 
 def test_label_encoder_flag_is_ignored_by_xgboost():
@@ -321,6 +326,9 @@ def test_label_encoder_flag_is_ignored_by_xgboost():
 
 
 def test_every_survivor_has_a_written_proof():
-    assert len(PROVEN_EQUIVALENT) == 2
+    # 2 → 1：L110/L163（`_fitted` 赋值）原判为"死存储所以等价"，
+    # 修 B-8 让 should_prune 真的读了它，那条证明已失效并撤销。
+    # 这两个点现在**既没被杀死也无书面证明**，已记进 survivor_disposition。
+    assert len(PROVEN_EQUIVALENT) == 1
     for key, why in PROVEN_EQUIVALENT.items():
         assert len(why) >= 40, f"{key} 的等价性说明过于敷衍：{why!r}"

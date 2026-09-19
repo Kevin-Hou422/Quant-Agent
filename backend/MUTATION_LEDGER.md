@@ -380,15 +380,15 @@ python tools/mutation/runner.py plan_full.json --state progress_full.json --stat
 | B-5 | `fast_ops.bn_ts_max/min` NaN 策略在两条分支之间不一致 |
 | B-6 | `fast_ops.cs_rank` 含 NaN 的截面上值域越出 [0,1] |
 | B-7 | `fast_ops` 七个滚动算子在面板短于窗口时抛 ValueError，而非返回 NaN |
-| B-8 | `proxy_model._fit()` 放弃后仍走模型分支 → AttributeError |
+| ~~B-8~~ | **已修（2026-09-20）**：`should_prune` 不再只看样本数就走模型分支 —— `_fit()` 放弃时 `_model` 是 None，原来会 `None.predict_proba` 打断整轮 GP。**样本够 ≠ 模型就绪**。连带效果：`_fitted` 从死存储变成真守卫，原「`_fitted` 全库无人读 → 等价」那条证明**失效并撤销**（它自带的失效告警 test_fitted_flag_has_no_reader 如期响了），对应 2 个存活点已记入 survivor_disposition |
 | B-9 | `proxy_model` 的 `use_label_encoder=False` 对 xgboost 3.x 已无意义（仅整洁问题） |
 | B-10 | `fast_ops` 向量化分支被 `except Exception` 完全兜住（结构问题） |
 | B-11 | `data_partitioner` 的「OOS 为空」守卫不可达（结构问题） |
-| B-12 | `chat_store` 的 ORDER BY 无第二排序键，同一 tick 内顺序反了 |
+| ~~B-12~~ | **已修（2026-09-20）**：三处排序都补了稳定的第二键。注意 `ChatSession.id` 是 **UUID 字符串**，按它排是随机序而非插入序 —— 另加了单调递增的 `seq` 列（同事务内取 max+1；`autoincrement` 只对整型主键生效）。`ChatMessage.id` 本就是自增整数，直接用 |
 | A-1 | `ingest_incremental` 把增量写进 PIT 两次 |
 | A-2 | `strategy_gate` 用 `np.nanstd(...) == 0.0` 判零方差，浮点零判不出来，守卫从不触发 |
-| A-3 | `PerformanceAnalyzer` 对近零波动无防护：全常数收益算出年化 Sharpe ≈ 3e16 |
-| A-4 | `PerformanceAnalyzer` 遇非日期索引先在 `_tdays` 抛 AttributeError，且报错指向内部实现 |
+| ~~A-3~~ | **已修（2026-09-20）**：`vol > 0` 判据换成**相对**量级（`sd > 1e-12 × 收益自身量级`）。全常数收益的 `std(ddof=1)` 是 6.5e-19 的浮点残渣，旧判据成立 → 年化 Sharpe 3e16、t 15.5，报告显示「高度显著」。相对判据保证真实低波动（日波动 1e-6）不被误杀，且 `sharpe_tstat` 共用同一判据不分叉 |
+| ~~A-4~~ | **已修（2026-09-20）**：`_tdays` 提前判 `DatetimeIndex` 并抛带说明的 `TypeError`，不再让 `(idx[-1]-idx[0]).days` 抛指向内部实现的 `AttributeError`。`max_drawdown` 里那条按序号相减的 else 分支**可达性未变**（仍不可达），对应的等价性证明措辞已同步 |
 | A-5 | `MVOPortfolio` 注释写「剔除的资产保留基准权重」，实现是整行替换 → 拿到 0 |
 | A-6 | **执行层已修（2026-09-18/19/20）**：不再写死 target、不再用持仓裁剪冒充成交、按交易差额逐名部分成交且**不再分配**、组合级净敞口回查、未成交量如实记账。实测放大倍数：**目标持仓** 3.33×、**成交名义额** 1.54×。**剩余**：回测引擎仍走 water-filling 持仓裁剪，两引擎在限流场景下语义分家 |
 | A-7 | `project_to_capped_l1(..., target=1.0)` 在**另外三处**仍写死（`realistic_backtester` / `LiquidityConstraint.apply` / `manager.apply_capacity`）。都是构建层，water-filling 合理、错的是 target；`apply_capacity` 的 docstring 写「容量不足时 gross<1」却传 1.0。五个调用点只有 `risk_gate` 传了真实值 |
@@ -399,7 +399,7 @@ python tools/mutation/runner.py plan_full.json --state progress_full.json --stat
 | D-3 | `langchain>=0.2` 无上界，装上的 1.x 已移除 `AgentExecutor` → LLM 链路整条**静默降级**，只打一条 warning |
 | D-4 | 系统提示词把 `rank(neg(...))` 当作 4 个因子家族的标准模板，而解析器不认 `neg(x)` |
 | D-5 | 提示词写 `corr > 0.9`，`AlphaPool` 实际默认 `0.70` 且用 `>=` |
-| D-6 | `proxy_model._fit()` 的 `except ImportError` 只包住 import，而 sklearn 缺失是 `XGBClassifier(...)` **构造时**才抛 → 异常越过守卫，GP 进化直接崩而非退回 rule-based |
+| ~~D-6~~ | **已修（2026-09-20）**：`_fit()` 的 `try` 现在同时包住 import 与`XGBClassifier(...)` 构造。缺 scikit-learn 时是**构造**抛 ImportError，原来越过守卫直接冒泡 → GP 进化崩溃，而非 warning 承诺的退回 rule-based |
 | ~~N-1~~ | **已修（2026-09-20）**：成本推导的缓存键原来只指纹 `close`，而价差算的是 high/low、冲击用的是 volume —— close 相同、high/low 不同的数据集命中同一条缓存（审计实测真实 1919.83 bps 被 37.47 bps 顶替，差 51 倍）。现在覆盖 `_COST_INPUT_FIELDS`（close/high/low/volume）全部面板 + 券商档位 + 账户类型。守卫两条：AST 从 `trading_context` 抽出**实际读取**的字段与清单对账（不抄一份同源清单）；行为上验证改 high/low 后不再命中旧条目，且同数据集仍然命中（缓存没退化成永不命中）|
 | ~~N-2~~ | **已修（2026-09-20）**：全局试验台账读不到时不再退回 `n_trials=1` 然后照常给结论 —— 那会让 DSR 少做多重检验校正、**门变松**（审计实测 passed=true / DSR≈0.99997）。改为 fail-closed：拒绝给出结论并写明「验证不完整」。旧测试断言的正是 `n_trials == 1`，**它保护的就是那个错误行为**，已改为断言结论 |
 | ~~N-3~~ | **已修（2026-09-20）**：`strategy_net_returns` 在 `apply_risk=True` 下风控/调仓对齐失败时，不再打一条 warning 就用未经风控的原始权重继续回测 —— 改为抛错。三个调用方均已 fail-closed（门判不通过并写明理由 / OOS 视为 -inf）。顺带补上了此处缺失的 `max_net` |
