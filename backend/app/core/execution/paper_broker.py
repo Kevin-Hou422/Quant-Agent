@@ -74,10 +74,21 @@ class PaperBroker:
         执行 alpha 在 date 的单日模拟成交并原子持久化（幂等：同日重跑覆盖）。
         昨仓与净值从 PositionStore 读取（崩溃恢复安全）。
         """
-        tickers = list(target_w.index)
         # 幂等/续跑：状态取**严格早于 date** 的最近一日（非全局最近），
         # 使重跑第 t 日基于 t-1 状态，全量重放逐位可复现。
         equity, prev_pos = self.store.state_before(alpha_id, date)
+
+        # 【缺陷 N-5，2026-09-20 修】原来是 `tickers = list(target_w.index)` ——
+        # 用**今日目标**的资产集合去截断昨仓。目标集合一缩小：
+        #   · 不在新目标里的旧持仓**不参与估值** → 当天的收益凭空消失
+        #   · 也**不产生平仓成交** → 仓位就这么没了，账本上查不到
+        # 外部审计实测：A/B 各半仓，次日目标只留 B 且 A 涨 10%，
+        # gross_ret 报 0（应为 +5%），成交记录里没有 A 的平仓。
+        #
+        # 正确口径是**昨仓与新目标的并集**：昨仓里的名字即使不在今日目标里，
+        # 也要估值（它今天确实还持有着）并按"目标 0"去平仓。
+        held = [tk for tk, w in prev_pos.items() if abs(float(w)) > 1e-12]
+        tickers = list(target_w.index) + [tk for tk in held if tk not in target_w.index]
 
         prev_w = np.array([prev_pos.get(tk, 0.0) for tk in tickers], dtype=float)
         tgt    = target_w.reindex(tickers).fillna(0.0).to_numpy(dtype=float)
@@ -86,9 +97,21 @@ class PaperBroker:
         adv    = np.nan_to_num(adv_usd.reindex(tickers).to_numpy(dtype=float), nan=0.0)
         vol    = np.nan_to_num(daily_vol.reindex(tickers).to_numpy(dtype=float), nan=0.02)
 
+        # 旧持仓今天可能拿不到行情（标的退出了数据集）。`reindex` 给 NaN，
+        # 而 `nansum` 会把它**当成 0** —— 收益悄悄丢掉、还看不出发生过。
+        # 这里显式处理：没有行情就**不估值变动、也不交易**（上限置 0），并留痕。
+        stale = ~np.isfinite(p_t) | ~np.isfinite(p_prev)
+        if np.any(stale & (np.abs(prev_w) > 1e-12)):
+            logger.warning(
+                "[paper_broker] alpha=%s date=%s 有旧持仓拿不到今日行情，"
+                "本日不估值也不交易（按真实状态挂账）：%s",
+                alpha_id, date, [tickers[i] for i in np.flatnonzero(stale)
+                                 if abs(prev_w[i]) > 1e-12])
+
         # 1) 持有昨仓度过今日：毛收益
         with np.errstate(divide="ignore", invalid="ignore"):
             price_chg = np.where(p_prev == 0, 0.0, (p_t - p_prev) / p_prev)
+        price_chg = np.where(stale, 0.0, price_chg)
         gross_ret = float(np.nansum(prev_w * price_chg))
 
         # 2) 借券成本（昨仓空头）
@@ -118,6 +141,9 @@ class PaperBroker:
             cap_trade_w = adv * self.params.max_participation_pct / self.initial_capital
         else:
             cap_trade_w = np.full_like(adv, np.inf)
+        # 没有行情的名字今天**不能交易** —— 成交量上限置 0，
+        # 于是它的减仓/平仓会以"未成交"的身份出现在账本里（用户决策 #2）。
+        cap_trade_w = np.where(stale, 0.0, cap_trade_w)
 
         fr = simulate_partial_fills(prev_w, tgt, cap_trade_w, max_net=self.max_net)
         filled, delta = fr.filled_w, fr.filled_d

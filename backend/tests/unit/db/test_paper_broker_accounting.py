@@ -783,3 +783,94 @@ def test_every_survivor_has_a_written_proof():
     assert not overlap, f"同一个变异点既算已证明又算已推翻：{overlap}"
     for key, why in list(PROVEN_EQUIVALENT.items()) + list(REFUTED_EQUIVALENCE.items()):
         assert len(why) >= 40, f"{key} 的说明过于敷衍：{why!r}"
+
+
+class TestPositionsOutsideTheNewTargetAreNotDropped:
+    """
+    **缺陷 N-5，2026-09-20 已修。**
+
+    原实现 `tickers = list(target_w.index)` —— 用**今日目标**的资产集合截断昨仓。
+    目标集合一缩小，不在新目标里的旧持仓既不估值（当天收益凭空消失）、
+    也不平仓（仓位在账本上查无此笔）。外部审计实测：A/B 各半仓，次日目标只留 B
+    且 A 涨 10%，`gross_ret` 报 0（应为 +5%），成交记录里没有 A 的平仓。
+
+    现在按**昨仓与新目标的并集**处理。
+    """
+
+    @staticmethod
+    def _both(broker, aid):
+        tk = ["A", "B"]
+        broker.step(alpha_id=aid, date="2024-04-01",
+                    target_w=_series([0.5, 0.5], tk),
+                    prices_t=_series([100.0, 100.0], tk),
+                    prices_prev=_series([100.0, 100.0], tk),
+                    adv_usd=_series([1e15, 1e15], tk),
+                    daily_vol=_series([0.02, 0.02], tk))
+
+    def test_a_dropped_name_still_contributes_its_return(self, broker):
+        """A 占 50% 且当日 +10% → 毛收益必须是 +5%，哪怕 A 已不在今日目标里。"""
+        self._both(broker, 51)
+        pnl = broker.step(alpha_id=51, date="2024-04-02",
+                          target_w=_series([1.0], ["B"]),
+                          prices_t=_series([110.0, 100.0], ["A", "B"]),
+                          prices_prev=_series([100.0, 100.0], ["A", "B"]),
+                          adv_usd=_series([1e15, 1e15], ["A", "B"]),
+                          daily_vol=_series([0.02, 0.02], ["A", "B"]))
+        assert pnl.gross_ret == pytest.approx(0.05, abs=1e-9), (
+            f"毛收益 {pnl.gross_ret:.6f}，应为 +5% —— "
+            f"不在今日目标里的旧持仓没有参与估值")
+
+    def test_a_dropped_name_is_actually_closed(self, broker):
+        """并且要真的平掉：落账持仓里不该再有 A，且有 A 的平仓成交。"""
+        self._both(broker, 52)
+        broker.step(alpha_id=52, date="2024-04-02",
+                    target_w=_series([1.0], ["B"]),
+                    prices_t=_series([110.0, 100.0], ["A", "B"]),
+                    prices_prev=_series([100.0, 100.0], ["A", "B"]),
+                    adv_usd=_series([1e15, 1e15], ["A", "B"]),
+                    daily_vol=_series([0.02, 0.02], ["A", "B"]))
+        pos = broker.store.latest_positions(52)
+        assert "A" not in pos, f"A 没有被平掉：{pos}"
+        fills = {f.ticker: f for f in broker.store.fills_on(52, "2024-04-02")}
+        assert "A" in fills, "A 的平仓没有留下成交记录 —— 仓位凭空消失"
+        assert fills["A"].traded_weight == pytest.approx(-0.5, abs=1e-9)
+
+    def test_a_dropped_name_that_cannot_fill_stays_on_the_book(self, broker):
+        """
+        **受限平仓 + 目标集合缩小**（两个条件叠加）：
+        A 已不在今日目标里，且当日只够成交 10% → 账面还剩 40%，未成交 -0.4。
+        """
+        self._both(broker, 53)
+        cap_pct = broker.params.max_participation_pct
+        adv_a = 0.10 * CAPITAL / cap_pct
+        broker.step(alpha_id=53, date="2024-04-02",
+                    target_w=_series([1.0], ["B"]),
+                    prices_t=_series([100.0, 100.0], ["A", "B"]),
+                    prices_prev=_series([100.0, 100.0], ["A", "B"]),
+                    adv_usd=_series([adv_a, 1e15], ["A", "B"]),
+                    daily_vol=_series([0.02, 0.02], ["A", "B"]))
+        pos = broker.store.latest_positions(53)
+        assert pos.get("A", 0.0) == pytest.approx(0.40, abs=1e-9), (
+            f"只成交了 10%，A 应还剩 40%，实际 {pos.get('A', 0.0)}")
+        f = {x.ticker: x for x in broker.store.fills_on(53, "2024-04-02")}["A"]
+        assert f.unfilled_weight == pytest.approx(-0.40, abs=1e-9)
+
+    def test_a_held_name_without_a_price_is_not_valued_or_traded(self, broker, caplog):
+        """
+        旧持仓今天拿不到行情（标的退出数据集）时：**不估值变动、也不交易**，
+        并留下 WARNING。`reindex` 给 NaN 而 `nansum` 当 0 —— 那是"悄悄丢掉"。
+        """
+        self._both(broker, 54)
+        with caplog.at_level("WARNING"):
+            pnl = broker.step(alpha_id=54, date="2024-04-02",
+                              target_w=_series([1.0], ["B"]),
+                              prices_t=_series([100.0], ["B"]),
+                              prices_prev=_series([100.0], ["B"]),
+                              adv_usd=_series([1e15], ["B"]),
+                              daily_vol=_series([0.02], ["B"]))
+        pos = broker.store.latest_positions(54)
+        assert pos.get("A", 0.0) == pytest.approx(0.5, abs=1e-9), (
+            f"没有行情却把 A 平掉了：{pos}")
+        assert pnl.gross_ret == pytest.approx(0.0, abs=1e-9)
+        assert any("拿不到今日行情" in r.getMessage() for r in caplog.records), (
+            "旧持仓无行情却没有留痕")

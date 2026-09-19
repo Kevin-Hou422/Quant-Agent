@@ -401,10 +401,10 @@ python tools/mutation/runner.py plan_full.json --state progress_full.json --stat
 | D-5 | 提示词写 `corr > 0.9`，`AlphaPool` 实际默认 `0.70` 且用 `>=` |
 | D-6 | `proxy_model._fit()` 的 `except ImportError` 只包住 import，而 sklearn 缺失是 `XGBClassifier(...)` **构造时**才抛 → 异常越过守卫，GP 进化直接崩而非退回 rule-based |
 | ~~N-1~~ | **已修（2026-09-20）**：成本推导的缓存键原来只指纹 `close`，而价差算的是 high/low、冲击用的是 volume —— close 相同、high/low 不同的数据集命中同一条缓存（审计实测真实 1919.83 bps 被 37.47 bps 顶替，差 51 倍）。现在覆盖 `_COST_INPUT_FIELDS`（close/high/low/volume）全部面板 + 券商档位 + 账户类型。守卫两条：AST 从 `trading_context` 抽出**实际读取**的字段与清单对账（不抄一份同源清单）；行为上验证改 high/low 后不再命中旧条目，且同数据集仍然命中（缓存没退化成永不命中）|
-| N-2 | 全局试验台账读不到时 `n_trials` 退回 1 → DSR 少做多重检验校正、门变**松**；代码注释自己写的是"应当更保守" |
+| ~~N-2~~ | **已修（2026-09-20）**：全局试验台账读不到时不再退回 `n_trials=1` 然后照常给结论 —— 那会让 DSR 少做多重检验校正、**门变松**（审计实测 passed=true / DSR≈0.99997）。改为 fail-closed：拒绝给出结论并写明「验证不完整」。旧测试断言的正是 `n_trials == 1`，**它保护的就是那个错误行为**，已改为断言结论 |
 | ~~N-3~~ | **已修（2026-09-20）**：`strategy_net_returns` 在 `apply_risk=True` 下风控/调仓对齐失败时，不再打一条 warning 就用未经风控的原始权重继续回测 —— 改为抛错。三个调用方均已 fail-closed（门判不通过并写明理由 / OOS 视为 -inf）。顺带补上了此处缺失的 `max_net` |
 | ~~N-4~~ | **已修（2026-09-20）**：`sharpe_tstat` 改用**日频** Sharpe 配日频观测数，SR 与 T 同频。实测 8.3236 → 0.5660，与独立的单样本 t（0.5664）相差 3.8e-4；按 1.96 的判定从「✓显著」翻成「✗不显著」。修的是**频率口径**不是显著性阈值。钉住旧值的常量已作废，新断言用 `scipy.stats.ttest_1samp` 作**独立同频基准** |
-| N-5 | `PaperBroker.step` 用 `target_w.index` 截断旧持仓 → 目标集合缩小时旧仓既不估值也不平仓，收益与仓位一起消失 |
+| ~~N-5~~ | **已修（2026-09-20）**：`PaperBroker.step` 改用**昨仓与新目标的并集**，不再用 `target_w.index` 截断旧持仓。实测 A/B 各半仓、次日目标只留 B 且 A 涨 10% → gross_ret 从 0 变回 **+5%**，且 A 产生真实平仓成交。另处理「旧持仓今日无行情」：不估值也不交易（`reindex` 给 NaN 而 `nansum` 当 0 = 悄悄丢掉），并留 WARNING |
 | N-6 | （前端，本轮不做）`useQuantWorkspace.switchSession` 在 await 后无条件 `setMessages`，迟到响应覆盖当前会话内容 |
 
 ### 为什么要有 `test_known_defects.py`

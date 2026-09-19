@@ -163,16 +163,6 @@ DEFECT_REGISTRY = {
             "但这个 except 的覆盖范围本身仍然是错的",
 
     # ---- 外部审计 2026-09-15 的独立发现（沿用它的编号，便于交叉引用）----
-    "N-2":  "StrategyGate 读全局试验台账失败时 `n_trials` 退回 1 —— 而 n_trials 是 "
-            "Deflated Sharpe 的多重检验校正项，退回 1 等于宣称『只试过一个策略』，"
-            "DSR 被高估、门变**松**。代码注释自己写着『门在读不到试验台账时应当"
-            "更保守，而不是更宽松』，实现却相反。审计实测：注入台账不可读后仍得 "
-            "passed=true、reasons=[]、DSR≈0.99997",
-    "N-5":  "PaperBroker.step 用 `tickers = list(target_w.index)` 截断旧持仓："
-            "目标资产集合缩小时，不在新目标里的旧持仓既不参与估值（当日收益丢失），"
-            "也不产生平仓成交（仓位凭空消失）。审计实测：A/B 各半仓、次日目标只留 "
-            "B 且 A 涨 10%，gross_ret=0（应为 +5%），成交记录里没有 A 的平仓。"
-            "应以旧持仓与新目标的**并集**估值与交易",
     "N-6":  "（前端，本轮不做）useQuantWorkspace.switchSession 在 await 之后无条件 "
             "`setMessages` —— 不检查响应回来时当前会话是否还是发起时那个。"
             "先切 A 再切 B、B 先返回 A 后返回时，store 里 sessionId=B 而展示内容"
@@ -1165,36 +1155,6 @@ def _panel_for_gate(days: int = 60, n: int = 4, seed: int = 3) -> dict:
 
 class TestStrategyGateCacheAndFailurePaths:
 
-    @_xfail("N-2")
-    def test_unreadable_trial_ledger_must_not_produce_a_pass(self):
-        """
-        台账读不到 → n_trials 退回 1 → DSR 少做多重检验校正 → 门变松。
-        代码注释自己写的是"应当更保守"。这里断言：读不到必要数据时，
-        结论**不能**是 passed（要么拒绝，要么明确标注验证不完整）。
-        """
-        from app.core.portfolio_manager import strategy_gate as sg
-
-        idx = pd.bdate_range("2024-01-02", periods=120)
-        rng = np.random.default_rng(11)
-        rets = pd.Series(rng.normal(0.004, 0.004, 120), index=idx)   # 稳定盈利
-
-        class _Broken:
-            def __init__(self):
-                raise RuntimeError("试验台账不可读（注入）")
-
-        with pytest.MonkeyPatch.context() as mp:
-            import app.db.trial_ledger as tl
-            mp.setattr(tl, "TrialLedger", _Broken)
-            mp.setattr(sg, "strategy_net_returns",
-                       lambda *a, **kw: (rets, pd.DataFrame()))
-            res = sg.StrategyGate(use_global_trials=True).evaluate(
-                {"f": pd.DataFrame(1.0, index=idx, columns=["A", "B"])},
-                _panel_for_gate(days=120, n=2))
-
-        assert not (res.passed and not res.reasons), (
-            f"全局试验台账读不到，门仍然给出无保留的通过："
-            f"passed={res.passed} n_trials={res.n_trials} reasons={res.reasons}")
-
     def test_risk_gate_failure_refuses_to_produce_returns(self):
         """
         **缺陷 N-3，2026-09-20 已修**（本用例已转正，不再是 xfail）。
@@ -1251,49 +1211,6 @@ class TestStrategyGateCacheAndFailurePaths:
         assert any("回测失败" in r or "风控" in r for r in res.reasons), (
             f"拒绝的理由里看不出是风控失败：{res.reasons}")
 
-class TestPaperBrokerShrinkingUniverse:
-
-    @_xfail("N-5")
-    def test_positions_outside_the_new_target_are_still_valued_and_closed(self):
-        """
-        第 1 天 A/B 各半仓；第 2 天目标只留 B，而 A 从 100 涨到 110。
-        A 的那半仓当天应当贡献 +5% 毛收益，并产生一笔平仓成交。
-
-        产品先用 `target_w.index` 截断旧持仓，于是 A 既不估值也不平仓 ——
-        仓位和收益一起消失。
-        """
-        import tempfile as _tf
-
-        from app.core.execution.paper_broker import PaperBroker
-        from app.db.position_store import PositionStore
-
-        tmp = Path(_tf.mkdtemp(prefix="n5_"))
-        b = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp/'n5.db'}"),
-                        initial_capital=1_000_000.0)
-        both = ["A", "B"]
-        b.step(alpha_id=1, date="2024-01-02",
-               target_w=pd.Series([0.5, 0.5], index=both),
-               prices_t=pd.Series([100.0, 100.0], index=both),
-               prices_prev=pd.Series([100.0, 100.0], index=both),
-               adv_usd=pd.Series([1e12, 1e12], index=both),
-               daily_vol=pd.Series([0.02, 0.02], index=both))
-
-        pnl = b.step(alpha_id=1, date="2024-01-03",
-                     target_w=pd.Series([1.0], index=["B"]),
-                     prices_t=pd.Series([110.0, 100.0], index=both),
-                     prices_prev=pd.Series([100.0, 100.0], index=both),
-                     adv_usd=pd.Series([1e12, 1e12], index=both),
-                     daily_vol=pd.Series([0.02, 0.02], index=both))
-
-        assert pnl.gross_ret == pytest.approx(0.05, abs=1e-9), (
-            f"昨仓 A 占 50% 且当日 +10%，毛收益应为 +5%，实际 {pnl.gross_ret:.6f} —— "
-            f"不在新目标里的旧持仓被 `target_w.index` 截掉了，既没估值也没平仓")
-
-
-# ===========================================================================
-# 登记表自身的一致性
-# ===========================================================================
-
 def test_defect_registry_matches_the_ledger():
     """
     登记表里的每个编号都必须能在 `MUTATION_LEDGER.md` 里找到 ——
@@ -1345,10 +1262,10 @@ def test_the_outstanding_defect_count_is_visible():
     混成一个数会让它读起来比实际严重，也会稀释真正该优先修的那几条。
     """
     behavioural = set(DEFECT_REGISTRY) - TECHNICAL_DEBT - FRONTEND_ONLY
-    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (26, 3, 1), (
+    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (24, 3, 1), (
         f"缺陷分类计数变了：行为缺陷 {len(behavioural)} / 技术债 "
         f"{len(TECHNICAL_DEBT)} / 前端 {len(FRONTEND_ONLY)}"
-        f"（登记总数 {len(DEFECT_REGISTRY)}，此前 26/3/1；N-1/N-3/N-4 已于 2026-09-20 修复）。\n"
+        f"（登记总数 {len(DEFECT_REGISTRY)}，此前 24/3/1；N-1/N-2/N-3/N-4/N-5 已于 2026-09-20 修复）。\n"
         f"修好缺陷时请同时：① 删掉对应 xfail 标记 ② 改掉模块测试里"
         f"『钉住现状』的断言 ③ 更新 MUTATION_LEDGER。\n"
         f"当前清单：\n  " + "\n  ".join(f"{k}: {v}" for k, v in DEFECT_REGISTRY.items()))

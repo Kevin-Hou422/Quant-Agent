@@ -448,13 +448,26 @@ class TestEvaluateGates:
         assert seen.get("long_only") is True, (
             "配置项缺失时放开了做空 —— getattr 的默认值方向反了")
 
-    def test_global_trials_failure_is_logged_not_silent(self, monkeypatch, caplog):
+    def test_global_trials_failure_refuses_to_give_a_verdict(self, monkeypatch, caplog):
         """
-        读取全局试验台账失败时 n_trials 退回 1 —— 这**不是无害兜底**：
-        DSR 的多重检验校正整体失效，门变松。必须留下 ERROR。
+        **缺陷 N-2，2026-09-20 已修。**
+
+        读取全局试验台账失败时原先 `n_trials = 1` 然后继续跑 —— 那等于宣称
+        "只试过一个策略"，Deflated Sharpe 的多重检验校正整体失效，**门变松**。
+        外部审计实测：注入台账不可读后仍得 `passed=true`、`reasons=[]`、
+        DSR≈0.99997。
+
+        ⚠️ 这条用例**原来断言的是 `res.n_trials == 1`** —— 它保护的正是那个
+        错误行为。只要求"有 ERROR 日志"不够：日志记了、门照样放行，
+        缺陷依然在。判据必须落在**结论**上。
+
+        `use_global_trials=True` 是调用方明确要求做全局校正；做不到就不能给
+        结论（与 N-3 同一个道理：缺少必要数据时 fail-closed）。
+
+        这里刻意喂一条**足够好**的收益序列 —— 若判据写松了，它会通过。
         """
         monkeypatch.setattr(sg, "strategy_net_returns",
-                            lambda *a, **k: (_rets(0.002, 0.008, seed=11), pd.DataFrame()))
+                            lambda *a, **k: (_rets(0.004, 0.004, seed=11), pd.DataFrame()))
 
         class _Boom:
             def __init__(self):
@@ -463,9 +476,25 @@ class TestEvaluateGates:
         monkeypatch.setattr("app.db.trial_ledger.TrialLedger", _Boom)
         with caplog.at_level("ERROR"):
             res = StrategyGate(use_global_trials=True).evaluate(self._signals(1), _panel())
+
+        assert res.passed is False, (
+            "全局试验台账读不到，门却给出了通过结论 —— DSR 未做多重检验校正")
+        assert res.reasons, "拒绝却没有给出理由"
+        assert any("试验台账" in r or "验证不完整" in r for r in res.reasons), (
+            f"理由里看不出是台账不可读：{res.reasons}")
+        assert any("拒绝给出结论" in r.getMessage() for r in caplog.records), (
+            "试验台账读取失败没有留下 ERROR")
+
+    def test_opting_out_of_global_trials_is_still_allowed(self):
+        """
+        反向保护：`use_global_trials=False` 是**明确选择**不做全局校正，
+        不该被上面的 fail-closed 误伤 —— 否则修完 N-2 会把正常路径一起堵死。
+        """
+        res = StrategyGate(use_global_trials=False).evaluate(
+            self._signals(1), _panel())
         assert res.n_trials == 1
-        assert any("多重检验" in r.getMessage() for r in caplog.records), (
-            "试验台账读取失败没有留下 ERROR —— 门悄悄变松了")
+        assert not any("试验台账" in r for r in (res.reasons or [])), (
+            f"没要求全局校正却因台账被拒：{res.reasons}")
 
 
 # ===========================================================================

@@ -306,13 +306,26 @@ class StrategyGate:
                     from app.db.trial_ledger import TrialLedger
                     n_trials = max(1, TrialLedger().total())
                 except Exception as exc:
+                    # 【缺陷 N-2，2026-09-20 修】原先这里 `n_trials = 1` 然后继续往下跑。
+                    #
                     # **这不是无害兜底**：n_trials 是 Deflated Sharpe 的多重检验校正项，
-                    # 静默退回 1 等于宣称"只试过一个策略" → DSR 被高估 → 门变松。
-                    # 门在读不到试验台账时应当更保守，而不是更宽松。
+                    # 退回 1 等于宣称"只试过一个策略" → DSR 被高估 → **门变松**。
+                    # 上一版的注释自己写着"门在读不到试验台账时应当更保守，而不是
+                    # 更宽松"，紧接着做的却正是更宽松的那件事 —— 外部审计实测：
+                    # 注入台账不可读后仍得 passed=true、reasons=[]、DSR≈0.99997。
+                    #
+                    # `use_global_trials=True` 是调用方**明确要求**做全局多重检验校正。
+                    # 做不到就不能给结论 —— 与 N-3（风控失败）同一个道理：
+                    # 缺少必要数据时 fail-closed，把"验证不完整"如实说出来。
                     logger.error(
-                        "[strategy_gate] 读取全局试验台账失败，n_trials 退回 1 —— "
-                        "本次 Deflated Sharpe **未做多重检验校正，偏乐观**: %s", exc)
-                    n_trials = 1
+                        "[strategy_gate] 读取全局试验台账失败 → **拒绝给出结论**"
+                        "（退回 n_trials=1 会让 Deflated Sharpe 偏乐观、门变松）: %s", exc)
+                    res.n_trials = 0
+                    res.reasons = [
+                        f"全局试验台账不可读，无法做多重检验校正 → 验证不完整，"
+                        f"不予通过: {exc}"
+                    ]
+                    return res
             else:
                 n_trials = 1
         res.n_trials = n_trials

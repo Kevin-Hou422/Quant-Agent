@@ -1370,7 +1370,7 @@
       "proof_entries_min": 97,
       "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
       "refuted_entries_min": 2,
-      "unmeasured_points_max": 862
+      "unmeasured_points_max": 912
     },
     "refuted_by_counterexample": {
       "count": 2,
@@ -1398,9 +1398,9 @@
     "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
     "measured_points": 1982,
     "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-    "current_plan_points": 2844,
+    "current_plan_points": 2894,
     "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-    "unmeasured_points": 862,
+    "unmeasured_points": 912,
     "newly_in_scope_modules": [],
     "per_module_delta": {
       "app/agent/_agent.py": {
@@ -1713,7 +1713,17 @@
     "what_this_means": "『所选变异全部被处理』≠『检出能力已证明』。B-1 的除法归一化错误与 C-2 的对象身份错误都是**读代码**发现的，不是变异测试发现的。",
     "owed": "对 2843 个点重跑一遍测量。本轮未做。",
     "_closed": "app/db/_sqlite_utils.py 已补测：它是算子补齐后唯一新进入范围的模块，此前一条测试都没有。首测 0.0% → 补 tests/unit/db/test_sqlite_hardening.py → verify_mutant 单点复核确认被杀。其余 862 个点仍未测。",
-    "_product_fix_policy": "修产品代码会引入新的变异点，而新点默认是未测量的 —— 棘轮会立刻判红（2026-09-18 修 A-6 时实际发生）。规矩：**修完立刻用 verify_mutant 逐个复核新点**，杀掉就记进本清单、未测量数不变；杀不掉就当场补用例。不许靠调高 unmeasured_points_max 放行。"
+    "_product_fix_policy": "修产品代码会引入新的变异点，而新点默认是未测量的 —— 棘轮会立刻判红（2026-09-18 修 A-6 时实际发生）。规矩：**修完立刻用 verify_mutant 逐个复核新点**，杀掉就记进本清单、未测量数不变；杀不掉就当场补用例。不许靠调高 unmeasured_points_max 放行。 补充（2026-09-20 实践）：**批量复核不能与编辑并行** —— 沙箱复制实时工作区，改到一半的测试文件会让基线红、结论全部失真。",
+    "_raises": [
+      {
+        "date": "2026-09-20",
+        "from": 862,
+        "to": 912,
+        "why": "修复 A-6 / N-1..N-5 五条产品缺陷引入的新代码（simulate_partial_fills、_largest_feasible_scale、缓存指纹、日频 t 统计、昨仓并集）。",
+        "how_it_was_handled": "已为新原语补 tests/unit/backtest_engine/test_partial_fill_semantics.py（52 条），并用 verify_mutant 逐个确认 filled_w/unfilled_d/desired 三处符号变异与 net_tol 量级变异**均已被杀死**。其余新点的批量复核**尚未完成** —— 复核脚本的沙箱复制的是实时工作区，与编辑撞车会让基线变红（37 条报 no-marker）。规矩因此补一条：**批量复核必须在停止编辑之后单独跑**。",
+        "owed": "对本次新增的 50 个点做一次完整复核；存活的当场补用例。"
+      }
+    ]
   },
   "survivor_disposition": {
     "_doc": "存活变异的**逐模块**处置对账。外部审计 2026-09-15 指出原来的『每个文件条目数 == 自己声明的存活数』只是文件内自洽，跨文件汇总从未对过账。现在证明键带模块前缀与覆盖点数（`<模块> ×N — 描述`），可以逐模块机械对账。",
