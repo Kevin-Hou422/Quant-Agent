@@ -30,6 +30,7 @@ import logging
 from typing import Dict, Optional
 
 import numpy as np
+from ..alpha_engine.fast_ops import average_ranks_1d
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -57,8 +58,10 @@ def _ic_ir(signal: pd.DataFrame, returns: pd.DataFrame) -> float:
         mask = ~(np.isnan(s) | np.isnan(r))
         if mask.sum() < 5:
             continue
-        rs = np.argsort(np.argsort(s[mask])).astype(float)
-        rr = np.argsort(np.argsort(r[mask])).astype(float)
+        # 缺陷 C-1：必须用**平均秩**（并列取均值），不是 argsort 两次的序数名次 ——
+        # 后者把截面恒定的零信息信号排成 [0,1,2,...]，算出按列顺序的伪 IC。
+        rs = average_ranks_1d(s[mask])
+        rr = average_ranks_1d(r[mask])
         rs -= rs.mean()
         rr -= rr.mean()
         denom = np.sqrt((rs ** 2).sum() * (rr ** 2).sum())

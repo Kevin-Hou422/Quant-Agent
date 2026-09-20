@@ -745,3 +745,31 @@ FAST_GROUP_OPS = {
     "group_mean":       group_mean,
     "group_neutralize": group_neutralize,
 }
+
+def average_ranks_1d(x: np.ndarray) -> np.ndarray:
+    """
+    一维**平均秩**（并列取均值）—— Spearman 的定义要求的做法。
+
+    【缺陷 C-1，2026-09-20 修】此前 GP 适应度、alpha_combiner、evaluation_utils、
+    alpha_workflows **四处**各自写了 `np.argsort(np.argsort(x))`。那是**序数**名次：
+    对并列值按出现顺序强行排先后，于是一个截面恒定、**零信息**的信号会拿到
+    `[0,1,2,...]` 的假秩 —— 算出来的 IC 不是 0，而是
+    "ticker 在面板里的位置 vs 未来收益"的伪相关。
+    把列顺序打乱，同一个信号的 fitness 就变了；而列序不是市场事实。
+
+    `daily_trading_loop._average_ranks` 早就有一份正确实现并写明了理由，
+    但没有被复用 —— 同一个错误复制了四份。现在统一到这里。
+    """
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+    order = np.argsort(x, kind="mergesort")
+    ranks = np.empty(n, dtype=float)
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and x[order[j + 1]] == x[order[i]]:
+            j += 1
+        ranks[order[i:j + 1]] = 0.5 * (i + j)      # 并列区间取平均秩
+        i = j + 1
+    return ranks
+

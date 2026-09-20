@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+from ..alpha_engine.fast_ops import average_ranks_1d
 
 from ..alpha_engine.parser import Parser, ParseError
 from ..alpha_engine.validator import AlphaValidator, ValidationError
@@ -596,8 +597,10 @@ def _combine_pool_alphas(
                 mask = ~(np.isnan(s) | np.isnan(r))
                 if mask.sum() < 5:
                     continue
-                rs = np.argsort(np.argsort(s[mask])).astype(float)
-                rr = np.argsort(np.argsort(r[mask])).astype(float)
+                # 缺陷 C-1：必须用**平均秩**（并列取均值），不是 argsort 两次的序数名次 ——
+                # 后者把截面恒定的零信息信号排成 [0,1,2,...]，算出按列顺序的伪 IC。
+                rs = average_ranks_1d(s[mask])
+                rr = average_ranks_1d(r[mask])
                 rs -= rs.mean(); rr -= rr.mean()
                 denom = np.sqrt((rs**2).sum() * (rr**2).sum())
                 if denom > 0:

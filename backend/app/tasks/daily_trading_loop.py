@@ -27,6 +27,8 @@ from datetime import date as _date
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+
+from app.core.alpha_engine.fast_ops import average_ranks_1d
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -581,23 +583,16 @@ class DailyTradingLoop:
 
 def _average_ranks(x: np.ndarray) -> np.ndarray:
     """
-    平均秩（并列取均值）—— 这是 Spearman 的**定义**要求的做法。
+    平均秩（并列取均值）—— Spearman 的**定义**要求的做法。
 
-    旧实现用 `argsort(argsort(x))`：它对并列值按出现顺序强行排出先后，
-    于是一个**完全无区分度**的常数信号会得到 [0,1,2,...] 的假秩，
-    与任意收益算出 IC = ±1（完美预测）。这个 IC 会写进 alpha_ic_history，
-    直接喂给 →ACTIVE 晋级门 —— 等于凭空造出业绩。
+    这里曾经有一份独立实现。2026-09-20 修缺陷 C-1 时发现同一个概念在代码库里
+    存在**五份**：这一份是对的，另外四份（GP 适应度 / alpha_combiner /
+    evaluation_utils / alpha_workflows）用的是 `argsort(argsort(x))` 序数名次，
+    会把截面恒定的零信息信号排成 [0,1,2,...] 并算出按列顺序的伪 IC。
+    现已统一到 `fast_ops.average_ranks_1d`，此处转为薄封装 ——
+    **同一个概念只保留一份实现**，否则修好四份仍会有第五份在犯错。
     """
-    order = np.argsort(x, kind="mergesort")
-    ranks = np.empty(len(x), dtype=float)
-    i = 0
-    while i < len(x):
-        j = i
-        while j + 1 < len(x) and x[order[j + 1]] == x[order[i]]:
-            j += 1
-        ranks[order[i:j + 1]] = 0.5 * (i + j)      # 并列区间取平均秩
-        i = j + 1
-    return ranks
+    return average_ranks_1d(x)
 
 
 def _cs_spearman(a: np.ndarray, b: np.ndarray) -> float:

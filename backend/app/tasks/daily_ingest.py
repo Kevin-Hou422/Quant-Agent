@@ -95,7 +95,9 @@ class DailyIngest:
             return IngestResult(False, dataset_name, as_of, mode="no_new_bar",
                                 reject_reason="no_new_bar", calendar_note=note)
 
-        inc = self.ingest(dataset_name, nxt, today.strftime("%Y-%m-%d"))
+        # `append_pit=False`：本方法在第 3 步自己按 `> last` 过滤后写 PIT（缺陷 A-1）。
+        inc = self.ingest(dataset_name, nxt, today.strftime("%Y-%m-%d"),
+                          append_pit=False)
         if not inc.accepted:
             inc.mode = "incremental"
             return inc
@@ -141,6 +143,7 @@ class DailyIngest:
         dataset_name: str,
         start:        str,
         end:          str,
+        append_pit:   bool = True,
     ) -> IngestResult:
         """
         拉取 + 健康验收。返回 IngestResult；accepted=False 时调用方应跳过当日循环并告警。
@@ -184,10 +187,17 @@ class DailyIngest:
 
         # Task 8.1：通过验收的数据按 as_of 追加进 PIT 存储（历史只追加不修改）。
         # PIT 写入失败**不阻塞**当日交易循环（存储是审计/复现资产，非交易前置），仅告警。
-        try:
-            self._append_pit(dataset_name, data, as_of)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[daily_ingest] PIT 追加失败（不阻塞交易循环）: %s", exc)
+        #
+        # 【缺陷 A-1，2026-09-20 修】`append_pit=False` 是给 `ingest_incremental`
+        # 用的：那条路径**自己**会按 `> last` 过滤后再写一次，
+        # 这里若也写，同一批 bar 就进了 PIT 两次（两个 vintage）。
+        # 而且两次写的窗口还不完全相同 —— 这里写的是整个抓取窗口
+        # （provider 可能返回一根重叠的旧 bar），外层写的才是严格的新增部分。
+        if append_pit:
+            try:
+                self._append_pit(dataset_name, data, as_of)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[daily_ingest] PIT 追加失败（不阻塞交易循环）: %s", exc)
 
         logger.info(
             "[daily_ingest] 摄取通过 '%s' | 健康=%.3f | %d 天 × %d 标的 | as_of=%s",

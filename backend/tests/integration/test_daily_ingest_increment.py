@@ -318,18 +318,19 @@ class TestIncrementWindow:
         per_day = df.groupby("timestamp")["as_of"].nunique()
         last_seeded = full["close"].index[4]
 
-        # 基线下共有 3 个 vintage：①回填时 `ingest()` 内部写的 5 天；
-        # ②增量取数时 `ingest()` 内部写的整段 8 天；③增量追加写的 3 天。
-        # （②这条"取数即整段写 PIT"是登记在案的产品问题——注释说"只写增量"，
-        #   实际上游已经整段写过一遍了。见 MUTATION_LEDGER。）
-        assert df["as_of"].nunique() == 3, (
-            f"构造前提不成立：应有 3 个 vintage，实际 {df['as_of'].nunique()}")
-        assert int(per_day.loc[last_seeded]) == 2, (
+        # 【缺陷 A-1，2026-09-20 修后的基线】共 2 个 vintage：
+        #   ① 回填时 `ingest()` 内部写的 5 天
+        #   ② 增量追加写的 3 天
+        # 原来还有第 ③ 个 —— 增量取数时 `ingest()` 内部又把整段 8 天写了一遍
+        #（注释说只写增量，上游却已整段写过）。现在由 `append_pit=False` 关掉。
+        assert df["as_of"].nunique() == 2, (
+            f"构造前提不成立：应有 2 个 vintage，实际 {df['as_of'].nunique()}")
+        assert int(per_day.loc[last_seeded]) == 1, (
             f"PIT 里最后一根旧 bar（{last_seeded.date()}）出现了 "
             f"{int(per_day.loc[last_seeded])} 个 vintage —— "
             f"它被增量追加又写了一遍，说明筛选不是**严格大于**")
-        assert per_day.max() == 2, f"有交易日的 vintage 数超出预期：\n{per_day}"
-
+        assert per_day.max() == 1, (
+            f"有交易日被写了不止一次 —— A-1 的双写回来了：{per_day}")
     def test_pit_only_receives_the_increment(self, ingest, monkeypatch):
         """
         `increment = {f: df.loc[df.index > last] ...}` —— 只追加**新** bar：
@@ -368,8 +369,12 @@ class TestIncrementWindow:
                     f"回填日 {ts.date()} 出现了 {n} 个 vintage —— "
                     f"重叠的旧 bar 被增量重写了")
             else:
-                assert n == 2, (
-                    f"增量日 {ts.date()} 的 vintage 数是 {n}，预期 2（已登记的双写）")
+                # 【缺陷 A-1，2026-09-20 修】此处原为 2 ——
+                # `ingest()` 内部整段写一次 + 外层按 `> last` 再写一次。
+                # 现在增量路径传 `append_pit=False`，每根 bar 只写一次。
+                assert n == 1, (
+                    f"增量日 {ts.date()} 的 vintage 数是 {n}，预期 1 —— "
+                    f"A-1 的双写回来了")
 
 
 # ===========================================================================

@@ -77,7 +77,6 @@ DEFECT_REGISTRY = {
     "B-9":  "use_label_encoder=False 对 xgboost 3.x 已无意义（仅代码整洁，无行为影响）",
     "B-10": "fast_ops 的向量化分支被 except Exception 完全兜住（结构问题，无行为断言）",
     "B-11": "data_partitioner 的『OOS 为空』守卫不可达（结构问题，无行为断言）",
-    "A-1":  "ingest_incremental 把增量写进 PIT 两次（ingest() 内一次 + 外层一次）",
     "A-2":  "strategy_gate 用 `np.nanstd(...) == 0.0` 判零方差。**指控已收窄**"
             "（外部审计 2026-09-15）：原写『守卫从不触发』是错的 —— 严格全零序列"
             "`np.nanstd` 返回精确 0.0，守卫会触发；不触发的是**非零常数**序列"
@@ -106,9 +105,6 @@ DEFECT_REGISTRY = {
             "五个调用点里只有 `risk_gate.py` 传了真实 target。"
             "（`project_to_capped_l1` 已支持逐行 target，改法是传 "
             "`np.abs(w).sum(axis=1)`，但每处都要单独确认上游口径）",
-    "C-1":  "GP 适应度的截面秩用 argsort(argsort(x)) 算，不处理并列："
-            "截面恒定（零信息）的信号被按**列顺序**摊成 0..n-1，"
-            "IC 成了『ticker 在面板里的位置 vs 未来收益』的伪相关而非 0",
     "D-3":  "requirements.txt 写的是 `langchain>=0.2` 没有上界，"
             "而 langchain 1.x 已把 `AgentExecutor` / `create_tool_calling_agent` "
             "移出 `langchain.agents`。本机装的 1.2.15 满足该约束，"
@@ -433,8 +429,7 @@ class TestStorageDefects:
         finally:
             mod.datetime = real
 
-    @_xfail("A-1")
-    def test_incremental_ingest_should_write_each_bar_once(self):
+    def test_incremental_ingest_writes_each_bar_once(self):
         """
         `ingest_incremental` 调用的 `ingest()` 内部已把整段增量窗口写过一遍 PIT，
         随后外层又 `_append_pit(increment)` 写一次 —— 每个增量日两个 vintage。
@@ -726,8 +721,7 @@ class TestBacktestAndExecutionDefects:
 
 class TestGpFitnessRankTies:
 
-    @_xfail("C-1")
-    def test_a_cross_sectionally_constant_signal_should_score_zero_ic(self):
+    def test_a_cross_sectionally_constant_signal_scores_zero_ic(self):
         """
         `rs = np.argsort(np.argsort(s[mask])).astype(float)` —— 这是**序数**
         名次，不是处理并列的平均名次。当日信号对所有票同值时，它给出的是
@@ -1379,7 +1373,7 @@ def test_the_outstanding_defect_count_is_visible():
     混成一个数会让它读起来比实际严重，也会稀释真正该优先修的那几条。
     """
     behavioural = set(DEFECT_REGISTRY) - TECHNICAL_DEBT - FRONTEND_ONLY
-    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (16, 3, 1), (
+    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (14, 3, 1), (
         f"缺陷分类计数变了：行为缺陷 {len(behavioural)} / 技术债 "
         f"{len(TECHNICAL_DEBT)} / 前端 {len(FRONTEND_ONLY)}"
         f"（登记总数 {len(DEFECT_REGISTRY)}，此前 24/3/1；N-1/N-2/N-3/N-4/N-5 已于 2026-09-20 修复）。\n"

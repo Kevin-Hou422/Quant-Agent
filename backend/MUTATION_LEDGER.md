@@ -385,14 +385,14 @@ python tools/mutation/runner.py plan_full.json --state progress_full.json --stat
 | B-10 | `fast_ops` 向量化分支被 `except Exception` 完全兜住（结构问题） |
 | B-11 | `data_partitioner` 的「OOS 为空」守卫不可达（结构问题） |
 | ~~B-12~~ | **已修（2026-09-20）**：三处排序都补了稳定的第二键。注意 `ChatSession.id` 是 **UUID 字符串**，按它排是随机序而非插入序 —— 另加了单调递增的 `seq` 列（同事务内取 max+1；`autoincrement` 只对整型主键生效）。`ChatMessage.id` 本就是自增整数，直接用 |
-| A-1 | `ingest_incremental` 把增量写进 PIT 两次 |
+| ~~A-1~~ | **已修（2026-09-20）**：`ingest()` 新增 `append_pit` 参数，增量路径传 `False`。原先 `ingest()` 内部先把**整个抓取窗口**写进 PIT，`ingest_incremental` 随后又按 `> last` 过滤后写第二次 —— 同一批 bar 两个 vintage，而且两次写的窗口还不同（内层可能含一根重叠旧 bar）。集成用例的基线已从 3 个 vintage 改到 2 个、增量日从 2 改到 1 |
 | A-2 | `strategy_gate` 用 `np.nanstd(...) == 0.0` 判零方差，浮点零判不出来，守卫从不触发 |
 | ~~A-3~~ | **已修（2026-09-20）**：`vol > 0` 判据换成**相对**量级（`sd > 1e-12 × 收益自身量级`）。全常数收益的 `std(ddof=1)` 是 6.5e-19 的浮点残渣，旧判据成立 → 年化 Sharpe 3e16、t 15.5，报告显示「高度显著」。相对判据保证真实低波动（日波动 1e-6）不被误杀，且 `sharpe_tstat` 共用同一判据不分叉 |
 | ~~A-4~~ | **已修（2026-09-20）**：`_tdays` 提前判 `DatetimeIndex` 并抛带说明的 `TypeError`，不再让 `(idx[-1]-idx[0]).days` 抛指向内部实现的 `AttributeError`。`max_drawdown` 里那条按序号相减的 else 分支**可达性未变**（仍不可达），对应的等价性证明措辞已同步 |
 | A-5 | `MVOPortfolio` 注释写「剔除的资产保留基准权重」，实现是整行替换 → 拿到 0 |
 | A-6 | **执行层已修（2026-09-18/19/20）**：不再写死 target、不再用持仓裁剪冒充成交、按交易差额逐名部分成交且**不再分配**、组合级净敞口回查、未成交量如实记账。实测放大倍数：**目标持仓** 3.33×、**成交名义额** 1.54×。**剩余**：回测引擎仍走 water-filling 持仓裁剪，两引擎在限流场景下语义分家 |
 | A-7 | `project_to_capped_l1(..., target=1.0)` 在**另外三处**仍写死（`realistic_backtester` / `LiquidityConstraint.apply` / `manager.apply_capacity`）。都是构建层，water-filling 合理、错的是 target；`apply_capacity` 的 docstring 写「容量不足时 gross<1」却传 1.0。五个调用点只有 `risk_gate` 传了真实值 |
-| C-1 | GP 适应度的截面秩用 `argsort(argsort(x))`，不处理并列 → 零信息信号被按**列顺序**摊开，IC 成了伪相关 |
+| ~~C-1~~ | **已修（2026-09-20）**：截面秩改用**平均秩**（并列取均值）。`argsort(argsort(x))` 是序数名次，把截面恒定的零信息信号排成 [0,1,2,...]，算出的 IC 是「ticker 在面板里的位置 vs 未来收益」的伪相关，列序一换 fitness 就变。**同一个错误复制了四份**（gp_engine / alpha_combiner / evaluation_utils / alpha_workflows）；而 `daily_trading_loop` 里早有一份正确实现且写明了理由，却没被复用。现统一到 `fast_ops.average_ranks_1d`，那份改为薄封装 —— 同一概念只留一份实现 |
 | ~~C-2~~ | **已修（2026-09-20）**：`_replace_node` 改为**先在原树里定位路径、再沿路径在副本上替换**。原实现先 deepcopy 再按 `id(target)` 找，副本里没有任何节点持有那个 id，于是除根节点外替换**永远静默失败** —— hoist / wrap_rank / add_ts_smoothing / replace_subtree / subtree_crossover 五个算子只能在根上动手，GP 看着在变异实际原地踏步 |
 | ~~D-1~~ | **已修（2026-09-20）**：取负识别从只认 `op == "neg"` 扩展到「`neg(x)` 或 `sub(0, x)`」。一元负号 `-x` 解析成 `neg(x)`，语义相同的 `(0-x)` 解析成 `sub(ScalarNode(0), x)` —— 同一因子换个等价写法就换家族。新增反向对照：`(1-x)` 不是取负，仍判 momentum（防判据放宽过头）|
 | ~~D-2~~ | **已修（2026-09-20）**：`returns` 是**派生**字段、从不落盘，已从 `available_fields()` 去掉；请求不可用字段改为**当场报 ValueError**，不再读到一半被 except 吞掉、最后交回空 dict。新增机械对账：宣称的每个字段都必须在 `STANDARD_COLUMNS` 里（判据取写入路径的事实来源，不另抄清单）|
