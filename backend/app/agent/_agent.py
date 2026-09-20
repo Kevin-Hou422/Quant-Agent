@@ -21,11 +21,41 @@ from app.agent._constants import (
 )
 from app.agent._fallback import FallbackOrchestrator
 from app.agent._helpers import _extract_balanced
-from app.agent._lc_agent import _build_langchain_agent
+from app.agent._lc_agent import LangChainIncompatibleError, _build_langchain_agent
 from app.agent._memory import ConversationMemory
 from app.agent._tools import QuantTools
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Agent 运行模式 —— 降级原因必须可检测、可上报
+# ---------------------------------------------------------------------------
+#
+# 【缺陷 D-3，2026-09-20】这四种情形此前都只表现为一条 warning + "/api/chat
+# 照常返回"，从外部完全分不开：设计内的降级（没配 key）与部署缺陷（依赖不兼容）
+# 长得一模一样。于是 langchain 大版本搬家把整条 LLM 研究链路打死之后，
+# 系统看起来仍然"正常工作"。
+#
+# 与 data_source 同一个道理：用户要能分辨屏幕上的东西究竟是怎么来的。
+
+#: LangChain agent 正常工作。
+AGENT_MODE_LLM = "llm"
+#: 没有配 API key —— **设计内**降级，不是故障。
+AGENT_MODE_NO_API_KEY = "fallback:no_api_key"
+#: 已安装的 langchain 大版本与代码不兼容 —— **部署缺陷**，必须修。
+AGENT_MODE_INCOMPATIBLE_DEPS = "fallback:incompatible_deps"
+#: 有 key，但 LLM 客户端初始化失败（配置/网络/凭据）。
+AGENT_MODE_LLM_INIT_FAILED = "fallback:llm_init_failed"
+#: LLM 建起来了，但 agent 组装失败（其它原因）。
+AGENT_MODE_AGENT_BUILD_FAILED = "fallback:agent_build_failed"
+
+#: 只有这一个代表"LLM 研究链路真的在跑"。
+AGENT_MODES_DEGRADED = frozenset({
+    AGENT_MODE_NO_API_KEY,
+    AGENT_MODE_INCOMPATIBLE_DEPS,
+    AGENT_MODE_LLM_INIT_FAILED,
+    AGENT_MODE_AGENT_BUILD_FAILED,
+})
 
 
 class QuantAgent:
@@ -64,6 +94,16 @@ class QuantAgent:
         self._chat_store = chat_store
         self._llm        = None
 
+        # 【缺陷 D-3，2026-09-20】降级原因必须是**可检测的状态**，不能只有一条
+        # warning。原来四种完全不同的情形都走同一条 `except Exception` + warning：
+        #   · 没配 API key        —— 设计内降级，正常
+        #   · 依赖大版本不兼容      —— 部署缺陷，必须修
+        #   · LLM 初始化失败        —— 配置/网络问题
+        #   · agent 构建失败        —— 其它
+        # 对外一律表现为"/api/chat 照常返回"，于是 LLM 研究链路整条死掉也没人知道。
+        # 这与 data_source 是同一个道理：用户要能分辨屏幕上的东西是怎么来的。
+        self._agent_mode: str = AGENT_MODE_NO_API_KEY
+
         # Per-session state (both paths need DSL tracking; Fallback also needs memory)
         self._session_memories: Dict[str, ConversationMemory] = {}
         self._session_last_dsl: Dict[str, Optional[str]]      = {}
@@ -82,6 +122,7 @@ class QuantAgent:
                 logger.info("LLM 初始化成功: %s", model)
             except Exception as exc:
                 logger.warning("LLM 初始化失败，降级 Fallback: %s", exc)
+                self._agent_mode = AGENT_MODE_LLM_INIT_FAILED
 
         # Shared tool instance (dataset is deterministic → safe across sessions)
         self._tools = QuantTools(
@@ -105,8 +146,19 @@ class QuantAgent:
         if self._llm is not None:
             try:
                 self._chain = _build_langchain_agent(self._llm, self._tools, chat_store)
+                self._agent_mode = AGENT_MODE_LLM
+            except LangChainIncompatibleError as exc:
+                # 按**异常类型**而不是文案匹配来分类 —— 文案改了也不会失效。
+                logger.error(
+                    "LangChain 大版本不兼容，LLM 研究链路不可用（这是部署缺陷，"
+                    "不是设计内降级）：%s", exc)
+                self._agent_mode = AGENT_MODE_INCOMPATIBLE_DEPS
             except Exception as exc:
-                logger.warning("LangChain Agent 构建失败，降级: %s", exc)
+                logger.error("LangChain Agent 构建失败，降级: %s", exc)
+                self._agent_mode = AGENT_MODE_AGENT_BUILD_FAILED
+        # `self._llm is None` 的两种情形上面都已定过 mode：
+        # 没配 key → 初值 NO_API_KEY；有 key 但初始化失败 → LLM_INIT_FAILED。
+        # 这里不需要 else 分支（写过一个空的 elif，纯噪声，已删）。
 
     # ------------------------------------------------------------------
     # Public interface
@@ -156,6 +208,22 @@ class QuantAgent:
     def data_source(self) -> str:
         """当前数据来源（"real:<name>" / "synthetic"）——随每次聊天响应返回，用户须看得见。"""
         return self._tools.data_source
+
+    @property
+    def agent_mode(self) -> str:
+        """
+        当前运行模式 —— 随每次聊天响应返回，用户须看得见。
+
+        `"llm"` 表示 LangChain 研究链路在跑；`"fallback:*"` 表示降级，
+        后缀说明**为什么**降级。区分"没配 key"（设计内）与"依赖不兼容"
+        （部署缺陷）是这条属性存在的全部理由：缺陷 D-3 里两者长得一样。
+        """
+        return self._agent_mode
+
+    @property
+    def agent_degraded(self) -> bool:
+        """是否处于降级状态（任何原因）。"""
+        return self._agent_mode in AGENT_MODES_DEGRADED
 
     @property
     def memory(self) -> ConversationMemory:
@@ -346,6 +414,10 @@ class QuantAgent:
                 # 只改 POST /chat 的响应等于只修一半（DEV_LESSONS §R）。
                 payload = dict(result or {})
                 payload.setdefault("data_source", self.data_source)
+                # agent_mode 同样必须随**流式**最终事件返回。
+                # 前端用的是 /chat/stream —— 只改 POST /chat 的响应等于只修一半
+                # （DEV_LESSONS §R，data_source 当初就是在这里踩过一次）。
+                payload.setdefault("agent_mode", self.agent_mode)
                 try: on_event({"type": "done", "result": payload})
                 except Exception: pass
 

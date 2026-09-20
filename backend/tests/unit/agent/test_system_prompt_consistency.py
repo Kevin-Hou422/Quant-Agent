@@ -186,14 +186,11 @@ class TestEmbeddedDslExamples:
         然后在 `_validate_and_fix` 里白烧两次修复调用后被丢弃 ——
         对外只表现为"agent 老是生成非法公式"。
 
-        当前唯一一批坏的就是含 neg( 的四条（缺陷 D-4，本阶段只登记不修）。
-        这里把它们排除在外，其余必须全绿 —— 于是**再坏一条就会红**，
-        而 D-4 的"应有行为"由 test_known_defects 里的 xfail 用例守着。
+        曾经有一批坏的：含 `neg(` 的四条（缺陷 D-4）。它们于 2026-09-20 改成
+        一元负号 `-x`，**例外已取消** —— 现在提示词里的每一条范例都必须解析得了。
         """
         bad = []
         for snip in _dsl_snippets():
-            if "neg(" in snip:
-                continue                      # 缺陷 D-4，见下一条
             try:
                 _parser.parse(snip)
             except Exception as exc:
@@ -206,8 +203,6 @@ class TestEmbeddedDslExamples:
         """解析得了还不够 —— 还要过 AlphaValidator（嵌套深度、链式归一化等）。"""
         bad = []
         for snip in _dsl_snippets():
-            if "neg(" in snip:
-                continue
             try:
                 _validator.validate(_parser.parse(snip))
             except Exception as exc:
@@ -216,21 +211,19 @@ class TestEmbeddedDslExamples:
             "提示词里的 DSL 范例过不了校验：\n  " +
             "\n  ".join(f"{x}  ->  {e}" for x, e in bad))
 
-    def test_the_neg_examples_are_still_broken(self):
+    def test_no_example_calls_a_negation_function(self):
         """
-        **钉住现状**（缺陷 D-4）：提示词把 `rank(neg(...))` 当作四个因子
-        家族的标准模板，而解析器只认一元负号 `-x`，不认 `neg(x)`。
+        **缺陷 D-4，2026-09-20 已修**，这条由"钉住现状"改成反向护栏。
 
-        与 `tests/meta/test_known_defects.py` 里的 D-4 xfail 用例成对：
-        那条断言"应该能解析"，这条钉住"现在不能"。修好时两条一起改。
+        提示词曾把 `rank(neg(...))` 当作四个因子家族的标准模板，而解析器只认
+        一元负号 `-x` —— `neg` 不是函数。这里同时钉两件事：
+        ① 提示词里不再出现 `neg(`；② 解析器确实不认它
+        （不然"提示词不写"就成了没有理由的忌讳）。
         """
-        negs = [x for x in _dsl_snippets() if "neg(" in x]
-        assert len(negs) >= 3, (
-            f"提示词里含 neg( 的范例只剩 {len(negs)} 条：{negs} —— "
-            f"若已改用 -x 写法，请同步删除缺陷 D-4")
-        for snip in negs:
-            with pytest.raises(ParseError):
-                _parser.parse(snip)
+        assert not [x for x in _dsl_snippets() if "neg(" in x], (
+            "提示词的范例里又出现了 `neg(` —— 解析器不认这个函数，D-4 复发")
+        with pytest.raises(ParseError):
+            _parser.parse("neg(close)")
 
     def test_the_unary_minus_form_is_what_the_parser_accepts(self):
         """
@@ -247,25 +240,24 @@ class TestEmbeddedDslExamples:
             assert _validator.validate(node) is None, f"{good} 没有通过校验"
         assert len(forms) == 4, "四个家族的模板各要有一条对照写法"
 
-    def test_every_function_used_in_an_example_except_neg_is_declared(self):
+    def test_every_function_used_in_an_example_is_declared(self):
         """
         范例里用到的算子必须出现在 `AVAILABLE OPERATORS` 清单上 ——
         否则 LLM 会得到互相矛盾的两份信息。
 
-        neg 正是这种形态（缺陷 D-4）：出现在四条范例里，却不在清单上。
-        这里把它排除，保证**再多一个**这样的不一致就会红。
+        `neg` 曾是唯一的例外（缺陷 D-4）：出现在四条范例里，却不在清单上，
+        而且解析器根本没有这个函数。**例外已于 2026-09-20 取消** ——
+        修法不是把 `neg` 加进清单（那会让提示词与解析器一起错），
+        而是把模板改成解析器接受、且系统自己序列化时也输出的 `-x`。
         """
         declared = set(_declared("AVAILABLE OPERATORS:"))
         used = {m.group(1) for m in re.finditer(r"\b(\w+)\s*\(", PROMPT)
                 if m.group(1) in _ARITY}
-        missing = sorted(used - declared - {"neg"})
+        missing = sorted(used - declared)
         assert not missing, (
             f"这些算子在提示词正文里被当成范例用了，却不在 "
             f"AVAILABLE OPERATORS 清单上：{missing} —— "
             f"LLM 拿到的是自相矛盾的两份说明")
-        assert "neg" in used and "neg" not in declared, (
-            "neg 的不一致已经消失 —— 缺陷 D-4 已修复，"
-            "请删掉 test_known_defects 里的 D-4 与本文件里钉住现状的两条")
 
 
 # ===========================================================================
@@ -301,8 +293,10 @@ class TestToolNames:
         本该由 LLM 主动调用的工具却忘了写进提示词）就会红。
         """
         import app.agent._lc_agent as LC
+        # 工具定义在 `_build_tools`（2026-09-20 从 `_build_langchain_agent` 抽出，
+        # 为的是让接线能用真的 @lc_tool 验、不必 mock 掉整个 langchain）。
         registered = set(re.findall(r"def (tool_[a-z_]+)\(",
-                                    inspect.getsource(LC._build_langchain_agent)))
+                                    inspect.getsource(LC._build_tools)))
         assert registered, "接线层里抽不出工具名 —— 本用例需要重写"
         named = set(re.findall(r"\btool_[a-z_]+", PROMPT))
         unmentioned = sorted(registered - named)
@@ -373,7 +367,7 @@ class TestNumbersMatchTheCode:
         """
         import app.agent._lc_agent as LC
 
-        src = inspect.getsource(LC._build_langchain_agent)
+        src = inspect.getsource(LC._build_tools)      # 工具签名在这里
         for key in ("n_generations", "pop_size"):
             in_prompt = set(re.findall(rf"{key}=(\d+)", PROMPT))
             in_code = set(re.findall(rf"{key}:\s*int\s*=\s*(\d+)", src))

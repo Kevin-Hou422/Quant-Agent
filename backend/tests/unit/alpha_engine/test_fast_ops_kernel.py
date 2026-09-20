@@ -18,11 +18,15 @@ alpha_engine/fast_ops.py —— 算子内核的定钉测试（变异测试驱动
 
 本文件的核心手法：**同一个输入喂给三条路径，要求逐位一致**。
 任何一处算术被改坏，三者立刻对不上 —— 一条断言同时覆盖三份实现。
-不一致的地方全部是**已登记的产品缺陷**（见 MUTATION_LEDGER「B 档」），
-本阶段只钉住现状、不修；每一条都标了"修好之后这条断言要改成什么"。
 
-参照实现用 pandas.rolling（独立的第三方实现）与手算常数，
-**不是**把被测公式在测试里再写一遍 —— 那种写法改坏了两边一起错。
+不一致的地方当初全部登记为产品缺陷（MUTATION_LEDGER「B 档」），本文件先只
+"钉住现状"，每条标了"修好之后这条断言要改成什么"。**2026-09-20 那六条
+（B-1/B-2/B-3/B-5/B-6/B-7）已全部修复**，H 节按那些说明逐条改成了正确性断言；
+只剩 B-4（契约未定）仍钉在 H2 节。
+
+参照实现用 pandas.rolling / pandas.rank / scipy.stats.rankdata / np.corrcoef
+（都是独立的第三方实现）与手算常数，**不是**把被测公式在测试里再写一遍 ——
+那种写法改坏了两边一起错，而 B 档六条恰恰是"公式本身写错了"。
 """
 from __future__ import annotations
 
@@ -112,8 +116,13 @@ class TestPathsAgree:
     `out[window-1:]`→`out[window+1:]` 都会让三者对不上。
     """
 
-    @pytest.mark.parametrize("name", ["bn_ts_mean", "bn_ts_std", "bn_ts_var",
-                                      "bn_ts_sum"])
+    #: 7 个 bottleneck 包装器 —— 三条路径必须逐位一致。
+    #: `bn_ts_max`/`bn_ts_min`/`bn_ts_rank` 是 2026-09-20 修完 B-1/B-5 后才并进来的：
+    #: 此前 rank 的三条路径算的是三个不同的量，max/min 在含 NaN 的输入上分家。
+    _BN_WRAPPERS = ["bn_ts_mean", "bn_ts_std", "bn_ts_var", "bn_ts_sum",
+                    "bn_ts_max", "bn_ts_min", "bn_ts_rank"]
+
+    @pytest.mark.parametrize("name", _BN_WRAPPERS)
     @pytest.mark.parametrize("window", [3, 7])
     def test_rolling_moments_agree_across_paths(self, name, window):
         x = _series(T=30, N=3, seed=1)
@@ -124,6 +133,22 @@ class TestPathsAgree:
         np.testing.assert_allclose(
             got["loop"], got["bottleneck"], rtol=1e-9, atol=1e-9,
             err_msg=f"{name}: 纯循环兜底分支与 bottleneck 分支算出了不同的数")
+
+    @pytest.mark.parametrize("name", _BN_WRAPPERS)
+    def test_rolling_ops_agree_across_paths_when_the_panel_has_gaps(self, name):
+        """
+        **含 NaN** 才测得到 NaN 策略。无 NaN 的输入上 `np.nanmax` 与 `np.max`
+        恒等，缺陷 B-5 在上一条里是看不见的 —— 停牌是常态，这条才对得上现实。
+        """
+        x = _series(T=30, N=3, seed=2)
+        x[7, 0] = x[8, 1] = x[20, 2] = np.nan        # 三只票在不同日子停牌
+        got = _all_paths(getattr(F, name), x, 5)
+        for other in ("strided", "loop"):
+            np.testing.assert_allclose(
+                got[other], got["bottleneck"], rtol=1e-9, atol=1e-9, equal_nan=True,
+                err_msg=f"{name}: 含 NaN 时 {other} 与 bottleneck 的策略不一致")
+        assert np.isnan(got["bottleneck"][7:12, 0]).all(), (
+            f"{name}: NaN 所在的 5 个窗口应当全部被否决")
 
     @pytest.mark.parametrize("name", ["ts_decay_linear", "ts_argmax", "ts_argmin",
                                       "ts_skew", "ts_kurt"])
@@ -136,14 +161,19 @@ class TestPathsAgree:
             got["loop"], got["strided"], rtol=1e-9, atol=1e-9,
             err_msg=f"{name}: 纯循环兜底与向量化分支算出了不同的数")
 
-    def test_ts_cov_agrees_between_paths(self):
-        """ts_corr **不**在此列 —— 它的两条路径算出的数不同，见 H 节 B-2。"""
+    @pytest.mark.parametrize("name", ["ts_cov", "ts_corr"])
+    def test_two_input_ops_agree_between_paths(self, name):
+        """
+        `ts_corr` 曾**不**在此列 —— 它的两条路径算出的数不同（缺陷 B-2：
+        向量化分支 cov 用 ddof=0、std 用 ddof=1，纯循环走 np.corrcoef）。
+        B-2 修复后两者同口径，于是并入这条。
+        """
         x = _series(T=30, N=3, seed=3)
         y = _series(T=30, N=3, seed=4)
-        got = _all_paths(F.ts_cov, x, y, 10)
+        got = _all_paths(getattr(F, name), x, y, 10)
         np.testing.assert_allclose(
             got["loop"], got["strided"], rtol=1e-9, atol=1e-9,
-            err_msg="ts_cov: 纯循环兜底与向量化分支算出了不同的数")
+            err_msg=f"{name}: 纯循环兜底与向量化分支算出了不同的数")
 
 
 # ===========================================================================
@@ -305,8 +335,9 @@ class TestWindowBoundary:
     def test_shorter_than_window_is_all_nan_for_pure_python_ops(self, path):
         """
         这几个算子没有 bottleneck 分支，三条路径都必须给全 NaN。
-        （有 bottleneck 分支的那 7 个在 window > T 时会**抛异常**，
-        是已登记缺陷 B-7，见 H 节。）
+        （有 bottleneck 分支的那 7 个曾在 window > T 时**抛异常** —— 缺陷 B-7，
+        已于 2026-09-20 修；它们由 H 节的
+        test_short_panels_return_nan_instead_of_raising 覆盖。）
         """
         x = _series(T=3, N=2, seed=17)
         for name in ("ts_decay_linear", "ts_argmax", "ts_argmin",
@@ -375,21 +406,19 @@ class TestHigherMoments:
         assert got.shape == x.shape, "ts_skew 的输出形状被广播改坏了"
         assert np.isfinite(got[8:]).all(), "ts_skew 在无 NaN 输入上产出了非有限值"
 
-    def test_corr_of_a_series_with_itself_is_the_maximum(self, path):
+    def test_corr_of_a_series_with_itself_is_exactly_one(self, path):
         """
-        自相关必须取到该路径的上界。这条同时钉住 `cov/denom` 的两个 `*`：
-        `np.mean(dx*dy)` 改成 `/`、`std_x*std_y` 改成 `/` 都会让它偏离。
+        自相关恒等于 1.0。这条同时钉住 `cov/denom` 的两个 `*`：
+        `sum(dx*dy)/(w-1)` 改成 `/`、`std_x*std_y` 改成 `/` 都会让它偏离。
 
-        向量化分支的上界是 **(w-1)/w** 而不是 1.0 —— 已登记缺陷 B-2
-        （cov 用 ddof=0、std 用 ddof=1，不配套）；纯循环兜底走 np.corrcoef，
-        给的是正确的 1.0。修好 B-2 之后这里两条路径应当合并成 1.0。
+        （缺陷 B-2 修复前，向量化分支的上界是 (w-1)/w，与纯循环兜底的
+        np.corrcoef 分家；现在三条路径统一给 1.0。）
         """
         x = _series(T=40, N=3, seed=21)
         w = 12
-        got = F.ts_corr(x, x, w)
-        expected = 1.0 if path == "loop" else (w - 1) / w
-        np.testing.assert_allclose(got[w - 1:], expected, rtol=1e-9, atol=1e-9,
-                                   err_msg=f"[{path}] 自相关不等于该路径的上界")
+        np.testing.assert_allclose(F.ts_corr(x, x, w)[w - 1:], 1.0,
+                                   rtol=1e-9, atol=1e-9,
+                                   err_msg=f"[{path}] 自相关不等于 1.0")
 
     def test_cov_matches_numpy_cov(self, path):
         x, y = _series(T=40, N=3, seed=22), _series(T=40, N=3, seed=23)
@@ -691,118 +720,162 @@ class TestGroupAndConditional:
 
 
 # ===========================================================================
-# H. 已登记缺陷的现状定钉
+# H. 曾经的缺陷 —— 现在钉的是**应有行为**
 # ===========================================================================
 #
-# 下面每一条钉的都是**当前的错误行为**，不是应有行为。
-# 按用户定的顺序，本阶段只登记不修；修好之后这些断言必须一并改，
-# 每条都写明了改成什么。全部登记在 MUTATION_LEDGER「B 档」。
+# B-1/B-2/B-3/B-5/B-6/B-7 于 2026-09-20 修复（MUTATION_LEDGER「B 档」）。
+# 本节原先钉的是错误行为并写明"修好之后改成什么"，现按那些说明逐条改成了
+# 正确性断言。**参照值一律来自独立实现**（scipy.stats.rankdata /
+# pandas.rank / np.corrcoef），不是把 fast_ops 的公式在测试里再抄一遍 ——
+# 抄一遍的话两边会一起错，而这六条恰恰是"公式本身写错了"。
 
-class TestKnownDefectsPinnedAsIs:
+class TestFormerlyBrokenOperators:
 
-    def test_ts_rank_is_compressed_by_window_on_the_bottleneck_path(self):
+    @pytest.mark.parametrize("window", [2, 3, 5, 20])
+    def test_ts_rank_is_an_average_rank_percentile_on_every_path(self, window):
         """
-        【已登记缺陷 B-1】docstring 写 "percentile in [0,1]"，
-        bottleneck 分支实际是 `bn.move_rank(...)/window`，值域 [-1/w, 1/w]。
-        修好之后：下面的 0.2 要改成 1.0，并与 numpy 分支合并成一条断言。
-        """
-        x = np.arange(20, dtype=float).reshape(20, 1)
-        real = F._HAS_BN
-        try:
-            F._HAS_BN = True
-            bn_val = F.bn_ts_rank(x, 5).ravel()[-1]
-            F._HAS_BN = False
-            np_val = F.bn_ts_rank(x, 5).ravel()[-1]
-        finally:
-            F._HAS_BN = real
-        np.testing.assert_allclose(bn_val, 0.2, rtol=1e-12)
-        np.testing.assert_allclose(np_val, 1.0, rtol=1e-12)
-        assert bn_val != np_val, (
-            "两条分支已经一致了 —— 缺陷 B-1 若已修复，请同时更新本断言与台账")
+        【缺陷 B-1，已修】两条分支此前算的不是同一个量：bottleneck 是
+        `bn.move_rank(...)/window`（值域 [-1/w, 1/w]，一半为负，且随窗口缩放），
+        numpy 是 `le/count`（值域 (0,1]，取不到 0）。docstring 承诺的 [0,1]
+        两边都不满足 —— `ts_rank(close,20) > 0.8` 在装了 bottleneck 的环境里
+        **恒为假**（上界 0.05）。
 
-    def test_ts_corr_is_biased_low_by_one_over_window(self):
+        参照值用 scipy.stats.rankdata(method="average")，与被测实现无共享代码。
         """
-        【已登记缺陷 B-2】`cov` 用 ddof=0、`std` 用 ddof=1，不配套。
-        完全线性相关的两条序列返回 (w-1)/w 而不是 1.0。
-        修好之后：expected 改成 1.0，并把 D 节 test_corr_of_a_series_with_itself
-        里的 `(w-1)/w` 一起改掉。
+        from scipy.stats import rankdata
+        x = _series(T=40, N=4, seed=31)
+        x[5, 1] = x[9, 1] = x[9, 2]              # 制造并列，逼出平均秩语义
+        ref = np.full_like(x, np.nan)
+        for i in range(window - 1, x.shape[0]):
+            for j in range(x.shape[1]):
+                block = x[i - window + 1: i + 1, j]
+                ref[i, j] = (rankdata(block, method="average")[-1] - 1) / (window - 1)
+        for name, got in _all_paths(F.bn_ts_rank, x, window).items():
+            np.testing.assert_allclose(
+                got, ref, rtol=1e-9, atol=1e-9, equal_nan=True,
+                err_msg=f"[{name}] ts_rank 不是 scipy 的平均秩百分位")
+
+    def test_ts_rank_reaches_both_ends_of_zero_one(self, path):
+        """窗口内最高 → 恰好 1.0，最低 → 恰好 0.0。端点取不到就不是百分位。"""
+        up = np.arange(20, dtype=float).reshape(20, 1)
+        np.testing.assert_allclose(F.bn_ts_rank(up, 5).ravel()[-1], 1.0, rtol=1e-12,
+                                   err_msg=f"[{path}] 窗口内最高值的秩不是 1.0")
+        np.testing.assert_allclose(F.bn_ts_rank(-up, 5).ravel()[-1], 0.0, atol=1e-12,
+                                   err_msg=f"[{path}] 窗口内最低值的秩不是 0.0")
+
+    def test_ts_corr_of_perfectly_correlated_series_is_exactly_one(self, path):
+        """
+        【缺陷 B-2，已修】协方差走 ddof=0、标准差走 ddof=1，相关系数被系统性
+        压低 (w-1)/w —— 偏差**随窗口变化**，短窗口的配对信号被压得更狠。
         """
         rng = np.random.default_rng(99)
         a = rng.normal(size=(60, 1))
         b = a * 2.0 + 1.0                       # 真相关恒为 1.0
         for w in (5, 20):
-            got = F.ts_corr(a, b, w).ravel()[-1]
-            np.testing.assert_allclose(got, (w - 1) / w, rtol=1e-9)
-            assert got < 1.0, f"window={w} 时 ts_corr 已能取到 1.0 —— 缺陷 B-2 疑似已修"
+            np.testing.assert_allclose(
+                F.ts_corr(a, b, w).ravel()[-1], 1.0, rtol=1e-9,
+                err_msg=f"[{path}] window={w}：完全线性相关没给出 1.0")
 
-    def test_cs_rank_breaks_ties_by_column_order_not_average(self):
-        """
-        【已登记缺陷 B-3】docstring 写 "ties resolved by average rank"，
-        `argsort(argsort())` 给的是序数名次：并列值按**列顺序**分先后，
-        同一截面换个标的顺序会得到不同因子值。
-        修好之后：下面应当变成两个并列值拿到同一个平均名次 0.1667。
-        """
-        a = F.cs_rank(np.array([[1.0, 1.0, 2.0, 3.0]])).ravel()
-        np.testing.assert_allclose(a, [0.0, 1 / 3, 2 / 3, 1.0], rtol=1e-12)
-        assert a[0] != a[1], "并列值已拿到同一名次 —— 缺陷 B-3 疑似已修"
-        # 换列顺序 → 同一只标的的名次变了
-        b = F.cs_rank(np.array([[1.0, 1.0, 3.0, 2.0]])).ravel()
-        assert b[2] != a[2], "列顺序不再影响结果 —— 缺陷 B-3 疑似已修"
+    def test_ts_corr_matches_numpy_corrcoef(self, path):
+        """一般输入也要对得上，而不只是在相关=1 的特例上碰巧。"""
+        x, y = _series(T=40, N=3, seed=32), _series(T=40, N=3, seed=33)
+        w = 12
+        ref = np.full((40, 3), np.nan)
+        for i in range(w - 1, 40):
+            for j in range(3):
+                ref[i, j] = np.corrcoef(x[i - w + 1: i + 1, j],
+                                        y[i - w + 1: i + 1, j])[0, 1]
+        np.testing.assert_allclose(F.ts_corr(x, y, w)[w - 1:], ref[w - 1:],
+                                   rtol=1e-9, atol=1e-9,
+                                   err_msg=f"[{path}] 滚动相关与 np.corrcoef 不符")
 
-    def test_ts_max_min_nan_policy_differs_between_paths(self):
+    def test_cs_rank_gives_tied_assets_the_same_average_rank(self):
         """
-        【已登记缺陷 B-5】模块 docstring 承诺 "All rolling operators enforce
-        strict NaN policy: fewer than `window` valid observations → NaN"。
-        bottleneck 分支遵守（min_count=window），numpy 分支用 `np.nanmax`
-        直接忽略 NaN —— 缺了一根 bar 的标的照样吐出 ts_max 值。
-        修好之后：三条路径应当逐位一致，本条改成 assert_allclose。
+        【缺陷 B-3，已修】`argsort(argsort())` 是**序数**名次：并列值按列顺序
+        强行分先后。参照值用 pandas.rank(method="average")。
+        """
+        cases = [
+            np.array([[1.0, 1.0, 2.0, 3.0]]),
+            np.array([[5.0, 5.0, 5.0, 9.0]]),
+            np.array([[10.0, 20.0, 30.0, 40.0]]),
+        ]
+        for row in cases:
+            ref = (pd.DataFrame(row).rank(axis=1, method="average").to_numpy() - 1) / 3.0
+            np.testing.assert_allclose(F.cs_rank(row), ref, rtol=1e-12,
+                                       err_msg=f"{row.ravel()} 的截面秩不是平均秩")
+        np.testing.assert_allclose(F.cs_rank(cases[0]).ravel(),
+                                   [1 / 6, 1 / 6, 2 / 3, 1.0], rtol=1e-12)
+
+    def test_cs_rank_does_not_depend_on_column_order(self):
+        """
+        列序是面板的存储顺序，不是市场事实。打乱列顺序，结果必须只是同样被
+        打乱 —— 而不是换一组数。这是 B-3 真正的危害。
+        """
+        row = np.array([[1.0, 1.0, 3.0, 2.0]])
+        perm = [2, 0, 3, 1]
+        np.testing.assert_allclose(F.cs_rank(row[:, perm]).ravel(),
+                                   F.cs_rank(row).ravel()[perm], rtol=1e-12,
+                                   err_msg="换列顺序改变了同一只标的的因子值")
+
+    def test_ts_max_min_obey_the_nan_policy_on_every_path(self):
+        """
+        【缺陷 B-5，已修】numpy 分支用 `np.nanmax/np.nanmin` **忽略** NaN，
+        bottleneck 用 `min_count=window` 遵守 —— 同一面板换条路径结果不同，
+        且 numpy 那边的极值是用更少的观测算出来的（停牌期 ts_max 系统性偏低）。
         """
         x = np.array([[1.0], [2.0], [np.nan], [4.0], [5.0], [6.0]])
-        got = _all_paths(F.bn_ts_max, x, 3)
-        assert np.isnan(got["bottleneck"][3, 0]), (
-            "bottleneck 分支不再对含 NaN 的窗口返回 NaN")
-        assert np.isfinite(got["strided"][3, 0]), (
-            "numpy 分支已开始遵守 NaN 策略 —— 缺陷 B-5 疑似已修，请更新本断言")
-        np.testing.assert_allclose(got["loop"][3, 0], got["strided"][3, 0],
-                                   err_msg="numpy 的两条子路径之间又多了一处分歧")
+        for fn in (F.bn_ts_max, F.bn_ts_min):
+            got = _all_paths(fn, x, 3)
+            for name in ("strided", "loop"):
+                np.testing.assert_allclose(
+                    got[name], got["bottleneck"], equal_nan=True,
+                    err_msg=f"{fn.__name__}: {name} 与 bottleneck 的 NaN 策略不一致")
+            # 含 NaN 的窗口（第 2/3/4 行）必须是 NaN，之后恢复
+            assert np.all(np.isnan(got["bottleneck"][:5, 0])), "含 NaN 的窗口没被否决"
+            assert np.isfinite(got["bottleneck"][5, 0]), "NaN 滑出窗口后应当恢复取值"
 
-    def test_cs_rank_range_overflows_one_when_the_row_has_nan(self):
+    def test_cs_rank_stays_within_zero_one_when_the_row_has_nan(self):
         """
-        【已登记缺陷 B-6】NaN 资产被 `-inf` 填充后**参与了 argsort**，占掉名次 0，
-        而分母只按有效个数算 (`valid_count - 1`)。结果：有效资产的名次从 1/(n-1)
-        起跳、最高到 n/(n-1) —— 值域越出 [0,1]，且缺失越多偏得越狠。
-        `rank(x) > 0.9` 这类条件会因为当天缺了几只票而莫名多命中。
-        修好之后：本行应当是 [0.0, nan, 0.5, 1.0]。
+        【缺陷 B-6，已修】NaN 被 `-inf` 填充后**参与排序**占掉低位名次，分母却
+        只按有效个数算 → 值域越出 [0,1]，且缺失越多偏得越狠。
+        `rank(x) > 0.9` 会因为当天停牌几只票而莫名多命中。
         """
         got = F.cs_rank(np.array([[10.0, np.nan, 30.0, 40.0]])).ravel()
-        np.testing.assert_allclose(got[[0, 2, 3]], [0.5, 1.0, 1.5], rtol=1e-12)
-        assert np.nanmax(got) > 1.0, "cs_rank 的值域已回到 [0,1] —— 缺陷 B-6 疑似已修"
-        clean = F.cs_rank(np.array([[10.0, 20.0, 30.0, 40.0]])).ravel()
-        assert clean.max() == 1.0, "无 NaN 的一行值域应当正常"
+        np.testing.assert_allclose(got[[0, 2, 3]], [0.0, 0.5, 1.0], rtol=1e-12)
+        assert np.isnan(got[1]), "NaN 资产应当保持 NaN"
 
-    def test_bottleneck_rolling_ops_raise_when_the_panel_is_shorter_than_window(self):
+    @pytest.mark.parametrize("n_nan", [0, 1, 2, 3])
+    def test_cs_rank_range_is_invariant_to_how_many_assets_are_missing(self, n_nan):
+        """缺失个数不该改变值域 —— 有效资产永远铺满 [0,1]。"""
+        row = np.arange(1.0, 9.0).reshape(1, 8)
+        row[0, :n_nan] = np.nan
+        got = F.cs_rank(row).ravel()
+        finite = got[np.isfinite(got)]
+        np.testing.assert_allclose([finite.min(), finite.max()], [0.0, 1.0], atol=1e-12,
+                                   err_msg=f"缺 {n_nan} 只票时值域不再是 [0,1]")
+
+    def test_short_panels_return_nan_instead_of_raising(self):
         """
-        【已登记缺陷 B-7】模块 docstring 承诺"不足 window 个有效观测 → NaN"，
-        numpy 分支照做（`if T < window: return 全 NaN`），但 bottleneck 分支
-        **没有这个守卫**，`bn.move_*` 直接抛 ValueError。
-        后果：面板行数短于窗口时整条 DSL 表达式求值崩掉，而不是给 NaN ——
+        【缺陷 B-7，已修】bottleneck 分支缺 `T < window` 守卫，`bn.move_*`
+        直接抛 ValueError —— 面板一短，整条 DSL 表达式求值崩掉而不是给 NaN。
         walk-forward 第一折、次新股子集、小 universe 切片都会踩到。
-        修好之后：这里应当与 numpy 分支一样返回全 NaN。
+        7 个包装器 × 3 条路径全部验。
         """
         x = _series(T=3, N=2, seed=26)
-        raising = ("bn_ts_mean", "bn_ts_std", "bn_ts_var", "bn_ts_sum",
-                   "bn_ts_max", "bn_ts_min", "bn_ts_rank")
-        for name in raising:
-            with pytest.raises(ValueError, match="Moving window"):
-                F.__dict__[name](x, 5)
-        real = F._HAS_BN
-        try:
-            F._HAS_BN = False
-            for name in raising:
-                assert np.all(np.isnan(F.__dict__[name](x, 5))), (
-                    f"{name}: numpy 分支也不再返回全 NaN 了")
-        finally:
-            F._HAS_BN = real
+        wrappers = ("bn_ts_mean", "bn_ts_std", "bn_ts_var", "bn_ts_sum",
+                    "bn_ts_max", "bn_ts_min", "bn_ts_rank")
+        for name in wrappers:
+            for pathname, got in _all_paths(F.__dict__[name], x, 5).items():
+                assert got.shape == x.shape, f"[{pathname}] {name}: 形状变了"
+                assert np.all(np.isnan(got)), (
+                    f"[{pathname}] {name}: 面板短于窗口时应当全 NaN")
+
+
+# ===========================================================================
+# H2. 仍未定契约的缺陷 —— 继续钉住现状
+# ===========================================================================
+
+class TestKnownDefectsPinnedAsIs:
 
     def test_entropy_with_one_bin_returns_minus_zero_instead_of_nan(self):
         """
@@ -826,20 +899,23 @@ PROVEN_EQUIVALENT = {
     "app/core/alpha_engine/fast_ops.py ×0 — L37 `_HAS_BN = False` → True（**已被杀死，此条保留为记录**）":
         "原本判定为等价：该行在 `except ImportError:` 块内，只有 bottleneck "
         "**导入失败**时才执行，而本环境已安装 bottleneck。复测把它杀死了 —— "
-        "H 节的 test_bottleneck_rolling_ops_raise_when_the_panel_is_shorter_than_window "
-        "会显式把 `_HAS_BN` 在 True/False 之间切换并断言两条分支的不同行为，"
+        "A 节的 test_rolling_ops_agree_across_paths_when_the_panel_has_gaps "
+        "会显式把 `_HAS_BN` 在 True/False 之间切换并逐位对账三条分支，"
         "模块级的初值因此变得可观测。"
+        "（点名的用例原是 H 节那条 B-7 定钉用例；B-7 于 2026-09-20 修复后它"
+        "改名为 test_short_panels_return_nan_instead_of_raising 且不再断言"
+        "两条分支行为**不同**，故改指 A 节这条 —— 切换 `_HAS_BN` 的观测力在那里。）"
         "留着这条是因为『我以为不可达、实测可达』值得留痕："
         "等价性的直觉判断不可靠，必须以复测结果为准。"
         "机械验证仍保留在 test_has_bn_false_line_is_inside_the_import_failure_branch。",
 
-    "app/core/alpha_engine/fast_ops.py ×2 — L247 / L257 `if window < T:` → `<=`（ts_delta / ts_delay）":
+    "app/core/alpha_engine/fast_ops.py ×2 — L310 / L320 `if window < T:` → `<=`（ts_delta / ts_delay）":
         "两种取值只在 window == T 时分道：此时 `x[window:]` 与 `x[:-window]` 都是"
         "形状 (0,N) 的空切片，`out[window:] = 空 - 空` 是一次空赋值，对 out 没有"
         "任何写入，结果与不进分支完全相同。见 test_delta_at_window_equal_t_is_a_noop。",
 
-    "app/core/alpha_engine/fast_ops.py ×10 — L58 / L80 / L99 / L463 `shape = (T - window + 1, window, N)` 的两个符号，"
-    "以及 L341/L342/L370/L371/L470/L471 的 `keepdims=True`":
+    "app/core/alpha_engine/fast_ops.py ×10 — L58 / L80 / L113 / L497 `shape = (T - window + 1, window, N)` 的两个符号，"
+    "以及 L404/L405/L433/L434/L542/L543 的 `keepdims=True`":
         "这十处全部落在 `try:` 块内，而 `except Exception:` 里是一份**独立的纯循环"
         "实现**。改坏 shape 会让 `out[window-1:] = result` 形状不匹配抛 ValueError，"
         "改掉 keepdims 会让 `ws - mu` 广播失败抛 ValueError —— 两者都被同一个 "
@@ -852,14 +928,14 @@ PROVEN_EQUIVALENT = {
         "『向量化实现写错了』和『这台机器的内存布局不支持 as_strided』"
         "变成同一件事，前者永远不会被发现。",
 
-    "app/core/alpha_engine/fast_ops.py ×2 — L434 `dx, dy = wx - mu_x, wy - mu_y` → `+`（ts_corr）"
-    "与 L472 `cov = np.sum((wx - mu_x) * (wy - mu_y), ...)` → `+`":
+    "app/core/alpha_engine/fast_ops.py ×2 — L506 `dx, dy = wx - mu_x, wy - mu_y` → `+`（ts_corr）"
+    "与 L544 `cov = np.sum((wx - mu_x) * (wy - mu_y), ...)` → `+`":
         "协方差只需要**一侧**去中心化：E[(X+μx)(Y−μy)] = E[(X−μx)(Y−μy)] + 2μx·E[Y−μy]，"
         "而 E[Y−μy] 恒为 0（μy 就是该窗口 Y 的均值），所以多出来的那一项恒等于 0。"
         "两种写法在任何输入上给出**逐位相同**的结果，是数学恒等而非测试盲区。"
         "见 test_centring_one_side_is_enough_for_covariance。",
 
-    "app/core/alpha_engine/fast_ops.py ×1 — L411 `counts[counts > 0]` → `>=`（ts_entropy，仅在无空桶时）":
+    "app/core/alpha_engine/fast_ops.py ×1 — L474 `counts[counts > 0]` → `>=`（ts_entropy，仅在无空桶时）":
         "np.histogram 的 counts 是非负整数；`>0` 与 `>=0` 只在**存在空桶**时不同，"
         "而 E 节的 test_entropy_skips_empty_bins 用必然产生空桶的输入把这一差别"
         "钉成了「有限值 vs NaN」，该变异在那条用例下被杀死，不属于等价变异。"

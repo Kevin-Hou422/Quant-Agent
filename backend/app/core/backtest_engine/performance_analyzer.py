@@ -25,6 +25,48 @@ logger = logging.getLogger(__name__)
 # 模块级回退常量（仅用于极端情况 < 2 个交易日）
 _FALLBACK_TDAYS = 252.0
 
+#: 日频标准差低于「收益自身量级 × 这个系数」就判为**没有真实波动** ——
+#: 那只是浮点求和残渣，不是市场波动。
+VOL_FLOOR_REL = 1e-12
+
+
+def has_meaningful_variation(returns, *, floor_rel: float = VOL_FLOOR_REL) -> bool:
+    """
+    收益序列是否存在**真实**波动（而非浮点残渣）。
+
+    判据是**相对**的：`std(ddof=1) > floor_rel × mean(|r|)`。
+    用相对量级而不是绝对阈值，是为了不把低波动但真实的策略误杀 ——
+    阈值随收益自身尺度缩放。
+
+    【缺陷 A-3 / A-2，2026-09-20】两处**独立**踩了同一个坑：
+
+      · A-3（`performance_analyzer`）原判据 `vol > 0`：全常数收益序列
+        （如每日恰好 +0.1%）的 `std(ddof=1)` 不是 0，而是 1.06e-17 量级的残渣，
+        `> 0` 成立 → 年化 Sharpe 算出 **3e16**、t 统计量 15.5，
+        在 `risk_report` 里显示成「高度显著」。
+
+      · A-2（`strategy_gate`）原判据 `float(np.nanstd(...)) == 0.0`：
+        用**精确相等**判浮点零。严格全零序列确实返回 0.0、守卫会触发；
+        真正漏掉的是**非零常数**序列 —— `np.nanstd([0.001]*100) = 2.17e-19`，
+        `== 0.0` 为假，守卫放行。回测净收益正是这种：多空两腿相减、
+        成本逐日重算，残渣必然非零。
+
+    两处本来是同一个问题，却各写各的判据（`sharpe_tstat` 里一度还有第三份
+    `sd <= 1e-15`）。判据一旦分头维护，迟早给出互相矛盾的结论：
+    同一条收益序列，绩效模块说「无波动、Sharpe=NaN」，门控模块说「有波动、继续评估」。
+    现在统一到这一个函数，调用方一律薄封装。
+    """
+    r = pd.Series(returns).dropna()
+    if len(r) < 2:
+        return False
+    sd = float(r.std(ddof=1))
+    if not np.isfinite(sd) or sd <= 0.0:
+        return False
+    scale = max(1e-12, float(np.abs(r).mean()))
+    # `bool(...)` 不是装饰：floor_rel 若是 np.float64（调用方用 np.nextafter
+    # 取边界时就是），比较结果是 np.bool_ 而不是标注承诺的 bool。
+    return bool(sd > floor_rel * scale)
+
 
 # ---------------------------------------------------------------------------
 # PerformanceAnalyzer
@@ -96,26 +138,13 @@ class PerformanceAnalyzer:
     def annualized_volatility(self) -> float:
         return float(self._ret.std(ddof=1) * np.sqrt(self._tdays))
 
-    #: 日频标准差低于「收益自身量级 × 这个系数」就判为**没有真实波动** ——
-    #: 那只是浮点求和残渣，不是市场波动。
-    #:
-    #: 【缺陷 A-3，2026-09-20 修】原判据是 `vol > 0`。全常数收益序列
-    #: （如每日恰好 +0.1%）的 `std(ddof=1)` 不是 0 而是 **1.06e-17** 量级的残渣，
-    #: `> 0` 成立 → 年化 Sharpe 算出 **3e16**、t 统计量 15.5，
-    #: 在 `risk_report` 里显示成"高度显著"。用**相对**量级而不是绝对阈值，
-    #: 是为了不把低波动但真实的策略误杀（阈值随收益自身尺度缩放）。
-    _VOL_FLOOR_REL = 1e-12
+    #: 判据与阈值都在模块级 `has_meaningful_variation` / `VOL_FLOOR_REL`，
+    #: 这里只保留类属性入口（子类可覆盖阈值）。
+    _VOL_FLOOR_REL = VOL_FLOOR_REL
 
     def _has_meaningful_variation(self) -> bool:
-        """收益序列是否存在**真实**波动（而非浮点残渣）。"""
-        r = self._ret.dropna()
-        if len(r) < 2:
-            return False
-        sd = float(r.std(ddof=1))
-        if not np.isfinite(sd) or sd <= 0.0:
-            return False
-        scale = max(1e-12, float(np.abs(r).mean()))
-        return sd > self._VOL_FLOOR_REL * scale
+        """收益序列是否存在**真实**波动。薄封装，判据见 `has_meaningful_variation`。"""
+        return has_meaningful_variation(self._ret, floor_rel=self._VOL_FLOOR_REL)
 
     def sharpe_ratio(self) -> float:
         if not self._has_meaningful_variation():

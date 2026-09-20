@@ -19,6 +19,9 @@ AVAILABLE DATA FIELDS: close, open, high, low, volume, vwap, returns
 AVAILABLE OPERATORS: rank, zscore, scale, ts_mean, ts_std, ts_delta, ts_delay,
   ts_max, ts_min, ts_rank, ts_decay_linear, ts_corr, log, abs, sqrt, sign,
   signed_power, if_else, trade_when, ind_neutralize, ts_zscore, ts_skew
+NEGATION: to flip a signal's sign, write the unary minus directly -- `-x`.
+  There is no negation *function*; writing one as a call is a parse error.
+  Correct: rank(-ts_delta(close, 5))
 
 ══════════════════════════════════════════════════════════════════════════════
 FINANCIAL FACTOR TAXONOMY
@@ -34,28 +37,28 @@ FINANCIAL FACTOR TAXONOMY
 
 2. MEAN REVERSION  — "short-term extremes revert"
    Mechanism : Liquidity provision by market makers; price overshoots.
-   DSL pattern: rank(neg(ts_delta(close, N)))  where N = 1 to 5
+   DSL pattern: rank(-ts_delta(close, N))  where N = 1 to 5
    Works in  : range-bound, high-liquidity markets
    Fails in  : trending markets (fights the trend)
    Key risks : very high turnover; transaction cost sensitive
 
 3. VOLATILITY  — "low-risk stocks outperform"
    Mechanism : Lottery demand, leverage constraints. Ang et al. (2006).
-   DSL pattern: rank(neg(ts_std(returns, 20)))
+   DSL pattern: rank(-ts_std(returns, 20))
    Works in  : bear markets, risk-off periods
    Fails in  : strong bull markets (high-vol stocks outperform)
    Key risks : beta exposure if not neutralized
 
 4. LIQUIDITY  — "illiquidity premium"
    Mechanism : Compensation for bearing illiquidity risk.
-   DSL pattern: rank(neg(ts_mean(volume, 20)))  or  rank(ts_corr(close, volume, 20))
+   DSL pattern: rank(-ts_mean(volume, 20))  or  rank(ts_corr(close, volume, 20))
    Works in  : most regimes; strongest in small-cap universes
    Fails in  : market stress (liquidity dries up everywhere)
    Key risks : capacity constraints; market impact costs
 
 5. PRICE-VOLUME CORRELATION
    Mechanism : Informed trading leaves traces in price-volume co-movement.
-   DSL pattern: rank(neg(ts_corr(close, volume, 20)))
+   DSL pattern: rank(-ts_corr(close, volume, 20))
    Works in  : markets with institutional order flow
    Fails in  : passive/index-dominated markets
    Key risks : regime-dependent signal strength

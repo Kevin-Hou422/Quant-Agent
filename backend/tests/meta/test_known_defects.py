@@ -62,27 +62,20 @@ from app.core.alpha_engine.parser import ParseError
 
 #: 缺陷编号 → 一句话描述。新增/修复缺陷都必须同步这张表。
 DEFECT_REGISTRY = {
-    "B-1":  "ts_rank 在 bottleneck 分支的值域是 [-1/w, 1/w]，不是 docstring 承诺的 [0,1]",
-    "B-2":  "ts_corr 因 cov(ddof=0)/std(ddof=1) 不配套而系统性偏低 (w-1)/w",
-    "B-3":  "cs_rank 的并列处理是序数名次，不是 docstring 声称的平均名次",
+    # B-1 / B-2 / B-3 / B-5 / B-6 / B-7 —— fast_ops 算子族，2026-09-20 全部修复并移出登记表。
+    # 正确性断言见 tests/unit/alpha_engine/test_fast_ops_kernel.py 的 H 节
+    # （TestFormerlyBrokenOperators，参照 scipy/pandas/np.corrcoef）。
     "B-4":  "ts_entropy(n_bins=1) 返回 -0.0 而非 NaN/报错 —— **契约未定**："
             "普通 Shannon 熵单箱本来就是 0，代码也显式选了分母 1"
             "（`log_nbins = np.log(n_bins) if n_bins > 1 else 1.0`），"
             "没有任何外部接口契约要求 NaN。真正的问题只有两点："
             "① 归一化熵在退化输入上的约定没写下来；② 返回的是 **负零**。"
             "第 3 阶段要先定约定再谈修不修（外部审计 2026-09-15 要求收窄）",
-    "B-5":  "ts_max / ts_min 的 NaN 策略在 bottleneck 与 numpy 分支之间不一致",
-    "B-6":  "cs_rank 在含 NaN 的截面上值域越出 [0,1]",
-    "B-7":  "面板行数短于窗口时 bottleneck 分支抛 ValueError，而非返回 NaN",
     "B-9":  "use_label_encoder=False 对 xgboost 3.x 已无意义（仅代码整洁，无行为影响）",
     "B-10": "fast_ops 的向量化分支被 except Exception 完全兜住（结构问题，无行为断言）",
     "B-11": "data_partitioner 的『OOS 为空』守卫不可达（结构问题，无行为断言）",
-    "A-2":  "strategy_gate 用 `np.nanstd(...) == 0.0` 判零方差。**指控已收窄**"
-            "（外部审计 2026-09-15）：原写『守卫从不触发』是错的 —— 严格全零序列"
-            "`np.nanstd` 返回精确 0.0，守卫会触发；不触发的是**非零常数**序列"
-            "（`nanstd([0.001]*100) = 2.17e-19`）。而且下游 `_sharpe` 与 t 统计量"
-            "另有容差保护，最终多半仍判 passed=false。因此这是**诊断说错了原因**，"
-            "不是『巨大 Sharpe 被批准』",
+    # A-2 —— strategy_gate 零方差守卫，2026-09-20 修复并移出登记表。
+
     "A-5":  "MVOPortfolio 注释写『剔除的资产保留基准权重』，实现是整行替换 → 拿到 0",
     "A-6":  "【执行层已于 2026-09-18/19/20 修复，回测引擎侧未动】"
             "PaperBroker 曾同时犯两个错：① `target=1.0` 写死，把目标总敞口强行"
@@ -105,22 +98,10 @@ DEFECT_REGISTRY = {
             "五个调用点里只有 `risk_gate.py` 传了真实 target。"
             "（`project_to_capped_l1` 已支持逐行 target，改法是传 "
             "`np.abs(w).sum(axis=1)`，但每处都要单独确认上游口径）",
-    "D-3":  "requirements.txt 写的是 `langchain>=0.2` 没有上界，"
-            "而 langchain 1.x 已把 `AgentExecutor` / `create_tool_calling_agent` "
-            "移出 `langchain.agents`。本机装的 1.2.15 满足该约束，"
-            "于是 `_build_langchain_agent` 的 `except ImportError` 每次都命中，"
-            "QuantAgent 只打一条 warning 就**静默降级到 FallbackOrchestrator** —— "
-            "LLM 研究链路整条不可用，但 /api/chat 照常返回、前端毫无异样。"
-            "而且报错文案是『需要安装 langchain』，实际 langchain 装着，"
-            "真正的原因是大版本不兼容，按文案去装只会再装一遍同样的版本",
-    "D-4":  "系统提示词把 `rank(neg(...))` 当作 **4 个因子家族**"
-            "（反转 / 波动 / 流动性 / 价量相关）的标准 DSL 模板，"
-            "但 `neg` 既不在提示词自己的 AVAILABLE OPERATORS 清单里，"
-            "解析器也**不接受** `neg(x)` 这种函数写法（只认一元负号 `-x`）。"
-            "LLM 照着模板写出来的 DSL 一律解析失败 → "
-            "`_validate_and_fix` 白烧两次修复调用后放弃 → "
-            "六个家族里有四个走模板路径时产出为零，"
-            "对外只表现为『agent 老是生成非法公式』",
+    # D-3 —— langchain 大版本不兼容，2026-09-20 迁移到 create_agent 并移出登记表。
+
+    # D-4 —— 提示词的 neg() 模板，2026-09-20 修复并移出登记表。
+
     "D-5":  "系统提示词写 `AlphaPool rejects signal-correlated alphas (corr > 0.9)`。"
             "**数字这一半的指控不成立**（外部审计 2026-09-15）：`AlphaPool` 的"
             "**类默认**确实是 0.70，但生产链路 `PopulationEvolver` 的默认是 0.90 "
@@ -182,15 +163,20 @@ def _xfail(defect_id: str, raises=AssertionError):
 # ===========================================================================
 
 class TestFastOpsDefects:
+    """
+    B-1/B-2/B-3/B-5/B-6/B-7 于 2026-09-20 修复，本类下这些用例**已转正**
+    （去掉 xfail，从此作为回归护栏）。详尽的正确性断言在
+    tests/unit/alpha_engine/test_fast_ops_kernel.py 的 H 节，那里用
+    scipy/pandas/np.corrcoef 作独立参照；这里只留最小的复现输入。
+    仍挂着 xfail 的只剩 B-4（契约未定）。
+    """
 
-    @_xfail("B-1")
     def test_ts_rank_should_be_a_percentile_in_zero_one(self):
         """单调上升序列的滚动排名，最新一根是窗口内最高，应当是 1.0。"""
         import app.core.alpha_engine.fast_ops as F
         x = np.arange(20, dtype=float).reshape(20, 1)
         assert F.bn_ts_rank(x, 5).ravel()[-1] == pytest.approx(1.0)
 
-    @_xfail("B-1")
     def test_ts_rank_should_agree_across_execution_paths(self):
         import app.core.alpha_engine.fast_ops as F
         x = np.arange(20, dtype=float).reshape(20, 1)
@@ -204,7 +190,6 @@ class TestFastOpsDefects:
             F._HAS_BN = real
         np.testing.assert_allclose(a, b, equal_nan=True)
 
-    @_xfail("B-2")
     def test_ts_corr_of_perfectly_correlated_series_should_be_one(self):
         import app.core.alpha_engine.fast_ops as F
         rng = np.random.default_rng(0)
@@ -212,14 +197,12 @@ class TestFastOpsDefects:
         b = a * 2.0 + 1.0
         assert F.ts_corr(a, b, 20).ravel()[-1] == pytest.approx(1.0, abs=1e-9)
 
-    @_xfail("B-3")
     def test_cs_rank_should_give_ties_the_average_rank(self):
         """docstring: "ties resolved by average rank"。[1,1,2,3] 的前两名应当并列。"""
         import app.core.alpha_engine.fast_ops as F
         got = F.cs_rank(np.array([[1.0, 1.0, 2.0, 3.0]])).ravel()
         assert got[0] == pytest.approx(got[1])
 
-    @_xfail("B-3")
     def test_equal_values_should_get_equal_ranks_regardless_of_position(self):
         """
         并列值拿到的名次只取决于它在数组里的下标 —— 同一只标的换个列位置
@@ -239,7 +222,6 @@ class TestFastOpsDefects:
         got = F.ts_entropy(np.arange(10, dtype=float).reshape(10, 1), 5, n_bins=1)
         assert np.all(np.isnan(got))
 
-    @_xfail("B-5")
     def test_ts_max_nan_policy_should_match_across_paths(self):
         """模块 docstring 承诺 strict NaN policy，两条分支必须一致。"""
         import app.core.alpha_engine.fast_ops as F
@@ -254,14 +236,12 @@ class TestFastOpsDefects:
             F._HAS_BN = real
         np.testing.assert_allclose(a, b, equal_nan=True)
 
-    @_xfail("B-6")
     def test_cs_rank_should_stay_within_zero_one_with_nan(self):
         import app.core.alpha_engine.fast_ops as F
         got = F.cs_rank(np.array([[10.0, np.nan, 30.0, 40.0]])).ravel()
         assert np.nanmax(got) == pytest.approx(1.0)
         assert np.nanmin(got) == pytest.approx(0.0)
 
-    @_xfail("B-7", raises=ValueError)
     def test_short_panels_should_return_nan_not_raise(self):
         """docstring 承诺"不足 window 个有效观测 → NaN"。"""
         import app.core.alpha_engine.fast_ops as F
@@ -518,34 +498,48 @@ class TestBacktestAndExecutionDefects:
             positions=zeros, trade_log=pd.DataFrame(), turnover=rets * 0.0,
             signal=zeros, daily_cost_bps=rets * 0.0)
 
-    @_xfail("A-2")
+    @staticmethod
+    def _float_noise_only(n: int, base: float = 0.001) -> np.ndarray:
+        """
+        "浮点意义上恒定、但 nanstd 非零"的序列 —— A-2 真正漏掉的那一类。
+
+        **不能**用 `np.full(n, base)`：那种数组的 `np.nanstd` 给 0 还是 2e-19
+        取决于 n 的浮点运气（实测 n=30/80/100 给 2.168e-19，n=40/50/60/70 给
+        精确 0.0）。旧版本用的就是 `np.full(60, 0.001)`，于是它在**前置守卫**
+        那一行就 AssertionError 了 —— 而那条 xfail 声明的 `raises` 也是
+        AssertionError，两者分不开，**这条用例从未真正验证过 A-2**。
+        （与 A-1 的 `inspect.getsource` 失败、C-1 的签名 TypeError 同一形态，
+        第三次了；`raises=` 挡得住异常类型不同的情形，挡不住同类型的。）
+
+        改用 1 ulp 扰动：sd 恒为 1.5e-19 量级，与 n 无关，确定性成立。
+        """
+        v = np.full(n, base)
+        v[::2] = np.nextafter(base, 1.0)
+        return v
+
     def test_zero_variance_guard_should_use_a_tolerance_not_equality(self):
         """
-        `float(np.nanstd(rets.values)) == 0.0` —— 用**精确相等**判浮点零。
+        **缺陷 A-2，2026-09-20 已修**（本用例已转正）。
 
-        精确恒定的数组 `np.nanstd` 确实返回 0.0（我第一版就是这么构造的，
-        strict xfail 当场报 XPASS）。真正出问题的是"浮点意义上恒定、
-        但带 1e-19 量级残渣"的序列 —— 回测算出来的净收益正是这种：
+        原判据 `float(np.nanstd(rets.values)) == 0.0` 用**精确相等**判浮点零。
+        严格全零序列 `np.nanstd` 确实返回 0.0、守卫会触发；漏掉的是
+        **非零、但只在浮点噪声级别变动**的序列 —— 回测净收益正是这种：
         多空两腿相减、成本逐日重算，残渣必然非零。
         那时 `== 0.0` 为假，守卫放行，随后 `vol > 0` 也成立，
         算出年化 Sharpe 3e16（见 A-3），报告里显示"高度显著"。
 
-        应当改成带容差的判定（如 `< 1e-12`）。
-
-        **登记文字已收窄**（外部审计 2026-09-15）：原先写"守卫从不触发"是错的 ——
-        严格全零序列 `np.nanstd` 返回精确 0.0，守卫会触发。真正不触发的是
-        **非零常数**序列（`np.nanstd([0.001]*100) = 2.17e-19`）。
-        而且后续 `_sharpe` 与 t 统计量另有容差保护，所以最终 `passed` 多数情况
-        仍是 False —— 缺陷在于**诊断说错了原因**，不在于"巨大 Sharpe 被批准"。
+        **登记文字曾被收窄**（外部审计 2026-09-15）：原先写"守卫从不触发"是错的。
+        而且后续 `_sharpe` 与 t 统计量另有容差保护，最终 `passed` 多数情况仍是
+        False —— 缺陷在于**诊断说错了原因**，不在于"巨大 Sharpe 被批准"。
         因此本用例断言的是 `reasons`，不是 `passed`。
 
-        旧版这条是 `assert "...== 0.0" not in src` 的**源码字符串断言**
+        更早一版是 `assert "...== 0.0" not in src` 的**源码字符串断言**
         （自伤教训 #6 的形态），改掉实现里任何一处等价写法它都察觉不到。
         """
         from app.core.portfolio_manager import strategy_gate as sg
 
         idx = pd.bdate_range("2024-01-02", periods=60)
-        rets = pd.Series(np.full(60, 0.001), index=idx)
+        rets = pd.Series(self._float_noise_only(60), index=idx)
         assert float(np.nanstd(rets.values)) != 0.0, (
             "构造的序列方差恰好为零 —— 那走的是守卫**会**触发的分支，测不到本缺陷")
 
@@ -559,6 +553,30 @@ class TestBacktestAndExecutionDefects:
         assert any("方差为 0" in r for r in res.reasons), (
             f"浮点意义上恒定的净收益（nanstd={float(np.nanstd(rets.values)):.3e}）"
             f"没有被零方差守卫认出来，给出的理由是：{res.reasons}")
+
+    def test_a_genuinely_low_volatility_strategy_is_not_killed_by_the_guard(self):
+        """
+        反向对照：修 A-2 时容易矫枉过正，把阈值写成绝对值（如 `sd < 1e-12`），
+        于是**真实**的低波动策略被当成零方差毙掉。判据是**相对**的
+        （`sd > 1e-12 × mean|r|`），所以日波动小到 1e-9 也必须照常评估。
+
+        没有这一条，"守卫更严格了"和"守卫开始误杀"分不开。
+        """
+        from app.core.portfolio_manager import strategy_gate as sg
+
+        idx = pd.bdate_range("2024-01-02", periods=60)
+        rets = pd.Series(np.random.default_rng(0).normal(0.001, 1e-9, 60), index=idx)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(sg, "strategy_net_returns",
+                       lambda *a, **kw: (rets, pd.DataFrame()))
+            res = sg.StrategyGate(use_global_trials=False).evaluate(
+                {"f": pd.DataFrame(1.0, index=idx, columns=["A", "B"])},
+                {"close": pd.DataFrame(100.0, index=idx, columns=["A", "B"])})
+
+        assert not any("方差为 0" in r for r in res.reasons), (
+            f"日波动 {float(rets.std(ddof=1)):.3e} 的**真实**策略被零方差守卫毙了 —— "
+            f"判据被写成了绝对阈值。理由：{res.reasons}")
 
     def test_near_zero_volatility_is_reported_as_meaningless(self):
         """
@@ -876,7 +894,6 @@ def _prompt_dsl_patterns() -> list:
 
 class TestSystemPromptDslExamples:
 
-    @_xfail("D-4", raises=ParseError)
     def test_the_documented_factor_patterns_all_parse(self):
         """
         提示词的 FINANCIAL FACTOR TAXONOMY 给每个因子家族配了一条
@@ -930,36 +947,57 @@ class TestSystemPromptDslExamples:
             taken.append(ln)
         return {t.strip() for t in " ".join(taken).split(",") if t.strip()}
 
-    def test_the_prompt_still_uses_neg_so_d4_is_still_open(self):
+    def test_every_function_used_in_a_documented_pattern_is_declared(self):
         """
-        **前置条件，不带 xfail。** 旧版把 `assert "neg(" in P` 写在下面那条
-        xfail 用例的**体内**，于是提示词一旦改对，这条前置先失败 → 用例仍是
-        "预期失败" → 修复被吃掉（外部审计 2026-09-15）。
+        **缺陷 D-4，2026-09-20 已修**（本用例已转正，并改成全称断言）。
 
-        前置条件必须单独成立，并且在缺陷被修好时**变红**，
-        逼人来删掉 D-4 与这条检查本身。
+        提示词内部自洽：`DSL pattern:` 里当范例用的每个函数，都必须出现在它
+        自己的 AVAILABLE OPERATORS 清单上。`neg` 曾是反例 —— 四个家族的模板
+        都写 `rank(neg(...))`，而 `neg` 既不在清单里、解析器也不认它
+        （只认一元负号 `-x`）。LLM 照模板产出的公式一律解析失败，
+        `_validate_and_fix` 白烧两次修复调用后放弃，六个家族里四个产出为零，
+        对外只表现为"agent 老是生成非法公式"。
+
+        旧版断言的是 `"neg" in declared`（把 `neg` 加进清单）。那是**错的修法**：
+        解析器里根本没有 `neg` 函数，加进清单只会让提示词与解析器一起错。
+        正确的修法是把模板改成解析器接受的 `-x` —— 那也正是系统自己序列化
+        时输出的形式（`str(parse("rank(-ts_delta(close,5))"))` 往返稳定）。
+
+        现在断言的是**全称命题**：从提示词抽出的每条模板里用到的每个函数名
+        都要被声明。这样新加一条用了未声明算子的模板也会被抓到，
+        而不只是防住 `neg` 这一个。
+        """
+        import re
+
+        declared = self._declared_operators()
+        patterns = _prompt_dsl_patterns()
+        assert patterns, "没从提示词里抽到 DSL 模板 —— 抽取规则与提示词格式对不上"
+
+        used = set()
+        for dsl in patterns:
+            used |= set(re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", dsl))
+
+        missing = sorted(used - declared)
+        assert not missing, (
+            f"提示词的 DSL 模板用了未在 AVAILABLE OPERATORS 里声明的函数：{missing}\n"
+            f"模板：{patterns}\n已声明：{sorted(declared)}")
+
+    def test_the_prompt_does_not_advertise_a_negation_function(self):
+        """
+        D-4 的反向护栏：不许有人"顺手"把 `neg` 写回提示词。
+
+        解析器没有 `neg` 函数（实测 `neg(close)` 抛 ParseError），
+        取负只能写一元负号。把 `neg(` 写回范例 = D-4 复发。
         """
         from app.agent._prompts import _SYSTEM_PROMPT as P
 
-        assert "neg(" in P, (
-            "提示词里已经不用 neg 了 —— D-4 已修复。"
-            "请删除 DEFECT_REGISTRY['D-4']、下面两条 xfail 用例和本条前置检查。")
+        assert "neg(" not in P, (
+            "提示词里又出现了 `neg(` —— 解析器不认这个函数，D-4 复发。"
+            "取负请写一元负号 `-x`。")
 
-    @_xfail("D-4")
-    def test_every_operator_used_in_the_prompt_is_also_declared_there(self):
-        """
-        提示词内部自洽：正文里当范例用的算子，必须出现在它自己的
-        AVAILABLE OPERATORS 清单上。现在 `neg` 只在范例里出现，
-        LLM 拿到的是自相矛盾的两份说明。
-
-        前置条件（提示词里确实还在用 `neg`）由
-        `test_the_prompt_still_uses_neg_so_d4_is_still_open` 单独把关，
-        不放在本用例体内。
-        """
-        declared = self._declared_operators()
-        assert "neg" in declared, (
-            f"`neg` 在范例里被使用，却不在 AVAILABLE OPERATORS 清单里："
-            f"{sorted(declared)}")
+        from app.core.alpha_engine.parser import ParseError as PE, Parser
+        with pytest.raises(PE):
+            Parser().parse("neg(close)")
 
 
 class TestSystemPromptThresholds:
@@ -1032,55 +1070,63 @@ class TestSystemPromptThresholds:
 # ===========================================================================
 
 class TestLangChainWiringIsAlive:
+    """
+    **缺陷 D-3，2026-09-20 已修**（两条用例均已转正）。
 
-    @_xfail("D-3", raises=Failed)
+    详尽的迁移验收在 tests/unit/agent/test_lc_agent_migration.py（22 条，
+    用**实际安装的** LangChain 真跑工具调用、两轮会话、会话隔离、
+    工具异常、调用次数上限）。这里只留最小的"链路没死"断言。
+    """
+
     def test_the_langchain_agent_can_actually_be_built(self):
         """
-        `_build_langchain_agent` 在**当前已安装的依赖**下必须能走到
-        `create_tool_calling_agent`，而不是在第一个 import 就掉进
-        `except ImportError`。
+        `_build_langchain_agent` 在**当前已安装的依赖**下必须真的建得出来。
 
-        现状：`requirements.txt` 只写了 `langchain>=0.2`，
-        装上的 1.2.15 已经把 `AgentExecutor` / `create_tool_calling_agent`
-        移出 `langchain.agents`。于是这个函数**每次都抛 ImportError**，
+        原缺陷：`requirements.txt` 写 `langchain>=0.2` 无上界、lock 锁 1.4.0，
+        而代码要的 `AgentExecutor` / `create_tool_calling_agent` 在 1.x 已搬进
+        未安装的 `langchain-classic` —— 于是这个函数**每次都抛 ImportError**，
         `QuantAgent.__init__` 打一条 warning 就退到 FallbackOrchestrator。
-
-        对外表现：`/api/chat` 照常工作、前端毫无异样 ——
-        LLM 研究链路整条死掉，却没有任何可见信号。
+        对外表现：`/api/chat` 照常工作、前端毫无异样，LLM 研究链路整条死掉。
         （交易回路本来就不含 LLM，所以不影响下单；影响的是因子发现。）
 
-        这条不碰网络、不需要 API key：只要 import 能成功、
-        能构造出 AgentExecutor，就算通过。
+        这条不碰网络、不需要 API key —— 建得出来就算通过。
         """
         import app.agent._lc_agent as LC
 
         try:
-            from langchain.agents import AgentExecutor, create_tool_calling_agent  # noqa: F401
-            from langchain.tools import tool as lc_tool                            # noqa: F401
-            from langchain_core.prompts import ChatPromptTemplate                  # noqa: F401
-        except ImportError as exc:          # pragma: no cover - 这正是缺陷本身
+            from langchain.agents import create_agent                      # noqa: F401
+            from langchain.agents.middleware import (                      # noqa: F401
+                ModelCallLimitMiddleware, wrap_tool_call)
+            from langchain.tools import tool as lc_tool                    # noqa: F401
+        except ImportError as exc:          # pragma: no cover
             pytest.fail(
                 f"当前安装的 langchain 无法提供 _lc_agent 需要的符号：{exc}。"
-                f"requirements.txt 的 `langchain>=0.2` 没有上界，"
-                f"装上的大版本与代码不兼容 —— LLM 链路静默降级。")
+                f"声明的依赖集合建不出 agent —— LLM 链路会静默降级。")
 
         assert callable(LC._build_langchain_agent)
+        assert callable(LC._build_tools)
 
     def test_the_import_failure_message_names_a_version_conflict(self):
         """
-        **钉住现状的另一半**：即使版本冲突短期不修，
-        报错文案也不该把人引向"再装一遍 langchain"。
+        报错文案必须指向**版本冲突**，不能把人引向"再装一遍 langchain"。
 
-        这条**不是** xfail —— 它描述的是当前文案，
-        一旦有人把文案改成提到版本，这里会红，提醒同步更新 D-3。
+        这条原本钉的是**误导文案本身**（`assert "pip install langchain" in src`），
+        并写明"一旦有人把文案改成提到版本，这里会红，提醒同步更新 D-3"。
+        2026-09-20 文案确实改了，这条如期变红 —— 现在翻成正向断言。
+
+        `LangChainIncompatibleError` 是独立异常类型，让调用方按**类型**而不是
+        文案匹配来分类；文案怎么改都不会让分类失效。
         """
         import inspect
 
         import app.agent._lc_agent as LC
 
         src = inspect.getsource(LC._build_langchain_agent)
-        assert "pip install langchain" in src, (
-            "报错文案变了 —— 如果已经改成提示版本冲突，请同步更新缺陷 D-3")
+        assert "pip install langchain" not in src, (
+            "报错文案又变回『去装 langchain』了 —— 而 langchain 是装着的，"
+            "照着这句做只会再装一遍同样的版本")
+        assert "LangChainIncompatibleError" in src
+        assert issubclass(LC.LangChainIncompatibleError, ImportError)
 
 
 # ===========================================================================
@@ -1373,10 +1419,11 @@ def test_the_outstanding_defect_count_is_visible():
     混成一个数会让它读起来比实际严重，也会稀释真正该优先修的那几条。
     """
     behavioural = set(DEFECT_REGISTRY) - TECHNICAL_DEBT - FRONTEND_ONLY
-    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (14, 3, 1), (
+    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (5, 3, 1), (
         f"缺陷分类计数变了：行为缺陷 {len(behavioural)} / 技术债 "
         f"{len(TECHNICAL_DEBT)} / 前端 {len(FRONTEND_ONLY)}"
-        f"（登记总数 {len(DEFECT_REGISTRY)}，此前 24/3/1；N-1/N-2/N-3/N-4/N-5 已于 2026-09-20 修复）。\n"
+        f"（登记总数 {len(DEFECT_REGISTRY)}，此前 6/3/1；"
+        f"B-1/B-2/B-3/B-5/B-6/B-7 这一族 fast_ops 算子缺陷已于 2026-09-20 一并修复）。\n"
         f"修好缺陷时请同时：① 删掉对应 xfail 标记 ② 改掉模块测试里"
         f"『钉住现状』的断言 ③ 更新 MUTATION_LEDGER。\n"
         f"当前清单：\n  " + "\n  ".join(f"{k}: {v}" for k, v in DEFECT_REGISTRY.items()))

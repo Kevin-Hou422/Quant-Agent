@@ -125,6 +125,11 @@ class ChatResponse(BaseModel):
     metrics:    Optional[Dict[str, Any]]
     # 数据来源必须随响应返回：用户要能分辨屏幕上的 Sharpe/OOS 是真实市场还是合成噪声
     data_source: str = "unknown"
+    # 同理，agent 运行模式也必须随响应返回（缺陷 D-3）：
+    # "llm" = LLM 研究链路在跑；"fallback:*" = 降级，后缀说明原因。
+    # 尤其要能分辨"没配 key"（设计内）与"依赖不兼容"（部署缺陷）——
+    # 这两者此前都只表现为"/api/chat 照常返回"，从外面完全看不出区别。
+    agent_mode: str = "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +288,7 @@ def chat(
         dsl         = result.get("dsl"),
         metrics     = result.get("metrics"),
         data_source = agent.data_source,
+        agent_mode  = agent.agent_mode,
     )
 
 

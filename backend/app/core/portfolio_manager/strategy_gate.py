@@ -343,7 +343,18 @@ class StrategyGate:
             res.reasons = [f"策略回测失败: {exc}"]
             return res
 
-        if len(rets) < 30 or float(np.nanstd(rets.values)) == 0.0:
+        # 【缺陷 A-2，2026-09-20 修】原判据 `float(np.nanstd(rets.values)) == 0.0`
+        # 用**精确相等**判浮点零。严格全零序列 `np.nanstd` 确实返回 0.0、守卫会触发；
+        # 漏掉的是**非零常数**序列 —— `np.nanstd([0.001]*100) = 2.17e-19`，
+        # `== 0.0` 为假，守卫放行。而回测净收益正是这种序列：多空两腿相减、
+        # 成本逐日重算，浮点残渣必然非零。
+        # 判据复用 `has_meaningful_variation`（缺陷 A-3 在绩效模块里建立的同一条），
+        # 不在这里另写一份 —— 两份判据迟早对同一条收益序列给出相反结论。
+        # 惰性导入，与本文件 `deflated_sharpe_from_returns` 同样的理由（避免循环导入）。
+        from app.core.backtest_engine.performance_analyzer import (
+            has_meaningful_variation)
+
+        if len(rets) < 30 or not has_meaningful_variation(rets):
             res.reasons = [f"策略净收益样本不足（{len(rets)}）或方差为 0"]
             return res
 

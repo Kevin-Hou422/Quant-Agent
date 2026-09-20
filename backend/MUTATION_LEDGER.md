@@ -353,19 +353,30 @@ python tools/mutation/runner.py plan_full.json --state progress_full.json --stat
 
 ---
 
-## 已登记产品缺陷（**28 条行为缺陷** + 3 条技术债 + 1 条前端，只登记不修）
+## 已登记产品缺陷（**5 条未修行为缺陷** + 3 条技术债 + 1 条前端）
 
 **分三类数，不混成一个数**（外部审计 2026-09-15 的判定）：
 
 | 类别 | 条数 | 含义 |
 |---|---:|---|
-| 行为缺陷 | **28** | 有复现、有"应有行为"的 `xfail(strict=True)` 断言 |
+| 行为缺陷（**未修**） | **5** | 有复现、有"应有行为"的 `xfail(strict=True)` 断言 |
 | 技术债 | 3 | B-9 / B-10 / B-11 —— 只有结构证据，**没有"产品结果是错的"的复现** |
 | 前端 | 1 | N-6 —— 已在当前代码上复现，但后端套件里没有可执行断言 |
 
-混成一个数会让它读起来比实际严重，也会稀释真正该优先修的那几条
-（A-6 把敞口放大到 L1=1、N-3 风控失败后继续回测、N-4 不显著显示成显著）。
+混成一个数会让它读起来比实际严重，也会稀释真正该优先修的那几条。
 由 `test_the_outstanding_defect_count_is_visible` 三类分别锁住。
+
+**修复进度（第 3 阶段，2026-09-18 起）**：登记时 28 条行为缺陷 → 现存 **5 条**。
+已修的在下表里以 ~~删除线~~ 标出并写明改法与后果，**不从表里删掉** ——
+下一份报告要能看出"修了什么、当初错在哪"。
+
+剩下的 5 条分三种性质，**不是都能直接开工**：
+
+| 性质 | 编号 | 卡在哪 |
+|---|---|---|
+| 待定契约（需你裁决） | B-4 / A-5 / D-5 | 分别是：单箱熵返回 0 还是 NaN；MVO 剔除资产拿基准权重还是 0；提示词的 `corr > 0.9` 与代码的 `abs(corr) >= 0.9`（绝对值 + 边界都不一致）|
+| 设计决策 | A-6 后半 / A-7 | A-6 要统一回测引擎与执行层语义，**会改变历史回测收益**，按你的决定 #4 需要前后对比与差异解释；A-7 是构建层三处写死的 `target=1.0`，每处的上游口径要单独确认 |
+
 
 编号、一句话描述、以及断言"应有行为"的 `xfail(strict=True)` 用例，
 全部在 `tests/meta/test_known_defects.py`。**那里是权威**，
@@ -373,20 +384,20 @@ python tools/mutation/runner.py plan_full.json --state progress_full.json --stat
 
 | 编号 | 一句话 |
 |---|---|
-| B-1 | `fast_ops.bn_ts_rank` bottleneck 分支值域是 [-1/w, 1/w]，非 docstring 承诺的 [0,1] |
-| B-2 | `fast_ops.ts_corr` cov(ddof=0)/std(ddof=1) 不配套 → 系统性偏低 (w-1)/w |
-| B-3 | `fast_ops.cs_rank` 并列处理是序数名次，非声称的平均名次 |
+| ~~B-1~~ | **已修（2026-09-20）**：`ts_rank` 统一为**平均秩 /(count-1)**，值域真的是 [0,1]。此前两条分支算的**不是同一个量**：bottleneck 是 `bn.move_rank(...)/window`（实测 move_rank 值域 [-1,1]，再除 w → [-1/w, 1/w]，一半为负且随窗口缩放），numpy 是 `le/count`（取不到 0）。后果不只是数不好看 —— `ts_rank(close,20) > 0.8` 在装了 bottleneck 的环境里**恒为假**（上界才 0.05），于是装没装 bottleneck 决定了信号存不存在，GP 进化出的表达式依赖运行环境。映射 `(raw+1)/2` 不是凑出来的：`bn.move_rank` 的定义 `(#less-#greater)/(count-1)` 恒等于 `2r/(count-1)-1`（r 为 0-based 平均秩），代数相等，已用 scipy.stats.rankdata 在 4 个窗口 × 3 条路径上逐位校验 |
+| ~~B-2~~ | **已修（2026-09-20）**：分子改成 `np.sum(dx*dy)/(window-1)`，与分母的 ddof=1 配套。偏差**随窗口变化**（完全线性相关的两条序列 w=5 只给 0.8、w=20 给 0.95），所以相关性阈值在短窗口上更难触发，短窗口的配对信号被系统性压制。`ts_cov` 一直是对的，两者本该同口径。修复后 `ts_corr` 并入三路径逐位对账 |
+| ~~B-3~~ | **已修（2026-09-20）**：`cs_rank` 改为按并列区间取中点的平均秩（全向量化，无 Python 循环）。这是 **C-1 的截面版本** —— 同一个 `argsort(argsort(x))` 错误，时序一份、截面一份。并列值按**列顺序**强行分先后，而列序是面板的存储顺序、不是市场事实：换个标的顺序，同一只票的因子值就变了。新增 test_cs_rank_does_not_depend_on_column_order 把这条直接钉住（打乱列顺序，结果必须只是同样被打乱）|
 | B-4 | `fast_ops.ts_entropy(n_bins=1)` 静默返回 -0.0，而非 NaN/报错 |
-| B-5 | `fast_ops.bn_ts_max/min` NaN 策略在两条分支之间不一致 |
-| B-6 | `fast_ops.cs_rank` 含 NaN 的截面上值域越出 [0,1] |
-| B-7 | `fast_ops` 七个滚动算子在面板短于窗口时抛 ValueError，而非返回 NaN |
+| ~~B-5~~ | **已修（2026-09-20）**：numpy 两条分支从 `np.nanmax/np.nanmin` 改成 `np.max/np.min`（NaN 自然传播），与 bottleneck 的 `min_count=window` 一致。旧行为不止是两边对不上：numpy 那边的极值是**用更少的观测**算出来的 —— 停牌期间 ts_max 系统性偏低、ts_min 偏高，而调用方无从知道这一行的样本数不足。`TestPathsAgree` 新增**含 NaN**的对账用例：无 NaN 的输入上 nanmax 与 max 恒等，旧用例根本看不见这个缺陷 |
+| ~~B-6~~ | **已修（2026-09-20）**：NaN 不再被填成 `-inf` 参与排序（`np.argsort` 本就把 NaN 排到末尾，不占有效名次）。旧实现让 NaN 占掉低位名次、分母却只按有效个数算，于是有效资产的名次从 n_nan/(n_valid-1) 起跳、最高越过 1。危害是 `rank(x) > 0.9` 命中多少取决于**当天停牌几只票**而不是信号。新增按缺失个数参数化的值域不变性用例（缺 0/1/2/3 只票，有效资产都必须铺满 [0,1]）|
+| ~~B-7~~ | **已修（2026-09-20）**：`_too_short` 守卫提到 `if _HAS_BN` 分支**之前**，7 个 bn_* 包装器共用一份。已逐个实测确认 7 个全部受影响（不止 move_mean）。面板一短，整条 DSL 表达式求值**崩掉**而不是给 NaN —— walk-forward 第一折、次新股子集、小 universe 切片都会踩到 |
 | ~~B-8~~ | **已修（2026-09-20）**：`should_prune` 不再只看样本数就走模型分支 —— `_fit()` 放弃时 `_model` 是 None，原来会 `None.predict_proba` 打断整轮 GP。**样本够 ≠ 模型就绪**。连带效果：`_fitted` 从死存储变成真守卫，原「`_fitted` 全库无人读 → 等价」那条证明**失效并撤销**（它自带的失效告警 test_fitted_flag_has_no_reader 如期响了），对应 2 个存活点已记入 survivor_disposition |
 | B-9 | `proxy_model` 的 `use_label_encoder=False` 对 xgboost 3.x 已无意义（仅整洁问题） |
 | B-10 | `fast_ops` 向量化分支被 `except Exception` 完全兜住（结构问题） |
 | B-11 | `data_partitioner` 的「OOS 为空」守卫不可达（结构问题） |
 | ~~B-12~~ | **已修（2026-09-20）**：三处排序都补了稳定的第二键。注意 `ChatSession.id` 是 **UUID 字符串**，按它排是随机序而非插入序 —— 另加了单调递增的 `seq` 列（同事务内取 max+1；`autoincrement` 只对整型主键生效）。`ChatMessage.id` 本就是自增整数，直接用 |
 | ~~A-1~~ | **已修（2026-09-20）**：`ingest()` 新增 `append_pit` 参数，增量路径传 `False`。原先 `ingest()` 内部先把**整个抓取窗口**写进 PIT，`ingest_incremental` 随后又按 `> last` 过滤后写第二次 —— 同一批 bar 两个 vintage，而且两次写的窗口还不同（内层可能含一根重叠旧 bar）。集成用例的基线已从 3 个 vintage 改到 2 个、增量日从 2 改到 1 |
-| A-2 | `strategy_gate` 用 `np.nanstd(...) == 0.0` 判零方差，浮点零判不出来，守卫从不触发 |
+| ~~A-2~~ | **已修（2026-09-20）**：零方差判据统一到 `performance_analyzer.has_meaningful_variation`（相对量级：`sd > 1e-12 × mean|r|`）。原判据 `float(np.nanstd(...)) == 0.0` 用**精确相等**判浮点零 —— 严格全零序列确实返回 0.0、守卫会触发，漏掉的是**只在浮点噪声级别变动**的序列（回测净收益正是这种：多空两腿相减、成本逐日重算，残渣必然非零）。**这与 A-3 本是同一个问题的两处独立实现**（`sharpe_tstat` 里一度还有第三份 `sd <= 1e-15`）；判据分头维护迟早对同一条收益序列给出相反结论，所以提成模块级共享函数，两边薄封装。另修一处：该函数返回 `np.bool_` 而非标注承诺的 `bool`（调用方用 np.nextafter 取边界时暴露）|
 | ~~A-3~~ | **已修（2026-09-20）**：`vol > 0` 判据换成**相对**量级（`sd > 1e-12 × 收益自身量级`）。全常数收益的 `std(ddof=1)` 是 6.5e-19 的浮点残渣，旧判据成立 → 年化 Sharpe 3e16、t 15.5，报告显示「高度显著」。相对判据保证真实低波动（日波动 1e-6）不被误杀，且 `sharpe_tstat` 共用同一判据不分叉 |
 | ~~A-4~~ | **已修（2026-09-20）**：`_tdays` 提前判 `DatetimeIndex` 并抛带说明的 `TypeError`，不再让 `(idx[-1]-idx[0]).days` 抛指向内部实现的 `AttributeError`。`max_drawdown` 里那条按序号相减的 else 分支**可达性未变**（仍不可达），对应的等价性证明措辞已同步 |
 | A-5 | `MVOPortfolio` 注释写「剔除的资产保留基准权重」，实现是整行替换 → 拿到 0 |
@@ -396,8 +407,8 @@ python tools/mutation/runner.py plan_full.json --state progress_full.json --stat
 | ~~C-2~~ | **已修（2026-09-20）**：`_replace_node` 改为**先在原树里定位路径、再沿路径在副本上替换**。原实现先 deepcopy 再按 `id(target)` 找，副本里没有任何节点持有那个 id，于是除根节点外替换**永远静默失败** —— hoist / wrap_rank / add_ts_smoothing / replace_subtree / subtree_crossover 五个算子只能在根上动手，GP 看着在变异实际原地踏步 |
 | ~~D-1~~ | **已修（2026-09-20）**：取负识别从只认 `op == "neg"` 扩展到「`neg(x)` 或 `sub(0, x)`」。一元负号 `-x` 解析成 `neg(x)`，语义相同的 `(0-x)` 解析成 `sub(ScalarNode(0), x)` —— 同一因子换个等价写法就换家族。新增反向对照：`(1-x)` 不是取负，仍判 momentum（防判据放宽过头）|
 | ~~D-2~~ | **已修（2026-09-20）**：`returns` 是**派生**字段、从不落盘，已从 `available_fields()` 去掉；请求不可用字段改为**当场报 ValueError**，不再读到一半被 except 吞掉、最后交回空 dict。新增机械对账：宣称的每个字段都必须在 `STANDARD_COLUMNS` 里（判据取写入路径的事实来源，不另抄清单）|
-| D-3 | `langchain>=0.2` 无上界，装上的 1.x 已移除 `AgentExecutor` → LLM 链路整条**静默降级**，只打一条 warning |
-| D-4 | 系统提示词把 `rank(neg(...))` 当作 4 个因子家族的标准模板，而解析器不认 `neg(x)` |
+| ~~D-3~~ | **已修（2026-09-20，单独提交）**：迁移到 langchain 1.x 的 `create_agent` API（用户决定）。原状比登记文字更糟 —— `requirements.txt` 无上界，而 **`requirements.lock` 锁的是 1.4.0**，也就是说按声明的依赖装出来的环境，LLM 链路**必然**建不起来，然后被 `except Exception` 吞成一条 warning。CI 全绿，`/api/chat` 照常返回，研究链路整条死掉。迁移中**两处语义不自动等价**，已逐个实测补回：① 工具异常在旧 `AgentExecutor(handle_parsing_errors=True)` 下转成观测喂回模型，`create_agent` 默认**直接冒出 invoke** → 用 `wrap_tool_call` 中间件补回；② `max_iterations=15` 到顶停下返回，`recursion_limit` 到顶**抛 GraphRecursionError** → 真正的对应物是 `ModelCallLimitMiddleware(run_limit=15, exit_behavior="end")`，`recursion_limit` 只作护栏（实测装中间件后需 `4L+4`=64，**不是**没装时的 `2L+2`；第一版照搬了后者，被自己的用例当场抓住）。**未引入 langgraph checkpointer** —— ChatStore 已是会话历史唯一真相，再挂一个就是同一概念两份实现。降级原因做成可检测状态 `AGENT_MODE_*`（四态，按**异常类型** `LangChainIncompatibleError` 而非文案匹配分类），REST 与流式 done **两条都带**。`requirements.txt` 改 `>=1.0,<2.0` 并机械核对 lock 满足。新增 46 条用例（25 迁移验收 + 21 接线），全部用**实际安装的** LangChain，零 mock |
+| ~~D-4~~ | **已修（2026-09-20）**：4 条家族模板从 `rank(neg(X))` 改为 `rank(-X)`，并在 AVAILABLE OPERATORS 下方写明取负只能用一元负号。实测提示词里 6 条 `DSL pattern:` 现在**全部可解析**，`neg(` 归零。**修法不是把 `neg` 加进算子清单** —— 解析器根本没有这个函数，加进去只会让提示词与解析器一起错；`-x` 才是解析器接受、且系统自己序列化时也输出的形式（`str(parse("rank(-ts_delta(close,5))"))` 往返稳定，已实测）。原后果：LLM 照模板产出的公式一律解析失败 → `_validate_and_fix` 白烧两次修复调用后放弃 → 六个家族里四个走模板路径时产出为零，对外只表现为「agent 老是生成非法公式」。两侧用例都改成**全称断言**（每条模板都要解析得了、每个用到的函数都要被声明），不再只防 `neg` 一个；另加反向护栏禁止写回 `neg(` |
 | D-5 | 提示词写 `corr > 0.9`，`AlphaPool` 实际默认 `0.70` 且用 `>=` |
 | ~~D-6~~ | **已修（2026-09-20）**：`_fit()` 的 `try` 现在同时包住 import 与`XGBClassifier(...)` 构造。缺 scikit-learn 时是**构造**抛 ImportError，原来越过守卫直接冒泡 → GP 进化崩溃，而非 warning 承诺的退回 rule-based |
 | ~~N-1~~ | **已修（2026-09-20）**：成本推导的缓存键原来只指纹 `close`，而价差算的是 high/low、冲击用的是 volume —— close 相同、high/low 不同的数据集命中同一条缓存（审计实测真实 1919.83 bps 被 37.47 bps 顶替，差 51 倍）。现在覆盖 `_COST_INPUT_FIELDS`（close/high/low/volume）全部面板 + 券商档位 + 账户类型。守卫两条：AST 从 `trading_context` 抽出**实际读取**的字段与清单对账（不抄一份同源清单）；行为上验证改 high/low 后不再命中旧条目，且同数据集仍然命中（缓存没退化成永不命中）|

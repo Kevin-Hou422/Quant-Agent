@@ -24,7 +24,8 @@ import pandas as pd
 import pytest
 
 from app.core.backtest_engine.backtest_engine import BacktestResult
-from app.core.backtest_engine.performance_analyzer import PerformanceAnalyzer
+from app.core.backtest_engine.performance_analyzer import (
+    PerformanceAnalyzer, has_meaningful_variation)
 
 # ---------------------------------------------------------------------------
 # 基准夹具：120 个交易日，4 日循环，**没有随机数**
@@ -119,6 +120,67 @@ class TestDynamicTradingDays:
 # ===========================================================================
 # B. 收益 / 波动 / 夏普 —— 公式本身
 # ===========================================================================
+
+class TestMeaningfulVariationCriterion:
+    """
+    `has_meaningful_variation` —— 缺陷 A-3 与 A-2 共用的"有没有真实波动"判据。
+    两处曾各写一份（`vol > 0` 与 `np.nanstd(...) == 0.0`），2026-09-20 统一到这里。
+    """
+
+    @staticmethod
+    def _series():
+        return pd.Series([0.001, 0.002, 0.0015, 0.0018, 0.0012, 0.0021])
+
+    def test_float_residue_is_not_variation(self):
+        """只在浮点噪声级别变动（1 ulp 扰动）→ 没有真实波动。"""
+        base = 0.001
+        v = np.full(60, base)
+        v[::2] = np.nextafter(base, 1.0)
+        assert float(np.nanstd(v)) != 0.0, "构造前提：nanstd 必须非零"
+        assert has_meaningful_variation(pd.Series(v)) is False
+
+    @pytest.mark.parametrize("sd", [1e-9, 1e-7, 1e-6, 1e-4])
+    def test_genuinely_low_volatility_is_still_variation(self, sd):
+        """
+        判据是**相对**的，所以真实的低波动策略不能被误杀。
+        写成绝对阈值（`sd < 1e-12`）时本条会红。
+        """
+        r = pd.Series(np.random.default_rng(0).normal(0.001, sd, 60))
+        assert has_meaningful_variation(r) is True
+
+    def test_the_threshold_is_strictly_greater_not_greater_or_equal(self):
+        """
+        `sd > floor_rel * scale` 的边界：**恰好相等**时判为"无波动"。
+
+        放宽成 `>=` 会让边界上的序列被当成有波动 —— 这是 verify_mutant 实测
+        存活过的一个点（2026-09-20），补本条杀死它。
+
+        精确命中边界靠的是**从序列自身反解** `floor_rel`，而不是拿一个常数去凑：
+        `floor_rel = sd / scale` 之后 `floor_rel * scale` 与 `sd` 逐位相等
+        （下面的前置断言会验证这一点，凑不中就当场报错而不是悄悄失去区分力）。
+        """
+        r = self._series()
+        sd = float(r.std(ddof=1))
+        scale = max(1e-12, float(np.abs(r).mean()))
+        floor_rel = sd / scale
+        assert floor_rel * scale == sd, (
+            f"没有精确命中边界（floor_rel*scale={floor_rel * scale!r} vs sd={sd!r}）"
+            f"—— 这条用例失去了区分力")
+
+        assert has_meaningful_variation(r, floor_rel=floor_rel) is False, (
+            "sd 恰好等于阈值时被判成了有波动 —— `>` 被放宽成了 `>=`")
+        # 稍微越过边界就必须给 True，证明上面的 False 不是因为别的原因
+        assert has_meaningful_variation(
+            r, floor_rel=np.nextafter(floor_rel, -np.inf)) is True, (
+            "越过 epsilon 之后仍判无波动 —— 上面那条断言并没有钉住边界")
+
+    def test_too_short_or_non_finite_is_not_variation(self):
+        """少于 2 个观测、或 std 非有限 → 一律判为没有波动。"""
+        assert has_meaningful_variation(pd.Series([0.01])) is False
+        assert has_meaningful_variation(pd.Series([], dtype=float)) is False
+        assert has_meaningful_variation(pd.Series([0.01, np.nan])) is False
+        assert has_meaningful_variation(pd.Series([np.inf, 1.0, 2.0])) is False
+
 
 class TestReturnVolSharpe:
 

@@ -288,17 +288,32 @@ class TestEvaluateGates:
         assert res.passed is False
         assert any("方差为 0" in x for x in res.reasons)
 
-    def test_near_constant_returns_slip_past_the_zero_variance_guard(self, monkeypatch):
+    def test_near_constant_returns_are_caught_by_the_zero_variance_guard(self, monkeypatch):
         """
-        与上一条配对，钉住那处脆弱的**现状**：日收益恒为 0.001 时
-        `np.nanstd` 给出 2.17e-19 ≠ 0，零方差守卫不触发，策略继续走后面的判定。
-        修这处（改成阈值比较）时本条会红，届时应当一并更新。
+        与上一条配对。**缺陷 A-2，2026-09-20 已修**，本条由"钉住现状"改成
+        断言应有行为。
+
+        旧实现用 `float(np.nanstd(...)) == 0.0` 判零方差，于是只在浮点噪声级别
+        变动的净收益（`nanstd` ≈ 1.5e-19 ≠ 0）一路放行，继续走后面的判定，
+        下游再算出年化 Sharpe 3e16（A-3）。现在判据统一到
+        `performance_analyzer.has_meaningful_variation`，按**相对**量级判。
+
+        构造用 1 ulp 扰动而不是 `pd.Series(0.001, ...)`：精确常数数组的
+        `np.nanstd` 给 0 还是 2e-19 取决于长度的浮点运气（n=40/50/60/70 给
+        精确 0.0），拿它当前提的用例会在前置断言上失败而不是测到目标。
         """
-        rets = pd.Series(0.001, index=IDX[:100])
-        assert float(np.nanstd(rets.values)) != 0.0
+        base = 0.001
+        vals = np.full(100, base)
+        vals[::2] = np.nextafter(base, 1.0)
+        rets = pd.Series(vals, index=IDX[:100])
+        assert float(np.nanstd(rets.values)) != 0.0, (
+            "构造前提：nanstd 必须非零，否则走的是守卫**本来就会**触发的分支")
+
         gate = self._gate_with(monkeypatch, rets)
         res = gate.evaluate(self._signals(1), _panel())
-        assert not any("方差为 0" in x for x in res.reasons)
+        assert any("方差为 0" in x for x in res.reasons), (
+            f"只在浮点噪声级别变动的净收益（nanstd="
+            f"{float(np.nanstd(rets.values)):.3e}）没有被守卫认出来：{res.reasons}")
 
     def test_segment_positivity_is_strict(self, monkeypatch):
         """

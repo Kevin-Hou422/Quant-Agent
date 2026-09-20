@@ -93,6 +93,23 @@ def _numpy_move_std(x: np.ndarray, window: int) -> np.ndarray:
     return out
 
 
+def _too_short(x: np.ndarray, window: int) -> bool:
+    """
+    面板行数不足一个窗口。
+
+    【缺陷 B-7，2026-09-20 修】模块 docstring 承诺"不足 window 个有效观测 → NaN"。
+    numpy 分支一直照做（`if T < window: return 全 NaN`），bottleneck 分支却没有
+    这个守卫 —— `bn.move_*` 直接抛 `ValueError: Moving window (=5) must between
+    1 and 3`。于是面板一短，整条 DSL 表达式求值**崩掉**而不是给 NaN：
+    walk-forward 第一折、次新股子集、小 universe 切片都会踩到。
+    7 个 bn_* 包装器全部受影响（已逐个实测），所以守卫提到分支**之前**。
+    """
+    # `x.ndim` 取真值而不写 `x.ndim >= 1`：`_ensure_2d` 之后 ndim 只可能是 0 或 ≥2，
+    # 于是 `>= 1` 与 `> 1` 在任何输入上同值 —— 那是个**任何用例都杀不死的等价变异点**
+    # （已用 verify_mutant 实测存活）。写成真值判断就没有这个可变异的比较符。
+    return bool(x.ndim and x.shape[0] < window)
+
+
 def _stride_windows(x: np.ndarray, window: int):
     """Return stride_tricks view of shape (T-w+1, window, N)."""
     T, N = x.shape
@@ -108,6 +125,8 @@ def _stride_windows(x: np.ndarray, window: int):
 def bn_ts_mean(x: np.ndarray, window: int) -> np.ndarray:
     """Rolling mean; NaN for fewer than `window` valid observations."""
     x = _ensure_2d(np.asarray(x, dtype=float))
+    if _too_short(x, window):                      # B-7：两条分支统一给全 NaN
+        return np.full(x.shape, np.nan)
     if _HAS_BN:
         return bn.move_mean(x, window=window, min_count=window, axis=0)
     return _numpy_move_mean(x, window)
@@ -116,6 +135,8 @@ def bn_ts_mean(x: np.ndarray, window: int) -> np.ndarray:
 def bn_ts_std(x: np.ndarray, window: int) -> np.ndarray:
     """Rolling std (ddof=1); NaN for fewer than `window` valid obs."""
     x = _ensure_2d(np.asarray(x, dtype=float))
+    if _too_short(x, window):                      # B-7：两条分支统一给全 NaN
+        return np.full(x.shape, np.nan)
     if _HAS_BN:
         return bn.move_std(x, window=window, min_count=window, axis=0, ddof=1)
     return _numpy_move_std(x, window)
@@ -124,6 +145,8 @@ def bn_ts_std(x: np.ndarray, window: int) -> np.ndarray:
 def bn_ts_var(x: np.ndarray, window: int) -> np.ndarray:
     """Rolling variance (ddof=1)."""
     x = _ensure_2d(np.asarray(x, dtype=float))
+    if _too_short(x, window):                      # B-7：两条分支统一给全 NaN
+        return np.full(x.shape, np.nan)
     if _HAS_BN:
         return bn.move_var(x, window=window, min_count=window, axis=0, ddof=1)
     std = _numpy_move_std(x, window)
@@ -133,6 +156,8 @@ def bn_ts_var(x: np.ndarray, window: int) -> np.ndarray:
 def bn_ts_sum(x: np.ndarray, window: int) -> np.ndarray:
     """Rolling sum; NaN for fewer than `window` valid obs."""
     x = _ensure_2d(np.asarray(x, dtype=float))
+    if _too_short(x, window):                      # B-7：两条分支统一给全 NaN
+        return np.full(x.shape, np.nan)
     if _HAS_BN:
         return bn.move_sum(x, window=window, min_count=window, axis=0)
     T, N = x.shape
@@ -154,64 +179,105 @@ def bn_ts_sum(x: np.ndarray, window: int) -> np.ndarray:
 
 
 def bn_ts_max(x: np.ndarray, window: int) -> np.ndarray:
+    """Rolling max; NaN for fewer than `window` valid observations."""
     x = _ensure_2d(np.asarray(x, dtype=float))
+    if _too_short(x, window):                      # B-7：两条分支统一给全 NaN
+        return np.full(x.shape, np.nan)
     if _HAS_BN:
         return bn.move_max(x, window=window, min_count=window, axis=0)
     T, N = x.shape
     out = np.full((T, N), np.nan)
-    if T < window:
-        return out
     try:
         windows = _stride_windows(x, window)
-        out[window - 1:] = np.nanmax(windows, axis=1)
+        # B-5：`np.max` **传播** NaN，`np.nanmax` 忽略它 —— 见下方注释。
+        out[window - 1:] = np.max(windows, axis=1)
     except Exception:
         for i in range(window - 1, T):
-            out[i] = np.nanmax(x[i - window + 1: i + 1], axis=0)
+            out[i] = np.max(x[i - window + 1: i + 1], axis=0)
     return out
 
 
 def bn_ts_min(x: np.ndarray, window: int) -> np.ndarray:
+    """
+    Rolling min; NaN for fewer than `window` valid observations.
+
+    【缺陷 B-5，2026-09-20 修】模块 docstring 承诺 strict NaN policy，
+    bottleneck 分支用 `min_count=window` 遵守了，numpy 两条分支却用
+    `np.nanmin/np.nanmax` **直接忽略** NaN —— 同一个面板换条执行路径，
+    缺了一根 bar 的标的在 bottleneck 下是 NaN、在 numpy 下照样吐出极值。
+    那个极值还是**用更少的观测**算出来的：停牌期间的 ts_max 会系统性偏低、
+    ts_min 偏高，而调用方无从知道这一行的样本数不足。
+    改用 `np.max/np.min`（NaN 自然传播），三条路径逐位一致。
+    """
     x = _ensure_2d(np.asarray(x, dtype=float))
+    if _too_short(x, window):                      # B-7：两条分支统一给全 NaN
+        return np.full(x.shape, np.nan)
     if _HAS_BN:
         return bn.move_min(x, window=window, min_count=window, axis=0)
     T, N = x.shape
     out = np.full((T, N), np.nan)
-    if T < window:
-        return out
     try:
         windows = _stride_windows(x, window)
-        out[window - 1:] = np.nanmin(windows, axis=1)
+        out[window - 1:] = np.min(windows, axis=1)
     except Exception:
         for i in range(window - 1, T):
-            out[i] = np.nanmin(x[i - window + 1: i + 1], axis=0)
+            out[i] = np.min(x[i - window + 1: i + 1], axis=0)
     return out
 
 
+def _avg_rank_fraction(windows: np.ndarray) -> np.ndarray:
+    """
+    窗口内**最后一个**值的平均秩，归一到 [0,1]。
+
+    平均秩（0-based）r = #{更小} + (#{并列} - 1)/2，归一分母 count-1。
+    并列取中点 —— 与 `cs_rank`、`average_ranks_1d` 同一个约定。
+    """
+    last  = windows[:, -1:, :]
+    valid = ~np.isnan(windows)
+    count = valid.sum(axis=1)
+    less  = ((windows < last) & valid).sum(axis=1)
+    ties  = ((windows == last) & valid).sum(axis=1)     # 含最后一个值自己
+    avg_rank = less + (ties - 1.0) / 2.0
+    denom = np.maximum(count - 1, 1)
+    return np.where(count >= windows.shape[1], avg_rank / denom, np.nan)
+
+
 def bn_ts_rank(x: np.ndarray, window: int) -> np.ndarray:
-    """Rolling rank (percentile in [0,1]) of the most recent value."""
+    """
+    Rolling rank of the most recent value, as a percentile in [0, 1].
+
+    0 = 窗口内最低，1 = 最高，并列取平均秩。
+
+    【缺陷 B-1，2026-09-20 修】两条分支此前算的**根本不是同一个量**：
+      - bottleneck：`bn.move_rank` 的值域是 **[-1, 1]**（实测），再 `/window`
+        → 实际值域 [-1/w, 1/w]。w=5 时单调上升序列的最新一根给 **0.2**，
+        w=20 时给 0.05 —— 同一个"排在窗口最高位"的事实，**因窗口长度而异**，
+        而且一半取值是负的。docstring 承诺的 [0,1] 从来没成立过。
+      - numpy：`le/count`（含并列的"小于等于"计数），值域 (0,1]，取不到 0。
+
+    后果不只是"数不好看"：`ts_rank(close, 20) > 0.8` 这类阈值在 bottleneck
+    环境下**恒为假**（上界才 0.05），装没装 bottleneck 决定了信号有没有。
+    GP 进化出来的表达式因此依赖于运行环境。
+
+    统一到平均秩 /(count-1)：bottleneck 的 [-1,1] 线性映射回 [0,1] 就是
+    `(raw+1)/2` —— 这不是凑出来的，`bn.move_rank` 的定义
+    `(#less - #greater)/(count-1)` 恒等于 `2·r/(count-1) - 1`（r 为 0-based
+    平均秩），两边代数相等，已用暴力参照逐位校验。
+    """
     x = _ensure_2d(np.asarray(x, dtype=float))
+    if _too_short(x, window):                      # B-7：两条分支统一给全 NaN
+        return np.full(x.shape, np.nan)
     if _HAS_BN:
         raw = bn.move_rank(x, window=window, min_count=window, axis=0)
-        return raw / window
+        return (raw + 1.0) / 2.0
     T, N = x.shape
     out = np.full((T, N), np.nan)
-    if T < window:
-        return out
     try:
-        windows = _stride_windows(x, window)
-        last     = windows[:, -1:, :]
-        count    = (~np.isnan(windows)).sum(axis=1)
-        le       = (windows <= last).sum(axis=1)
-        last_nan = np.isnan(windows[:, -1, :])
-        result   = np.where((count >= window) & ~last_nan, le / count, np.nan)
-        out[window - 1:] = result
+        out[window - 1:] = _avg_rank_fraction(_stride_windows(x, window))
     except Exception:
         for i in range(window - 1, T):
-            block = x[i - window + 1: i + 1]
-            last  = block[-1]
-            count = np.sum(~np.isnan(block), axis=0)
-            le    = np.sum(block <= last, axis=0)
-            out[i] = np.where(count >= window, le / count, np.nan)
+            block = x[i - window + 1: i + 1][np.newaxis]      # (1, window, N)
+            out[i] = _avg_rank_fraction(block)[0]
     return out
 
 
@@ -415,7 +481,16 @@ def ts_entropy(x: np.ndarray, window: int, n_bins: int = 10) -> np.ndarray:
 
 
 def ts_corr(x: np.ndarray, y: np.ndarray, window: int) -> np.ndarray:
-    """Rolling Pearson correlation between x and y."""
+    """
+    Rolling Pearson correlation between x and y.
+
+    【缺陷 B-2，2026-09-20 修】分子分母的自由度不配套：协方差走
+    `np.mean(dx*dy)`（ddof=0，除以 w），标准差走 `np.std(..., ddof=1)`
+    （除以 w-1）。相关系数于是被系统性压低 **(w-1)/w** —— 完全线性相关的
+    两条序列 w=5 时只给 0.8、w=20 时给 0.95。偏差随窗口变化，所以
+    `|ts_corr| > 0.7` 这类阈值在短窗口上更难触发，短窗口的配对信号被压制。
+    分子改成同样的 ddof=1。（`ts_cov` 一直是对的，两者本该一致。）
+    """
     x = _ensure_2d(np.asarray(x, dtype=float))
     y = _ensure_2d(np.asarray(y, dtype=float))
     T, N = x.shape
@@ -432,7 +507,7 @@ def ts_corr(x: np.ndarray, y: np.ndarray, window: int) -> np.ndarray:
         mu_x = np.mean(wx, axis=1, keepdims=True)
         mu_y = np.mean(wy, axis=1, keepdims=True)
         dx, dy = wx - mu_x, wy - mu_y
-        cov_xy = np.mean(dx * dy, axis=1)
+        cov_xy = np.sum(dx * dy, axis=1) / (window - 1)    # B-2：与 std 的 ddof=1 配套
         std_x  = np.std(wx, axis=1, ddof=1)
         std_y  = np.std(wy, axis=1, ddof=1)
         denom  = std_x * std_y
@@ -493,17 +568,52 @@ def cs_rank(x: np.ndarray) -> np.ndarray:
     """
     Cross-sectional percentile rank [0, 1] per row.
     NaN assets excluded from ranking; ties resolved by average rank.
+
+    【缺陷 B-3 + B-6，2026-09-20 修】旧实现 `argsort(argsort(where(nan, -inf, x)))`
+    一行里错了两件事：
+
+    B-3 —— 那是**序数**名次，不是 docstring 承诺的平均名次。并列值按**列顺序**
+    被强行排出先后，于是同一个截面把标的换个顺序，因子值就变了。而列序不是
+    市场事实，是面板的存储顺序。（与 C-1 是同一个错误的截面版本。）
+
+    B-6 —— NaN 被填成 `-inf` 后**参与了排序**，占掉最低的几个名次，分母却只按
+    有效个数算 `valid_count-1`。于是有效资产的名次从 n_nan/(n_valid-1) 起跳，
+    最高到 (n-1)/(n_valid-1) > 1 —— 值域越出 [0,1]，缺失越多偏得越狠。
+    `rank(x) > 0.9` 这类条件会因为当天缺了几只票而莫名多命中，
+    而且命中的多少取决于**停牌数量**，不取决于信号。
+
+    新实现：NaN 不填充（`np.argsort` 本就把 NaN 排到末尾，不占有效名次），
+    在排序后的序列上按并列区间取中点，再散射回原位。全向量化，无 Python 循环。
     """
     x = _ensure_2d(np.asarray(x, dtype=float))
-    nan_mask  = np.isnan(x)
-    x_filled  = np.where(nan_mask, -np.inf, x)
-    order     = np.argsort(np.argsort(x_filled, axis=1), axis=1).astype(float)
+    T, N = x.shape
+    nan_mask = np.isnan(x)
+
+    order = np.argsort(x, axis=1, kind="mergesort")       # NaN 自然落到末尾
+    xs    = np.take_along_axis(x, order, axis=1)          # 每行升序后的值
+
+    # 并列区间的起点/终点（NaN != NaN，所以每个 NaN 自成一组，稍后被屏蔽）
+    idx = np.arange(N)
+    is_start = np.ones((T, N), dtype=bool)
+    is_start[:, 1:] = xs[:, 1:] != xs[:, :-1]
+    is_end = np.ones((T, N), dtype=bool)
+    is_end[:, :-1] = is_start[:, 1:]
+
+    # 非边界位置填的是"输不掉的哨兵"：起点向右取最大故填 0，终点自右向左取最小故填 N。
+    # 第 0 位必是起点、第 N-1 位必是终点，所以哨兵永远赢不了真实下标。
+    # 终点这侧写 `N` 而不是 `N - 1`：两者都正确（任何 ≥ N-1 的值都行），
+    # 但 `N - 1` 会多出一个**杀不死的等价变异点**（已实测 `N-1 → N+1` 存活）。
+    start = np.maximum.accumulate(np.where(is_start, idx, 0), axis=1)
+    end   = np.minimum.accumulate(np.where(is_end, idx, N)[:, ::-1], axis=1)[:, ::-1]
+
+    ranks_sorted = 0.5 * (start + end)                    # 并列取中点 = 平均秩
+    ranks = np.empty((T, N), dtype=float)
+    np.put_along_axis(ranks, order, ranks_sorted, axis=1)
+
     valid_count = (~nan_mask).sum(axis=1, keepdims=True).astype(float)
-    order[nan_mask] = np.nan
-    denom = np.maximum(valid_count - 1, 1)
-    order = order / denom
-    order[nan_mask] = np.nan
-    return order
+    ranks = ranks / np.maximum(valid_count - 1.0, 1.0)
+    ranks[nan_mask] = np.nan
+    return ranks
 
 
 def cs_zscore(x: np.ndarray) -> np.ndarray:

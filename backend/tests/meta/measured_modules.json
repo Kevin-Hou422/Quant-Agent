@@ -1370,7 +1370,7 @@
       "proof_entries_min": 97,
       "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
       "refuted_entries_min": 2,
-      "unmeasured_points_max": 934
+      "unmeasured_points_max": 946
     },
     "refuted_by_counterexample": {
       "count": 2,
@@ -1398,9 +1398,9 @@
     "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
     "measured_points": 1982,
     "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-    "current_plan_points": 2916,
+    "current_plan_points": 2928,
     "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-    "unmeasured_points": 934,
+    "unmeasured_points": 946,
     "newly_in_scope_modules": [],
     "per_module_delta": {
       "app/agent/_agent.py": {
@@ -1441,7 +1441,8 @@
       },
       "app/core/alpha_engine/fast_ops.py": {
         "measured": 145,
-        "now_planned": 219
+        "now_planned": 237,
+        "_note": "now_planned 此前写的 219 已过期（C-1 给本模块加了 average_ranks_1d 却没同步这个数）。237 是 2026-09-20 修完 B-1/B-2/B-3/B-5/B-6/B-7 后按同一判据重新枚举的。"
       },
       "app/core/alpha_engine/financial_diagnostics.py": {
         "measured": 35,
@@ -1713,7 +1714,7 @@
     "what_this_means": "『所选变异全部被处理』≠『检出能力已证明』。B-1 的除法归一化错误与 C-2 的对象身份错误都是**读代码**发现的，不是变异测试发现的。",
     "owed": "对 2843 个点重跑一遍测量。本轮未做。",
     "_closed": "app/db/_sqlite_utils.py 已补测：它是算子补齐后唯一新进入范围的模块，此前一条测试都没有。首测 0.0% → 补 tests/unit/db/test_sqlite_hardening.py → verify_mutant 单点复核确认被杀。其余 862 个点仍未测。",
-    "_product_fix_policy": "修产品代码会引入新的变异点，而新点默认是未测量的 —— 棘轮会立刻判红（2026-09-18 修 A-6 时实际发生）。规矩：**修完立刻用 verify_mutant 逐个复核新点**，杀掉就记进本清单、未测量数不变；杀不掉就当场补用例。不许靠调高 unmeasured_points_max 放行。 补充（2026-09-20 实践）：**批量复核不能与编辑并行** —— 沙箱复制实时工作区，改到一半的测试文件会让基线红、结论全部失真。",
+    "_product_fix_policy": "修产品代码会引入新的变异点，而新点默认是未测量的 —— 棘轮会立刻判红（2026-09-18 修 A-6 时实际发生）。规矩：**修完立刻用 verify_mutant 逐个复核新点**，杀掉就记进本清单、未测量数不变；杀不掉就当场补用例。不许靠调高 unmeasured_points_max 放行。 补充（2026-09-20 实践）：**批量复核不能与编辑并行** —— 沙箱复制实时工作区，改到一半的测试文件会让基线红、结论全部失真。 补充（2026-09-20，A-2）：**`_xfail(raises=...)` 挡不住同类型的错误原因**。A-2 那条用例的前置守卫 `assert np.nanstd(...) != 0.0` 与目标断言都是 AssertionError，而它构造的 `np.full(60, 0.001)` 的 nanstd 恰好是精确 0.0（该值给 0 还是 2e-19 取决于长度的浮点运气：n=30/80/100 给 2.168e-19，n=40/50/60/70 给 0.0），于是这条 xfail 从未验证过 A-2 —— 与 A-1、C-1 同一形态，第三例。构造\"无真实波动\"的序列要用 1 ulp 扰动（`np.nextafter`），与长度无关。",
     "_raises": [
       {
         "date": "2026-09-20",
@@ -1778,6 +1779,22 @@
         "why": "修 A-1 新增 `append_pit` 参数与分支。",
         "how_it_was_handled": "xfail 转正（真跑一遍增量摄取、数 PIT vintage）；两条集成用例的基线同步到修复后的口径。",
         "owed": "本次新增 2 个点待批量复核。"
+      },
+      {
+        "date": "2026-09-20 (B-1/B-2/B-3/B-5/B-6/B-7)",
+        "from": 934,
+        "to": 942,
+        "why": "一次修完 fast_ops 的六条算子缺陷：新增 `_too_short` 短面板守卫、`_avg_rank_fraction` 平均秩内核、`cs_rank` 按并列区间取中点的向量化重写，`ts_corr` 分子改 ddof=1，`ts_max/ts_min` 改用传播 NaN 的 np.max/np.min。本模块枚举点数 229 → 237（新增 34、消失 26）。",
+        "how_it_was_handled": "**本次新增的 34 个点已全部逐个复核，34/34 被杀死**（单沙箱批量驱动，判据与 verify_mutant 相同：基线绿 + 变异非绿）。首轮复核报 36 新增、2 个存活：`x.ndim >= 1`（`_ensure_2d` 之后 ndim 只能是 0 或 ≥2，`>= 1` 与 `> 1` 同值）与 `np.where(is_end, idx, N - 1)`（自右向左取最小，哨兵只需 ≥ N-1，`N+1` 同样正确）。两者都是**任何用例都杀不死的等价变异**。没有为它们写等价性证明，而是改写代码让这两个点不存在：前者写成真值判断 `bool(x.ndim and ...)`，后者哨兵改成 `N`（变量引用，无可变异的算术符）。改写后重新枚举得 34 个新增点，并对改写过的那一行的 2 个点单独重验 —— 均被杀死。",
+        "owed": "无。与此前各条不同，本次新增点的复核**已当场完成**，不留欠账。注意：942 这个数按『未被某一轮全量测量覆盖』统计，其中 34 个点实际已逐个验证过，所以它对真实盲区是**高估**的；真正的盲区仍是那 908 个从未跑过的点。"
+      },
+      {
+        "date": "2026-09-20 (D-3 迁移)",
+        "from": 942,
+        "to": 946,
+        "why": "迁移 _lc_agent 到 langchain 1.x 的 create_agent：新增 RECURSION_LIMIT 常数、wrap_tool_call 中间件、_SessionScopedAgent 适配器（会话历史读写），以及 _agent 的 AGENT_MODE_* 分类。",
+        "how_it_was_handled": "**新增的 8 个点已逐个复核，8/8 被杀死。** 首轮 5 杀 3 活，存活的三个都是 `and -> or` 条件放宽 —— **不是等价变异**，是当时没有用例走到那些形状。按它们真实的失败后果补了 3 条用例并复验通过：① 回复绝不能取到 ToolMessage 的原始输出（模型调完工具给空总结时会走到）；② content 可能是多模态块列表，放行会让 ChatResponse.reply 拿到非字符串；③ 缺 session_id 时不得拿 None 当会话 id 去写库。另有 2 个点是**删掉**的：`_agent.py` 里我自己写的一个空 `elif ... : pass` 分支，它什么也不做、两个点必然存活。没有为空操作写等价性证明 —— 删掉才是诚实的处理（与 fast_ops 那两个幻影点同一个判断：等价变异的出路是让它不存在）。",
+        "owed": "无。本次新增点复核已当场完成。"
       }
     ]
   },

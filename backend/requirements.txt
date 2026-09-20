@@ -40,9 +40,22 @@ pydantic>=2.0
 pydantic-settings>=2.0
 
 # ── LLM / LangChain ──────────────────────────────────────────────────────
-langchain>=0.2
-langchain-openai>=0.1
-langchain-core>=0.2
+#
+# 【缺陷 D-3，2026-09-20】下界必须是 1.0，且**必须有上界**。
+#
+# 原来写的是 `langchain>=0.2` 等三行**无上界**的约束。langchain 1.x 把
+# `AgentExecutor` / `create_tool_calling_agent` / `RunnableWithMessageHistory`
+# 搬进了独立的 `langchain-classic` 包，于是按这份声明装出来的环境里，
+# `_lc_agent._build_langchain_agent` **必然**构建失败 —— 然后被一条 warning
+# 吞掉、静默降级到 FallbackOrchestrator，`/api/chat` 照常返回。
+# 声明的依赖集合跑不起主链路，而 CI 全绿。
+#
+# 代码已于同日迁移到 1.x 的 `create_agent` API，所以下界是 1.0；
+# 上界防的是下一次大版本搬家重演同一出（`langgraph` 由 langchain 传递引入，
+# 精确版本见 requirements.lock）。
+langchain>=1.0,<2.0
+langchain-openai>=1.0,<2.0
+langchain-core>=1.0,<2.0
 
 # ── Data Providers ───────────────────────────────────────────────────────
 yfinance>=0.2
