@@ -532,12 +532,38 @@ def _classify_family(node, fields: Set[str], all_ops: List[str]) -> str:
     return "momentum"  # default
 
 
+def _negated_operand(node):
+    """
+    若 `node` 语义上是"对某个子表达式取负"，返回被取负的那个子表达式；否则 None。
+
+    【缺陷 D-1，2026-09-20 修】原来只认 `op == "neg"` 这一种节点。
+    DSL 的一元负号 `-x` 解析成 `neg(x)`，而**语义完全相同**的 `(0 - x)`
+    解析成 `sub(ScalarNode(0), x)` —— 于是同一个因子换个等价写法就换了家族
+    （`-x` 判 reversion、`(0-x)` 判 momentum），GP 会据此配错互补家族与算子偏好。
+
+    两种写法都要认：
+      · `neg(x)`
+      · `sub(0, x)`  —— 左操作数是值为 0 的 ScalarNode
+    """
+    from .typed_nodes import ArithmeticNode, ScalarNode
+
+    if not isinstance(node, ArithmeticNode):
+        return None
+    ch = node.children()
+    if node.op == "neg":
+        return ch[0] if ch else None
+    if node.op == "sub" and len(ch) == 2:
+        left = ch[0]
+        if isinstance(left, ScalarNode) and float(getattr(left, "value", 1.0)) == 0.0:
+            return ch[1]
+    return None
+
+
 def _is_inverted_momentum(node) -> bool:
     """Return True if the dominant momentum signal is negated."""
-    from .typed_nodes import ArithmeticNode, TimeSeriesNode
-    if isinstance(node, ArithmeticNode) and node.op == "neg":
-        ch = node.children()
-        return len(ch) > 0 and _has_op(ch[0], {"ts_delta", "ts_rank"})
+    operand = _negated_operand(node)
+    if operand is not None:
+        return _has_op(operand, {"ts_delta", "ts_rank"})
     for child in node.children():
         if _is_inverted_momentum(child):
             return True

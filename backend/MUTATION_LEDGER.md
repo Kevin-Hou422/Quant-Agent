@@ -393,9 +393,9 @@ python tools/mutation/runner.py plan_full.json --state progress_full.json --stat
 | A-6 | **执行层已修（2026-09-18/19/20）**：不再写死 target、不再用持仓裁剪冒充成交、按交易差额逐名部分成交且**不再分配**、组合级净敞口回查、未成交量如实记账。实测放大倍数：**目标持仓** 3.33×、**成交名义额** 1.54×。**剩余**：回测引擎仍走 water-filling 持仓裁剪，两引擎在限流场景下语义分家 |
 | A-7 | `project_to_capped_l1(..., target=1.0)` 在**另外三处**仍写死（`realistic_backtester` / `LiquidityConstraint.apply` / `manager.apply_capacity`）。都是构建层，water-filling 合理、错的是 target；`apply_capacity` 的 docstring 写「容量不足时 gross<1」却传 1.0。五个调用点只有 `risk_gate` 传了真实值 |
 | C-1 | GP 适应度的截面秩用 `argsort(argsort(x))`，不处理并列 → 零信息信号被按**列顺序**摊开，IC 成了伪相关 |
-| C-2 | `mutations._replace_node` 先 deepcopy 再按 `id(target)` 找节点 → 除非 target 是 root，替换**永远静默失败**；`add_ts_smoothing` 在多数情况下是彻底的空操作 |
-| D-1 | `financial_interpreter` 只认 `neg` 节点：`-x` 判 reversion，语义相同的 `(0-x)` 判 momentum |
-| D-2 | `LocalParquetProvider` 宣称支持 `returns`，按此请求会让**整批数据返回空**（连 close 都没有） |
+| ~~C-2~~ | **已修（2026-09-20）**：`_replace_node` 改为**先在原树里定位路径、再沿路径在副本上替换**。原实现先 deepcopy 再按 `id(target)` 找，副本里没有任何节点持有那个 id，于是除根节点外替换**永远静默失败** —— hoist / wrap_rank / add_ts_smoothing / replace_subtree / subtree_crossover 五个算子只能在根上动手，GP 看着在变异实际原地踏步 |
+| ~~D-1~~ | **已修（2026-09-20）**：取负识别从只认 `op == "neg"` 扩展到「`neg(x)` 或 `sub(0, x)`」。一元负号 `-x` 解析成 `neg(x)`，语义相同的 `(0-x)` 解析成 `sub(ScalarNode(0), x)` —— 同一因子换个等价写法就换家族。新增反向对照：`(1-x)` 不是取负，仍判 momentum（防判据放宽过头）|
+| ~~D-2~~ | **已修（2026-09-20）**：`returns` 是**派生**字段、从不落盘，已从 `available_fields()` 去掉；请求不可用字段改为**当场报 ValueError**，不再读到一半被 except 吞掉、最后交回空 dict。新增机械对账：宣称的每个字段都必须在 `STANDARD_COLUMNS` 里（判据取写入路径的事实来源，不另抄清单）|
 | D-3 | `langchain>=0.2` 无上界，装上的 1.x 已移除 `AgentExecutor` → LLM 链路整条**静默降级**，只打一条 warning |
 | D-4 | 系统提示词把 `rank(neg(...))` 当作 4 个因子家族的标准模板，而解析器不认 `neg(x)` |
 | D-5 | 提示词写 `corr > 0.9`，`AlphaPool` 实际默认 `0.70` 且用 `>=` |

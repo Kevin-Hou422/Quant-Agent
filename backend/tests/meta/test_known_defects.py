@@ -109,22 +109,6 @@ DEFECT_REGISTRY = {
     "C-1":  "GP 适应度的截面秩用 argsort(argsort(x)) 算，不处理并列："
             "截面恒定（零信息）的信号被按**列顺序**摊成 0..n-1，"
             "IC 成了『ticker 在面板里的位置 vs 未来收益』的伪相关而非 0",
-    "C-2":  "mutations._replace_node 先 deepcopy 再按 id(target) 找节点，"
-            "而 deepcopy 后副本里没有任何节点持有那个 id —— 除非 target 就是 root，"
-            "否则替换**永远静默失败**，返回原样副本。"
-            "后果：hoist/wrap_rank/add_ts_smoothing/replace_subtree/subtree_crossover "
-            "五个算子只能在根节点动手，add_ts_smoothing 在根不是数据/窄窗 TS 节点时"
-            "是**彻底的空操作**（60 个种子只产出 1 种结果 = 原树）",
-    "D-1":  "financial_interpreter 的取负识别只认 `neg` 节点："
-            "DSL 的一元负号 `-x` 判为 reversion，而语义完全相同的 `(0-x)` "
-            "判为 momentum —— 同一个因子换个等价写法就换了家族，"
-            "GP 会据此配错互补家族与算子偏好",
-    "D-2":  "LocalParquetProvider.available_fields() 对外宣称支持 `returns`，"
-            "但 `returns` 从不落盘（不在 STANDARD_COLUMNS 里）。"
-            "按宣称的字段清单调用 `fetch(fields=[..., 'returns'])` 时，"
-            "列裁剪在 pyarrow 层直接失败 → `_read_ticker` 吞掉异常只发一条 warning → "
-            "**整批数据返回空**（连 close 都没有），而不是只缺 returns 一项。"
-            "调用方拿到 `{}`，看不出是自己要了一个不存在的列",
     "D-3":  "requirements.txt 写的是 `langchain>=0.2` 没有上界，"
             "而 langchain 1.x 已把 `AgentExecutor` / `create_tool_calling_agent` "
             "移出 `langchain.agents`。本机装的 1.2.15 满足该约束，"
@@ -785,8 +769,13 @@ class TestGpFitnessRankTies:
 # ===========================================================================
 
 class TestReplaceNodeIdentity:
+    """**缺陷 C-2，2026-09-20 已修**（两条用例均已转正）。
 
-    @_xfail("C-2")
+    `_replace_node` 原来先 `deepcopy` 再按 `id(target)` 找 —— 深拷贝之后副本里
+    没有任何节点持有那个 id，除非 target 就是 root，替换**永远静默失败**。
+    现在改成：先在**原树**里定位 target 的路径，再沿同一条路径在副本上替换。
+    """
+
     def test_replacing_an_internal_node_should_actually_replace_it(self):
         """
         ```python
@@ -829,7 +818,6 @@ class TestReplaceNodeIdentity:
             f"把内部叶子 close 换成 volume，得到的却是 {out!r} —— "
             f"deepcopy 之后按 id() 找节点永远找不到，替换静默失败")
 
-    @_xfail("C-2")
     def test_add_ts_smoothing_should_not_be_a_no_op(self):
         """
         C-2 最刺眼的表现：`add_ts_smoothing` 对一棵完全正常的树，
@@ -1107,53 +1095,45 @@ class TestLangChainWiringIsAlive:
 
 class TestLocalParquetAdvertisedFields:
 
-    @_xfail("D-2")
-    def test_every_advertised_field_can_actually_be_requested(self, tmp_path):
+    def test_every_advertised_field_can_actually_be_requested(self):
         """
-        `available_fields()` 是 provider 对外的**字段契约**，
-        调用方（DataManager / DatasetRegistry）按它决定要什么。
+        **缺陷 D-2，2026-09-20 已修**（本用例已转正）。
 
-        但 `returns` 只在这份清单里，从来没进过 parquet ——
-        一旦按契约请求它，`_read_ticker` 的列裁剪在 pyarrow 层抛
-        `No match for FieldRef.Name(returns)`，被 `except` 吞成一条 warning，
-        于是**这个 ticker 的所有分区都读不出来**。
+        `available_fields()` 曾宣称支持 `returns`，而它不在 `STANDARD_COLUMNS` 里、
+        从不落盘。按契约请求 `fields=["close", "returns"]` 时，pyarrow 的列裁剪
+        在读取层失败 → `_read_ticker` 的 except 吞掉异常只发一条 warning →
+        **整批数据返回 `{}`**（连 close 都没有）。调用方拿到空 dict，
+        看不出是自己要了一个不存在的列。
 
-        后果不是"少一列 returns"，而是 `fetch` 返回 `{}` ——
-        连 close 都没有。日循环拿到空面板会当成"今天没有数据"。
+        ⚠️ 旧版把前提 `assert "returns" in advertised` 写在**用例体内** ——
+        `returns` 一旦不再被宣称，这条前提先失败、用例仍是"预期失败"，
+        **修复无法被识别**（与 D-4 同型，见 `_xfail` 的 docstring）。
+        现在断言的是全称命题：**宣称的每一个字段都必须真的能请求到**。
         """
-        import warnings
+        import tempfile
 
         from app.core.data_engine.local_parquet_provider import LocalParquetProvider
 
-        prov = LocalParquetProvider(tmp_path / "store")
-        idx = pd.bdate_range("2022-01-03", periods=4)
-        prov.write(pd.DataFrame({
-            "timestamp": idx, "ticker": ["AAA"] * 4,
-            "open": [1.0] * 4, "high": [2.0] * 4, "low": [0.5] * 4,
-            "close": [1.5] * 4, "volume": [1e6] * 4, "vwap": [1.4] * 4,
-            "adj_factor": [1.0] * 4,
+        root = Path(tempfile.mkdtemp(prefix="d2_"))
+        pv = LocalParquetProvider(root_dir=str(root))
+        idx = pd.bdate_range("2022-01-03", periods=6)
+        pv.write(pd.DataFrame({
+            "timestamp": idx, "ticker": "AAA",
+            "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5,
+            "volume": 1e6, "vwap": 100.2, "adj_factor": 1.0,
         }))
 
-        advertised = prov.available_fields()
-        assert "returns" in advertised, "前提变了：returns 不再被宣称支持"
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            ds = prov.fetch(["AAA"], "2022-01-01", "2022-12-31",
-                            fields=["close", "returns"])
-
-        assert "close" in ds, (
-            f"按 available_fields() 的契约请求 returns，结果连 close 都没拿到："
-            f"{sorted(ds)} —— 一个不可读的宣称字段让整批数据归零")
-
-
-# ===========================================================================
-# financial_interpreter —— 因子家族分类
-# ===========================================================================
+        advertised = pv.available_fields()
+        assert advertised, "没有宣称任何字段，本用例测不到东西"
+        for f in advertised:
+            ds = pv.fetch(["AAA"], "2022-01-01", "2022-12-31", fields=["close", f])
+            assert ds, f"宣称支持 {f!r}，但按契约请求后整批数据为空"
+            assert "close" in ds, (
+                f"请求 [close, {f!r}] 之后连 close 都没了 —— "
+                f"一个不可读的宣称字段让整批数据归零")
 
 class TestFinancialInterpreterNegation:
 
-    @_xfail("D-1")
     def test_both_equivalent_negation_forms_give_the_same_family(self):
         """
         `_is_inverted_momentum` 只认 `ArithmeticNode(op="neg")`：
@@ -1177,6 +1157,10 @@ class TestFinancialInterpreterNegation:
         it = FinancialInterpreter()
         unary = it.interpret("rank(-ts_delta(close,5))").factor_family
         zero_minus = it.interpret("rank((0-ts_delta(close,5)))").factor_family
+        # 反向对照：`(1 - x)` **不是**取负，不得被误判成 reversion ——
+        # 否则这个修复就是把判据放宽到把别的东西也吞进来。
+        assert it.interpret("rank((1-ts_delta(close,5)))").factor_family == "momentum", (
+            "`(1-x)` 被当成了取负 —— 判据放得太宽")
         assert unary == zero_minus, (
             f"`-x` 判为 {unary}，而语义等价的 `(0-x)` 判为 {zero_minus} —— "
             f"同一个因子换写法就换了家族")
@@ -1395,7 +1379,7 @@ def test_the_outstanding_defect_count_is_visible():
     混成一个数会让它读起来比实际严重，也会稀释真正该优先修的那几条。
     """
     behavioural = set(DEFECT_REGISTRY) - TECHNICAL_DEBT - FRONTEND_ONLY
-    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (19, 3, 1), (
+    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (16, 3, 1), (
         f"缺陷分类计数变了：行为缺陷 {len(behavioural)} / 技术债 "
         f"{len(TECHNICAL_DEBT)} / 前端 {len(FRONTEND_ONLY)}"
         f"（登记总数 {len(DEFECT_REGISTRY)}，此前 24/3/1；N-1/N-2/N-3/N-4/N-5 已于 2026-09-20 修复）。\n"

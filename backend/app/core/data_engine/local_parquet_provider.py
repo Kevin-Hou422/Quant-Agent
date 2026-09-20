@@ -23,7 +23,18 @@ from .schema import SchemaEnforcer, STANDARD_COLUMNS
 
 logger = logging.getLogger(__name__)
 
-_SUPPORTED_FIELDS = ["open", "high", "low", "close", "volume", "vwap", "adj_factor", "returns"]
+#: 本 provider **真正落盘**的字段。
+#:
+#: 【缺陷 D-2，2026-09-20 修】原来这里多列了一个 `"returns"` —— 它不在
+#: `STANDARD_COLUMNS` 里、从不落盘。按 `available_fields()` 的契约请求
+#: `fields=["close", "returns"]` 时，pyarrow 的列裁剪在读取层直接失败，
+#: `_read_ticker` 的 `except` 吞掉异常只发一条 warning，于是
+#: **整批数据返回 `{}`（连 close 都没有）**，调用方完全看不出是自己要了一个
+#: 不存在的列。`returns` 是**派生**字段（由上层从 close 计算），不该由存储层宣称。
+#:
+#: 这个清单与 STANDARD_COLUMNS 的一致性由
+#: `test_local_parquet_provider.py::test_advertised_fields_are_all_actually_stored` 对账。
+_SUPPORTED_FIELDS = ["open", "high", "low", "close", "volume", "vwap", "adj_factor"]
 
 
 class LocalParquetProvider(DataProvider):
@@ -71,6 +82,15 @@ class LocalParquetProvider(DataProvider):
         fields: Optional[List[str]] = None,
     ) -> pd.DataFrame:
         """读取并返回标准 long-format 面板。"""
+        # 请求了本 provider 不提供的字段 → **当场报错**，不要读到一半再
+        # 在 `_read_ticker` 里被 except 吞掉、最后交回一个空 dict（缺陷 D-2）。
+        if fields:
+            unknown = [f for f in fields if f not in _SUPPORTED_FIELDS]
+            if unknown:
+                raise ValueError(
+                    f"LocalParquetProvider 不提供字段 {unknown}；"
+                    f"可用字段为 {_SUPPORTED_FIELDS}。"
+                    f"（`returns` 等派生字段请在上层由 close 计算）")
         tickers = [t.upper() for t in tickers]
         start_dt = pd.Timestamp(start)
         end_dt   = pd.Timestamp(end)

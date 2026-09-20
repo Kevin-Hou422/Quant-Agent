@@ -66,9 +66,24 @@ def provider(tmp_path):
 class TestProviderMetadata:
 
     def test_the_supported_field_list_is_the_documented_one(self):
+        # 2026-09-20 修 D-2：`returns` 已从清单里去掉 —— 它是**派生**字段，
+        # 从不落盘，宣称支持会让按契约请求它的调用方拿到空数据。
         assert _SUPPORTED_FIELDS == ["open", "high", "low", "close", "volume",
-                                     "vwap", "adj_factor", "returns"], (
+                                     "vwap", "adj_factor"], (
             f"支持字段列表被改动：{_SUPPORTED_FIELDS}")
+
+    def test_advertised_fields_are_all_actually_stored(self):
+        """
+        **机械对账**（缺陷 D-2 的根因守卫）：宣称支持的每个字段都必须真的落盘。
+
+        判据取 `schema.STANDARD_COLUMNS` —— 那是写入路径的唯一事实来源，
+        不是在测试里另抄一份清单（抄的那份与实现同源，实现改了它不会红）。
+        """
+        from app.core.data_engine.schema import STANDARD_COLUMNS
+        missing = [f for f in _SUPPORTED_FIELDS if f not in STANDARD_COLUMNS]
+        assert not missing, (
+            f"`available_fields()` 宣称支持 {missing}，但它们不在 STANDARD_COLUMNS 里、"
+            f"从不落盘 —— 按契约请求会让整批读取失败")
 
     def test_available_fields_returns_a_copy_not_the_module_list(self, provider):
         """
@@ -502,26 +517,28 @@ class TestFieldProjection:
         ds = provider._to_raw_dataset(long_df, ["close", "不存在的字段"])
         assert set(ds) == {"close"}
 
-    def test_requesting_an_advertised_but_unstored_field_wipes_the_read(self,
-                                                                        provider):
+    def test_requesting_an_unavailable_field_fails_loudly(self, provider):
         """
-        **钉住现状**（缺陷 D-2，本阶段只登记不修）：
-        `returns` 在 `available_fields()` 里，却从不落盘。
-        按契约请求它，整批数据归零 —— 不是少一列，是一列都没有。
+        **缺陷 D-2，2026-09-20 已修**（本用例原是"钉住现状"的那一半）。
 
-        这条与 `tests/meta/test_known_defects.py` 里的 xfail 用例成对：
-        那条描述**应该**的行为（红），这条描述**当前**的行为（绿）。
-        修复时两条一起改。
+        `returns` 曾在 `available_fields()` 里却从不落盘。按契约请求它，
+        pyarrow 的列裁剪在读取层失败 → `_read_ticker` 的 except 吞掉异常 →
+        **整批数据归零**（连 close 都没有），调用方看不出是自己要了不存在的列。
+
+        现在：① `returns` 不再被宣称；② 请求不可用字段**当场报错**。
         """
         provider.write(_long("AAA", pd.bdate_range("2022-01-03", periods=4)))
-        assert "returns" in provider.available_fields()
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            ds = provider.fetch(["AAA"], "2022-01-01", "2022-12-31",
-                                fields=["close", "returns"])
-        assert ds == {}, (
-            f"D-2 的现状变了（现在返回 {sorted(ds)}）—— "
-            f"如果是修好了，请同步删除 test_known_defects 里的 D-2")
+        assert "returns" not in provider.available_fields()
+        with pytest.raises(ValueError, match="不提供字段"):
+            provider.fetch(["AAA"], "2022-01-01", "2022-12-31",
+                           fields=["close", "returns"])
+
+    def test_requesting_only_available_fields_still_works(self, provider):
+        """反向保护：合法字段组合不得被新的前置校验误伤。"""
+        provider.write(_long("AAA", pd.bdate_range("2022-01-03", periods=4)))
+        ds = provider.fetch(["AAA"], "2022-01-01", "2022-12-31",
+                            fields=["close", "volume"])
+        assert set(ds) >= {"close", "volume"}, f"合法请求却拿不到数据：{sorted(ds)}"
 
     def test_the_wide_index_is_a_datetime_index(self, provider):
         """

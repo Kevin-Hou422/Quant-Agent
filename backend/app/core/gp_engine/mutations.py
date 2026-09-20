@@ -27,6 +27,8 @@ All operations:
 from __future__ import annotations
 
 import copy
+import logging
+
 from . import _rng   # R-N1：可绑定共享随机源，替代全局 random（确定性）
 from typing import List, Optional, Tuple
 
@@ -37,6 +39,8 @@ from ..alpha_engine.typed_nodes import (
     _TS_OPS, _CS_OPS,
 )
 from ..alpha_engine.validator import AlphaValidator
+
+logger = logging.getLogger(__name__)
 
 _validator = AlphaValidator()
 
@@ -116,16 +120,86 @@ def _collect_nodes(root: Node) -> List[Node]:
     return result
 
 
+def _child_slots(node: Node):
+    """
+    产出 `(取子节点, 设子节点)` 的存取器对，顺序稳定 —— 这是"路径"的定义基础。
+
+    节点类型分三类：TS（child / second_child）、CS（child）、
+    算术（`_children` 列表），外加 ast.Node 的 `children` 列表兜底。
+    """
+    if isinstance(node, TimeSeriesNode):
+        yield (lambda n=node: n.child,
+               lambda v, n=node: setattr(n, "child", v))
+        if node.second_child is not None:
+            yield (lambda n=node: n.second_child,
+                   lambda v, n=node: setattr(n, "second_child", v))
+        return
+    if isinstance(node, CrossSectionalNode):
+        yield (lambda n=node: n.child,
+               lambda v, n=node: setattr(n, "child", v))
+        return
+    if isinstance(node, ArithmeticNode):
+        for i in range(len(node._children)):
+            yield (lambda n=node, i=i: n._children[i],
+                   lambda v, n=node, i=i: n._children.__setitem__(i, v))
+        return
+    kids = getattr(node, "children", None)
+    if isinstance(kids, list):
+        for i in range(len(kids)):
+            yield (lambda n=node, i=i: n.children[i],
+                   lambda v, n=node, i=i: n.children.__setitem__(i, v))
+
+
+def _path_to(root: Node, target: Node):
+    """在**原树**里按对象身份找 target，返回从 root 出发的子节点序号路径；找不到返回 None。"""
+    if root is target:
+        return []
+    for i, (get, _set) in enumerate(_child_slots(root)):
+        child = get()
+        if child is target:
+            return [i]
+        sub = _path_to(child, target)
+        if sub is not None:
+            return [i] + sub
+    return None
+
+
 def _replace_node(root: Node, target: Node, replacement: Node) -> Node:
     """
-    Deep-copy root and replace the first occurrence of target (by object id)
-    with a deep-copy of replacement.  If target IS root, return a copy of
-    replacement directly.
+    深拷贝 root，并把其中对应 `target` 的那个节点换成 `replacement` 的深拷贝。
+
+    【缺陷 C-2，2026-09-20 修】原实现是：
+
+        root_copy = copy.deepcopy(root)
+        _replace_inplace(root_copy, id(target), copy.deepcopy(replacement))
+
+    —— 先深拷贝，再按 `id(target)` 去副本里找。**深拷贝之后副本里没有任何节点
+    持有那个 id**，于是除非 `target is root`（上面单独处理），替换**永远静默失败**，
+    函数返回一个原样副本。
+
+    后果：`hoist` / `wrap_rank` / `add_ts_smoothing` / `replace_subtree` /
+    `subtree_crossover` 五个算子只能在根节点动手；`add_ts_smoothing` 在根不是
+    数据/窄窗 TS 节点时是**彻底的空操作**（实测 60 个种子只产出 1 种结果 = 原树）。
+    而且它不报错 —— GP 看起来在变异，实际在原地踏步。
+
+    修法：**先在原树里定位 target 的路径**（`id` 在原树里是有效的），
+    再沿同一条路径在副本上替换。路径与对象身份无关，深拷贝不影响它。
     """
     if root is target:
         return copy.deepcopy(replacement)
+
+    path = _path_to(root, target)
+    if path is None:
+        # target 不在这棵树里 —— 调用方传错了。返回原样副本（与旧行为一致），
+        # 但**留痕**：此前这条路径与"找到了却没换成"混在一起，无法区分。
+        logger.warning("[mutations] _replace_node: target 不在 root 里，返回原树副本")
+        return copy.deepcopy(root)
+
     root_copy = copy.deepcopy(root)
-    _replace_inplace(root_copy, id(target), copy.deepcopy(replacement))
+    node = root_copy
+    for step in path[:-1]:
+        node = list(_child_slots(node))[step][0]()
+    list(_child_slots(node))[path[-1]][1](copy.deepcopy(replacement))
     return root_copy
 
 

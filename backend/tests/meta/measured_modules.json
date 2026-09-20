@@ -1370,7 +1370,7 @@
       "proof_entries_min": 97,
       "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
       "refuted_entries_min": 2,
-      "unmeasured_points_max": 924
+      "unmeasured_points_max": 932
     },
     "refuted_by_counterexample": {
       "count": 2,
@@ -1398,9 +1398,9 @@
     "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
     "measured_points": 1982,
     "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-    "current_plan_points": 2906,
+    "current_plan_points": 2914,
     "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-    "unmeasured_points": 924,
+    "unmeasured_points": 932,
     "newly_in_scope_modules": [],
     "per_module_delta": {
       "app/agent/_agent.py": {
@@ -1746,6 +1746,30 @@
         "why": "修 B-12 新增 `seq` 列与同事务取号逻辑。",
         "how_it_was_handled": "两条行为断言（会话侧倒排、消息侧一问一答顺序）已转正通过。",
         "owed": "本次新增 2 个点待批量复核。"
+      },
+      {
+        "date": "2026-09-20 (C-2)",
+        "from": 924,
+        "to": 927,
+        "why": "修 C-2 新增 `_child_slots` / `_path_to` 两个辅助函数。",
+        "how_it_was_handled": "两条原 xfail 已转正（内部节点确实被替换、add_ts_smoothing 不再是空操作）。",
+        "owed": "本次新增 3 个点待批量复核。"
+      },
+      {
+        "date": "2026-09-20 (D-1)",
+        "from": 927,
+        "to": 931,
+        "why": "修 D-1 新增 `_negated_operand`。",
+        "how_it_was_handled": "原 xfail 转正，并加反向对照（`(1-x)` 不得被判成取负）。",
+        "owed": "本次新增 4 个点待批量复核。"
+      },
+      {
+        "date": "2026-09-20 (D-2)",
+        "from": 931,
+        "to": 932,
+        "why": "修 D-2 在 fetch_panel 里新增不可用字段的前置校验。",
+        "how_it_was_handled": "xfail 转正为**全称断言**（宣称的每个字段都要能请求到），另加反向对照（合法字段组合不得被新校验误伤）。",
+        "owed": "本次新增 1 个点待批量复核。"
       }
     ]
   },
