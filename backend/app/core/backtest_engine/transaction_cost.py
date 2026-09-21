@@ -339,7 +339,17 @@ class LiquidityConstraint:
 
         # Task 6.6：迭代投影（water-filling），保证归一化后仍不超 ADV 上限。
         # 旧实现 "clip → 整体 L1 归一化" 会把已触顶的权重推回超限（E-N1/F-N1）。
-        projected = project_to_capped_l1(w, cap_w, target=1.0)
+        #
+        # 【缺陷 A-7，2026-09-21 修】target 原先写死 1.0。`project_to_capped_l1`
+        # 的 `row_target = min(target, budget)`，而 budget 在 cap **有限**时是
+        # Σcap（ADV 上限通常远大于 1），于是 row_target 恒为 1.0 —— 上游
+        # gross≠1 的输入会被整体**放大**回 L1=1。本函数的职责是"削掉超 ADV 的
+        # 部分"，不是"把敞口补满"；上游若已降过敞口（风控/信号弱/部分空仓），
+        # 那是一个决定，这里无权抹掉。这正是 A-6 在执行层的同型错误。
+        #
+        # 传逐行真实 gross：容量充足时原样保敞口，容量不足时自然降到 budget。
+        row_gross = np.abs(w).sum(axis=1)
+        projected = project_to_capped_l1(w, cap_w, target=row_gross)
 
         return pd.DataFrame(projected, index=weights.index, columns=weights.columns)
 

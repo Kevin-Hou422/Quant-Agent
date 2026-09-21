@@ -353,24 +353,24 @@ python tools/mutation/runner.py plan_full.json --state progress_full.json --stat
 
 ---
 
-## 已登记产品缺陷（**5 条未修行为缺陷** + 3 条技术债 + 1 条前端）
+## 已登记产品缺陷（**1 条未修行为缺陷** + 3 条技术债 + 1 条前端）
 
 **分三类数，不混成一个数**（外部审计 2026-09-15 的判定）：
 
 | 类别 | 条数 | 含义 |
 |---|---:|---|
-| 行为缺陷（**未修**） | **5** | 有复现、有"应有行为"的 `xfail(strict=True)` 断言 |
+| 行为缺陷（**未修**） | **1** | 有复现、有"应有行为"的 `xfail(strict=True)` 断言 |
 | 技术债 | 3 | B-9 / B-10 / B-11 —— 只有结构证据，**没有"产品结果是错的"的复现** |
 | 前端 | 1 | N-6 —— 已在当前代码上复现，但后端套件里没有可执行断言 |
 
 混成一个数会让它读起来比实际严重，也会稀释真正该优先修的那几条。
 由 `test_the_outstanding_defect_count_is_visible` 三类分别锁住。
 
-**修复进度（第 3 阶段，2026-09-18 起）**：登记时 28 条行为缺陷 → 现存 **5 条**。
+**修复进度（第 3 阶段，2026-09-18 起）**：登记时 28 条行为缺陷 → 现存 **1 条**（A-6 后半）。
 已修的在下表里以 ~~删除线~~ 标出并写明改法与后果，**不从表里删掉** ——
 下一份报告要能看出"修了什么、当初错在哪"。
 
-剩下的 5 条分三种性质，**不是都能直接开工**：
+剩下的 2 条都已获授权，是工程活不是决策，**不是都能直接开工**：
 
 | 性质 | 编号 | 卡在哪 |
 |---|---|---|
@@ -387,7 +387,7 @@ python tools/mutation/runner.py plan_full.json --state progress_full.json --stat
 | ~~B-1~~ | **已修（2026-09-20）**：`ts_rank` 统一为**平均秩 /(count-1)**，值域真的是 [0,1]。此前两条分支算的**不是同一个量**：bottleneck 是 `bn.move_rank(...)/window`（实测 move_rank 值域 [-1,1]，再除 w → [-1/w, 1/w]，一半为负且随窗口缩放），numpy 是 `le/count`（取不到 0）。后果不只是数不好看 —— `ts_rank(close,20) > 0.8` 在装了 bottleneck 的环境里**恒为假**（上界才 0.05），于是装没装 bottleneck 决定了信号存不存在，GP 进化出的表达式依赖运行环境。映射 `(raw+1)/2` 不是凑出来的：`bn.move_rank` 的定义 `(#less-#greater)/(count-1)` 恒等于 `2r/(count-1)-1`（r 为 0-based 平均秩），代数相等，已用 scipy.stats.rankdata 在 4 个窗口 × 3 条路径上逐位校验 |
 | ~~B-2~~ | **已修（2026-09-20）**：分子改成 `np.sum(dx*dy)/(window-1)`，与分母的 ddof=1 配套。偏差**随窗口变化**（完全线性相关的两条序列 w=5 只给 0.8、w=20 给 0.95），所以相关性阈值在短窗口上更难触发，短窗口的配对信号被系统性压制。`ts_cov` 一直是对的，两者本该同口径。修复后 `ts_corr` 并入三路径逐位对账 |
 | ~~B-3~~ | **已修（2026-09-20）**：`cs_rank` 改为按并列区间取中点的平均秩（全向量化，无 Python 循环）。这是 **C-1 的截面版本** —— 同一个 `argsort(argsort(x))` 错误，时序一份、截面一份。并列值按**列顺序**强行分先后，而列序是面板的存储顺序、不是市场事实：换个标的顺序，同一只票的因子值就变了。新增 test_cs_rank_does_not_depend_on_column_order 把这条直接钉住（打乱列顺序，结果必须只是同样被打乱）|
-| B-4 | `fast_ops.ts_entropy(n_bins=1)` 静默返回 -0.0，而非 NaN/报错 |
+| ~~B-4~~ | **已修（2026-09-21，用户裁定契约）**：`n_bins < 2` 当场抛 ValueError。依据是 **n_bins 走不到 GP/DSL** —— `FAST_TS_OPS` 按 `fn(x, window)` 派发、n_bins 恒为默认 10，fast_ops.py 之外全库零引用，所以 `n_bins=1` 只可能是开发者写错参数，该当场报错而不是返回一个看不出错的数。**顺带修掉登记表列的第二点（负零）**：`h = -np.sum(probs*log(probs))` 在常数窗口（某只票当天没动）上得到 **-0.0**，与 n_bins 无关、合法参数照样触发；负零会传播（`1/-0.0 = -inf`）、报告里显示成 "-0.0" 像故障。这一点是补的反向对照用例 test_a_constant_window_has_zero_entropy 抓出来的 |
 | ~~B-5~~ | **已修（2026-09-20）**：numpy 两条分支从 `np.nanmax/np.nanmin` 改成 `np.max/np.min`（NaN 自然传播），与 bottleneck 的 `min_count=window` 一致。旧行为不止是两边对不上：numpy 那边的极值是**用更少的观测**算出来的 —— 停牌期间 ts_max 系统性偏低、ts_min 偏高，而调用方无从知道这一行的样本数不足。`TestPathsAgree` 新增**含 NaN**的对账用例：无 NaN 的输入上 nanmax 与 max 恒等，旧用例根本看不见这个缺陷 |
 | ~~B-6~~ | **已修（2026-09-20）**：NaN 不再被填成 `-inf` 参与排序（`np.argsort` 本就把 NaN 排到末尾，不占有效名次）。旧实现让 NaN 占掉低位名次、分母却只按有效个数算，于是有效资产的名次从 n_nan/(n_valid-1) 起跳、最高越过 1。危害是 `rank(x) > 0.9` 命中多少取决于**当天停牌几只票**而不是信号。新增按缺失个数参数化的值域不变性用例（缺 0/1/2/3 只票，有效资产都必须铺满 [0,1]）|
 | ~~B-7~~ | **已修（2026-09-20）**：`_too_short` 守卫提到 `if _HAS_BN` 分支**之前**，7 个 bn_* 包装器共用一份。已逐个实测确认 7 个全部受影响（不止 move_mean）。面板一短，整条 DSL 表达式求值**崩掉**而不是给 NaN —— walk-forward 第一折、次新股子集、小 universe 切片都会踩到 |
@@ -400,16 +400,16 @@ python tools/mutation/runner.py plan_full.json --state progress_full.json --stat
 | ~~A-2~~ | **已修（2026-09-20）**：零方差判据统一到 `performance_analyzer.has_meaningful_variation`（相对量级：`sd > 1e-12 × mean|r|`）。原判据 `float(np.nanstd(...)) == 0.0` 用**精确相等**判浮点零 —— 严格全零序列确实返回 0.0、守卫会触发，漏掉的是**只在浮点噪声级别变动**的序列（回测净收益正是这种：多空两腿相减、成本逐日重算，残渣必然非零）。**这与 A-3 本是同一个问题的两处独立实现**（`sharpe_tstat` 里一度还有第三份 `sd <= 1e-15`）；判据分头维护迟早对同一条收益序列给出相反结论，所以提成模块级共享函数，两边薄封装。另修一处：该函数返回 `np.bool_` 而非标注承诺的 `bool`（调用方用 np.nextafter 取边界时暴露）|
 | ~~A-3~~ | **已修（2026-09-20）**：`vol > 0` 判据换成**相对**量级（`sd > 1e-12 × 收益自身量级`）。全常数收益的 `std(ddof=1)` 是 6.5e-19 的浮点残渣，旧判据成立 → 年化 Sharpe 3e16、t 15.5，报告显示「高度显著」。相对判据保证真实低波动（日波动 1e-6）不被误杀，且 `sharpe_tstat` 共用同一判据不分叉 |
 | ~~A-4~~ | **已修（2026-09-20）**：`_tdays` 提前判 `DatetimeIndex` 并抛带说明的 `TypeError`，不再让 `(idx[-1]-idx[0]).days` 抛指向内部实现的 `AttributeError`。`max_drawdown` 里那条按序号相减的 else 分支**可达性未变**（仍不可达），对应的等价性证明措辞已同步 |
-| A-5 | `MVOPortfolio` 注释写「剔除的资产保留基准权重」，实现是整行替换 → 拿到 0 |
+| ~~A-5~~ | **已修（2026-09-21，用户裁定「数据资格先于优化」）**：**两个选项都不对** —— 我当初问的是「保留基准权重 vs 置 0」，而真正的问题是**那一行根本不该是一个数**。返回值现在有三种含义：有限数值=有效目标、全零=**主动清仓**、全 NaN=**本日无有效目标**。把 NaN 当 0 会在数据缺失的日子直接把仓位卖光。原实现有**五条**静默回退路径（returns=None / 预热期 / valid<3 / 求解失败 / 优化结果退化），每条都产出一行看起来完全正常的权重；其中「优化结果退化」那条**连 warning 都没有**，只按登记文字改根本碰不到它。旧实现还自相矛盾：部分资产数据不合格→那些资产清零，不合格到 valid<3→**全部保留**基准权重，缺得越多持仓反而越满。`returns=None` 的 SignalWeighted 回退改为**显式开关**（默认报错，打开后每次构造记 WARNING）。下游 `RealisticBacktester._resolve_no_target_rows` 显式解析 NaN：有过有效目标→沿用（持仓不动，减仓交执行层按实际成交处理）、从未建仓→0（陈述事实而非清仓动作），并在 `_build_weights` 末尾断言无 NaN 漏出。旧注释不作为正确性依据 |
 | A-6 | **执行层已修（2026-09-18/19/20）**：不再写死 target、不再用持仓裁剪冒充成交、按交易差额逐名部分成交且**不再分配**、组合级净敞口回查、未成交量如实记账。实测放大倍数：**目标持仓** 3.33×、**成交名义额** 1.54×。**剩余**：回测引擎仍走 water-filling 持仓裁剪，两引擎在限流场景下语义分家 |
-| A-7 | `project_to_capped_l1(..., target=1.0)` 在**另外三处**仍写死（`realistic_backtester` / `LiquidityConstraint.apply` / `manager.apply_capacity`）。都是构建层，water-filling 合理、错的是 target；`apply_capacity` 的 docstring 写「容量不足时 gross<1」却传 1.0。五个调用点只有 `risk_gate` 传了真实值 |
+| ~~A-7~~ | **已修（2026-09-21）**：三处都改传逐行真实 gross `np.abs(w).sum(axis=1)`。语义核准：`row_target = min(target, budget)`，而 budget 在 cap **有限**时是 Σcap（ADV / 单票上限通常远大于 1），于是 row_target 恒为 1.0 —— 上游 gross≠1 会被整体**放大**回 L1=1，把每个降敞口的决定（波动率目标、风控缩减、部分空仓）抹掉。（cap 为 inf 时 budget 取 `a` 本身，反而不会放大 —— 所以缺陷只在有限 cap 上成立，而三处用的全是有限 cap。）**今天多数情况下是 no-op**：上游全是 SignalWeighted、gross 本就≈1，713 条测试里只有 A-7 自己那条 xfail 变了。修的不是「现在算错」，而是「硬编码了对上游的假设且不校验」。`apply_capacity` 尤其自相矛盾：docstring 写「容量不足时 gross<1」却传 1.0；改完之后两条路径同时对了。补两条反向对照（容量不足仍要降 gross、上限不绑定时权重一点都不该变）。**顺带修掉一条空真用例**：`test_max_single_weight_enforced_end_to_end` 只断言 `max|w| <= cap`，账本被清空时 `0 <= 0.15` 照样成立 —— 变异复核把它抓了出来，已补「加上限后总敞口不得塌陷」的第三段 |
 | ~~C-1~~ | **已修（2026-09-20）**：截面秩改用**平均秩**（并列取均值）。`argsort(argsort(x))` 是序数名次，把截面恒定的零信息信号排成 [0,1,2,...]，算出的 IC 是「ticker 在面板里的位置 vs 未来收益」的伪相关，列序一换 fitness 就变。**同一个错误复制了四份**（gp_engine / alpha_combiner / evaluation_utils / alpha_workflows）；而 `daily_trading_loop` 里早有一份正确实现且写明了理由，却没被复用。现统一到 `fast_ops.average_ranks_1d`，那份改为薄封装 —— 同一概念只留一份实现 |
 | ~~C-2~~ | **已修（2026-09-20）**：`_replace_node` 改为**先在原树里定位路径、再沿路径在副本上替换**。原实现先 deepcopy 再按 `id(target)` 找，副本里没有任何节点持有那个 id，于是除根节点外替换**永远静默失败** —— hoist / wrap_rank / add_ts_smoothing / replace_subtree / subtree_crossover 五个算子只能在根上动手，GP 看着在变异实际原地踏步 |
 | ~~D-1~~ | **已修（2026-09-20）**：取负识别从只认 `op == "neg"` 扩展到「`neg(x)` 或 `sub(0, x)`」。一元负号 `-x` 解析成 `neg(x)`，语义相同的 `(0-x)` 解析成 `sub(ScalarNode(0), x)` —— 同一因子换个等价写法就换家族。新增反向对照：`(1-x)` 不是取负，仍判 momentum（防判据放宽过头）|
 | ~~D-2~~ | **已修（2026-09-20）**：`returns` 是**派生**字段、从不落盘，已从 `available_fields()` 去掉；请求不可用字段改为**当场报 ValueError**，不再读到一半被 except 吞掉、最后交回空 dict。新增机械对账：宣称的每个字段都必须在 `STANDARD_COLUMNS` 里（判据取写入路径的事实来源，不另抄清单）|
 | ~~D-3~~ | **已修（2026-09-20，单独提交）**：迁移到 langchain 1.x 的 `create_agent` API（用户决定）。原状比登记文字更糟 —— `requirements.txt` 无上界，而 **`requirements.lock` 锁的是 1.4.0**，也就是说按声明的依赖装出来的环境，LLM 链路**必然**建不起来，然后被 `except Exception` 吞成一条 warning。CI 全绿，`/api/chat` 照常返回，研究链路整条死掉。迁移中**两处语义不自动等价**，已逐个实测补回：① 工具异常在旧 `AgentExecutor(handle_parsing_errors=True)` 下转成观测喂回模型，`create_agent` 默认**直接冒出 invoke** → 用 `wrap_tool_call` 中间件补回；② `max_iterations=15` 到顶停下返回，`recursion_limit` 到顶**抛 GraphRecursionError** → 真正的对应物是 `ModelCallLimitMiddleware(run_limit=15, exit_behavior="end")`，`recursion_limit` 只作护栏（实测装中间件后需 `4L+4`=64，**不是**没装时的 `2L+2`；第一版照搬了后者，被自己的用例当场抓住）。**未引入 langgraph checkpointer** —— ChatStore 已是会话历史唯一真相，再挂一个就是同一概念两份实现。降级原因做成可检测状态 `AGENT_MODE_*`（四态，按**异常类型** `LangChainIncompatibleError` 而非文案匹配分类），REST 与流式 done **两条都带**。`requirements.txt` 改 `>=1.0,<2.0` 并机械核对 lock 满足。新增 46 条用例（25 迁移验收 + 21 接线），全部用**实际安装的** LangChain，零 mock |
 | ~~D-4~~ | **已修（2026-09-20）**：4 条家族模板从 `rank(neg(X))` 改为 `rank(-X)`，并在 AVAILABLE OPERATORS 下方写明取负只能用一元负号。实测提示词里 6 条 `DSL pattern:` 现在**全部可解析**，`neg(` 归零。**修法不是把 `neg` 加进算子清单** —— 解析器根本没有这个函数，加进去只会让提示词与解析器一起错；`-x` 才是解析器接受、且系统自己序列化时也输出的形式（`str(parse("rank(-ts_delta(close,5))"))` 往返稳定，已实测）。原后果：LLM 照模板产出的公式一律解析失败 → `_validate_and_fix` 白烧两次修复调用后放弃 → 六个家族里四个走模板路径时产出为零，对外只表现为「agent 老是生成非法公式」。两侧用例都改成**全称断言**（每条模板都要解析得了、每个用到的函数都要被声明），不再只防 `neg` 一个；另加反向护栏禁止写回 `neg(` |
-| D-5 | 提示词写 `corr > 0.9`，`AlphaPool` 实际默认 `0.70` 且用 `>=` |
+| ~~D-5~~ | **已修（2026-09-21，用户裁定改文档）**：代码 `abs(corr) >= threshold` 不动，改提示词两处（`_prompts.py` / `_lc_agent.py` 工具 docstring）写明**绝对值**与 `>=`。负相关的 alpha 携带的是同一份信息、只是符号相反，同样该被拒 —— 代码行为在金融上是对的，文档该跟着实现走。（阈值那一半的指控此前已被外部审计推翻：生产链路 `PopulationEvolver` 显式传 0.90，类默认 0.70 不是链路行为。）|
 | ~~D-6~~ | **已修（2026-09-20）**：`_fit()` 的 `try` 现在同时包住 import 与`XGBClassifier(...)` 构造。缺 scikit-learn 时是**构造**抛 ImportError，原来越过守卫直接冒泡 → GP 进化崩溃，而非 warning 承诺的退回 rule-based |
 | ~~N-1~~ | **已修（2026-09-20）**：成本推导的缓存键原来只指纹 `close`，而价差算的是 high/low、冲击用的是 volume —— close 相同、high/low 不同的数据集命中同一条缓存（审计实测真实 1919.83 bps 被 37.47 bps 顶替，差 51 倍）。现在覆盖 `_COST_INPUT_FIELDS`（close/high/low/volume）全部面板 + 券商档位 + 账户类型。守卫两条：AST 从 `trading_context` 抽出**实际读取**的字段与清单对账（不抄一份同源清单）；行为上验证改 high/low 后不再命中旧条目，且同数据集仍然命中（缓存没退化成永不命中）|
 | ~~N-2~~ | **已修（2026-09-20）**：全局试验台账读不到时不再退回 `n_trials=1` 然后照常给结论 —— 那会让 DSR 少做多重检验校正、**门变松**（审计实测 passed=true / DSR≈0.99997）。改为 fail-closed：拒绝给出结论并写明「验证不完整」。旧测试断言的正是 `n_trials == 1`，**它保护的就是那个错误行为**，已改为断言结论 |

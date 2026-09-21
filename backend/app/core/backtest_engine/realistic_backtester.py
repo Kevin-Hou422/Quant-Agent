@@ -424,6 +424,50 @@ class RealisticBacktester:
     # 内部：组合构建（Long-Short or Decile）
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _resolve_no_target_rows(weights: "pd.DataFrame") -> "pd.DataFrame":
+        """
+        把「本日无有效目标」（全 NaN 行）解析成一个**明确的**持仓指令。
+
+        【缺陷 A-5，2026-09-21】`MVOPortfolio` 现在用全 NaN 行表示"这一天没算出
+        有效目标"（数据不合格 / 求解失败 / 预热期），与全零行的"主动清仓"
+        **是两回事**。把 NaN 当 0 会在数据缺失的日子直接把仓位卖光。
+
+        解析规则，两条都必须是明确决定而不是副产物：
+
+          · **已经有过有效目标** → 沿用上一个有效目标（forward fill）。
+            没有新指令 ≠ 平仓。持仓继续估值、继续记账；真要减仓由执行层按
+            实际成交处理，构建层不替它假定已经成交。
+
+          · **还没有过任何有效目标**（开头的预热期）→ 0。
+            此时根本没有建过仓，"空仓"就是事实，不是清仓动作。
+
+        两种情形都会记日志：回测结果里混着"优化出来的目标"和"沿用的旧目标"，
+        不写下来就没人分得清哪一天是哪种。
+        """
+        import numpy as np
+        import pandas as pd
+
+        na_rows = weights.isna().all(axis=1)
+        if not na_rows.any():
+            return weights
+
+        resolved = weights.ffill()
+        # 开头那段没有前值可沿用 —— 那是"还没建仓"，填 0 是事实陈述
+        still_na = resolved.isna().all(axis=1)
+        resolved.loc[still_na, :] = 0.0
+        # 部分列 NaN（理论上不会有：MVO 要么整行有效要么整行 NaN）也一并兜住
+        resolved = resolved.fillna(0.0)
+
+        n_carried = int((na_rows & ~still_na).sum())
+        n_flat    = int(still_na.sum())
+        logger.warning(
+            "[RealisticBacktester] MVO 有 %d 个交易日无有效目标：%d 日沿用上一个"
+            "有效目标（持仓不动），%d 日尚未建过仓（记为空仓）。"
+            "这些日子的权重**不是**优化结果。",
+            int(na_rows.sum()), n_carried, n_flat)
+        return resolved
+
     def _build_weights(
         self,
         signal:  pd.DataFrame,
@@ -457,10 +501,17 @@ class RealisticBacktester:
                 if returns is None and "close" in dataset:
                     returns = dataset["close"].pct_change()
             weights = MVOPortfolio().construct(signal, returns=returns)
+            weights = self._resolve_no_target_rows(weights)
         else:
             raise ValueError(
                 f"未知 portfolio_mode: '{mode}'，应为 'long_short'、'decile' 或 'mvo'"
             )
+
+        # NaN 行到这里必须已经解析掉 —— 它是「无有效目标」，不是权重。
+        # 让它流进 project_to_capped_l1 / BacktestEngine 会被静默当成 0（清仓）。
+        assert not weights.isna().to_numpy().any(), (
+            "权重矩阵里还有 NaN —— 「无有效目标」的行没有被显式解析，"
+            "下游会把它当成 0（清仓）。见 _resolve_no_target_rows。")
 
         # F11: 单资产权重上限约束
         # Task 6.6：迭代投影替代 "clip→整体 L1 归一化"，保证归一化后单票仍 ≤ cap
@@ -470,7 +521,11 @@ class RealisticBacktester:
             from .transaction_cost import project_to_capped_l1
             w   = weights.to_numpy(dtype=float)
             cap_mat = np.full_like(w, cap)
-            projected = project_to_capped_l1(w, cap_mat, target=1.0)
+            # 【缺陷 A-7，2026-09-21 修】原先写死 target=1.0。单票上限 cap 是
+            # 有限值，budget=N×cap 通常远大于 1，于是 gross≠1 的输入被放大回 1。
+            # 这里的职责只是"压住单票集中度"，不该改变组合总敞口。
+            projected = project_to_capped_l1(w, cap_mat,
+                                             target=np.abs(w).sum(axis=1))
             weights = pd.DataFrame(projected, index=weights.index, columns=weights.columns)
 
         return weights

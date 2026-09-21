@@ -1370,7 +1370,7 @@
       "proof_entries_min": 97,
       "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
       "refuted_entries_min": 2,
-      "unmeasured_points_max": 946
+      "unmeasured_points_max": 954
     },
     "refuted_by_counterexample": {
       "count": 2,
@@ -1398,9 +1398,9 @@
     "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
     "measured_points": 1982,
     "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-    "current_plan_points": 2928,
+    "current_plan_points": 2936,
     "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-    "unmeasured_points": 946,
+    "unmeasured_points": 954,
     "newly_in_scope_modules": [],
     "per_module_delta": {
       "app/agent/_agent.py": {
@@ -1794,6 +1794,22 @@
         "to": 946,
         "why": "迁移 _lc_agent 到 langchain 1.x 的 create_agent：新增 RECURSION_LIMIT 常数、wrap_tool_call 中间件、_SessionScopedAgent 适配器（会话历史读写），以及 _agent 的 AGENT_MODE_* 分类。",
         "how_it_was_handled": "**新增的 8 个点已逐个复核，8/8 被杀死。** 首轮 5 杀 3 活，存活的三个都是 `and -> or` 条件放宽 —— **不是等价变异**，是当时没有用例走到那些形状。按它们真实的失败后果补了 3 条用例并复验通过：① 回复绝不能取到 ToolMessage 的原始输出（模型调完工具给空总结时会走到）；② content 可能是多模态块列表，放行会让 ChatResponse.reply 拿到非字符串；③ 缺 session_id 时不得拿 None 当会话 id 去写库。另有 2 个点是**删掉**的：`_agent.py` 里我自己写的一个空 `elif ... : pass` 分支，它什么也不做、两个点必然存活。没有为空操作写等价性证明 —— 删掉才是诚实的处理（与 fast_ops 那两个幻影点同一个判断：等价变异的出路是让它不存在）。",
+        "owed": "无。本次新增点复核已当场完成。"
+      },
+      {
+        "date": "2026-09-21 (B-4 / A-5 / D-5)",
+        "from": 946,
+        "to": 951,
+        "why": "按用户裁定的契约修 B-4（n_bins 守卫 + 负零）与 A-5（MVO 的「无有效目标」NaN 语义、显式回退开关、下游解析函数）。D-5 只改提示词文本，零新增点。",
+        "how_it_was_handled": "新增 11 个点，首轮 9 杀 2 活。两个存活分别处置：① `min_valid_assets < 2` 的 `<=` 变异 —— 真盲区（2 是文档写明的合法下界却没人测），补 test_min_valid_assets_boundary 并复验杀死；② `l1 <= 1e-12` 的 `<` 变异 —— 要穿过线性求解精确命中 1e-12 才分道，不现实，但**不等价**（真命中时旧写法拦下、新写法放行，权重被 1e-12 除到1e12 量级）。改写成 `np.isclose(l1, 0.0, atol=1e-12, rtol=0.0)`：恒等，但没有可变异的比较符 —— 与 fast_ops 那两个幻影点同一个判断，等价/不可达变异的出路是让它不存在，不是给它开证明。",
+        "owed": "无。本次新增点复核已当场完成。"
+      },
+      {
+        "date": "2026-09-21 (A-7)",
+        "from": 951,
+        "to": 954,
+        "why": "修 A-7：构建层三处 `project_to_capped_l1(..., target=1.0)` 改传逐行真实 gross （transaction_cost.LiquidityConstraint.apply / manager.apply_capacity / realistic_backtester 的单票上限）。",
+        "how_it_was_handled": "新增 3 个点（三处 `np.abs` 的「丢符号」变异），首轮 2 杀 1 活。存活的是 realistic_backtester 那处 —— **不是等价变异，是既有用例空真**：`test_max_single_weight_enforced_end_to_end` 断言 `max|w| <= cap`，而去掉 abs 后多空账本的带符号和≈0 → target 塌成 0 → 组合被清空，`0 <= 0.15` 照样成立，用例全绿而持仓已经没了。（该用例的 docstring 自己警告过空真，但防的是另一个方向。）补第三段断言：加了单票上限后总敞口相对不加上限的中位数比值必须 > 0.5 —— 上限的职责是压集中度、不是降敞口。复验确认杀死。",
         "owed": "无。本次新增点复核已当场完成。"
       }
     ]

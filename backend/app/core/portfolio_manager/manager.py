@@ -126,7 +126,14 @@ class PortfolioManager:
         cap_usd = adv_usd * self.params.adv_cap_pct             # 每名每日 $ 上限
         cap_w = (cap_usd / self.aum).to_numpy(dtype=float)
         cap_w = np.where(np.isfinite(cap_w) & (cap_w > 0.0), cap_w, 0.0)
-        capped = project_to_capped_l1(weights.to_numpy(dtype=float), cap_w, target=1.0)
+        # 【缺陷 A-7，2026-09-21 修】原先写死 target=1.0，与本函数 docstring
+        # 承诺的"容量不足时 gross<1"**自相矛盾**：cap 有限时 budget=Σcap 远大于
+        # 1，row_target 恒为 1.0，上游 gross≠1 会被放大回 1。
+        # 传逐行真实 gross 之后两件事都对：容量足→保持上游敞口，
+        # 容量不足→降到 budget（docstring 承诺的那条路径）。
+        w_arr = weights.to_numpy(dtype=float)
+        capped = project_to_capped_l1(w_arr, cap_w,
+                                      target=np.abs(w_arr).sum(axis=1))
         return pd.DataFrame(capped, index=weights.index, columns=cols)
 
     # ------------------------------------------------------------------ 编排

@@ -65,18 +65,15 @@ DEFECT_REGISTRY = {
     # B-1 / B-2 / B-3 / B-5 / B-6 / B-7 —— fast_ops 算子族，2026-09-20 全部修复并移出登记表。
     # 正确性断言见 tests/unit/alpha_engine/test_fast_ops_kernel.py 的 H 节
     # （TestFormerlyBrokenOperators，参照 scipy/pandas/np.corrcoef）。
-    "B-4":  "ts_entropy(n_bins=1) 返回 -0.0 而非 NaN/报错 —— **契约未定**："
-            "普通 Shannon 熵单箱本来就是 0，代码也显式选了分母 1"
-            "（`log_nbins = np.log(n_bins) if n_bins > 1 else 1.0`），"
-            "没有任何外部接口契约要求 NaN。真正的问题只有两点："
-            "① 归一化熵在退化输入上的约定没写下来；② 返回的是 **负零**。"
-            "第 3 阶段要先定约定再谈修不修（外部审计 2026-09-15 要求收窄）",
+    # B-4 —— ts_entropy 单箱契约，2026-09-21 修复并移出登记表。
+
     "B-9":  "use_label_encoder=False 对 xgboost 3.x 已无意义（仅代码整洁，无行为影响）",
     "B-10": "fast_ops 的向量化分支被 except Exception 完全兜住（结构问题，无行为断言）",
     "B-11": "data_partitioner 的『OOS 为空』守卫不可达（结构问题，无行为断言）",
     # A-2 —— strategy_gate 零方差守卫，2026-09-20 修复并移出登记表。
 
-    "A-5":  "MVOPortfolio 注释写『剔除的资产保留基准权重』，实现是整行替换 → 拿到 0",
+    # A-5 —— MVO 无有效目标 vs 主动清仓，2026-09-21 修复并移出登记表。
+
     "A-6":  "【执行层已于 2026-09-18/19/20 修复，回测引擎侧未动】"
             "PaperBroker 曾同时犯两个错：① `target=1.0` 写死，把目标总敞口强行"
             "放大到 L1=1（实测日循环**目标持仓**总敞口 0.27–0.30 → 0.90–1.00，"
@@ -89,26 +86,14 @@ DEFECT_REGISTRY = {
             "限流场景下语义已经分家 —— `test_replay_matches_backtest_engine` 的 "
             "1e-9 对账目前只在『上限不绑定』的数据上成立，绑定时会分叉。"
             "统一之后历史回测收益会变，需要前后对比与差异解释",
-    "A-7":  "`project_to_capped_l1(..., target=1.0)` 的字面量在**另外三处**仍然写死："
-            "`realistic_backtester.py`（单票权重上限）、`transaction_cost.py` 的 "
-            "`LiquidityConstraint.apply`、`manager.py` 的 `apply_capacity`。"
-            "这三处都是**构建层**，water-filling 本身合理，错的是 target："
-            "上游 gross≠1 时会被整体放大回 1。`apply_capacity` 尤其自相矛盾 —— "
-            "它的 docstring 写着『容量不足时 gross<1』，却传 `target=1.0`。"
-            "五个调用点里只有 `risk_gate.py` 传了真实 target。"
-            "（`project_to_capped_l1` 已支持逐行 target，改法是传 "
-            "`np.abs(w).sum(axis=1)`，但每处都要单独确认上游口径）",
+    # A-7 —— 构建层三处写死的 target=1.0，2026-09-21 修复并移出登记表。
+
     # D-3 —— langchain 大版本不兼容，2026-09-20 迁移到 create_agent 并移出登记表。
 
     # D-4 —— 提示词的 neg() 模板，2026-09-20 修复并移出登记表。
 
-    "D-5":  "系统提示词写 `AlphaPool rejects signal-correlated alphas (corr > 0.9)`。"
-            "**数字这一半的指控不成立**（外部审计 2026-09-15）：`AlphaPool` 的"
-            "**类默认**确实是 0.70，但生产链路 `PopulationEvolver` 的默认是 0.90 "
-            "并显式传进池子（`AlphaPool(max_size=200, corr_threshold=corr_threshold)`），"
-            "实际对象上就是 0.90 —— 不能拿类默认值去断言链路行为。"
-            "剩下的真实不一致只有一处：提示词说 `corr > 0.9`，代码判的是 "
-            "`abs(corr) >= 0.9` —— **绝对值**（负相关同样被拒）与**边界开闭**两处差异",
+    # D-5 —— 提示词相关度文案，2026-09-21 修复并移出登记表。
+
     "N-6":  "（前端，本轮不做）useQuantWorkspace.switchSession 在 await 之后无条件 "
             "`setMessages` —— 不检查响应回来时当前会话是否还是发起时那个。"
             "先切 A 再切 B、B 先返回 A 后返回时，store 里 sessionId=B 而展示内容"
@@ -215,12 +200,29 @@ class TestFastOpsDefects:
         got = F.cs_rank(np.array([[5.0, 5.0, 5.0, 9.0]])).ravel()
         assert got[0] == pytest.approx(got[1]) == pytest.approx(got[2])
 
-    @_xfail("B-4")
-    def test_ts_entropy_with_one_bin_should_not_return_zero(self):
-        """n_bins=1 是退化参数，应当是 NaN 或报错，不能静默给 -0.0。"""
+    def test_ts_entropy_rejects_a_degenerate_bin_count(self):
+        """
+        **缺陷 B-4，2026-09-21 定契约并修**（本用例已转正）。
+
+        `n_bins=1` 原先静默返回 **-0.0**：单箱 probs=[1.0] → h=-0.0，
+        再除以顶替的分母 1.0（`log(1)=0` 不能当分母，代码拿 1.0 换了量纲）。
+
+        契约定为**报错**，依据是 `n_bins` 走不到 GP/DSL —— `FAST_TS_OPS` 按
+        `fn(x, window)` 派发、n_bins 恒为默认 10，fast_ops.py 之外全库零引用。
+        所以它只可能是开发者写错参数。
+
+        登记表列的第二点（负零）与 n_bins 无关、合法参数照样触发，
+        已一并修掉；详尽断言见
+        test_fast_ops_kernel.py::TestEntropyBinContract。
+        """
         import app.core.alpha_engine.fast_ops as F
-        got = F.ts_entropy(np.arange(10, dtype=float).reshape(10, 1), 5, n_bins=1)
-        assert np.all(np.isnan(got))
+        x = np.arange(10, dtype=float).reshape(10, 1)
+        with pytest.raises(ValueError, match="n_bins"):
+            F.ts_entropy(x, 5, n_bins=1)
+        # 反向对照：合法参数不受影响，且常数窗口给的是**正**零
+        flat = F.ts_entropy(np.full((10, 1), 2.0), 5, n_bins=4)[4:]
+        np.testing.assert_allclose(flat, 0.0, atol=1e-12)
+        assert not np.signbit(flat).any(), "常数窗口仍返回负零"
 
     def test_ts_max_nan_policy_should_match_across_paths(self):
         """模块 docstring 承诺 strict NaN policy，两条分支必须一致。"""
@@ -621,24 +623,28 @@ class TestBacktestAndExecutionDefects:
         assert "DatetimeIndex" in msg, f"报错没说清楚要什么索引：{msg}"
         assert "net_returns" in msg, f"报错没指出是哪个字段的索引：{msg}"
 
-    @_xfail("A-5")
-    def test_dropped_assets_should_keep_their_benchmark_weight(self):
+    def test_data_ineligible_assets_get_no_allocation(self):
         """
-        注释写"剔除 NaN 过多的资产（保留其基准权重）"，实现是
-        `w_out[t] = row / l1` **整行替换** —— 被剔除的资产拿到 0。
+        **缺陷 A-5，2026-09-21 按用户裁定的「数据资格先于优化」修复**（已转正）。
 
-        旧版这条是 `assert "保留其基准权重" not in src or ...` 的**源码字符串
-        断言**（外部审计 2026-09-15 点名）：它只能发现"这两句话同时出现在源码
-        里"，改个措辞就静默转绿，而权重仍然是 0。这里改成真的跑一遍构造器、
-        比对被剔除资产的权重。
+        旧注释写"剔除 NaN 过多的资产（保留其基准权重）"，实现给的是 0。
+        **两者都不是答案** —— 真正的问题是返回值把三件事混成了一种表示：
 
-        **契约尚未裁定**（审计的意见，我同意）：对坏数据资产保留非零仓位
-        是否正确，不能由一句注释决定。本用例钉住的是"注释承诺的行为"，
-        第 3 阶段要先定政策 —— 若结论是"归零才对"，那要改的是注释，
-        同时删掉本用例与 A-5 登记。
+          · 有限数值 = 本日的有效目标
+          · 全零     = **主动清仓**
+          · 全 NaN   = **本日没有有效目标**（数据不合格 / 求解失败 / 预热期）
+
+        旧实现有五条静默回退路径，每条都产出一行看起来完全正常的权重，
+        而且自相矛盾：部分资产数据不合格 → 那些资产清零；不合格到
+        `valid < 3` → **全部保留**基准权重。缺得越多，持仓反而越满。
+
+        本条钉住裁定后的规则：合格资产足够时，不合格的那些**明确不配置**（0），
+        其余照常优化且整行不是 NaN。
+
+        （更早一版是 `assert "保留其基准权重" not in src` 的源码字符串断言 ——
+        改个措辞就静默转绿，而权重仍然是 0。外部审计 2026-09-15 点名。）
         """
-        from app.core.backtest_engine.portfolio_constructor import (
-            MVOPortfolio, SignalWeightedPortfolio)
+        from app.core.backtest_engine.portfolio_constructor import MVOPortfolio
 
         T, N, W = 30, 5, 20
         idx = pd.bdate_range("2024-01-02", periods=T)
@@ -646,32 +652,62 @@ class TestBacktestAndExecutionDefects:
         rng = np.random.default_rng(7)
         signal = pd.DataFrame(rng.normal(size=(T, N)), index=idx, columns=cols)
         returns = pd.DataFrame(rng.normal(0, 0.01, (T, N)), index=idx, columns=cols)
-        # 第 0 列在协方差窗口里 50% 缺失 → `valid` 判 False（阈值 30%），
-        # 其余 4 列干净（`valid.sum() == 4 >= 3`，优化分支照常走）。
+        # 第 0 列在协方差窗口里 50% 缺失 → 不合格（阈值 30%）；
+        # 其余 4 列干净，合格数 4 >= min_valid_assets，优化分支照常走。
         returns.iloc[::2, 0] = np.nan
 
-        base = SignalWeightedPortfolio(clip_z=3.0).construct(signal)
         out = MVOPortfolio(cov_window=W, clip_z=3.0).construct(signal, returns)
+        live = out.iloc[W:]
 
-        optimised = [t for t in range(W, T) if not np.allclose(
-            out.to_numpy()[t], base.to_numpy()[t], atol=1e-12)]
-        assert optimised, (
-            "没有任何一天真的走进优化分支 —— 本用例测不到剔除逻辑")
+        assert not live.isna().all(axis=1).any(), (
+            "有 4 个合格资产，却整行判成了「无有效目标」")
+        assert np.allclose(live.iloc[:, 0].to_numpy(), 0.0, atol=1e-12), (
+            f"数据不合格的 {cols[0]} 仍拿到了配置："
+            f"{live.iloc[:, 0].abs().max():.6g} —— 数据资格没有先于优化")
+        assert np.allclose(live.abs().sum(axis=1).to_numpy(), 1.0, atol=1e-6), (
+            "剔除之后没有在合格集合上重新归一")
 
-        t0 = optimised[0]
-        assert out.iloc[t0, 0] == pytest.approx(base.iloc[t0, 0], abs=1e-12), (
-            f"第 {t0} 天：被剔除资产 {cols[0]} 的权重是 {out.iloc[t0, 0]:.6g}，"
-            f"而注释承诺『保留其基准权重』= {base.iloc[t0, 0]:.6g}")
+    def test_no_valid_target_is_not_the_same_as_a_flat_book(self):
+        """
+        「本日无有效目标」(NaN) 与「主动清仓」(全零) 必须分得开。
 
-    @_xfail("A-7")
+        把 NaN 当 0 会在数据缺失的日子直接把仓位卖光 —— 这正是用户裁定里
+        点名禁止的"返回全零权重冒充成功"。
+        """
+        from app.core.backtest_engine.portfolio_constructor import MVOPortfolio
+
+        T, N, W = 40, 4, 20
+        idx = pd.bdate_range("2024-01-02", periods=T)
+        cols = [f"T{i}" for i in range(N)]
+        rng = np.random.default_rng(11)
+        signal = pd.DataFrame(rng.normal(size=(T, N)), index=idx, columns=cols)
+        returns = pd.DataFrame(np.nan, index=idx, columns=cols)   # 全部不合格
+
+        out = MVOPortfolio(cov_window=W, clip_z=3.0).construct(signal, returns)
+        tail = out.iloc[W:]
+        assert tail.isna().all(axis=1).all(), (
+            "合格资产为零时没有给「无有效目标」")
+        # 关键区分：这些行必须是 NaN，**不能**是 0 —— 0 是"卖光"的指令
+        assert not (tail == 0.0).any().any(), (
+            "「无有效目标」被写成了全零，下游会照此清仓")
+        # 预热期同样是 NaN —— 那几天根本没有协方差估计
+        assert out.iloc[:W].isna().all(axis=1).all(), "预热期仍在产出权重"
+
     def test_construction_layer_projections_keep_the_upstream_gross(self):
         """
-        构建层的三处 `project_to_capped_l1(..., target=1.0)`：上游 gross≠1 时
-        会被整体放大回 1，把每一个降敞口的决定抹掉（A-6 的同型）。
+        **缺陷 A-7，2026-09-21 已修**（本用例已转正）。
 
-        这里挑 `manager.apply_capacity` 作代表 —— 它**自相矛盾**得最明显：
+        构建层的三处 `project_to_capped_l1(..., target=1.0)`：`row_target` 是
+        `min(target, budget)`，而 budget 在 cap **有限**时是 Σcap
+        （ADV / 单票上限通常远大于 1），于是 row_target 恒为 1.0 ——
+        上游 gross≠1 的输入被整体**放大**回 L1=1，
+        每一个降敞口的决定（波动率目标、风控缩减、部分空仓）都被抹掉。
+        这是 A-6 在构建层的同型错误。
+
+        三处现在都传逐行真实 gross：容量足→原样保敞口，容量不足→降到 budget。
+
+        本条挑 `manager.apply_capacity` 作代表 —— 它**自相矛盾**得最明显：
         docstring 写着"容量不足时 gross<1"，传的却是 `target=1.0`。
-        喂一份 gross=0.3 的权重、容量充足（上限不绑定），输出 gross 必须还是 0.3。
         """
         from app.core.portfolio_manager.manager import PortfolioManager
 
@@ -686,7 +722,48 @@ class TestBacktestAndExecutionDefects:
         got = float(out.abs().sum(axis=1).iloc[-1])
         assert got == pytest.approx(0.3, abs=1e-9), (
             f"容量不绑定时 gross 应原样保持 0.3，实际 {got:.4f} —— "
-            f"`target=1.0` 写死把上游的降敞口决定抹掉了")
+            f"上游的降敞口决定被抹掉了")
+
+    def test_capacity_shortfall_still_lowers_the_gross(self):
+        """
+        反向对照：修 A-7 时容易矫枉过正 —— 把 target 换成逐行 gross 之后，
+        **容量不足**那条路径必须仍然生效（`row_target = min(gross, budget)`）。
+
+        没有这一条，"不再放大"和"再也不削减"就分不开，而
+        `apply_capacity` 的 docstring 承诺的正是"容量不足时 gross<1"。
+        """
+        from app.core.portfolio_manager.manager import PortfolioManager
+
+        idx = pd.bdate_range("2024-01-02", periods=5)
+        cols = ["A", "B"]
+        w = pd.DataFrame([[0.5, -0.5]] * 5, index=idx, columns=cols)    # gross 1.0
+        px = pd.DataFrame(100.0, index=idx, columns=cols)
+        vol = pd.DataFrame(100.0, index=idx, columns=cols)              # ADV 极小
+
+        pm = PortfolioManager(aum=1_000_000.0)
+        out = pm.apply_capacity(w, px, vol)
+        got = float(out.abs().sum(axis=1).iloc[-1])
+        assert got < 1.0 - 1e-9, (
+            f"容量严重不足时 gross 仍是 {got:.4f} —— 容量约束失效了")
+        assert got >= 0.0
+
+    def test_the_single_name_cap_does_not_change_total_exposure(self):
+        """
+        `realistic_backtester` 那一处：单票上限的职责只是**压住集中度**，
+        不该改变组合总敞口。
+
+        喂一份 gross=0.4 且**没有任何一只票触顶**的权重，
+        输出 gross 必须还是 0.4 —— 上限没绑定就什么都不该发生。
+        """
+        from app.core.backtest_engine.transaction_cost import project_to_capped_l1
+
+        w = np.array([[0.25, -0.15]])          # gross 0.4，单票上限 0.3 不绑定
+        cap = np.full_like(w, 0.3)
+        out = project_to_capped_l1(w, cap, target=np.abs(w).sum(axis=1))
+        assert float(np.abs(out).sum()) == pytest.approx(0.4, abs=1e-12), (
+            "上限不绑定时组合总敞口被改动了")
+        np.testing.assert_allclose(out, w, atol=1e-12,
+                                   err_msg="上限不绑定时权重就不该变")
 
     @_xfail("A-6")
     def test_the_two_engines_agree_when_liquidity_binds(self):
@@ -1038,7 +1115,6 @@ class TestSystemPromptThresholds:
             "PopulationEvolver 没有把自己的 corr_threshold 传给 AlphaPool —— "
             "那样类默认值才会真的生效，D-5 的原始指控就重新成立了")
 
-    @_xfail("D-5")
     def test_the_prompt_threshold_matches_the_actual_rejection_rule(self):
         """
         收窄后仍然成立的那一半：提示词写 `corr > 0.9`，
@@ -1054,15 +1130,21 @@ class TestSystemPromptThresholds:
 
         from app.agent._prompts import _SYSTEM_PROMPT as P
 
-        m = re.search(r"corr\s*([<>=]+)\s*([\d.]+)", P)
-        assert m, "提示词里找不到相关度阈值"
+        # 提示词里带一份**规范形式** `abs(corr) >= 0.9`，测试锚定它而不是扫散文。
+        # 上一版正则是 `corr\s*([<>=]+)\s*([\d.]+)` —— 我把措辞改通顺之后它就
+        # 抓不到了，当场判红。规则的三要素（绝对值 / 比较符 / 阈值）必须都能
+        # 机械读出来，否则"提示词和代码一致"这件事就只能靠人眼。
+        m = re.search(r"abs\(corr\)\s*(>=|>|<=|<)\s*([\d.]+)", P)
+        assert m, (
+            "提示词里找不到规范形式 `abs(corr) <op> <阈值>` —— "
+            "措辞可以改，但这份机器可读的规则必须留着")
         op, num = m.group(1), float(m.group(2))
         thr = self._evolver()._pool._corr_threshold
 
-        assert (op, num) == (">=", thr) and "abs" in P.lower(), (
-            f"提示词写的是 `corr {op} {num}`，实际拒收规则是 "
-            f"`abs(corr) >= {thr}` —— 绝对值与边界开闭两处都没写对"
-            f"（数字本身 {num} vs {thr} 是对的，那一半指控已撤销）")
+        assert op == ">=", (
+            f"提示词写的比较符是 `{op}`，代码判的是 `>=`（边界闭）")
+        assert num == pytest.approx(thr), (
+            f"提示词写的阈值是 {num}，生产链路实际是 {thr}")
 
 
 # ===========================================================================
@@ -1419,10 +1501,10 @@ def test_the_outstanding_defect_count_is_visible():
     混成一个数会让它读起来比实际严重，也会稀释真正该优先修的那几条。
     """
     behavioural = set(DEFECT_REGISTRY) - TECHNICAL_DEBT - FRONTEND_ONLY
-    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (5, 3, 1), (
+    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (1, 3, 1), (
         f"缺陷分类计数变了：行为缺陷 {len(behavioural)} / 技术债 "
         f"{len(TECHNICAL_DEBT)} / 前端 {len(FRONTEND_ONLY)}"
-        f"（登记总数 {len(DEFECT_REGISTRY)}，此前 6/3/1；"
+        f"（登记总数 {len(DEFECT_REGISTRY)}，此前 2/3/1；"
         f"B-1/B-2/B-3/B-5/B-6/B-7 这一族 fast_ops 算子缺陷已于 2026-09-20 一并修复）。\n"
         f"修好缺陷时请同时：① 删掉对应 xfail 标记 ② 改掉模块测试里"
         f"『钉住现状』的断言 ③ 更新 MUTATION_LEDGER。\n"

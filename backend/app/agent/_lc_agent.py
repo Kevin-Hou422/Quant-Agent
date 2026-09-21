@@ -135,7 +135,9 @@ def _build_tools(tools_obj: QuantTools) -> list:
         1. Initialises population with seed_dsl + random AST variants.
         2. Evolves for n_generations using AST mutation + subtree crossover + selection.
         3. Multi-objective fitness: sharpe_oos - 0.2*turnover - 0.3*overfit_penalty.
-        4. Diversity filter: rejects alphas with signal correlation > 0.9.
+        4. Diversity filter: rejects alphas whose |signal correlation| with any
+           pooled alpha is >= 0.9 (negative correlation counts: same information,
+           opposite sign).
         5. After evolution, Optuna fine-tunes ONLY the best structure's parameters.
 
         factor_family: pass the value from tool_interpret_factor to bias GP mutations

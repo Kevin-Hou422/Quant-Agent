@@ -394,35 +394,74 @@ class TestNumbersMatchTheCode:
         assert not missing, (
             f"提示词点名了 mutations.py 里不存在的算子：{missing}")
 
-    def test_the_alpha_pool_correlation_threshold_matches_the_default(self):
+    def test_the_prompt_states_the_real_rejection_rule(self):
         """
-        **本轮靠这条抓出了缺陷 D-5**（当前钉住的是**现状**，见下）。
+        **缺陷 D-5，2026-09-21 按用户裁定（改文档、代码不动）修复**（已转正）。
 
-        提示词：`AlphaPool rejects signal-correlated alphas (corr > 0.9)`
-        代码：  `corr_threshold: float = 0.70`，判定 `abs(corr) >= threshold`
+        提示词原写 `AlphaPool rejects signal-correlated alphas (corr > 0.9)`，
+        而实际拒收规则是 `abs(corr) >= threshold`：**绝对值**（负相关同样被拒）
+        与**边界开闭**两处都不一致。后果是 LLM 按提示词判断"这两条够不够正交"，
+        与池子的真实规则不同，会反复产出自以为合格、实际被静默拒绝的候选。
 
-        两处都对不上。本阶段只登记不修，所以这里钉住现状；
-        与 `tests/meta/test_known_defects.py` 里的 D-5 xfail 用例成对，
-        修好时两条一起改。
+        裁定结论是改文档：代码行为在金融上是对的 —— 与已有因子完全负相关的
+        alpha 携带的是同一份信息、只是符号相反，理应同样被拒。
+
+        提示词里现在带一份**规范形式** `abs(corr) >= 0.9`，本条锚定它。
+        上一版正则扫的是散文里的 `corr > 0.9`；措辞一改就抓不到，
+        而"抓不到"与"不一致"是两回事，必须分开报。
+
+        （阈值数字那一半的指控此前已被外部审计推翻：生产链路
+        `PopulationEvolver` 显式传 0.90，`AlphaPool` 的类默认 0.70 不是链路行为。
+        所以这里对的是**规则形状**，具体数值由
+        test_the_production_pool_threshold_is_not_the_class_default 管。）
         """
-        import inspect as _i
+        m = re.search(r"abs\(corr\)\s*(>=|>|<=|<)\s*([\d.]+)", PROMPT)
+        assert m, (
+            "提示词里找不到规范形式 `abs(corr) <op> <阈值>`。"
+            "措辞随便改，但这份机器可读的规则必须留着 —— 没有它，"
+            "「提示词与代码一致」就只能靠人眼看。")
+        op, value = m.group(1), float(m.group(2))
 
-        from app.core.gp_engine.alpha_pool import AlphaPool
+        assert op == ">=", (
+            f"提示词写的比较符是 `{op}`，而 AlphaPool 判的是 `>=`（边界闭）")
+        assert value == pytest.approx(0.9), (
+            f"提示词里的阈值是 {value}，生产链路用的是 0.90")
 
-        m = re.search(r"corr\s*>\s*([\d.]+)", PROMPT)
-        assert m, "提示词里找不到相关度阈值"
-        prompt_value = float(m.group(1))
+        # 规则形状必须与代码里真正的判据同构 —— **真跑一遍池子**，
+        # 不是去 AlphaPool 的源码里找 "abs(corr) >= ..." 这串字符。
+        # （第一版就是那么写的，被 TestLessonY 的源码子串棘轮当场抓住：
+        #  同一串在文件里出现多次时那种断言杀不掉任何变异，台账自伤教训 #6。）
+        import numpy as np
 
-        default = _i.signature(AlphaPool.__init__).parameters["corr_threshold"].default
+        from app.core.gp_engine.alpha_pool import AlphaPool, PoolEntry
 
-        assert prompt_value == 0.9, (
-            f"提示词里的相关度阈值变成了 {prompt_value} —— "
-            f"如果已改成与代码一致，请同步删除缺陷 D-5")
-        assert default == pytest.approx(0.70), (
-            f"AlphaPool 的默认阈值变成了 {default} —— 请同步更新缺陷 D-5")
-        assert prompt_value != default, (
-            "提示词与代码的相关度阈值已经一致了 —— 缺陷 D-5 已修复，"
-            "请删掉 test_known_defects 里的 D-5 与本断言")
+        def _entry(name, vec):
+            return PoolEntry(dsl=name, fitness=1.0, sharpe_is=1.0, sharpe_oos=1.0,
+                             turnover=0.1, overfitting_score=0.0, generation=0,
+                             signal_vec=np.asarray(vec, dtype=float))
+
+        base = np.linspace(-1.0, 1.0, 64)
+        pool = AlphaPool(max_size=50, corr_threshold=value)
+        assert pool.add(_entry("first", base)), "第一条就被拒了，构造有问题"
+
+        # ① 绝对值：完全**负**相关携带同一份信息，必须同样被拒
+        assert not pool.add(_entry("anti", -base)), (
+            "与池中因子 ρ=-1 的 alpha 被接受了 —— 拒收判据没有取绝对值，"
+            "而提示词写的是 abs(corr)")
+
+        # ② 边界闭：恰好等于阈值要拒，略低于阈值要收
+        rng = np.random.default_rng(0)
+        noise = rng.normal(size=base.size)
+        noise -= noise.mean()
+        b = base - base.mean()
+        noise -= b * (noise @ b) / (b @ b)                 # 与 base 正交
+        def _mix(rho):
+            v = rho * b / np.linalg.norm(b) +                 np.sqrt(1 - rho ** 2) * noise / np.linalg.norm(noise)
+            return v
+        assert not pool.add(_entry("at_thr", _mix(value))), (
+            f"ρ 恰好等于阈值 {value} 的 alpha 被接受了 —— 边界是闭的（>=）")
+        assert pool.add(_entry("below", _mix(value - 0.15))), (
+            f"ρ 明显低于阈值 {value} 的 alpha 被拒了 —— 判据过严")
 
 
 # ===========================================================================

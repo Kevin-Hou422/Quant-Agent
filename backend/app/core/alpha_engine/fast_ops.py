@@ -457,13 +457,33 @@ def ts_entropy(x: np.ndarray, window: int, n_bins: int = 10) -> np.ndarray:
     Rolling normalized Shannon entropy in [0, 1].
     1 = uniform distribution, 0 = all mass on one bin.
     Uses a fixed-bin histogram approximation.
+
+    `n_bins` must be >= 2.
+
+    【缺陷 B-4，2026-09-21 定契约并修】原实现写
+    `log_nbins = np.log(n_bins) if n_bins > 1 else 1.0`，于是 `n_bins=1` 静默
+    返回 **-0.0**（单箱 probs=[1.0] → h=-0.0，再除以 1.0）。
+
+    单箱的"归一化"熵没有意义：归一化的分母本该是 `log(n_bins)`，而 log(1)=0，
+    真要归一就是 0/0。代码用 1.0 顶替分母，等于悄悄换了一个量纲，
+    而调用方看不出参数给错了 —— 返回的还是个长得很正常的 0。
+
+    **已核实 `n_bins` 走不到 GP/DSL**：`FAST_TS_OPS` 按 `fn(x, window)` 派发，
+    n_bins 恒为默认 10；fast_ops.py 之外全库零引用。所以 `n_bins=1` 只可能来自
+    开发者直接调用 —— 那是调用方写错参数，应当**当场报错**，
+    而不是返回一个看不出错的数。
     """
+    if n_bins < 2:
+        raise ValueError(
+            f"ts_entropy 需要 n_bins >= 2，收到 {n_bins}。"
+            f"单箱分布没有不确定性可言，归一化分母 log(n_bins) 会是 0 —— "
+            f"这是调用方的参数错误，不是数据问题。")
     x = _ensure_2d(np.asarray(x, dtype=float))
     T, N = x.shape
     out = np.full((T, N), np.nan)
     if T < window:
         return out
-    log_nbins = np.log(n_bins) if n_bins > 1 else 1.0
+    log_nbins = np.log(n_bins)
     for n_idx in range(N):
         col = x[:, n_idx]
         for i in range(window - 1, T):
@@ -476,7 +496,12 @@ def ts_entropy(x: np.ndarray, window: int, n_bins: int = 10) -> np.ndarray:
                 continue
             probs = counts[counts > 0] / total
             h = -np.sum(probs * np.log(probs))
-            out[i, n_idx] = h / log_nbins
+            # `+ 0.0` 消除**负零**：常数窗口（某只票当天没动）只有一个非空箱，
+            # probs=[1.0] → log(1)=0 → `-np.sum(...)` 得到 **-0.0**。
+            # 这是登记表 B-4 列的第二个问题，与 n_bins 无关 —— 合法 n_bins
+            # 在完全正常的数据上照样触发。负零会往下传播（`1/-0.0 = -inf`），
+            # 报告里也显示成 "-0.0"，看着像故障。
+            out[i, n_idx] = h / log_nbins + 0.0
     return out
 
 

@@ -128,6 +128,24 @@ class TestConstraintHardening:
             "不加上限时也没有票超过 0.15 —— 该用例对 cap 不敏感，等于没测"
         )
 
+        # ── 第三段：**上面两段合起来仍然是空真的** ────────────────────────
+        # `max |w| <= cap` 在账本被清空时同样成立（0 <= 0.15）。
+        # 变异复核（2026-09-21）实测：把 A-7 的 `target=np.abs(w).sum(axis=1)`
+        # 去掉 abs，多空账本的带符号和 ≈ 0 → target 塌成 0 → 组合被清空，
+        # 而上面两段**照样全绿**。
+        #
+        # 所以还要钉住"加了上限之后仍然在场上"：单票上限的职责是压集中度，
+        # 不是降总敞口。
+        gross_capped   = capped.is_result.positions.abs().sum(axis=1)
+        gross_uncapped = uncapped.is_result.positions.abs().sum(axis=1)
+        live = gross_uncapped > 1e-9
+        assert live.any(), "不加上限时组合本身就是空的 —— 本段测不到东西"
+        ratio = (gross_capped[live] / gross_uncapped[live]).median()
+        assert ratio > 0.5, (
+            f"加了单票上限之后总敞口只剩 {ratio:.1%} —— 上限把组合压没了。"
+            f"它该做的是压集中度，不是降敞口（缺陷 A-7 的同型）"
+        )
+
 
 # ===========================================================================
 # 6.7 — 前视/口径修复

@@ -198,7 +198,10 @@ GP OPTIMIZATION DETAILS:
   • GP mutations include: wrap_rank, add_ts_smoothing, add_condition,
     add_volume_filter, combine_signals, replace_subtree, add_operator
     (all guided by financial principles in the mutation engine)
-  • AlphaPool rejects signal-correlated alphas (corr > 0.9) for diversity.
+  • AlphaPool diversity rule:  reject when  abs(corr) >= 0.9
+    Read it literally. The absolute value matters: a strongly NEGATIVE
+    correlation carries the same information with the sign flipped, so it is
+    rejected too. The boundary is closed: exactly 0.9 is rejected, not kept.
 
 TOKEN EFFICIENCY:
   • After tool calls: state the key financial finding, not just numbers.

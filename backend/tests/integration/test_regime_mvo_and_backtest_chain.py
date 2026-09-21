@@ -145,18 +145,30 @@ class TestMVOPortfolio:
         l1 = w.abs().sum(axis=1)
         assert np.allclose(l1.iloc[80:], 1.0, atol=1e-6)
 
-    def test_fallback_before_window_matches_signal_weighted(self, sig_ret):
+    def test_the_warmup_window_has_no_valid_target(self, sig_ret):
+        """
+        【缺陷 A-5，2026-09-21】预热期原先**悄悄沿用基准权重** —— 那几天根本
+        没有协方差估计，产出的不是"优化出来的组合"，却和真优化的行看起来一样。
+        现在是全 NaN：没有有效目标。**NaN 不等于 0**，0 是"主动清仓"。
+        """
         sig, ret = sig_ret
-        mvo  = MVOPortfolio(cov_window=60).construct(sig, returns=ret)
-        base = SignalWeightedPortfolio(clip_z=3.0).construct(sig)
-        # 窗口未满的日期应与 SignalWeighted 完全一致
-        pd.testing.assert_frame_equal(mvo.iloc[:60], base.iloc[:60])
+        mvo = MVOPortfolio(cov_window=60).construct(sig, returns=ret)
+        warm = mvo.iloc[:60]
+        assert warm.isna().all(axis=1).all(), (
+            "预热期仍在产出权重 —— 那是没有协方差估计时编出来的目标")
+        assert not mvo.iloc[60:].isna().all(axis=1).all(), (
+            "窗口满了之后仍然一个有效目标都没有，构造有问题")
 
-    def test_no_returns_degrades_to_signal_weighted(self, sig_ret):
+    def test_no_returns_raises_unless_the_fallback_is_explicit(self, sig_ret):
+        """`returns=None` 不再静默退化 —— 见 A-5。"""
         sig, _ = sig_ret
-        mvo  = MVOPortfolio().construct(sig, returns=None)
-        base = SignalWeightedPortfolio(clip_z=3.0).construct(sig)
-        pd.testing.assert_frame_equal(mvo, base)
+        with pytest.raises(ValueError, match="fallback_to_signal_weighted"):
+            MVOPortfolio().construct(sig, returns=None)
+
+        got = MVOPortfolio(fallback_to_signal_weighted=True).construct(
+            sig, returns=None)
+        pd.testing.assert_frame_equal(
+            got, SignalWeightedPortfolio(clip_z=3.0).construct(sig))
 
     def test_diverges_from_signal_weighted_after_window(self, sig_ret):
         sig, ret = sig_ret
@@ -165,19 +177,63 @@ class TestMVOPortfolio:
         diff = (mvo.iloc[100:] - base.iloc[100:]).abs().sum().sum()
         assert diff > 0.01   # 协方差调整确实生效
 
-    def test_nan_returns_tolerated(self, sig_ret):
+    def test_an_asset_with_missing_returns_gets_no_allocation(self, sig_ret):
+        """
+        数据资格先于优化：估不出协方差的资产**不进入本次配置集合**（权重 0），
+        而不是"保留其基准权重"（旧注释的说法，与旧实现本身也不符）。
+
+        同时确认这是**明确的决定**而非某条失败路径的副产物 —— 其余资产照常
+        优化、L1 仍归一到 1，整行不是 NaN。
+        """
         sig, ret = sig_ret
-        ret.iloc[50:150, 0] = np.nan          # 一列大段 NaN
+        ret.iloc[50:150, 0] = np.nan          # 第 0 列大段缺失
         w = MVOPortfolio(cov_window=60).construct(sig, returns=ret)
-        assert not w.isna().any().any()
-        l1 = w.abs().sum(axis=1)
-        assert np.allclose(l1.iloc[80:], 1.0, atol=1e-6)
+
+        live = w.iloc[80:150]
+        assert not live.isna().all(axis=1).any(), (
+            "有足够多的合格资产，却整行判成了无有效目标")
+        assert np.allclose(live.iloc[:, 0], 0.0, atol=1e-12), (
+            "缺失数据的资产仍拿到了配置 —— 数据资格没有先于优化")
+        assert np.allclose(live.abs().sum(axis=1), 1.0, atol=1e-6), (
+            "剔除资产后没有在合格集合上重新归一")
+
+    def test_too_few_valid_assets_yields_no_target_not_a_flat_book(self, sig_ret):
+        """
+        合格资产不足时必须给"无有效目标"（NaN），**不是**全零。
+
+        旧实现在这里 `continue`，于是整行沿用基准权重 —— 与"部分缺失就把那些
+        资产清零"正好相反：缺得越多，持仓反而越满。两条分支行为矛盾。
+        全零同样不行：那是"主动清仓"的指令，会让下游把仓位卖光。
+        """
+        sig, ret = sig_ret
+        ret.iloc[:, 1:] = np.nan              # 只剩 1 个合格资产
+        w = MVOPortfolio(cov_window=60).construct(sig, returns=ret)
+
+        tail = w.iloc[60:]
+        rows_all_nan  = tail.isna().all(axis=1)
+        rows_all_zero = (tail.fillna(-1) == 0).all(axis=1)
+        assert rows_all_nan.any(), "合格资产不足时没有给出「无有效目标」"
+        assert not (rows_all_nan & rows_all_zero).any()
+        assert not tail[rows_all_nan].notna().any().any(), (
+            "「无有效目标」的行里混进了数值权重")
 
     def test_invalid_params_raise(self):
         with pytest.raises(ValueError):
             MVOPortfolio(cov_window=10)
         with pytest.raises(ValueError):
             MVOPortfolio(shrinkage=1.5)
+
+    def test_min_valid_assets_boundary(self):
+        """
+        `min_valid_assets < 2` 才报错 —— **2 是合法下界**（协方差至少要两个资产）。
+        把守卫收紧成 `<= 2` 会把文档写明的下界一起拒掉，而没有任何用例会发现：
+        变异复核（2026-09-21）实测这个点存活，本条补上。
+        """
+        MVOPortfolio(min_valid_assets=2)          # 合法下界，不得报错
+        MVOPortfolio(min_valid_assets=5)
+        for bad in (1, 0, -1):
+            with pytest.raises(ValueError, match="min_valid_assets"):
+                MVOPortfolio(min_valid_assets=bad)
 
     def test_mvo_mode_end_to_end(self, make_dataset):
         """SimulationConfig(portfolio_mode='mvo') 在 RealisticBacktester 中可用。"""

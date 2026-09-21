@@ -872,23 +872,48 @@ class TestFormerlyBrokenOperators:
 
 
 # ===========================================================================
-# H2. 仍未定契约的缺陷 —— 继续钉住现状
+# H2. B-4：单箱熵的契约（2026-09-21 定案）
 # ===========================================================================
 
-class TestKnownDefectsPinnedAsIs:
+class TestEntropyBinContract:
 
-    def test_entropy_with_one_bin_returns_minus_zero_instead_of_nan(self):
+    def test_one_bin_raises_instead_of_returning_a_plausible_number(self):
         """
-        【已登记缺陷 B-4】`np.log(n_bins) if n_bins > 1 else 1.0` 把退化参数
-        静默归一成 0，调用方看不出 n_bins 给错了。
-        修好之后：应当抛 ValueError 或返回全 NaN。
+        【缺陷 B-4，2026-09-21 定契约并修】原实现写
+        `log_nbins = np.log(n_bins) if n_bins > 1 else 1.0`，`n_bins=1` 静默
+        返回 **-0.0**（单箱 probs=[1.0] → h=-0.0，再除以顶替的分母 1.0）。
+
+        单箱的"归一化"熵没有意义：分母本该是 log(n_bins)，而 log(1)=0。
+        代码拿 1.0 顶替，等于悄悄换了量纲，而调用方看到的是个长得很正常的 0。
+
+        契约定为**报错**，依据是 `n_bins` 走不到 GP/DSL：`FAST_TS_OPS` 按
+        `fn(x, window)` 派发，n_bins 恒为默认 10，fast_ops.py 之外全库零引用。
+        所以 n_bins=1 只可能来自开发者直接调用 —— 那是参数写错，该当场报错，
+        而不是返回一个看不出错的数。
         """
         x = np.arange(10, dtype=float).reshape(10, 1)
-        got = F.ts_entropy(x, 5, n_bins=1).ravel()
-        assert np.all(np.isnan(got[:4])), "窗口未满的行仍应是 NaN"
-        np.testing.assert_allclose(got[4:], 0.0, atol=1e-12)
-        assert not np.any(np.isnan(got[4:])), (
-            "n_bins=1 已开始返回 NaN —— 缺陷 B-4 疑似已修，请更新本断言")
+        with pytest.raises(ValueError, match="n_bins"):
+            F.ts_entropy(x, 5, n_bins=1)
+        with pytest.raises(ValueError, match="n_bins"):
+            F.ts_entropy(x, 5, n_bins=0)
+
+    def test_the_default_path_is_untouched(self):
+        """反向对照：合法 n_bins 的行为不能被这条守卫改掉。"""
+        x = np.arange(20, dtype=float).reshape(20, 1)
+        got = F.ts_entropy(x, 10)                 # 默认 n_bins=10
+        assert np.all(np.isnan(got[:9])), "窗口未满的行仍应是 NaN"
+        finite = got[9:]
+        assert np.all(np.isfinite(finite))
+        assert np.all((finite >= 0.0) & (finite <= 1.0)), (
+            f"归一化熵越出 [0,1]：{finite.min()}..{finite.max()}")
+
+    @pytest.mark.parametrize("n_bins", [2, 5, 10])
+    def test_a_constant_window_has_zero_entropy(self, n_bins):
+        """全部落进同一个箱 → 熵 0（正零，不是负零）。"""
+        x = np.full((10, 1), 3.0)
+        got = F.ts_entropy(x, 5, n_bins=n_bins)[4:]
+        np.testing.assert_allclose(got, 0.0, atol=1e-12)
+        assert not np.signbit(got).any(), "返回了负零"
 
 
 # ===========================================================================

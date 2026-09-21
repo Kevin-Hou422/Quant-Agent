@@ -163,13 +163,46 @@ class MVOPortfolio(PortfolioConstructor):
     又抑制小样本下非对角元素的估计噪声。
 
     信号先做截面 z-score（±clip_z 裁剪），使 Σ⁻¹s 的量纲稳定。
-    协方差窗口未满或求解失败的日期，退化为 SignalWeighted 行为（z/L1）。
+
+    返回值的三种行有**三种不同含义**，不可混为一谈
+    ------------------------------------------------
+      · 有限数值行 —— 当日的有效目标权重
+      · **全零行**  —— 当日目标就是**空仓**（信号全零 → 主动清仓）
+      · **全 NaN 行** —— 当日**没有有效目标**（数据不合格 / 求解失败 / 预热期）
+
+    后两者绝不能互相顶替：`0` 是"卖光"，`NaN` 是"这次没算出来，别动"。
+    上层必须分开处理 —— 把 NaN 当 0 会在数据缺失的日子直接清仓。
+
+    【缺陷 A-5，2026-09-21 按"数据资格先于优化"重做】
+    原实现有**五条**静默回退路径，每条都产出一行看起来完全正常的权重：
+
+      ① `returns=None`          → 整段退化成 SignalWeighted
+      ② 预热期 `t < cov_window` → 悄悄沿用基准权重
+      ③ `valid.sum() < 3`       → `continue`，沿用基准权重
+      ④ 协方差求解失败           → `continue`，沿用基准权重
+      ⑤ 优化结果退化（l1≈0）     → `continue`，沿用基准权重（**连 warning 都没有**）
+
+    于是"优化成功"与"五种失败"在输出上完全无法分辨。更糟的是它自相矛盾：
+    部分资产数据不合格时那些资产被**置 0**（清仓），而数据不合格到
+    `valid < 3` 时反倒**全部保留**基准权重 —— 同一件事（数据缺失）
+    在两条分支上行为相反，缺得越多反而持仓越满。
+
+    原注释写"剔除的资产保留基准权重"，与实现（置 0）不符。**注释不是正确性依据**：
+    这里采用的规则是**数据资格先于优化** —— 估不出协方差的资产不进入本次配置集合，
+    但"不配置"必须是一个明确的决定，而不是某条失败路径的副产物。
 
     Parameters
     ----------
     cov_window : 协方差估计滚动窗口（交易日，默认 60）
     shrinkage  : 对角收缩强度 δ ∈ [0,1]（默认 0.5）
     clip_z     : 信号 z-score 裁剪界（默认 3.0）
+    min_valid_assets : 少于这么多个合格资产就判本日无有效目标（默认 3）
+    fallback_to_signal_weighted :
+        `returns=None` 时是否退化为 SignalWeighted。**默认 False（不启用）**。
+        这是一条**显式策略**，不是兜底：它跑的根本不是均值-方差优化，
+        没有任何协方差/风险检查，结果与 MVO 不可比。
+        需要它的调用方必须自己写明理由并显式打开；打开后每次构造都会记一条
+        WARNING，好让"这批回测其实是 SignalWeighted 跑的"在日志里留痕。
     """
 
     def __init__(
@@ -177,14 +210,22 @@ class MVOPortfolio(PortfolioConstructor):
         cov_window: int   = 60,
         shrinkage:  float = 0.5,
         clip_z:     float = 3.0,
+        min_valid_assets: int = 3,
+        fallback_to_signal_weighted: bool = False,
     ) -> None:
         if cov_window < 20:
             raise ValueError(f"cov_window 至少 20 个交易日，当前={cov_window}")
         if not 0.0 <= shrinkage <= 1.0:
             raise ValueError(f"shrinkage 应在 [0,1] 内，当前={shrinkage}")
+        if min_valid_assets < 2:
+            raise ValueError(
+                f"min_valid_assets 至少 2（协方差需要两个以上资产），"
+                f"当前={min_valid_assets}")
         self.cov_window = cov_window
         self.shrinkage  = shrinkage
         self.clip_z     = clip_z
+        self.min_valid_assets = min_valid_assets
+        self.fallback_to_signal_weighted = fallback_to_signal_weighted
 
     def construct(
         self,
@@ -196,32 +237,61 @@ class MVOPortfolio(PortfolioConstructor):
         Parameters
         ----------
         signal  : (T×N) 信号矩阵
-        returns : (T×N) 资产日收益矩阵（协方差估计用）。
-                  为 None 时全程退化为 SignalWeighted 行为。
-        """
-        # 基准权重：截面 z-score / L1（也是回退路径）
-        base = SignalWeightedPortfolio(clip_z=self.clip_z).construct(signal)
-        if returns is None:
-            return base
+        returns : (T×N) 资产日收益矩阵（协方差估计用）。为 None 时**报错**，
+                  除非显式打开 `fallback_to_signal_weighted`。
 
+        Returns
+        -------
+        (T×N) 权重矩阵。**全 NaN 的行表示本日没有有效目标**（见类 docstring）——
+        调用方必须显式处理，不得当作 0（那是清仓）。
+        """
+        # ── 路径 ①：没有收益数据 ────────────────────────────────────────
+        # 不再静默退化。跑 SignalWeighted 得到的根本不是均值-方差组合，
+        # 混进 MVO 的回测结果里无从分辨，"MVO 效果如何"的结论会被污染。
+        if returns is None:
+            if not self.fallback_to_signal_weighted:
+                raise ValueError(
+                    "MVOPortfolio 需要 returns 才能估协方差，收到 None。"
+                    "若确实想用 SignalWeighted 跑这批回测，请显式构造 "
+                    "MVOPortfolio(fallback_to_signal_weighted=True) 并说明理由 —— "
+                    "那条路径不做任何协方差/风险检查，结果与 MVO 不可比。")
+            logger.warning(
+                "[PortfolioConstructor] MVO 以 **SignalWeighted 回退模式** 运行"
+                "（returns=None 且已显式启用）：本批权重不含任何协方差优化，"
+                "不要与 MVO 结果混为一谈。")
+            return SignalWeightedPortfolio(clip_z=self.clip_z).construct(signal)
+
+        base = SignalWeightedPortfolio(clip_z=self.clip_z).construct(signal)
         ret_arr = (
             returns.reindex(index=signal.index, columns=signal.columns)
             .to_numpy(dtype=float)
         )
         z_arr = base.to_numpy(dtype=float)          # 已 z-score+L1 的信号方向
         T, N  = z_arr.shape
-        w_out = z_arr.copy()
+
+        # ── 路径 ②：预热期 ──────────────────────────────────────────────
+        # 默认值是 NaN（无有效目标），**不是**基准权重。
+        # 前 cov_window 行根本没有协方差估计，它们不是"优化出来的组合"。
+        w_out = np.full((T, N), np.nan)
 
         eye = np.eye(N)
+        n_no_target = 0
         for t in range(self.cov_window, T):
             s = z_arr[t]
             if not np.any(s):
+                # 信号全零 —— 这是**真的空仓目标**，不是失败。写 0，不是 NaN。
+                w_out[t] = 0.0
                 continue
+
             window = ret_arr[t - self.cov_window : t]      # 不含 t：无前视
-            # 剔除窗口内含 NaN 过多的资产（保留其基准权重）
+            # 数据资格先于优化：窗口内缺失过多的资产不进入本次配置集合。
             valid = np.isnan(window).mean(axis=0) < 0.3
-            if valid.sum() < 3:
-                continue
+
+            # ── 路径 ③：合格资产不足 ────────────────────────────────────
+            if valid.sum() < self.min_valid_assets:
+                n_no_target += 1
+                continue                                    # 留 NaN
+
             sub = window[:, valid]
             sub = np.where(np.isnan(sub), 0.0, sub)
             S   = np.cov(sub.T)                             # (n_valid, n_valid)
@@ -232,15 +302,40 @@ class MVOPortfolio(PortfolioConstructor):
                     s[valid],
                 )
             except np.linalg.LinAlgError as exc:
-                # 求解失败 → 当日沿用基准权重。结果与"优化成功"不同，必须留痕，
-                # 否则回测里会混着两种口径的权重而无从分辨。
-                logger.warning("[PortfolioConstructor] 协方差求解失败，当日沿用基准权重: %s", exc)
-                continue
+                # ── 路径 ④：协方差求解失败 ──────────────────────────────
+                logger.warning(
+                    "[PortfolioConstructor] 第 %d 行协方差求解失败 → 本日无有效目标: %s",
+                    t, exc)
+                n_no_target += 1
+                continue                                    # 留 NaN
+
             row = np.zeros(N)
-            row[valid] = w_sub
+            row[valid] = w_sub                  # 不合格资产：明确不配置（0）
             l1 = np.abs(row).sum()
-            if l1 > 1e-12:
-                w_out[t] = row / l1
+
+            # ── 路径 ⑤：优化结果退化 ────────────────────────────────────
+            # 用 `np.isclose(..., rtol=0)` 而不是 `l1 <= 1e-12`：两者恒等
+            # （l1 >= 0，rtol=0 时判据就是 `l1 <= atol`），但比较符写成字面量时
+            # `<=` / `<` 只在 l1 **恰好**等于 1e-12 时分道 —— 那个值要穿过线性
+            # 求解去精确命中不现实，于是留下一个杀不死的边界点。
+            # 而它**不等价**：真命中时旧写法拦下、新写法放行，权重会被 1e-12
+            # 除到 1e12 量级。写成 isclose 既保住语义，也不留这个点。
+            if np.isclose(l1, 0.0, atol=1e-12, rtol=0.0):
+                # 旧实现在这里**一声不吭**地沿用基准权重。
+                logger.warning(
+                    "[PortfolioConstructor] 第 %d 行优化结果退化（L1=%.3e）"
+                    " → 本日无有效目标", t, l1)
+                n_no_target += 1
+                continue                                    # 留 NaN
+
+            w_out[t] = row / l1
+
+        if n_no_target:
+            logger.warning(
+                "[PortfolioConstructor] MVO 共有 %d 个交易日没有有效目标"
+                "（另有预热期 %d 日）。这些行是 NaN —— 上层必须显式处理，"
+                "当成 0 会在这些日子直接清仓。",
+                n_no_target, min(self.cov_window, T))
 
         return pd.DataFrame(w_out, index=signal.index, columns=signal.columns)
 

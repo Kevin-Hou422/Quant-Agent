@@ -278,10 +278,24 @@ class TestMVO:
         assert w.to_numpy()[t, 0] == pytest.approx(0.0, abs=1e-12), (
             "NaN 占比恰好 30% 的资产没有被剔除出协方差估计")
 
-    def test_no_returns_degrades_to_signal_weighted(self):
+    def test_no_returns_raises_unless_the_fallback_is_explicit(self):
+        """
+        【缺陷 A-5，2026-09-21】`returns=None` 原先**静默**退化成 SignalWeighted。
+        那条路径跑的根本不是均值-方差优化、不做任何协方差/风险检查，
+        结果混进 MVO 的回测里无从分辨 ——「MVO 效果如何」的结论会被污染。
+        现在默认报错；要用必须显式打开，并且每次构造都会记 WARNING。
+        """
         sig, _ = self._inputs()
+        with pytest.raises(ValueError, match="fallback_to_signal_weighted"):
+            MVOPortfolio(cov_window=20).construct(sig)
+
+    def test_the_explicit_fallback_still_produces_signal_weighted(self):
+        """显式打开之后行为不变 —— 改的是"默不默认"，不是那条路径本身。"""
+        sig, _ = self._inputs()
+        got = MVOPortfolio(cov_window=20,
+                           fallback_to_signal_weighted=True).construct(sig)
         assert np.allclose(
-            MVOPortfolio(cov_window=20).construct(sig).to_numpy(),
+            got.to_numpy(),
             SignalWeightedPortfolio(clip_z=3.0).construct(sig).to_numpy())
 
 
