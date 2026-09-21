@@ -74,18 +74,8 @@ DEFECT_REGISTRY = {
 
     # A-5 —— MVO 无有效目标 vs 主动清仓，2026-09-21 修复并移出登记表。
 
-    "A-6":  "【执行层已于 2026-09-18/19/20 修复，回测引擎侧未动】"
-            "PaperBroker 曾同时犯两个错：① `target=1.0` 写死，把目标总敞口强行"
-            "放大到 L1=1（实测日循环**目标持仓**总敞口 0.27–0.30 → 0.90–1.00，"
-            "3.33×；**成交名义额** 1.54×）；② 用 water-filling 裁剪**目标持仓**"
-            "冒充成交，A 被削掉后亏空摊给 B（[0.9,-0.1] → [0.01,-0.99]）。"
-            "执行层已改为 `simulate_partial_fills`：按**交易差额**逐名部分成交、"
-            "不再分配、组合级净敞口回查、未成交量如实记账。"
-            "**仍未完成的是引擎统一**：`BacktestEngine` 走的还是 "
-            "`LiquidityConstraint` 的 water-filling **持仓**裁剪，于是两个引擎在"
-            "限流场景下语义已经分家 —— `test_replay_matches_backtest_engine` 的 "
-            "1e-9 对账目前只在『上限不绑定』的数据上成立，绑定时会分叉。"
-            "统一之后历史回测收益会变，需要前后对比与差异解释",
+    # A-6 —— 执行层 2026-09-18/19 修，回测引擎统一于 2026-09-21，已移出登记表。
+
     # A-7 —— 构建层三处写死的 target=1.0，2026-09-21 修复并移出登记表。
 
     # D-3 —— langchain 大版本不兼容，2026-09-20 迁移到 create_agent 并移出登记表。
@@ -765,12 +755,14 @@ class TestBacktestAndExecutionDefects:
         np.testing.assert_allclose(out, w, atol=1e-12,
                                    err_msg="上限不绑定时权重就不该变")
 
-    @_xfail("A-6")
     def test_the_two_engines_agree_when_liquidity_binds(self):
         """
-        A-6 的**剩余部分**：执行层已改成"按交易差额部分成交、不再分配"，
-        而 `BacktestEngine` 走的还是 `LiquidityConstraint` 的 water-filling
-        **持仓**裁剪 —— 两个引擎在限流场景下语义已经分家。
+        **缺陷 A-6 已全部修复（后半于 2026-09-21）**，本用例已转正。
+
+        执行层 2026-09-18/19 改成"按交易差额部分成交、不再分配"，而
+        `BacktestEngine` 一直走 `LiquidityConstraint` 的 water-filling
+        **持仓**裁剪 —— 两个引擎在限流场景下语义分家。现在回测也走
+        `simulate_partial_fills`、同一个 cap 公式、逐日推进（路径依赖）。
 
         `test_replay_matches_backtest_engine` 的 1e-9 对账用的是成交量充足的数据
         （上限不绑定），所以它**看不见**这个分叉。这里把成交量压到上限真的绑定，
@@ -1501,10 +1493,10 @@ def test_the_outstanding_defect_count_is_visible():
     混成一个数会让它读起来比实际严重，也会稀释真正该优先修的那几条。
     """
     behavioural = set(DEFECT_REGISTRY) - TECHNICAL_DEBT - FRONTEND_ONLY
-    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (1, 3, 1), (
+    assert (len(behavioural), len(TECHNICAL_DEBT), len(FRONTEND_ONLY)) == (0, 3, 1), (
         f"缺陷分类计数变了：行为缺陷 {len(behavioural)} / 技术债 "
         f"{len(TECHNICAL_DEBT)} / 前端 {len(FRONTEND_ONLY)}"
-        f"（登记总数 {len(DEFECT_REGISTRY)}，此前 2/3/1；"
+        f"（登记总数 {len(DEFECT_REGISTRY)}，此前 1/3/1；"
         f"B-1/B-2/B-3/B-5/B-6/B-7 这一族 fast_ops 算子缺陷已于 2026-09-20 一并修复）。\n"
         f"修好缺陷时请同时：① 删掉对应 xfail 标记 ② 改掉模块测试里"
         f"『钉住现状』的断言 ③ 更新 MUTATION_LEDGER。\n"

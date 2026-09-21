@@ -1370,7 +1370,7 @@
       "proof_entries_min": 97,
       "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
       "refuted_entries_min": 2,
-      "unmeasured_points_max": 954
+      "unmeasured_points_max": 957
     },
     "refuted_by_counterexample": {
       "count": 2,
@@ -1398,9 +1398,9 @@
     "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
     "measured_points": 1982,
     "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-    "current_plan_points": 2936,
+    "current_plan_points": 2939,
     "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-    "unmeasured_points": 954,
+    "unmeasured_points": 957,
     "newly_in_scope_modules": [],
     "per_module_delta": {
       "app/agent/_agent.py": {
@@ -1810,6 +1810,14 @@
         "to": 954,
         "why": "修 A-7：构建层三处 `project_to_capped_l1(..., target=1.0)` 改传逐行真实 gross （transaction_cost.LiquidityConstraint.apply / manager.apply_capacity / realistic_backtester 的单票上限）。",
         "how_it_was_handled": "新增 3 个点（三处 `np.abs` 的「丢符号」变异），首轮 2 杀 1 活。存活的是 realistic_backtester 那处 —— **不是等价变异，是既有用例空真**：`test_max_single_weight_enforced_end_to_end` 断言 `max|w| <= cap`，而去掉 abs 后多空账本的带符号和≈0 → target 塌成 0 → 组合被清空，`0 <= 0.15` 照样成立，用例全绿而持仓已经没了。（该用例的 docstring 自己警告过空真，但防的是另一个方向。）补第三段断言：加了单票上限后总敞口相对不加上限的中位数比值必须 > 0.5 —— 上限的职责是压集中度、不是降敞口。复验确认杀死。",
+        "owed": "无。本次新增点复核已当场完成。"
+      },
+      {
+        "date": "2026-09-21 (A-6 后半：引擎统一)",
+        "from": 954,
+        "to": 957,
+        "why": "BacktestEngine 的流动性处理从 `LiquidityConstraint.apply`（整矩阵 water-filling 裁**持仓**、会再分配）换成逐日 `simulate_partial_fills`（按**交易差额**部分成交、不再分配），与 PaperBroker 同一份原语、同一个 cap 公式。新增 max_net 参数。",
+        "how_it_was_handled": "新增 3 个点，首轮 2 杀 1 活。存活的是 `if self.initial_capital > 0:` 的 `>=` 变异 —— `capital==0` 时两条分支都给 inf，**除非** `adv==0`（那时 0/0=nan vs inf）。执行侧早有同款用例 test_zero_initial_capital_falls_back_to_no_cap_not_nan，其 docstring 写明了构造要点（capital==0 **且** adv==0，只测前者不够）。镜像到回测侧 TestZeroInitialCapital —— 统一两个引擎本来就该包括守卫被同等地测到，否则「统一」只统一了正常路径。复验确认杀死。",
         "owed": "无。本次新增点复核已当场完成。"
       }
     ]

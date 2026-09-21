@@ -95,6 +95,47 @@ class TestZeroVolume:
         )
 
 
+class TestZeroInitialCapital:
+    """
+    `if self.initial_capital > 0: cap = adv * pct / capital` 的守卫。
+
+    与执行侧的 `test_paper_broker_accounting.py::
+    test_zero_initial_capital_falls_back_to_no_cap_not_nan` **成对** ——
+    A-6 统一了两个引擎的撮合语义，它们的守卫也该被同等地测到，
+    否则"统一"只统一了正常路径。
+    """
+
+    def test_zero_capital_falls_back_to_no_cap_not_nan(self):
+        """
+        改成 `>=` 后 `initial_capital == 0` 会走进除零：
+
+          · adv > 0  → inf（与正确分支的 np.inf 同值，**看不出来**）
+          · adv == 0 → **nan**（0/0）→ cap 全 nan → 撮合结果全 nan
+                       → 持仓整片消失
+
+        所以必须 `capital == 0` **且** `adv == 0` 才能区分，只测前者不够 ——
+        这一点是执行侧那条用例的 docstring 写下来的，这里照搬。
+        """
+        from app.core.backtest_engine.backtest_engine import BacktestEngine
+
+        T, N = 6, 2
+        idx = pd.bdate_range("2024-01-02", periods=T)
+        cols = ["A", "B"]
+        prices = pd.DataFrame(100.0, index=idx, columns=cols)
+        volume = pd.DataFrame(0.0, index=idx, columns=cols)       # → ADV = 0
+        weights = pd.DataFrame([[0.6, -0.4]] * T, index=idx, columns=cols)
+        signal = pd.DataFrame(0.0, index=idx, columns=cols)
+
+        res = BacktestEngine(initial_capital=0.0).run(weights, prices, volume, signal)
+        pos = res.positions.to_numpy(dtype=float)
+
+        assert not np.isnan(pos).any(), (
+            "capital==0 且 adv==0 时持仓算成了 NaN —— cap 走进了 0/0")
+        # 资本为 0 → 无法按资本折算上限 → 明确退回"不设上限"，目标原样落账
+        np.testing.assert_allclose(pos[-1], [0.6, -0.4], atol=1e-12,
+                                   err_msg="退回『不设上限』之后目标没有原样落账")
+
+
 class TestSingleAsset:
 
     def test_single_asset_shape_preserved(self):

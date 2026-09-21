@@ -23,6 +23,7 @@ from .transaction_cost import (
     LiquidityConstraint,
     TradeRecord,
     TransactionCostEngine,
+    simulate_partial_fills,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,10 @@ class BacktestEngine:
     cost_params     : CostParams 实例（成本、滑点参数）
     initial_capital : 初始资金（USD）
     vol_window      : 计算日波动率所用的滚动窗口（交易日）
+    max_net         : 组合净敞口上限 |Σw|。**None = 明确选择不限制**，
+                      与 `PaperBroker` 的默认一致 —— 两个引擎必须同款，
+                      否则"统一语义"只统一了一半。
+                      需要限制的调用方显式传入（生产链路由 RiskLimits.max_net 给）。
     """
 
     def __init__(
@@ -69,7 +74,9 @@ class BacktestEngine:
         cost_params:     Optional[CostParams] = None,
         initial_capital: float = 1_000_000.0,
         vol_window:      int   = 20,
+        max_net:         Optional[float] = None,
     ) -> None:
+        self.max_net         = max_net
         self.params          = cost_params or CostParams()
         self.initial_capital = initial_capital
         self.vol_window      = vol_window
@@ -123,10 +130,42 @@ class BacktestEngine:
         daily_vol_df  = price_ret.rolling(self.vol_window, min_periods=2).std().fillna(0.02)
         daily_vol_arr = daily_vol_df.to_numpy(dtype=float)
 
-        # --- ADV 流动性截断（整体） ---
-        adj_weights = self._liq.apply(
-            weights, adv_usd_df, self.initial_capital
-        ).to_numpy(dtype=float)
+        # --- 流动性：逐日按**交易差额**部分成交（执行层语义）---
+        #
+        # 【缺陷 A-6 后半，2026-09-21 修】原实现是
+        #     adj_weights = self._liq.apply(weights, adv_usd_df, capital)
+        # 即对**整个 T×N 持仓矩阵**做 water-filling。两处与执行层分家：
+        #
+        #   ① 口径错：它裁的是**目标持仓**，而流动性约束的是**当天能成交多少**。
+        #      持仓 0.5 且昨天已经持有 0.5 的名字今天根本不需要交易，
+        #      却照样被 ADV 上限削掉。
+        #   ② 会**再分配**：water-filling 把 A 被削掉的额度摊给 B
+        #      （[0.9,-0.1] → [0.01,-0.99]，10% 的对冲腿变成 99% 的方向性空头）。
+        #      券商不会因为 A 买不到就多买 B。
+        #
+        # 执行层（PaperBroker）已于 2026-09-18/19 改为 `simulate_partial_fills`，
+        # 于是两个引擎在限流场景下语义分家 —— `test_replay_matches_backtest_engine`
+        # 的 1e-9 对账用的是上限不绑定的数据，**看不见**这个分叉。
+        #
+        # 现在回测走同一份原语、同一个 cap 公式，逐日推进（**路径依赖**：
+        # 今天成不了的量不会凭空消失，也不会被摊给别人，而是留到以后接着成交）。
+        #
+        # 用户决定 #4：接受由此产生的历史回测收益变化，前后对比见
+        # docs/A6_ENGINE_UNIFICATION.md。
+        tgt_arr = weights.to_numpy(dtype=float)
+        if self.initial_capital > 0:
+            cap_trade_mat = (
+                adv_usd * self.params.max_participation_pct / self.initial_capital)
+        else:
+            cap_trade_mat = np.full_like(adv_usd, np.inf)
+
+        adj_weights = np.zeros((T, N), dtype=float)
+        prev_filled = np.zeros(N, dtype=float)
+        for t in range(T):
+            fr = simulate_partial_fills(
+                prev_filled, tgt_arr[t], cap_trade_mat[t], max_net=self.max_net)
+            adj_weights[t] = fr.filled_w
+            prev_filled = fr.filled_w
 
         # --- E3: 从实际日期范围动态计算年化系数 ---
         if T >= 2:
