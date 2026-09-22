@@ -66,6 +66,10 @@ EXPECTED_BOOL_DEFAULTS = {
     "tr_experiment_mode":          True,
     "tr_enforce_active_gate":      False,
     "risk_halt_on_drawdown":       False,
+
+    # ── Phase S 统计地基：这两个关掉，汇报出去的"样本外"就不是样本外 ──
+    "s_three_way_enabled":         True,    # 全路径三段切割 + 冻结 holdout
+    "s_use_cpcv":                  True,    # PBO 用 CPCV；CSCV 无 purge → PBO 偏低
 }
 
 

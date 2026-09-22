@@ -515,6 +515,61 @@ class TestLessonK_WrittenMeansWired:
             f"依赖它的配置在实线路径上永远不生效（写了等于没写）。"
         )
 
+    #: 明确不做三段切割的端点函数，每个都要写明**为什么**。
+    #  这是豁免名单，不是垃圾桶：写在这里就得说清楚为什么它不需要冻结样本外。
+    THREE_WAY_EXEMPT = {
+        # GenerationWorkflow / OptimizationWorkflow 内部就是靠 _partition_three_way
+        # 切三段的（GP 只在 Validate 上择优，Test 仅汇报）。在端点再切一次
+        # 会把已经冻结的段再冻一次，selection 段被连削两刀。
+        "workflow_generate":        "GenerationWorkflow 内部已做三段切割",
+        "workflow_optimize":        "OptimizationWorkflow 内部已做三段切割",
+        "workflow_generate_stream": "同上（SSE 版，共用同一个 workflow）",
+        "workflow_optimize_stream": "同上（SSE 版，共用同一个 workflow）",
+        "_worker":                  "上面两个 SSE 端点的内嵌线程体，数据由外层传入",
+    }
+
+    def test_every_endpoint_that_loads_a_dataset_also_freezes_a_holdout(self):
+        """
+        §K 在 Phase S 的形态：三段切割**写了**不算数，得每条会产出绩效数字的
+        端点都真的走。
+
+        实测过的坑：`/backtest/run` 曾直接拿全量数据跑一份报告返回，
+        `/backtest/realistic` 只切两段 —— 于是"最近两年"既参与人挑因子，
+        又被当成样本外证据汇报。只要有**一条**路径漏掉，使用者就会挑那条
+        看起来最好的用（不必是故意的）。
+
+        判据：函数体里调了 `_resolve_dataset`，就必须也调 `_three_way`。
+        """
+        router = APP / "api" / "router.py"
+        tree = ast.parse(_src(router))
+        offenders = []
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            called = {n.func.id for n in ast.walk(fn)
+                      if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+            if "_resolve_dataset" not in called:
+                continue
+            if fn.name in self.THREE_WAY_EXEMPT:
+                continue
+            if "_three_way" not in called:
+                offenders.append(f"{fn.name}（router.py:{fn.lineno}）")
+        assert not offenders, (
+            "以下端点加载了数据集却**没有**做三段切割 —— 它们汇报的『样本外』"
+            "包含本该冻结的最近一段，是选择时用过的同一批数据：\n  "
+            + "\n  ".join(offenders)
+            + "\n修法：调用 `_three_way(full, dataset_name, purpose)` 并把返回的 "
+              "partition 放进响应体；确实不需要就加进 THREE_WAY_EXEMPT 并写明理由。"
+        )
+
+    def test_the_three_way_exemption_list_only_names_real_functions(self):
+        """豁免名单不许留僵尸条目 —— 否则它会慢慢变成一句永远够用的免责声明。"""
+        tree = ast.parse(_src(APP / "api" / "router.py"))
+        names = {fn.name for fn in ast.walk(tree)
+                 if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        gone = sorted(set(self.THREE_WAY_EXEMPT) - names)
+        assert not gone, f"THREE_WAY_EXEMPT 里有已不存在的函数：{gone}"
+
 
 # ===========================================================================
 # §O 合成 H/L 会让价差估计荒谬  →  测试夹具的 H/L 必须有现实幅度

@@ -29,7 +29,12 @@ def _panel_from_close(close: pd.DataFrame) -> dict:
     }
 
 
-def _signal_dataset(T=520, N=20, seed=0) -> dict:
+#: T 从 520 提到 1400（Phase S.2）：验证门现在**只在 selection 段上判定**
+#: （最后两年被冻结为 holdout）。520 天的面板切完只剩 378 天给 WalkForward，
+#: 每折 OOS 窗口从 173 天压到 84 天，这个合成动量信号就有一折翻负 —— 那不是
+#: 门的逻辑变了，是样本被切短后的噪声。1400 天下选择段 859 天、每折 ~245 天，
+#: 比改动前更宽裕，考验的才仍是"全折为正"这条逻辑本身。
+def _signal_dataset(T=1400, N=20, seed=0) -> dict:
     """每资产有固定 quality q_i，日收益 = 0.0015*q_i + 噪声 → 动量因子逐折 OOS 为正。"""
     rng = np.random.default_rng(seed)
     q = np.linspace(-1, 1, N)

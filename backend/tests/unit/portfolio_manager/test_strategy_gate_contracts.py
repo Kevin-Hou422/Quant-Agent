@@ -553,14 +553,17 @@ class TestPboGate:
 
         PBO 是 `lam_neg / total` 这样的有理数，0.5 之类的取值精确可达；
         这里直接把计算函数打桩成阈值本身，保证边界精确。
+
+        打桩对象是 `cpcv_pbo`（Phase S.3 起的发布默认口径）—— 本用例测的是
+        **阈值比较的方向**，与用哪种 PBO 算法无关；打错函数会让真算法跑起来，
+        边界不再精确，这条断言就失去观察面。
         """
         monkeypatch.setattr(sg, "strategy_net_returns",
                             lambda *a, **k: (_rets(0.002, 0.01, n=100, seed=20),
                                              pd.DataFrame()))
         monkeypatch.setattr(
-            "app.core.backtest_engine.overfit_stats."
-            "probability_of_backtest_overfitting",
-            lambda mat, n_splits=8: 0.5)
+            "app.core.backtest_engine.overfit_stats.cpcv_pbo",
+            lambda mat, n_groups=6, k=2, embargo=20: 0.5)
         idx = pd.bdate_range("2023-01-02", periods=60)
         sigs = {f"f{i}": pd.DataFrame(1.0, index=idx, columns=["T0", "T1"])
                 for i in range(2)}
@@ -576,9 +579,8 @@ class TestPboGate:
                             lambda *a, **k: (_rets(0.002, 0.01, n=100, seed=20),
                                              pd.DataFrame()))
         monkeypatch.setattr(
-            "app.core.backtest_engine.overfit_stats."
-            "probability_of_backtest_overfitting",
-            lambda mat, n_splits=8: 0.51)
+            "app.core.backtest_engine.overfit_stats.cpcv_pbo",
+            lambda mat, n_groups=6, k=2, embargo=20: 0.51)
         idx = pd.bdate_range("2023-01-02", periods=60)
         sigs = {f"f{i}": pd.DataFrame(1.0, index=idx, columns=["T0", "T1"])
                 for i in range(2)}
@@ -596,6 +598,61 @@ class TestPboGate:
         res = StrategyGate(use_global_trials=False).evaluate(
             {"only": pd.DataFrame(1.0, index=idx, columns=["T0"])}, _panel())
         assert res.pbo is None
+        assert res.pbo_method == "none", (
+            f"没算 PBO 却报了口径 {res.pbo_method!r}")
+
+
+# ===========================================================================
+# E2. PBO 的**口径**（Phase S.3 收尾：CPCV 取代 CSCV 成为默认）
+# ===========================================================================
+
+class TestPboMethodIsReported:
+
+    @staticmethod
+    def _sigs(n=2):
+        idx = pd.bdate_range("2023-01-02", periods=60)
+        return {f"f{i}": pd.DataFrame(1.0, index=idx, columns=["T0", "T1"])
+                for i in range(n)}
+
+    def test_the_release_default_is_cpcv(self, monkeypatch):
+        """
+        默认走 CPCV。CSCV 的块之间没有 purge，PBO 会**偏低** ——
+        默认留在 CSCV 等于门默认更松。
+        """
+        monkeypatch.setattr(sg, "strategy_net_returns",
+                            lambda *a, **k: (_rets(0.002, 0.01, n=200, seed=21),
+                                             pd.DataFrame()))
+        res = StrategyGate(use_global_trials=False).evaluate(self._sigs(), _panel())
+        assert res.pbo is not None
+        assert res.pbo_method == "cpcv", (
+            f"发布默认的 PBO 口径是 {res.pbo_method!r}，不是 cpcv")
+        assert res.to_dict()["pbo_method"] == "cpcv", "to_dict 没把口径带出去"
+
+    def test_turning_cpcv_off_is_reported_as_cscv(self, monkeypatch):
+        monkeypatch.setattr(sg, "strategy_net_returns",
+                            lambda *a, **k: (_rets(0.002, 0.01, n=200, seed=21),
+                                             pd.DataFrame()))
+        res = StrategyGate(use_global_trials=False, use_cpcv=False).evaluate(
+            self._sigs(), _panel())
+        assert res.pbo_method == "cscv"
+
+    def test_falling_back_to_cscv_says_so_instead_of_pretending(self, monkeypatch):
+        """
+        CPCV 算不动时退回 CSCV 是可以的，**冒充 CPCV 不行**：两种口径的
+        0.42 不是同一个 0.42，读者会据此判断"选择流程过不过拟合"。
+        """
+        monkeypatch.setattr(sg, "strategy_net_returns",
+                            lambda *a, **k: (_rets(0.002, 0.01, n=200, seed=22),
+                                             pd.DataFrame()))
+
+        def _boom(*a, **k):
+            raise ValueError("CPCV 未能生成任何有效组合")
+
+        monkeypatch.setattr("app.core.backtest_engine.overfit_stats.cpcv_pbo", _boom)
+        res = StrategyGate(use_global_trials=False).evaluate(self._sigs(), _panel())
+        assert res.pbo is not None, "退回 CSCV 之后连 PBO 都没算出来"
+        assert res.pbo_method == "cscv", (
+            f"实际跑的是 CSCV，却仍自称 {res.pbo_method!r}")
 
 
 # ===========================================================================

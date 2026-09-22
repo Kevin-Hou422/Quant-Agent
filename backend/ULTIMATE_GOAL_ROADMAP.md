@@ -1,6 +1,6 @@
 # 终极目标路线图：美股实盘全链路自主模拟交易
 
-> 状态：**规划（Phase 8 已完成，Phase 9–14 + R 未实现）** · 地基 Phase 6–8 见
+> 状态：**Phase S/8/9/TR/PM/A/B 已完成（S 于 2026-09-22 关闭），Phase 10/12/13/14 + R.2/R.4 未实现** · 地基 Phase 6–8 见
 > `backend_retired_report/PAPER_TRADING_ROADMAP.md`（已归档）· 遵循 RESEARCH_OPERATING_MODEL.md
 > 生成日期：2026-08-18
 
@@ -63,9 +63,13 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（moomo
 - **多 agent 仅按触发条件引入**（目标对立/信息隔离/时间尺度不同）；红队是最早有回报的角色。
 - 保留原有用户假设 Workflow A/B（加法，不替换）。
 
-> **⚠️ 方法论警示（外部评估 2026-08-22 核实）**：当前所有回测数字**不是"偏乐观"，而是"方向不明"**——
-> 幸存者偏差 + OOS 被选择性挖掘的联合效应，符号与大小都无法估计（可能把 Sharpe −0.2 显示成 1.5）。
-> **在完成下面的 Phase S 前，不应对任何回测数字做任何决策解读**（含 paper 期的历史回放段）。
+> **⚠️ 方法论警示（外部评估 2026-08-22 核实 · 2026-09-22 随 Phase S 完成更新）**：原判断是
+> 回测数字**不是"偏乐观"，而是"方向不明"**——幸存者偏差 + OOS 被选择性挖掘的联合效应，
+> 符号与大小都无法估计。**Phase S 已完成，去掉了其中"被选择性挖掘"那一半**（三段切割 +
+> 冻结 holdout + 使用次数台账 + purged CV + CPCV-PBO）。
+> **剩下的一半仍在**：免费价格源没有退市股，历史幸存者偏差未修（S.4 已决策搁置）。
+> 因此现在的口径是：**相对结论（谁比谁好、选择流程有没有过拟合）可以读；
+> 绝对水平（年化多少、Sharpe 多高）仍不可当决策依据**，要等前向 paper 的 realized IC。
 
 ---
 
@@ -74,27 +78,59 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（moomo
 **为什么**：外部评估（逐行核实无误）指出三个致命问题，使目前**所有回测数字失去决策意义**。这些不是
 "补强"，是"不修则一切数字无效"。工程和治理已达机构级，短板在**数据真实性 + 统计诚实性**。
 
-- **S.1 去掉 fitness 的 OOS 选择 ✅（发现路径，2026-08-24）** —— 现状 `gp_engine/fitness.py`
+- **S.1 去掉 fitness 的 OOS 选择 ✅（2026-08-24 发现路径 · 2026-09-22 收尾）** —— 原状
   `fitness = sharpe_oos − …` **直接按 OOS 择优 → OOS 退化为第二个样本内**。已改：`GenerationWorkflow`
-  用三段切割，GP 只在 **Validate** 段做适应度选择，**Test 段全程不可见**（`_partition_three_way` +
-  赢家在 Test 上汇报 `test_sharpe`/`held_out_test`）。**待补**：`/api/backtest/*` 直接回测路径、
-  以及把适应度换成 IS 内部 purged K-fold CV（当前 Validate 是单段内部验证，已足以去除循环论证）。
-- **S.2 全路径强制真 holdout ◑（发现路径已做，2026-08-24）** —— 已给 `GenerationWorkflow` 加真
-  held-out Test（GP 不可见、仅汇报）。**待补**：`/api/backtest/*`、`ValidationGate` 也走三段；test 段
-  改**最近 2–3 年冻结、一次性使用**；`RunManifest` 记"该 test 段已用 N 次"超阈值告警。
-- **S.3 全局多重检验计数器 ◑（2026-08-24）**—— 已建 `db/trial_ledger.py`（`TrialLedger`：跨会话持久
-  累计 trial 数）；发现每轮 GP 把 `pop×gen+optuna` 累加进去；`ValidationGate` 默认用**全局累计数**做
-  DSR 去膨胀（不再默认 1）+ 新增 **t≥3.0**（Harvey-Liu-Zhu，Lo 2002 t 统计量）门槛。PBO 函数
-  `backtest_engine/overfit_stats.py`（CSCV，Bailey 2015）**已接进 StrategyGate（2026-08-30）**：候选各
-  因子单因子策略收益构成矩阵 → PBO；`PBO>阈值(默认0.5)` 判"选择流程过拟合"，落进策略 verdict（配置
-  `pbo_threshold/pbo_n_splits`）。**待补**：CPCV。（吸收原 Phase R.1。）
+  用三段切割，GP 只在 **Validate** 段做适应度选择，**Test 段全程不可见**。
+  **收尾（2026-09-22）**：① 适应度换成 **IS 内部 purged K 折**（`data_partitioner.PurgedKFold` +
+  `gp_engine/evaluation_utils.purged_cv_sharpe`，发布默认 `s_fitness_mode=purged_cv`）——
+  分数不再取决于"最后那一段恰好是什么行情"，留出块两侧各 purge `s_embargo_days` 防滚动算子跨块借数；
+  `EvalResult.oos_metric` 带出口径（`holdout|purged_cv`），**同名字段换了含义必须说出来**。
+  ② `/api/backtest/*` 与 `/alpha/{simulate,optimize}`、`/gp/evolve`、`/agent/run`、`/alphas/{id}/retrain`
+  全部改走 selection 段。
+- **S.2 全路径强制真 holdout ✅（2026-09-22）** —— 三段切割升为一等组件
+  `data_engine/data_partitioner.ThreeWayPartitioner`（`train | embargo | validate | embargo | test`，
+  **段间 embargo 是新加的**：原 `_partition_three_way` 是纯 iloc 切片、段间无隔离）。
+  - **Test 段按日历冻结**：`s_test_freeze_years=2.0`，窗口不随入参漂移（用例钉住"换个起始日
+    重跑，test_key 不变"）。兑现不了时按 `s_max_test_share=0.35` **份额封顶**并标
+    `frozen_by=years_capped / degraded=True` —— 不静默缩窗，也不把选择段钉死在下限上
+    （钉死会让 n_days 400 与 900 切出一样大的研究样本，等于把 B-2 换个地方复发）。
+  - **一次性使用台账**：`db/trial_ledger.HoldoutLedger`（append-only 表 `holdout_usages`）。
+    每次真的在 Test 段上算指标就 +1，超 `s_holdout_budget=1` 返回 `over_budget=True` 并 log.error。
+    **不阻断**（阻断会让人绕开台账），但 `uses/budget/over_budget` 跟着数字一起进响应体与 RunManifest。
+    台账写不进去时 `recorded=False`、`uses=-1`，**不许用 1 冒充"这是第一次看"**。
+  - **`ValidationGate` 走三段**：WF+DSR 只看 `split.selection`；Test 段仅在 `report_test=True` 时
+    动用一次并记账。用例反向验证：把信号造成"只在冻结段有效"，门必须判不过。
+  - 全路径由 `tests/meta/test_lessons_enforced.py::TestLessonK` 的新检查守着：router 里调了
+    `_resolve_dataset` 却没调 `_three_way` 的端点直接判红（豁免须写明理由）。
+- **S.3 全局多重检验计数器 ✅（2026-08-24 起 · 2026-09-22 收尾）**—— `db/trial_ledger.TrialLedger`
+  跨会话累计 trial；`ValidationGate`/`StrategyGate` 用**全局累计数**做 DSR 去膨胀 + **t≥3.0**
+  （Harvey-Liu-Zhu）。PBO 已接进 StrategyGate（2026-08-30）。
+  **收尾（2026-09-22）：CPCV 已落地并成为默认** —— `overfit_stats.combinatorial_purged_splits /
+  cpcv_pbo / cpcv_path_sharpes`：C(N,k) 组合、留出块两侧 purge。CSCV 的块直接相邻，日频面板上
+  IS 块末尾与 OOS 块开头共享原始 bar → **PBO 被系统性低估**（选择流程看起来比实际更不过拟合）。
+  `StrategyGate` 默认 `s_use_cpcv=True`，算不动时退回 CSCV 但 **`pbo_method` 如实标注**
+  （两种口径的 0.42 不是同一个 0.42）。（吸收原 Phase R.1。）
 - **S.4 换含退市收益的价格数据源**（根治历史幸存者偏差）—— **🚫 已搁置（2026-08-25，被 TR.2 取代）**。
   原计划接付费源（Sharadar/CRSP）修历史幸存者偏差，但用户目标是**零预算的前向 paper 模拟**：
   ① 幸存者偏差只影响**历史回测**，**前向 paper 天生无此偏差且免费**（前向 paper 会自纠幸存者伪因子）；
   ② 单一权威源统一到 **moomoo（TR.2）**，退市股虽仍无，但不在"免费前向"的关键路径上。**故不做 S.4。**
 
 **依赖/次序**：S 是**所有回测结论的前置**；与 Phase PM（组合层）并列为最高优先级——PM 补"操作"轴，
-S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容。）
+S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容，**均已完成 2026-09-22**。）
+
+### Phase S 完成后，哪些结论可以读、哪些仍然不可以（2026-09-22）
+
+| 问题 | 状态 | 说明 |
+|------|------|------|
+| 按 OOS 择优的循环论证 | ✅ 已消除 | 选择只在 selection 段发生；Test 段被冻结且使用次数有账可查 |
+| 段间泄漏（滚动算子跨切点） | ✅ 已消除 | 三段之间、CV 折之间、CPCV 组合之间都做了 purge/embargo |
+| 多重检验膨胀 | ✅ 已校正 | 全局 trial 台账 + DSR + t≥3.0 + **CPCV** 口径的 PBO |
+| 单段 holdout 的段位偏倚 | ✅ 已降低 | 适应度改 purged K 折，每个样本都当过一次留出 |
+| **历史幸存者偏差** | 🚫 仍在（S.4 已决策搁置） | 免费价格源没有退市股。**历史回测的绝对水平仍不可当结论**；解法是前向 paper（天然无此偏差） |
+| **前向证据不足** | ⬜ 未开始 | `alpha_ic_history.is_forward` 已就绪，但真实前向样本仍为 0（见 OPERATIONS M5） |
+
+一句话：**"选出来的东西是不是被数据挖出来的"这个问题已经能回答了；"这个收益率数字有多大"
+仍然不能当真**——后者要等前向 paper 跑满 60 个交易日。
 
 ---
 
@@ -679,8 +715,9 @@ fetch/SSE、`components/analysis/*` 图表、`AlphaDashboard`。**前端只读 +
 ## 依赖关系（执行顺序）
 
 ```
-Phase S（统计地基）★★ P0 ── 所有回测结论的前置；未完成前任何数字不可解读
-  S.1 去 OOS 选择(✅) · S.2 全路径 holdout(✅) · S.3 全局 trial+PBO+t≥3(◑吸收R.1) · ~~S.4 换退市源~~(🚫搁置,被 TR.2 取代)
+Phase S（统计地基）★★ P0 ── **已完成 2026-09-22**；相对结论可读，绝对水平仍需前向证据
+  S.1 去 OOS 选择+purged CV 适应度(✅) · S.2 全路径三段+冻结 holdout+使用台账(✅)
+  S.3 全局 trial+t≥3+**CPCV**-PBO(✅,吸收R.1) · ~~S.4 换退市源~~(🚫搁置,被 TR.2 取代)
 Phase 8（PIT 地基，✅）
 Phase 9（自主发现 + 生命周期门 + 批准，✅）── 门控设计已演进为「策略级」，见 PM.S
 Phase TR（交易现实：moomoo 单一源 + 真实成本/可做空 + 门分级）

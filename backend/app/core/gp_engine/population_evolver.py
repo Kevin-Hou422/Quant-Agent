@@ -109,6 +109,12 @@ class EvalResult:
     max_drawdown:      float
     overfitting_score: float
     node:              Optional[Node] = field(default=None, repr=False)
+    #: `sharpe_oos` 是**怎么算出来的**（Phase S.1）。
+    #: ``holdout``   = 单段 Validate 的夏普；
+    #: ``purged_cv`` = IS 内部 purged K 折各留出块夏普的均值。
+    #: 两者不是同一个量，字段名相同更要把口径带上 —— 否则跨轮对比会把
+    #: 口径变化读成因子变好/变坏。
+    oos_metric:        str = "holdout"
 
     def to_dict(self) -> dict:
         return {
@@ -119,6 +125,7 @@ class EvalResult:
             "turnover":          round(self.turnover,          4),
             "max_drawdown":      round(self.max_drawdown,      4),
             "overfitting_score": round(self.overfitting_score, 4),
+            "oos_metric":        self.oos_metric,
         }
 
 
@@ -154,6 +161,11 @@ class PopulationEvolver:
     elite_ratio       : Fraction of pop kept as elite parents
     corr_threshold    : Signal correlation threshold for diversity filter
     seed              : Random seed
+    fitness_mode      : ``"holdout"`` = 用 oos_data 单段算选择指标（旧口径）；
+                        ``"purged_cv"`` = 在 **IS 内部**做 purged K 折，用各折
+                        留出块的平均夏普作选择指标（Phase S.1 的目标口径）。
+                        None → 读配置 `s_fitness_mode`。
+    cv_folds          : purged CV 折数（None → 读 `s_cv_folds`）。
     """
 
     def __init__(
@@ -168,6 +180,9 @@ class PopulationEvolver:
         elite_ratio:       float = 0.25,
         corr_threshold:    float = 0.90,
         seed:              int   = 42,
+        fitness_mode:      Optional[str] = None,
+        cv_folds:          Optional[int] = None,
+        embargo_days:      Optional[int] = None,
     ) -> None:
         self._is_data           = is_data
         self._oos_data          = oos_data
@@ -179,6 +194,25 @@ class PopulationEvolver:
         self._elite_ratio       = elite_ratio
         self._corr_threshold    = corr_threshold
         self._seed              = seed
+        # ── Phase S.1：适应度口径 ──────────────────────────────────────────
+        # 读不到配置时退回 "purged_cv"（更保守的一侧）：单段 holdout 的适应度
+        # 方差更大、且取决于最后一段恰好是什么行情，与 DEV_LESSONS §U 同一条规矩。
+        if fitness_mode is None or cv_folds is None or embargo_days is None:
+            try:
+                from app.config import settings
+                fitness_mode = fitness_mode if fitness_mode is not None else settings.s_fitness_mode
+                cv_folds     = cv_folds     if cv_folds     is not None else settings.s_cv_folds
+                embargo_days = embargo_days if embargo_days is not None else settings.s_embargo_days
+            except Exception as exc:
+                logger.error("[GP] 读不到适应度口径配置，退回 purged_cv/5/20: %s", exc)
+                fitness_mode = fitness_mode or "purged_cv"
+                cv_folds     = cv_folds or 5
+                embargo_days = embargo_days if embargo_days is not None else 20
+        if fitness_mode not in ("holdout", "purged_cv"):
+            raise ValueError(f"fitness_mode 必须是 holdout|purged_cv，当前={fitness_mode!r}")
+        self._fitness_mode = fitness_mode
+        self._cv_folds     = int(cv_folds)
+        self._embargo_days = int(embargo_days)
         # E4 修复: 实例级 RNG，替代全局 random.seed / np.random.seed
         # 全局 seed 调用会被并发请求互相覆盖，导致不可复现结果。
         self._rng = random.Random(seed)
@@ -487,6 +521,24 @@ class PopulationEvolver:
             turnover     = _f(is_r.ann_turnover)
             max_drawdown = _f(oos_r.max_drawdown) if oos_r else 0.0
 
+            # ── Phase S.1：适应度改用 IS 内部 purged K 折的平均留出夏普 ──
+            # 单段 Validate 的分数取决于"最后那一段恰好是什么行情"；K 折让每个
+            # 样本都当过一次留出，方差与段位偏倚都降下来。折数不足时
+            # `purged_cv_sharpe` 返回 n_folds=0 —— 此时**保留单段口径**并留痕，
+            # 不静默把 0 当成"该因子 OOS 夏普为 0"（那会让好因子被判死）。
+            oos_metric = "holdout"
+            if self._fitness_mode == "purged_cv":
+                from .evaluation_utils import purged_cv_sharpe
+                cv = purged_cv_sharpe(
+                    result.is_result.net_returns,
+                    n_splits=self._cv_folds, embargo_days=self._embargo_days)
+                if cv["n_folds"] >= 2:
+                    sharpe_oos = float(cv["mean"])
+                    oos_metric = "purged_cv"
+                else:
+                    logger.debug(
+                        "purged CV 折数不足（%s），本候选退回单段 holdout 口径", cv["n_folds"])
+
             if abs(sharpe_is) > 1e-9 and oos_r:
                 deg = (sharpe_is - sharpe_oos) / abs(sharpe_is)
                 overfit_score = float(np.clip(deg, 0.0, 1.0))
@@ -509,6 +561,7 @@ class PopulationEvolver:
                 max_drawdown      = max_drawdown,
                 overfitting_score = overfit_score,
                 node              = node,
+                oos_metric        = oos_metric,
             )
 
         except Exception as exc:

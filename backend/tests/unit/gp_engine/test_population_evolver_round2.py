@@ -80,8 +80,13 @@ def stub_bt(monkeypatch):
 
 @pytest.fixture(scope="module")
 def evolver() -> PopulationEvolver:
+    # fitness_mode 显式写成 "holdout"：本文件测的是**单段口径**下的过拟合公式
+    # 与 NaN 兜底。发布默认已改为 purged_cv（Phase S.1），那条路径下 sharpe_oos
+    # 来自 IS 内部 K 折、与 stub 的 oos_report 无关，这些断言会失去观察面。
+    # purged_cv 口径另有 test_purged_cv_fitness.py 专测。
     return PopulationEvolver(is_data=_panel(1), oos_data=_panel(2),
-                             pop_size=8, n_generations=3, seed=42)
+                             pop_size=8, n_generations=3, seed=42,
+                             fitness_mode="holdout")
 
 
 # ===========================================================================

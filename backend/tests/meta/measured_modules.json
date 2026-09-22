@@ -1,1854 +1,1862 @@
 {
-  "_doc": "每个有变异点的 app 模块 → 变异测量结果。由 tests/meta/test_invariants.py::TestEveryModuleIsMeasured 对账：app/ 下任何有变异点却不在本表里的模块都会让测试变红。新增模块、或改动使模块产生新变异点时，必须先测量再更新本文件。",
-  "_selection_rule": "一个模块可能有多轮测量。取**同一点数下击杀数最高**的那轮 —— 本项目的工作流只往测试里加断言、不删，故固定点数下击杀率单调不减。不用文件 mtime：多模块批次会在单模块复测之后仍在写盘，mtime 会指错。",
-  "_note_state_file_missing": "标了 state_file_missing 的模块：A 档确实测量过（台账有逐条存活分析），但当时的 progress 状态文件后来被清理，数字取自台账而非状态文件。重跑一次即可回到自动生成的口径。",
-  "totals": {
-    "modules_with_mutants": 89,
-    "total_points": 1982,
-    "total_survived": 136,
-    "total_killed": 1846
+ "_doc": "每个有变异点的 app 模块 → 变异测量结果。由 tests/meta/test_invariants.py::TestEveryModuleIsMeasured 对账：app/ 下任何有变异点却不在本表里的模块都会让测试变红。新增模块、或改动使模块产生新变异点时，必须先测量再更新本文件。",
+ "_selection_rule": "一个模块可能有多轮测量。取**同一点数下击杀数最高**的那轮 —— 本项目的工作流只往测试里加断言、不删，故固定点数下击杀率单调不减。不用文件 mtime：多模块批次会在单模块复测之后仍在写盘，mtime 会指错。",
+ "_note_state_file_missing": "标了 state_file_missing 的模块：A 档确实测量过（台账有逐条存活分析），但当时的 progress 状态文件后来被清理，数字取自台账而非状态文件。重跑一次即可回到自动生成的口径。",
+ "totals": {
+  "modules_with_mutants": 89,
+  "total_points": 1982,
+  "total_survived": 136,
+  "total_killed": 1846
+ },
+ "modules": {
+  "app/agent/_agent.py": {
+   "points": 16,
+   "killed": 16,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/agent/test_agent_fallback.py",
+    "tests/unit/agent/test_agent_routing.py"
+   ],
+   "source": "progress_c_rerun_6.json",
+   "all_runs": [
+    0.0,
+    68.8,
+    100.0
+   ]
   },
-  "modules": {
-    "app/agent/_agent.py": {
-      "points": 16,
-      "killed": 16,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/agent/test_agent_fallback.py",
-        "tests/unit/agent/test_agent_routing.py"
-      ],
-      "source": "progress_c_rerun_6.json",
-      "all_runs": [
-        0.0,
-        68.8,
-        100.0
-      ]
-    },
-    "app/agent/_chat_history.py": {
-      "points": 2,
-      "killed": 2,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/agent/test_agent_helpers_and_history.py"
-      ],
-      "source": "progress_d_r4.json",
-      "all_runs": [
-        0.0,
-        50.0,
-        100.0
-      ]
-    },
-    "app/agent/_critic.py": {
-      "points": 18,
-      "killed": 18,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/agent/test_agent_critic.py",
-        "tests/unit/agent/test_critic_thresholds.py"
-      ],
-      "source": "progress_c_rerun_2.json",
-      "all_runs": [
-        50.0,
-        94.4,
-        100.0
-      ]
-    },
-    "app/agent/_data_utils.py": {
-      "points": 22,
-      "killed": 22,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/agent/test_agent_data_utils.py"
-      ],
-      "source": "progress_d_r11.json",
-      "all_runs": [
-        86.4,
-        100.0
-      ]
-    },
-    "app/agent/_fallback.py": {
-      "points": 4,
-      "killed": 3,
-      "survived": 1,
-      "kill_rate": 75.0,
-      "tests": [
-        "tests/unit/agent/test_agent_fallback.py"
-      ],
-      "source": "progress_d_gap2.json",
-      "all_runs": [
-        0.0,
-        75.0
-      ]
-    },
-    "app/agent/_helpers.py": {
-      "points": 1,
-      "killed": 1,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/agent/test_agent_helpers_and_history.py"
-      ],
-      "source": "progress_d_r3.json",
-      "all_runs": [
-        0.0,
-        100.0
-      ]
-    },
-    "app/agent/_lc_agent.py": {
-      "points": 5,
-      "killed": 5,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/meta/test_known_defects.py",
-        "tests/unit/agent/test_lc_agent_wiring.py"
-      ],
-      "source": "progress_d_r12.json",
-      "all_runs": [
-        100.0
-      ]
-    },
-    "app/agent/_memory.py": {
-      "points": 1,
-      "killed": 1,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/integration/test_conversational_agent_chain.py",
-        "tests/unit/agent/"
-      ],
-      "source": "progress_d_b2.json",
-      "all_runs": [
-        100.0
-      ]
-    },
-    "app/agent/_tools.py": {
-      "points": 22,
-      "killed": 21,
-      "survived": 1,
-      "kill_rate": 95.5,
-      "tests": [
-        "tests/unit/agent/test_agent_fallback.py",
-        "tests/unit/agent/test_agent_tools_guards.py"
-      ],
-      "source": "progress_c_rerun_5.json",
-      "all_runs": [
-        4.5,
-        95.5
-      ]
-    },
-    "app/agent/alpha_agent.py": {
-      "points": 10,
-      "killed": 10,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/agent/test_alpha_agent_loop.py",
-        "tests/unit/agent/test_system_prompt_consistency.py"
-      ],
-      "source": "progress_d_r15.json",
-      "all_runs": [
-        45.5,
-        100.0
-      ]
-    },
-    "app/api/chat_router.py": {
-      "points": 5,
-      "killed": 5,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/integration/test_discovery_and_chat_router.py"
-      ],
-      "source": "progress_c_rerun_2.json",
-      "all_runs": [
-        40.0,
-        60.0,
-        100.0
-      ]
-    },
-    "app/api/router.py": {
-      "points": 75,
-      "killed": 74,
-      "survived": 1,
-      "kill_rate": 98.7,
-      "tests": [
-        "tests/integration/test_api_uncovered_routes.py",
-        "tests/unit/api/test_api_router_guards.py",
-        "tests/unit/api/test_api_router_round2.py"
-      ],
-      "source": "progress_c_final.json",
-      "all_runs": [
-        16.0,
-        48.0,
-        94.7,
-        98.7
-      ]
-    },
-    "app/config.py": {
-      "points": 17,
-      "killed": 17,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/entrypoint/test_settings_boolean_defaults.py"
-      ],
-      "source": "progress_b_newonly.json",
-      "all_runs": [
-        35.3,
-        100.0
-      ]
-    },
-    "app/core/alpha_engine/dsl_executor.py": {
-      "points": 25,
-      "killed": 25,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/alpha_engine/test_dsl_edge_cases.py",
-        "tests/unit/alpha_engine/test_dsl_engine.py",
-        "tests/unit/alpha_engine/test_dsl_executor_pipeline.py",
-        "tests/unit/alpha_engine/test_dsl_operators.py",
-        "tests/unit/alpha_engine/test_leak_filter.py"
-      ],
-      "source": "progress_b_rerun_9.json",
-      "all_runs": [
-        36.0,
-        92.0,
-        96.0,
-        100.0
-      ]
-    },
-    "app/core/alpha_engine/fast_ops.py": {
-      "points": 145,
-      "killed": 127,
-      "survived": 18,
-      "kill_rate": 87.6,
-      "tests": [
-        "tests/unit/alpha_engine/test_dsl_edge_cases.py",
-        "tests/unit/alpha_engine/test_dsl_engine.py",
-        "tests/unit/alpha_engine/test_dsl_operators.py",
-        "tests/unit/alpha_engine/test_fast_ops_kernel.py"
-      ],
-      "source": "progress_b_rerun_7.json",
-      "all_runs": [
-        6.9,
-        84.1,
-        86.9,
-        87.6
-      ]
-    },
-    "app/core/alpha_engine/financial_diagnostics.py": {
-      "points": 35,
-      "killed": 35,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/alpha_engine/test_financial_diagnostics.py"
-      ],
-      "source": "progress_d_r2.json",
-      "all_runs": [
-        0.0,
-        88.6,
-        100.0
-      ]
-    },
-    "app/core/alpha_engine/financial_interpreter.py": {
-      "points": 50,
-      "killed": 50,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/meta/test_known_defects.py",
-        "tests/unit/alpha_engine/test_financial_interpreter.py"
-      ],
-      "source": "progress_d_fi2.json",
-      "all_runs": [
-        0.0,
-        66.0,
-        100.0
-      ]
-    },
-    "app/core/alpha_engine/parser.py": {
-      "points": 13,
-      "killed": 12,
-      "survived": 1,
-      "kill_rate": 92.3,
-      "tests": [
-        "tests/unit/alpha_engine/test_dsl_parser_and_validator_bounds.py"
-      ],
-      "source": "progress_b_newonly.json",
-      "all_runs": [
-        15.4,
-        92.3
-      ]
-    },
-    "app/core/alpha_engine/signal_processor.py": {
-      "points": 18,
-      "killed": 16,
-      "survived": 2,
-      "kill_rate": 88.9,
-      "tests": [
-        "tests/unit/alpha_engine/test_leak_filter.py",
-        "tests/unit/alpha_engine/test_signal_processor_pipeline.py"
-      ],
-      "source": "progress_b_rerun_5.json",
-      "all_runs": [
-        44.4,
-        83.3,
-        88.9
-      ]
-    },
-    "app/core/alpha_engine/typed_nodes.py": {
-      "points": 33,
-      "killed": 33,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/alpha_engine/test_dsl_edge_cases.py",
-        "tests/unit/alpha_engine/test_dsl_engine.py",
-        "tests/unit/alpha_engine/test_dsl_operators.py",
-        "tests/unit/alpha_engine/test_typed_nodes_semantics.py"
-      ],
-      "source": "progress_b_rerun_9.json",
-      "all_runs": [
-        30.3,
-        90.9,
-        93.9,
-        100.0
-      ]
-    },
-    "app/core/alpha_engine/validator.py": {
-      "points": 11,
-      "killed": 11,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/alpha_engine/test_dsl_parser_and_validator_bounds.py"
-      ],
-      "source": "progress_b_newonly.json",
-      "all_runs": [
-        27.3,
-        100.0
-      ]
-    },
-    "app/core/backtest_engine/alpha_combiner.py": {
-      "points": 25,
-      "killed": 24,
-      "survived": 1,
-      "kill_rate": 96.0,
-      "tests": [
-        "tests/unit/backtest_engine/test_alpha_combiner.py"
-      ],
-      "source": "progress_d_r13.json",
-      "all_runs": [
-        64.0,
-        96.0
-      ]
-    },
-    "app/core/backtest_engine/backtest_engine.py": {
-      "points": 15,
-      "killed": 15,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/golden/test_golden_backtest.py",
-        "tests/meta/test_invariants.py",
-        "tests/unit/backtest_engine/test_backtest_edge_cases.py",
-        "tests/unit/backtest_engine/test_backtest_engine.py",
-        "tests/unit/backtest_engine/test_backtest_engine_accounting.py"
-      ],
-      "source": "progress_final2.json",
-      "all_runs": [
-        20.0,
-        93.3,
-        100.0
-      ]
-    },
-    "app/core/backtest_engine/multi_dataset_backtester.py": {
-      "points": 14,
-      "killed": 14,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/backtest_engine/test_multi_dataset_backtester.py"
-      ],
-      "source": "progress_d_r15.json",
-      "all_runs": [
-        92.9,
-        100.0
-      ]
-    },
-    "app/core/backtest_engine/overfit_stats.py": {
-      "points": 10,
-      "killed": 8,
-      "survived": 2,
-      "kill_rate": 80.0,
-      "tests": [
-        "tests/meta/test_invariants.py",
-        "tests/unit/backtest_engine/test_overfit_stats_pbo.py"
-      ],
-      "source": "progress_final2.json",
-      "all_runs": [
-        20.0,
-        80.0
-      ]
-    },
-    "app/core/backtest_engine/performance_analyzer.py": {
-      "points": 92,
-      "killed": 88,
-      "survived": 4,
-      "kill_rate": 95.7,
-      "tests": [
-        "tests/golden/test_golden_backtest.py",
-        "tests/integration/test_supplementary_fixes.py",
-        "tests/unit/backtest_engine/test_performance_analyzer_formulas.py"
-      ],
-      "source": "progress_final.json",
-      "all_runs": [
-        30.4,
-        89.1,
-        95.7,
-        96.5
-      ]
-    },
-    "app/core/backtest_engine/portfolio_constructor.py": {
-      "points": 37,
-      "killed": 32,
-      "survived": 5,
-      "kill_rate": 86.5,
-      "tests": [
-        "tests/unit/backtest_engine/test_backtest_edge_cases.py",
-        "tests/unit/backtest_engine/test_portfolio_constructor_formulas.py"
-      ],
-      "source": "progress_final.json",
-      "all_runs": [
-        32.4,
-        86.5
-      ]
-    },
-    "app/core/backtest_engine/realistic_backtester.py": {
-      "points": 37,
-      "killed": 33,
-      "survived": 4,
-      "kill_rate": 89.2,
-      "tests": [
-        "tests/integration/test_supplementary_fixes.py",
-        "tests/unit/backtest_engine/test_realistic_backtester_contracts.py"
-      ],
-      "source": "progress_final.json",
-      "all_runs": [
-        32.4,
-        81.1,
-        89.2
-      ]
-    },
-    "app/core/backtest_engine/risk_report.py": {
-      "points": 32,
-      "killed": 30,
-      "survived": 2,
-      "kill_rate": 93.8,
-      "tests": [
-        "tests/unit/backtest_engine/test_risk_report_contracts.py"
-      ],
-      "source": "progress_final.json",
-      "all_runs": [
-        3.1,
-        84.4,
-        93.8
-      ]
-    },
-    "app/core/backtest_engine/transaction_cost.py": {
-      "points": 41,
-      "killed": 32,
-      "survived": 9,
-      "kill_rate": 78.0,
-      "tests": [
-        "tests/unit/backtest_engine/"
-      ],
-      "source": "progress_d_b2.json",
-      "all_runs": [
-        78.0
-      ]
-    },
-    "app/core/backtest_engine/visualizer.py": {
-      "points": 19,
-      "killed": 19,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/backtest_engine/test_backtest_plot_fidelity.py"
-      ],
-      "source": "progress_d_r14.json",
-      "all_runs": [
-        73.7,
-        100.0
-      ]
-    },
-    "app/core/data_engine/base.py": {
-      "points": 5,
-      "killed": 5,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/data_engine/test_provider_base.py"
-      ],
-      "source": "progress_d_r7.json",
-      "all_runs": [
-        0.0,
-        80.0,
-        100.0
-      ]
-    },
-    "app/core/data_engine/data_partitioner.py": {
-      "points": 54,
-      "killed": 45,
-      "survived": 9,
-      "kill_rate": 83.3,
-      "tests": [
-        "tests/unit/data_engine/test_data_partitioner_split.py"
-      ],
-      "source": "progress_b_rerun_8b.json",
-      "all_runs": [
-        18.5,
-        81.5,
-        83.3
-      ]
-    },
-    "app/core/data_engine/dataset_filters.py": {
-      "points": 54,
-      "killed": 53,
-      "survived": 1,
-      "kill_rate": 98.1,
-      "tests": [
-        "tests/unit/data_engine/test_dataset_filters.py"
-      ],
-      "source": "progress_d_r9.json",
-      "all_runs": [
-        77.8,
-        98.1
-      ]
-    },
-    "app/core/data_engine/dataset_registry.py": {
-      "points": 16,
-      "killed": 16,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/data_engine/test_dataset_registry_loading.py"
-      ],
-      "source": "progress_b_newonly.json",
-      "all_runs": [
-        0.0,
-        93.8,
-        100.0
-      ]
-    },
-    "app/core/data_engine/health_report.py": {
-      "points": 32,
-      "killed": 32,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/data_engine/test_health_report.py"
-      ],
-      "source": "progress_d_gap3.json",
-      "all_runs": [
-        0.0,
-        75.0,
-        100.0
-      ]
-    },
-    "app/core/data_engine/local_parquet_provider.py": {
-      "points": 21,
-      "killed": 18,
-      "survived": 3,
-      "kill_rate": 85.7,
-      "tests": [
-        "tests/meta/test_known_defects.py",
-        "tests/unit/data_engine/test_local_parquet_provider.py"
-      ],
-      "source": "progress_d_r12.json",
-      "all_runs": [
-        71.4,
-        85.7
-      ]
-    },
-    "app/core/data_engine/market_calendar.py": {
-      "points": 22,
-      "killed": 20,
-      "survived": 2,
-      "kill_rate": 90.9,
-      "tests": [
-        "tests/unit/data_engine/test_market_calendar_fail_closed.py"
-      ],
-      "source": "progress_final.json",
-      "all_runs": [
-        77.3,
-        86.4,
-        90.9
-      ]
-    },
-    "app/core/data_engine/multi_dataset.py": {
-      "points": 23,
-      "killed": 22,
-      "survived": 1,
-      "kill_rate": 95.7,
-      "tests": [
-        "tests/unit/data_engine/test_multi_dataset.py"
-      ],
-      "source": "progress_d_r13.json",
-      "all_runs": [
-        78.3,
-        95.7
-      ]
-    },
-    "app/core/data_engine/pit_store.py": {
-      "points": 24,
-      "killed": 19,
-      "survived": 5,
-      "kill_rate": 79.2,
-      "tests": [
-        "tests/unit/data_engine/test_pit_store_storage.py"
-      ],
-      "source": "progress_final.json",
-      "all_runs": [
-        70.8,
-        79.2
-      ]
-    },
-    "app/core/data_engine/providers/akshare_provider.py": {
-      "points": 9,
-      "killed": 9,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/data_engine/test_akshare_provider.py"
-      ],
-      "source": "progress_d_r11.json",
-      "all_runs": [
-        100.0
-      ]
-    },
-    "app/core/data_engine/providers/ccxt_provider.py": {
-      "points": 12,
-      "killed": 11,
-      "survived": 1,
-      "kill_rate": 91.7,
-      "tests": [
-        "tests/unit/data_engine/test_ccxt_provider.py"
-      ],
-      "source": "progress_d_r11.json",
-      "all_runs": [
-        91.7
-      ]
-    },
-    "app/core/data_engine/providers/moomoo_provider.py": {
-      "points": 13,
-      "killed": 13,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/data_engine/test_moomoo_paging_and_window.py"
-      ],
-      "source": "progress_b_rerun_3.json",
-      "all_runs": [
-        7.7,
-        92.3,
-        100.0
-      ]
-    },
-    "app/core/data_engine/regime_detector.py": {
-      "points": 17,
-      "killed": 16,
-      "survived": 1,
-      "kill_rate": 94.1,
-      "tests": [
-        "tests/unit/data_engine/test_regime_detector_labels.py"
-      ],
-      "source": "progress_b_rerun_5.json",
-      "all_runs": [
-        52.9,
-        94.1
-      ]
-    },
-    "app/core/data_engine/schema.py": {
-      "points": 11,
-      "killed": 11,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/data_engine/test_schema_enforcer.py"
-      ],
-      "source": "progress_d_r4.json",
-      "all_runs": [
-        0.0,
-        90.9,
-        100.0
-      ]
-    },
-    "app/core/data_engine/sector_mapper.py": {
-      "points": 5,
-      "killed": 5,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/data_engine/test_sector_mapper.py"
-      ],
-      "source": "progress_d_gap2.json",
-      "all_runs": [
-        0.0,
-        100.0
-      ]
-    },
-    "app/core/data_engine/yahoo_provider.py": {
-      "points": 3,
-      "killed": 3,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/data_engine/test_yahoo_provider.py"
-      ],
-      "source": "progress_d_gap2.json",
-      "all_runs": [
-        0.0,
-        100.0
-      ]
-    },
-    "app/core/discovery/discovery_engine.py": {
-      "points": 9,
-      "killed": 9,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/integration/test_discovery_and_chat_router.py"
-      ],
-      "source": "progress_c_rerun_1.json",
-      "all_runs": [
-        33.3,
-        100.0
-      ]
-    },
-    "app/core/discovery/market_observer.py": {
-      "points": 22,
-      "killed": 22,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/discovery/test_market_observer_scoring.py"
-      ],
-      "source": "progress_b_rerun_3.json",
-      "all_runs": [
-        22.7,
-        72.7,
-        95.5,
-        100.0
-      ]
-    },
-    "app/core/execution/paper_broker.py": {
-      "points": 27,
-      "killed": 24,
-      "survived": 3,
-      "kill_rate": 88.9,
-      "tests": [
-        "tests/unit/db/test_paper_broker_accounting.py"
-      ],
-      "source": "MUTATION_LEDGER.md（A 档收口表）",
-      "state_file_missing": true,
-      "note": "L119（两个比较符）与 L127 原登记为等价变异，2026-09-15 外部审计给出反例推翻。2026-09-16 补 TestSubEpsilonPositionsAreADeliberatePolicy（5 条），逐个 verify_mutant 复核：三条全部 [OK] 变异被杀死。 2026-09-18 修 A-6 前半（target=1.0 → |tgt| 之和）新引入 1 个变异点（L108 `np.abs(` 删除 → 总敞口变净敞口），由新增的多空用例 [0.3,-0.3] 当场覆盖，verify_mutant 复核 [OK] 被杀死。",
-      "all_runs": [
-        88.5
-      ]
-    },
-    "app/core/gp_engine/alpha_pool.py": {
-      "points": 22,
-      "killed": 21,
-      "survived": 1,
-      "kill_rate": 95.5,
-      "tests": [
-        "tests/unit/gp_engine/test_alpha_pool_dedup.py",
-        "tests/unit/gp_engine/test_gp_alpha_pool.py"
-      ],
-      "source": "progress_c_rerun_3.json",
-      "all_runs": [
-        59.1,
-        77.3,
-        81.8,
-        95.5
-      ]
-    },
-    "app/core/gp_engine/evaluation_utils.py": {
-      "points": 10,
-      "killed": 8,
-      "survived": 2,
-      "kill_rate": 80.0,
-      "tests": [
-        "tests/unit/gp_engine/test_evaluation_utils.py"
-      ],
-      "source": "progress_d_r6.json",
-      "all_runs": [
-        0.0,
-        70.0,
-        80.0
-      ]
-    },
-    "app/core/gp_engine/fitness.py": {
-      "points": 20,
-      "killed": 20,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/integration/test_supplementary_fixes.py",
-        "tests/unit/gp_engine/test_gp_fitness_weights.py"
-      ],
-      "source": "progress_c_rerun_3.json",
-      "all_runs": [
-        35.0,
-        90.0,
-        95.0,
-        100.0
-      ]
-    },
-    "app/core/gp_engine/gp_engine.py": {
-      "points": 15,
-      "killed": 11,
-      "survived": 4,
-      "kill_rate": 73.3,
-      "tests": [
-        "tests/integration/test_alpha_discovery.py",
-        "tests/unit/gp_engine/test_gp_engine_fitness.py"
-      ],
-      "source": "progress_c_rerun_2.json",
-      "all_runs": [
-        0.0,
-        66.7,
-        73.3
-      ]
-    },
-    "app/core/gp_engine/mutations.py": {
-      "points": 65,
-      "killed": 65,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/integration/test_alpha_discovery.py",
-        "tests/meta/test_known_defects.py",
-        "tests/unit/gp_engine/test_gp_mutation_operators.py"
-      ],
-      "source": "progress_c_final.json",
-      "all_runs": [
-        4.6,
-        69.2,
-        96.9,
-        98.5,
-        100.0
-      ]
-    },
-    "app/core/gp_engine/population_evolver.py": {
-      "points": 48,
-      "killed": 48,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/integration/test_alpha_discovery.py",
-        "tests/unit/gp_engine/test_gp_evolution_full.py",
-        "tests/unit/gp_engine/test_population_evolver_internals.py",
-        "tests/unit/gp_engine/test_population_evolver_round2.py",
-        "tests/unit/gp_engine/test_population_evolver_round3.py"
-      ],
-      "source": "progress_c_pe_final.json",
-      "all_runs": [
-        10.4,
-        56.2,
-        79.2,
-        93.8,
-        100.0
-      ]
-    },
-    "app/core/lifecycle/leak_filter.py": {
-      "points": 9,
-      "killed": 7,
-      "survived": 2,
-      "kill_rate": 77.8,
-      "tests": [
-        "tests/unit/alpha_engine/test_leak_filter.py"
-      ],
-      "source": "progress_d_b2.json",
-      "all_runs": [
-        77.8
-      ]
-    },
-    "app/core/lifecycle/promotion_gate.py": {
-      "points": 13,
-      "killed": 12,
-      "survived": 1,
-      "kill_rate": 92.3,
-      "tests": [
-        "tests/integration/test_graded_promotion_gates.py",
-        "tests/unit/lifecycle/"
-      ],
-      "source": "progress_d_b2.json",
-      "all_runs": [
-        92.3
-      ]
-    },
-    "app/core/lifecycle/validation_gate.py": {
-      "points": 8,
-      "killed": 6,
-      "survived": 2,
-      "kill_rate": 75.0,
-      "tests": [
-        "tests/integration/test_validation_gate_contracts.py"
-      ],
-      "source": "progress_final2.json",
-      "all_runs": [
-        25.0,
-        75.0
-      ]
-    },
-    "app/core/ml_engine/alpha_evaluator.py": {
-      "points": 22,
-      "killed": 22,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/ml_engine/test_alpha_evaluator_overfit.py"
-      ],
-      "source": "progress_b_rerun_7.json",
-      "all_runs": [
-        22.7,
-        95.5,
-        100.0
-      ]
-    },
-    "app/core/ml_engine/alpha_optimizer.py": {
-      "points": 24,
-      "killed": 23,
-      "survived": 1,
-      "kill_rate": 95.8,
-      "tests": [
-        "tests/unit/ml_engine/test_alpha_optimizer_search.py",
-        "tests/unit/ml_engine/test_ml_optimizer.py"
-      ],
-      "source": "progress_b_rerun_7.json",
-      "all_runs": [
-        4.2,
-        75.0,
-        95.8
-      ]
-    },
-    "app/core/ml_engine/proxy_model.py": {
-      "points": 8,
-      "killed": 5,
-      "survived": 3,
-      "kill_rate": 62.5,
-      "tests": [
-        "tests/integration/test_alpha_discovery.py",
-        "tests/unit/ml_engine/test_proxy_model_pruning.py"
-      ],
-      "source": "progress_b_rerun_2.json",
-      "all_runs": [
-        12.5,
-        62.5
-      ]
-    },
-    "app/core/monitor/alpha_monitor.py": {
-      "points": 12,
-      "killed": 12,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/monitor/test_alpha_monitor_decay.py"
-      ],
-      "source": "progress_b_rerun_5.json",
-      "all_runs": [
-        50.0,
-        58.3,
-        91.7,
-        100.0
-      ]
-    },
-    "app/core/portfolio_manager/horizon.py": {
-      "points": 7,
-      "killed": 7,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/portfolio_manager/test_horizon_band_and_classification.py"
-      ],
-      "source": "progress_d_r11.json",
-      "all_runs": [
-        85.7,
-        100.0
-      ]
-    },
-    "app/core/portfolio_manager/manager.py": {
-      "points": 14,
-      "killed": 12,
-      "survived": 2,
-      "kill_rate": 85.7,
-      "tests": [
-        "tests/unit/portfolio_manager/test_portfolio_manager_book.py"
-      ],
-      "source": "progress_a_recheck.json",
-      "all_runs": [
-        35.7,
-        78.6,
-        85.7
-      ]
-    },
-    "app/core/portfolio_manager/risk_gate.py": {
-      "points": 42,
-      "killed": 32,
-      "survived": 10,
-      "kill_rate": 76.2,
-      "tests": [
-        "tests/unit/portfolio_manager/"
-      ],
-      "source": "progress_d_b2.json",
-      "all_runs": [
-        76.2
-      ]
-    },
-    "app/core/portfolio_manager/strategy_builder.py": {
-      "points": 8,
-      "killed": 8,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/portfolio_manager/test_strategy_builder_assembly.py"
-      ],
-      "source": "progress_d_r10.json",
-      "all_runs": [
-        12.5,
-        100.0
-      ]
-    },
-    "app/core/portfolio_manager/strategy_gate.py": {
-      "points": 31,
-      "killed": 29,
-      "survived": 2,
-      "kill_rate": 93.5,
-      "tests": [
-        "tests/unit/portfolio_manager/test_daily_loop_money_and_gates.py",
-        "tests/unit/portfolio_manager/test_strategy_gate_contracts.py"
-      ],
-      "source": "progress_a_recheck.json",
-      "all_runs": [
-        0.0,
-        77.4,
-        93.5
-      ]
-    },
-    "app/core/strategies/baselines.py": {
-      "points": 3,
-      "killed": 1,
-      "survived": 2,
-      "kill_rate": 33.3,
-      "tests": [
-        "tests/unit/portfolio_manager/test_baseline_strategy_library.py"
-      ],
-      "source": "progress_d_b2.json",
-      "all_runs": [
-        33.3
-      ]
-    },
-    "app/core/trading_context/context.py": {
-      "points": 11,
-      "killed": 10,
-      "survived": 1,
-      "kill_rate": 90.9,
-      "tests": [
-        "tests/unit/trading_context/test_daily_loop_survivors.py",
-        "tests/unit/trading_context/test_trading_context_reality.py"
-      ],
-      "source": "progress_a_recheck.json",
-      "all_runs": [
-        45.5,
-        72.7,
-        90.9
-      ]
-    },
-    "app/core/trading_context/providers.py": {
-      "points": 4,
-      "killed": 4,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/integration/test_diagnostics_and_providers.py"
-      ],
-      "source": "progress_final2.json",
-      "all_runs": [
-        50.0,
-        100.0
-      ]
-    },
-    "app/core/trading_context/spread.py": {
-      "points": 21,
-      "killed": 17,
-      "survived": 4,
-      "kill_rate": 81.0,
-      "tests": [
-        "tests/unit/trading_context/test_spread_estimators.py"
-      ],
-      "source": "progress_final.json",
-      "all_runs": [
-        47.6,
-        76.2,
-        81.0
-      ]
-    },
-    "app/core/workflows/alpha_workflows.py": {
-      "points": 69,
-      "killed": 64,
-      "survived": 5,
-      "kill_rate": 92.8,
-      "tests": [
-        "tests/integration/test_supplementary_fixes.py",
-        "tests/unit/workflows/test_alpha_workflows_internals.py",
-        "tests/unit/workflows/test_alpha_workflows_round2.py",
-        "tests/unit/workflows/test_alpha_workflows_round3.py"
-      ],
-      "source": "progress_c_rerun_8.json",
-      "all_runs": [
-        20.3,
-        52.2,
-        60.9,
-        87.0,
-        92.8
-      ]
-    },
-    "app/db/alpha_lifecycle.py": {
-      "points": 1,
-      "killed": 1,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [],
-      "source": "progress.json",
-      "all_runs": [
-        100.0
-      ]
-    },
-    "app/db/alpha_store.py": {
-      "points": 23,
-      "killed": 22,
-      "survived": 1,
-      "kill_rate": 95.7,
-      "tests": [
-        "tests/unit/db/test_alpha_store_schema.py"
-      ],
-      "source": "progress_final.json",
-      "all_runs": [
-        26.1,
-        87.0,
-        95.7
-      ]
-    },
-    "app/db/chat_store.py": {
-      "points": 17,
-      "killed": 17,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/db/test_chat_store_schema.py",
-        "tests/unit/db/test_db_chat_store.py"
-      ],
-      "source": "progress_final.json",
-      "all_runs": [
-        58.8,
-        100.0
-      ]
-    },
-    "app/db/diagnostics_store.py": {
-      "points": 7,
-      "killed": 6,
-      "survived": 1,
-      "kill_rate": 85.7,
-      "tests": [
-        "tests/integration/test_diagnostics_and_providers.py"
-      ],
-      "source": "progress_final2.json",
-      "all_runs": [
-        28.6,
-        85.7
-      ]
-    },
-    "app/db/position_store.py": {
-      "points": 25,
-      "killed": 24,
-      "survived": 1,
-      "kill_rate": 96.0,
-      "tests": [
-        "tests/unit/db/test_paper_broker_accounting.py",
-        "tests/unit/db/test_position_store_schema.py"
-      ],
-      "source": "progress_final.json",
-      "all_runs": [
-        24.0,
-        96.0
-      ]
-    },
-    "app/db/run_manifest.py": {
-      "points": 14,
-      "killed": 12,
-      "survived": 2,
-      "kill_rate": 85.7,
-      "tests": [
-        "tests/unit/db/test_run_manifest_reproducibility.py"
-      ],
-      "source": "progress_a_recheck.json",
-      "all_runs": [
-        14.3,
-        78.6,
-        85.7
-      ]
-    },
-    "app/db/strategy_store.py": {
-      "points": 13,
-      "killed": 12,
-      "survived": 1,
-      "kill_rate": 92.3,
-      "tests": [
-        "tests/unit/db/test_strategy_store_schema.py"
-      ],
-      "source": "progress_final2.json",
-      "all_runs": [
-        38.5,
-        92.3
-      ]
-    },
-    "app/db/trial_ledger.py": {
-      "points": 8,
-      "killed": 7,
-      "survived": 1,
-      "kill_rate": 87.5,
-      "tests": [
-        "tests/integration/test_validation_gate_contracts.py"
-      ],
-      "source": "progress_final2.json",
-      "all_runs": [
-        50.0,
-        87.5
-      ]
-    },
-    "app/main.py": {
-      "points": 21,
-      "killed": 21,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/integration/test_api_health.py",
-        "tests/unit/entrypoint/test_main_startup_guards.py",
-        "tests/unit/entrypoint/test_production_defaults.py"
-      ],
-      "source": "progress_c_rerun_3.json",
-      "all_runs": [
-        9.5,
-        52.4,
-        85.7,
-        100.0
-      ]
-    },
-    "app/tasks/backup.py": {
-      "points": 14,
-      "killed": 14,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/tasks/test_backup.py",
-        "tests/unit/tasks/test_backup_failure_paths.py"
-      ],
-      "source": "progress_c_rerun_2.json",
-      "all_runs": [
-        57.1,
-        92.9,
-        100.0
-      ]
-    },
-    "app/tasks/cost_calibration.py": {
-      "points": 16,
-      "killed": 16,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/tasks/test_cost_calibration_report.py"
-      ],
-      "source": "progress_final2.json",
-      "all_runs": [
-        50.0,
-        87.5,
-        100.0
-      ]
-    },
-    "app/tasks/daily_ingest.py": {
-      "points": 22,
-      "killed": 22,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/integration/test_daily_ingest_increment.py"
-      ],
-      "source": "progress_a_recheck.json",
-      "all_runs": [
-        31.8,
-        72.7,
-        90.9,
-        95.5,
-        100.0
-      ]
-    },
-    "app/tasks/daily_trading_loop.py": {
-      "points": 63,
-      "killed": 53,
-      "survived": 10,
-      "kill_rate": 84.1,
-      "tests": [],
-      "source": "MUTATION_LEDGER.md（A 档收口表）",
-      "state_file_missing": true
-    },
-    "app/tasks/reasoning_log.py": {
-      "points": 2,
-      "killed": 2,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/tasks/test_reasoning_log.py"
-      ],
-      "source": "progress_d_r7.json",
-      "all_runs": [
-        0.0,
-        100.0
-      ]
-    },
-    "app/tasks/scheduler.py": {
-      "points": 20,
-      "killed": 20,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/tasks/test_scheduler_registration.py"
-      ],
-      "source": "progress_c_rerun_2.json",
-      "all_runs": [
-        5.0,
-        70.0,
-        100.0
-      ]
-    },
-    "app/db/_sqlite_utils.py": {
-      "points": 1,
-      "killed": 1,
-      "survived": 0,
-      "kill_rate": 100.0,
-      "tests": [
-        "tests/unit/db/test_sqlite_hardening.py"
-      ],
-      "source": "2026-09-16 补测（算子补齐后首次进入范围）",
-      "all_runs": [
-        0.0,
-        100.0
-      ],
-      "note": "首测 0.0%（该模块此前一条测试都没有）。补 test_sqlite_hardening.py 后用 verify_mutant.py 单点复核：L28 `!=` → `==` 结论 [OK] 变异被杀死。"
-    }
+  "app/agent/_chat_history.py": {
+   "points": 2,
+   "killed": 2,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/agent/test_agent_helpers_and_history.py"
+   ],
+   "source": "progress_d_r4.json",
+   "all_runs": [
+    0.0,
+    50.0,
+    100.0
+   ]
   },
-  "proof_reconciliation": {
-    "_doc": "存活变异的处置对账状态。这是本轮交付**已知未闭合**的唯一缺口，写在这里是为了它不会被忘掉。",
-    "modules_with_survivors": 44,
-    "total_survivors": 136,
-    "proof_files_in_suite": 44,
-    "proof_entries_in_suite": 97,
-    "per_file_accounting": "自洽：44 个文件的 PROVEN_EQUIVALENT 条目数与各自声明的存活数逐个相等（由 test_lessons_enforced.py::TestLessonX 强制）",
-    "module_level_attribution": "已逐模块对账（2026-09-16）：见 survivor_disposition",
-    "why_not": "PROVEN_EQUIVALENT 的键是自由文本（如 'L124 (weights < -tol) → <='），不带模块路径；按 import 归属会错判（risk_gate 的 10 条证明在它自己的文件里，而那个文件并不直接 import 该模块）。所以无法机械地把 138 个存活逐条对上 97 条证明。",
-    "what_is_established": "① app/ 下 88 个有变异点的模块全部测量过（本文件对账）；② 每个写了证明的文件，条目数与它声明的存活数一致；③ 每条证明说明 ≥40 字、点名的验证用例真实存在。 ④ 已被反例推翻的证明单独登记在 REFUTED_EQUIVALENCE，并配一条固化反例的可执行用例。",
-    "how_to_close": "已完成：97 条键全部改写成 `<模块路径> ×<覆盖点数> — <描述>`，由 test_every_proof_key_declares_its_module_and_point_count 强制格式，由 test_survivor_disposition_reconciles_per_module 逐模块对账。遗留的不是『对不上账』，而是『22 个存活项确实没处置』，见 survivor_disposition。",
-    "ratchet": {
-      "proof_entries_min": 97,
-      "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
-      "refuted_entries_min": 2,
-      "unmeasured_points_max": 957
-    },
-    "refuted_by_counterexample": {
-      "count": 2,
-      "where": "tests/unit/db/test_paper_broker_accounting.py :: REFUTED_EQUIVALENCE",
-      "_doc": "paper_broker L119/L127 的两条『等价性证明』已被反例推翻（外部审计 2026-09-15）：project_to_capped_l1([[1e-12, 1-1e-12]]) 逐位保留 1e-12，于是 `>` 与 `>=` 结论不同。原『机械验证』断言的是 (base+tol)-base != tol，证的是更弱的命题。这两个存活点现在既未被杀死也无有效证明。",
-      "resolved": "已处置：三个变异点（L119 的两个比较符 + L127）全部由 TestSubEpsilonPositionsAreADeliberatePolicy 杀死，verify_mutant 逐个复核确认。REFUTED_EQUIVALENCE 保留为历史记录 —— 那两条证明本身是错的，不许再写回去。"
-    }
+  "app/agent/_critic.py": {
+   "points": 18,
+   "killed": 18,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/agent/test_agent_critic.py",
+    "tests/unit/agent/test_critic_thresholds.py"
+   ],
+   "source": "progress_c_rerun_2.json",
+   "all_runs": [
+    50.0,
+    94.4,
+    100.0
+   ]
   },
-  "_provenance_repair": {
-    "_doc": "外部审计 2026-09-15 指出：本文件记录的测试出处有 104 个不重复路径在 Task 1 目录重组后已不存在 —— 点数没错，但照着清单跑不回『当初是哪些测试测的它』。",
-    "repaired_on": "2026-09-16",
-    "method": "按文件名唯一匹配重映射到重组后的路径；重组时被合并/删除的文件无法映射，置空。",
-    "remapped": 96,
-    "kept": 41,
-    "dropped_unmappable": 59,
-    "modules_with_no_surviving_provenance": 3,
-    "modules_list": [
-      "app/core/execution/paper_broker.py",
-      "app/db/alpha_lifecycle.py",
-      "app/tasks/daily_trading_loop.py"
-    ],
-    "caveat": "重映射是按**文件名**做的，不是重跑得来的。它保证清单里的路径现在都存在、可以照着跑；不保证当初那一版文件的内容与现在这一版相同。唯一能消除这个不确定性的办法是重测，本轮未做。"
+  "app/agent/_data_utils.py": {
+   "points": 22,
+   "killed": 22,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/agent/test_agent_data_utils.py"
+   ],
+   "source": "progress_d_r11.json",
+   "all_runs": [
+    86.4,
+    100.0
+   ]
   },
-  "measurement_scope": {
-    "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
-    "measured_points": 1982,
-    "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-    "current_plan_points": 2939,
-    "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-    "unmeasured_points": 957,
-    "newly_in_scope_modules": [],
-    "per_module_delta": {
-      "app/agent/_agent.py": {
-        "measured": 16,
-        "now_planned": 22
-      },
-      "app/agent/_chat_history.py": {
-        "measured": 2,
-        "now_planned": 3
-      },
-      "app/agent/_critic.py": {
-        "measured": 18,
-        "now_planned": 19
-      },
-      "app/agent/_data_utils.py": {
-        "measured": 22,
-        "now_planned": 30
-      },
-      "app/agent/_helpers.py": {
-        "measured": 1,
-        "now_planned": 5
-      },
-      "app/agent/_tools.py": {
-        "measured": 22,
-        "now_planned": 23
-      },
-      "app/agent/alpha_agent.py": {
-        "measured": 10,
-        "now_planned": 15
-      },
-      "app/api/router.py": {
-        "measured": 75,
-        "now_planned": 90
-      },
-      "app/core/alpha_engine/dsl_executor.py": {
-        "measured": 25,
-        "now_planned": 31
-      },
-      "app/core/alpha_engine/fast_ops.py": {
-        "measured": 145,
-        "now_planned": 237,
-        "_note": "now_planned 此前写的 219 已过期（C-1 给本模块加了 average_ranks_1d 却没同步这个数）。237 是 2026-09-20 修完 B-1/B-2/B-3/B-5/B-6/B-7 后按同一判据重新枚举的。"
-      },
-      "app/core/alpha_engine/financial_diagnostics.py": {
-        "measured": 35,
-        "now_planned": 44
-      },
-      "app/core/alpha_engine/financial_interpreter.py": {
-        "measured": 50,
-        "now_planned": 111
-      },
-      "app/core/alpha_engine/parser.py": {
-        "measured": 13,
-        "now_planned": 36
-      },
-      "app/core/alpha_engine/signal_processor.py": {
-        "measured": 18,
-        "now_planned": 25
-      },
-      "app/core/alpha_engine/typed_nodes.py": {
-        "measured": 33,
-        "now_planned": 86
-      },
-      "app/core/backtest_engine/alpha_combiner.py": {
-        "measured": 25,
-        "now_planned": 46
-      },
-      "app/core/backtest_engine/backtest_engine.py": {
-        "measured": 15,
-        "now_planned": 28
-      },
-      "app/core/backtest_engine/multi_dataset_backtester.py": {
-        "measured": 14,
-        "now_planned": 21
-      },
-      "app/core/backtest_engine/overfit_stats.py": {
-        "measured": 10,
-        "now_planned": 19
-      },
-      "app/core/backtest_engine/performance_analyzer.py": {
-        "measured": 92,
-        "now_planned": 138
-      },
-      "app/core/backtest_engine/portfolio_constructor.py": {
-        "measured": 37,
-        "now_planned": 61
-      },
-      "app/core/backtest_engine/realistic_backtester.py": {
-        "measured": 37,
-        "now_planned": 50
-      },
-      "app/core/backtest_engine/risk_report.py": {
-        "measured": 32,
-        "now_planned": 44
-      },
-      "app/core/backtest_engine/transaction_cost.py": {
-        "measured": 41,
-        "now_planned": 61
-      },
-      "app/core/data_engine/data_partitioner.py": {
-        "measured": 54,
-        "now_planned": 65
-      },
-      "app/core/data_engine/dataset_filters.py": {
-        "measured": 54,
-        "now_planned": 92
-      },
-      "app/core/data_engine/dataset_registry.py": {
-        "measured": 16,
-        "now_planned": 21
-      },
-      "app/core/data_engine/health_report.py": {
-        "measured": 32,
-        "now_planned": 39
-      },
-      "app/core/data_engine/local_parquet_provider.py": {
-        "measured": 21,
-        "now_planned": 29
-      },
-      "app/core/data_engine/market_calendar.py": {
-        "measured": 22,
-        "now_planned": 25
-      },
-      "app/core/data_engine/multi_dataset.py": {
-        "measured": 23,
-        "now_planned": 31
-      },
-      "app/core/data_engine/pit_store.py": {
-        "measured": 24,
-        "now_planned": 34
-      },
-      "app/core/data_engine/providers/akshare_provider.py": {
-        "measured": 9,
-        "now_planned": 14
-      },
-      "app/core/data_engine/providers/ccxt_provider.py": {
-        "measured": 12,
-        "now_planned": 23
-      },
-      "app/core/data_engine/providers/moomoo_provider.py": {
-        "measured": 13,
-        "now_planned": 18
-      },
-      "app/core/data_engine/regime_detector.py": {
-        "measured": 17,
-        "now_planned": 23
-      },
-      "app/core/data_engine/yahoo_provider.py": {
-        "measured": 3,
-        "now_planned": 6
-      },
-      "app/core/discovery/discovery_engine.py": {
-        "measured": 9,
-        "now_planned": 11
-      },
-      "app/core/discovery/market_observer.py": {
-        "measured": 22,
-        "now_planned": 41
-      },
-      "app/core/execution/paper_broker.py": {
-        "measured": 26,
-        "now_planned": 41
-      },
-      "app/core/gp_engine/alpha_pool.py": {
-        "measured": 22,
-        "now_planned": 26
-      },
-      "app/core/gp_engine/evaluation_utils.py": {
-        "measured": 10,
-        "now_planned": 15
-      },
-      "app/core/gp_engine/fitness.py": {
-        "measured": 20,
-        "now_planned": 24
-      },
-      "app/core/gp_engine/gp_engine.py": {
-        "measured": 15,
-        "now_planned": 21
-      },
-      "app/core/gp_engine/mutations.py": {
-        "measured": 65,
-        "now_planned": 98
-      },
-      "app/core/gp_engine/population_evolver.py": {
-        "measured": 48,
-        "now_planned": 72
-      },
-      "app/core/lifecycle/leak_filter.py": {
-        "measured": 9,
-        "now_planned": 17
-      },
-      "app/core/lifecycle/promotion_gate.py": {
-        "measured": 13,
-        "now_planned": 20
-      },
-      "app/core/lifecycle/validation_gate.py": {
-        "measured": 8,
-        "now_planned": 14
-      },
-      "app/core/ml_engine/alpha_evaluator.py": {
-        "measured": 22,
-        "now_planned": 28
-      },
-      "app/core/ml_engine/alpha_optimizer.py": {
-        "measured": 24,
-        "now_planned": 26
-      },
-      "app/core/ml_engine/proxy_model.py": {
-        "measured": 8,
-        "now_planned": 14
-      },
-      "app/core/monitor/alpha_monitor.py": {
-        "measured": 12,
-        "now_planned": 15
-      },
-      "app/core/portfolio_manager/horizon.py": {
-        "measured": 7,
-        "now_planned": 10
-      },
-      "app/core/portfolio_manager/manager.py": {
-        "measured": 14,
-        "now_planned": 17
-      },
-      "app/core/portfolio_manager/risk_gate.py": {
-        "measured": 42,
-        "now_planned": 54
-      },
-      "app/core/portfolio_manager/strategy_gate.py": {
-        "measured": 31,
-        "now_planned": 43
-      },
-      "app/core/strategies/baselines.py": {
-        "measured": 3,
-        "now_planned": 4
-      },
-      "app/core/trading_context/context.py": {
-        "measured": 11,
-        "now_planned": 18
-      },
-      "app/core/trading_context/providers.py": {
-        "measured": 4,
-        "now_planned": 5
-      },
-      "app/core/trading_context/spread.py": {
-        "measured": 21,
-        "now_planned": 33
-      },
-      "app/core/workflows/alpha_workflows.py": {
-        "measured": 69,
-        "now_planned": 88
-      },
-      "app/db/alpha_lifecycle.py": {
-        "measured": 1,
-        "now_planned": 2
-      },
-      "app/db/alpha_store.py": {
-        "measured": 23,
-        "now_planned": 33
-      },
-      "app/db/chat_store.py": {
-        "measured": 17,
-        "now_planned": 19
-      },
-      "app/db/diagnostics_store.py": {
-        "measured": 7,
-        "now_planned": 8
-      },
-      "app/db/position_store.py": {
-        "measured": 25,
-        "now_planned": 42
-      },
-      "app/db/run_manifest.py": {
-        "measured": 14,
-        "now_planned": 19
-      },
-      "app/db/strategy_store.py": {
-        "measured": 13,
-        "now_planned": 17
-      },
-      "app/db/trial_ledger.py": {
-        "measured": 8,
-        "now_planned": 9
-      },
-      "app/main.py": {
-        "measured": 21,
-        "now_planned": 26
-      },
-      "app/tasks/backup.py": {
-        "measured": 14,
-        "now_planned": 21
-      },
-      "app/tasks/cost_calibration.py": {
-        "measured": 16,
-        "now_planned": 23
-      },
-      "app/tasks/daily_ingest.py": {
-        "measured": 22,
-        "now_planned": 24
-      },
-      "app/tasks/daily_trading_loop.py": {
-        "measured": 63,
-        "now_planned": 84
-      }
-    },
-    "still_blind": [
-      "数值常量（阈值/窗口长度）",
-      "对象身份与 deepcopy 语义（C-2 那一类）",
-      "调用实参的增删与顺序",
-      "控制流结构（提前 return、循环边界）"
-    ],
-    "what_this_means": "『所选变异全部被处理』≠『检出能力已证明』。B-1 的除法归一化错误与 C-2 的对象身份错误都是**读代码**发现的，不是变异测试发现的。",
-    "owed": "对 2843 个点重跑一遍测量。本轮未做。",
-    "_closed": "app/db/_sqlite_utils.py 已补测：它是算子补齐后唯一新进入范围的模块，此前一条测试都没有。首测 0.0% → 补 tests/unit/db/test_sqlite_hardening.py → verify_mutant 单点复核确认被杀。其余 862 个点仍未测。",
-    "_product_fix_policy": "修产品代码会引入新的变异点，而新点默认是未测量的 —— 棘轮会立刻判红（2026-09-18 修 A-6 时实际发生）。规矩：**修完立刻用 verify_mutant 逐个复核新点**，杀掉就记进本清单、未测量数不变；杀不掉就当场补用例。不许靠调高 unmeasured_points_max 放行。 补充（2026-09-20 实践）：**批量复核不能与编辑并行** —— 沙箱复制实时工作区，改到一半的测试文件会让基线红、结论全部失真。 补充（2026-09-20，A-2）：**`_xfail(raises=...)` 挡不住同类型的错误原因**。A-2 那条用例的前置守卫 `assert np.nanstd(...) != 0.0` 与目标断言都是 AssertionError，而它构造的 `np.full(60, 0.001)` 的 nanstd 恰好是精确 0.0（该值给 0 还是 2e-19 取决于长度的浮点运气：n=30/80/100 给 2.168e-19，n=40/50/60/70 给 0.0），于是这条 xfail 从未验证过 A-2 —— 与 A-1、C-1 同一形态，第三例。构造\"无真实波动\"的序列要用 1 ulp 扰动（`np.nextafter`），与长度无关。",
-    "_raises": [
-      {
-        "date": "2026-09-20",
-        "from": 862,
-        "to": 912,
-        "why": "修复 A-6 / N-1..N-5 五条产品缺陷引入的新代码（simulate_partial_fills、_largest_feasible_scale、缓存指纹、日频 t 统计、昨仓并集）。",
-        "how_it_was_handled": "已为新原语补 tests/unit/backtest_engine/test_partial_fill_semantics.py（52 条），并用 verify_mutant 逐个确认 filled_w/unfilled_d/desired 三处符号变异与 net_tol 量级变异**均已被杀死**。其余新点的批量复核**尚未完成** —— 复核脚本的沙箱复制的是实时工作区，与编辑撞车会让基线变红（37 条报 no-marker）。规矩因此补一条：**批量复核必须在停止编辑之后单独跑**。",
-        "owed": "对本次新增的 50 个点做一次完整复核；存活的当场补用例。"
-      },
-      {
-        "date": "2026-09-20 (A-3/A-4)",
-        "from": 912,
-        "to": 921,
-        "why": "修 A-3（近零波动相对判据 `_has_meaningful_variation`）与 A-4（`_tdays` 提前判 DatetimeIndex）新增的代码。",
-        "how_it_was_handled": "两条都配了行为断言：A-3 除『全常数判 NaN』外另加**反向**对照（日波动 1e-6 的真实低波动序列不得被误杀）；A-4 断言报错消息里必须同时出现 DatetimeIndex 与 net_returns。批量 verify_mutant 复核仍待编辑停止后统一跑。",
-        "owed": "本次新增 9 个点待复核。"
-      },
-      {
-        "date": "2026-09-20 (B-8/D-6)",
-        "from": 921,
-        "to": 922,
-        "why": "修 B-8（should_prune 增加 `_fitted`/`_model` 判据）与 D-6（try 包住构造）新增的代码。",
-        "how_it_was_handled": "两条 xfail 均已转正为行为断言并通过；`_fitted` 另配 test_fitted_flag_actually_guards_the_model_branch。",
-        "owed": "本次新增 1 个点待批量复核。"
-      },
-      {
-        "date": "2026-09-20 (B-12)",
-        "from": 922,
-        "to": 924,
-        "why": "修 B-12 新增 `seq` 列与同事务取号逻辑。",
-        "how_it_was_handled": "两条行为断言（会话侧倒排、消息侧一问一答顺序）已转正通过。",
-        "owed": "本次新增 2 个点待批量复核。"
-      },
-      {
-        "date": "2026-09-20 (C-2)",
-        "from": 924,
-        "to": 927,
-        "why": "修 C-2 新增 `_child_slots` / `_path_to` 两个辅助函数。",
-        "how_it_was_handled": "两条原 xfail 已转正（内部节点确实被替换、add_ts_smoothing 不再是空操作）。",
-        "owed": "本次新增 3 个点待批量复核。"
-      },
-      {
-        "date": "2026-09-20 (D-1)",
-        "from": 927,
-        "to": 931,
-        "why": "修 D-1 新增 `_negated_operand`。",
-        "how_it_was_handled": "原 xfail 转正，并加反向对照（`(1-x)` 不得被判成取负）。",
-        "owed": "本次新增 4 个点待批量复核。"
-      },
-      {
-        "date": "2026-09-20 (D-2)",
-        "from": 931,
-        "to": 932,
-        "why": "修 D-2 在 fetch_panel 里新增不可用字段的前置校验。",
-        "how_it_was_handled": "xfail 转正为**全称断言**（宣称的每个字段都要能请求到），另加反向对照（合法字段组合不得被新校验误伤）。",
-        "owed": "本次新增 1 个点待批量复核。"
-      },
-      {
-        "date": "2026-09-20 (A-1)",
-        "from": 932,
-        "to": 934,
-        "why": "修 A-1 新增 `append_pit` 参数与分支。",
-        "how_it_was_handled": "xfail 转正（真跑一遍增量摄取、数 PIT vintage）；两条集成用例的基线同步到修复后的口径。",
-        "owed": "本次新增 2 个点待批量复核。"
-      },
-      {
-        "date": "2026-09-20 (B-1/B-2/B-3/B-5/B-6/B-7)",
-        "from": 934,
-        "to": 942,
-        "why": "一次修完 fast_ops 的六条算子缺陷：新增 `_too_short` 短面板守卫、`_avg_rank_fraction` 平均秩内核、`cs_rank` 按并列区间取中点的向量化重写，`ts_corr` 分子改 ddof=1，`ts_max/ts_min` 改用传播 NaN 的 np.max/np.min。本模块枚举点数 229 → 237（新增 34、消失 26）。",
-        "how_it_was_handled": "**本次新增的 34 个点已全部逐个复核，34/34 被杀死**（单沙箱批量驱动，判据与 verify_mutant 相同：基线绿 + 变异非绿）。首轮复核报 36 新增、2 个存活：`x.ndim >= 1`（`_ensure_2d` 之后 ndim 只能是 0 或 ≥2，`>= 1` 与 `> 1` 同值）与 `np.where(is_end, idx, N - 1)`（自右向左取最小，哨兵只需 ≥ N-1，`N+1` 同样正确）。两者都是**任何用例都杀不死的等价变异**。没有为它们写等价性证明，而是改写代码让这两个点不存在：前者写成真值判断 `bool(x.ndim and ...)`，后者哨兵改成 `N`（变量引用，无可变异的算术符）。改写后重新枚举得 34 个新增点，并对改写过的那一行的 2 个点单独重验 —— 均被杀死。",
-        "owed": "无。与此前各条不同，本次新增点的复核**已当场完成**，不留欠账。注意：942 这个数按『未被某一轮全量测量覆盖』统计，其中 34 个点实际已逐个验证过，所以它对真实盲区是**高估**的；真正的盲区仍是那 908 个从未跑过的点。"
-      },
-      {
-        "date": "2026-09-20 (D-3 迁移)",
-        "from": 942,
-        "to": 946,
-        "why": "迁移 _lc_agent 到 langchain 1.x 的 create_agent：新增 RECURSION_LIMIT 常数、wrap_tool_call 中间件、_SessionScopedAgent 适配器（会话历史读写），以及 _agent 的 AGENT_MODE_* 分类。",
-        "how_it_was_handled": "**新增的 8 个点已逐个复核，8/8 被杀死。** 首轮 5 杀 3 活，存活的三个都是 `and -> or` 条件放宽 —— **不是等价变异**，是当时没有用例走到那些形状。按它们真实的失败后果补了 3 条用例并复验通过：① 回复绝不能取到 ToolMessage 的原始输出（模型调完工具给空总结时会走到）；② content 可能是多模态块列表，放行会让 ChatResponse.reply 拿到非字符串；③ 缺 session_id 时不得拿 None 当会话 id 去写库。另有 2 个点是**删掉**的：`_agent.py` 里我自己写的一个空 `elif ... : pass` 分支，它什么也不做、两个点必然存活。没有为空操作写等价性证明 —— 删掉才是诚实的处理（与 fast_ops 那两个幻影点同一个判断：等价变异的出路是让它不存在）。",
-        "owed": "无。本次新增点复核已当场完成。"
-      },
-      {
-        "date": "2026-09-21 (B-4 / A-5 / D-5)",
-        "from": 946,
-        "to": 951,
-        "why": "按用户裁定的契约修 B-4（n_bins 守卫 + 负零）与 A-5（MVO 的「无有效目标」NaN 语义、显式回退开关、下游解析函数）。D-5 只改提示词文本，零新增点。",
-        "how_it_was_handled": "新增 11 个点，首轮 9 杀 2 活。两个存活分别处置：① `min_valid_assets < 2` 的 `<=` 变异 —— 真盲区（2 是文档写明的合法下界却没人测），补 test_min_valid_assets_boundary 并复验杀死；② `l1 <= 1e-12` 的 `<` 变异 —— 要穿过线性求解精确命中 1e-12 才分道，不现实，但**不等价**（真命中时旧写法拦下、新写法放行，权重被 1e-12 除到1e12 量级）。改写成 `np.isclose(l1, 0.0, atol=1e-12, rtol=0.0)`：恒等，但没有可变异的比较符 —— 与 fast_ops 那两个幻影点同一个判断，等价/不可达变异的出路是让它不存在，不是给它开证明。",
-        "owed": "无。本次新增点复核已当场完成。"
-      },
-      {
-        "date": "2026-09-21 (A-7)",
-        "from": 951,
-        "to": 954,
-        "why": "修 A-7：构建层三处 `project_to_capped_l1(..., target=1.0)` 改传逐行真实 gross （transaction_cost.LiquidityConstraint.apply / manager.apply_capacity / realistic_backtester 的单票上限）。",
-        "how_it_was_handled": "新增 3 个点（三处 `np.abs` 的「丢符号」变异），首轮 2 杀 1 活。存活的是 realistic_backtester 那处 —— **不是等价变异，是既有用例空真**：`test_max_single_weight_enforced_end_to_end` 断言 `max|w| <= cap`，而去掉 abs 后多空账本的带符号和≈0 → target 塌成 0 → 组合被清空，`0 <= 0.15` 照样成立，用例全绿而持仓已经没了。（该用例的 docstring 自己警告过空真，但防的是另一个方向。）补第三段断言：加了单票上限后总敞口相对不加上限的中位数比值必须 > 0.5 —— 上限的职责是压集中度、不是降敞口。复验确认杀死。",
-        "owed": "无。本次新增点复核已当场完成。"
-      },
-      {
-        "date": "2026-09-21 (A-6 后半：引擎统一)",
-        "from": 954,
-        "to": 957,
-        "why": "BacktestEngine 的流动性处理从 `LiquidityConstraint.apply`（整矩阵 water-filling 裁**持仓**、会再分配）换成逐日 `simulate_partial_fills`（按**交易差额**部分成交、不再分配），与 PaperBroker 同一份原语、同一个 cap 公式。新增 max_net 参数。",
-        "how_it_was_handled": "新增 3 个点，首轮 2 杀 1 活。存活的是 `if self.initial_capital > 0:` 的 `>=` 变异 —— `capital==0` 时两条分支都给 inf，**除非** `adv==0`（那时 0/0=nan vs inf）。执行侧早有同款用例 test_zero_initial_capital_falls_back_to_no_cap_not_nan，其 docstring 写明了构造要点（capital==0 **且** adv==0，只测前者不够）。镜像到回测侧 TestZeroInitialCapital —— 统一两个引擎本来就该包括守卫被同等地测到，否则「统一」只统一了正常路径。复验确认杀死。",
-        "owed": "无。本次新增点复核已当场完成。"
-      }
-    ]
+  "app/agent/_fallback.py": {
+   "points": 4,
+   "killed": 3,
+   "survived": 1,
+   "kill_rate": 75.0,
+   "tests": [
+    "tests/unit/agent/test_agent_fallback.py"
+   ],
+   "source": "progress_d_gap2.json",
+   "all_runs": [
+    0.0,
+    75.0
+   ]
   },
-  "survivor_disposition": {
-    "_doc": "存活变异的**逐模块**处置对账。外部审计 2026-09-15 指出原来的『每个文件条目数 == 自己声明的存活数』只是文件内自洽，跨文件汇总从未对过账。现在证明键带模块前缀与覆盖点数（`<模块> ×N — 描述`），可以逐模块机械对账。",
-    "total_survivors": 136,
-    "proven_points": 112,
-    "unproven_points": 24,
-    "unproven_by_module": {
-      "app/core/alpha_engine/fast_ops.py": 3,
-      "app/core/backtest_engine/transaction_cost.py": 3,
-      "app/core/data_engine/data_partitioner.py": 4,
-      "app/core/strategies/baselines.py": 2,
-      "app/tasks/daily_trading_loop.py": 10,
-      "app/core/ml_engine/proxy_model.py": 2
-    },
-    "what_unproven_means": "这些变异点既没有被任何用例杀死，也没有书面的等价性证明 —— 改坏了不会有人知道，而且我们连『为什么可以不管它』都没写下来。两个模块（baselines / daily_trading_loop）是**一条证明都没有**。",
-    "how_to_close": "逐模块：要么补用例杀死（首选），要么写可机械验证的等价性证明并配反驳尝试。闭合一个就把 unproven_by_module 里对应的数字改小；test_survivor_disposition_reconciles_per_module 会逐模块核对。",
-    "ratchet": {
-      "unproven_max": 24,
-      "_doc": "未处置数只许减不许增。声明数多于存活数会直接判红（证明盖住了不存在的点）。"
-    },
-    "_raises": [
-      {
-        "date": "2026-09-20",
-        "module": "app/core/ml_engine/proxy_model.py",
-        "delta": 2,
-        "why": "修 B-8 时 `should_prune` 开始读 `_fitted`，于是 L110/L163 那条「`_fitted` 全库无人读 → 死存储 → 等价」的证明**失效**并撤销。那条证明当初自带失效告警（test_fitted_flag_has_no_reader），告警如期响了 —— 这正是它该起的作用。",
-        "status": "这 2 个点现在既未被杀死也无有效证明；已换上 test_fitted_flag_actually_guards_the_model_branch 作行为用例，待下一轮 verify_mutant 复核确认是否已被它杀死。"
-      }
-    ]
+  "app/agent/_helpers.py": {
+   "points": 1,
+   "killed": 1,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/agent/test_agent_helpers_and_history.py"
+   ],
+   "source": "progress_d_r3.json",
+   "all_runs": [
+    0.0,
+    100.0
+   ]
+  },
+  "app/agent/_lc_agent.py": {
+   "points": 5,
+   "killed": 5,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/meta/test_known_defects.py",
+    "tests/unit/agent/test_lc_agent_wiring.py"
+   ],
+   "source": "progress_d_r12.json",
+   "all_runs": [
+    100.0
+   ]
+  },
+  "app/agent/_memory.py": {
+   "points": 1,
+   "killed": 1,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_conversational_agent_chain.py",
+    "tests/unit/agent/"
+   ],
+   "source": "progress_d_b2.json",
+   "all_runs": [
+    100.0
+   ]
+  },
+  "app/agent/_tools.py": {
+   "points": 22,
+   "killed": 21,
+   "survived": 1,
+   "kill_rate": 95.5,
+   "tests": [
+    "tests/unit/agent/test_agent_fallback.py",
+    "tests/unit/agent/test_agent_tools_guards.py"
+   ],
+   "source": "progress_c_rerun_5.json",
+   "all_runs": [
+    4.5,
+    95.5
+   ]
+  },
+  "app/agent/alpha_agent.py": {
+   "points": 10,
+   "killed": 10,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/agent/test_alpha_agent_loop.py",
+    "tests/unit/agent/test_system_prompt_consistency.py"
+   ],
+   "source": "progress_d_r15.json",
+   "all_runs": [
+    45.5,
+    100.0
+   ]
+  },
+  "app/api/chat_router.py": {
+   "points": 5,
+   "killed": 5,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_discovery_and_chat_router.py"
+   ],
+   "source": "progress_c_rerun_2.json",
+   "all_runs": [
+    40.0,
+    60.0,
+    100.0
+   ]
+  },
+  "app/api/router.py": {
+   "points": 75,
+   "killed": 74,
+   "survived": 1,
+   "kill_rate": 98.7,
+   "tests": [
+    "tests/integration/test_api_uncovered_routes.py",
+    "tests/unit/api/test_api_router_guards.py",
+    "tests/unit/api/test_api_router_round2.py"
+   ],
+   "source": "progress_c_final.json",
+   "all_runs": [
+    16.0,
+    48.0,
+    94.7,
+    98.7
+   ]
+  },
+  "app/config.py": {
+   "points": 17,
+   "killed": 17,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/entrypoint/test_settings_boolean_defaults.py"
+   ],
+   "source": "progress_b_newonly.json",
+   "all_runs": [
+    35.3,
+    100.0
+   ]
+  },
+  "app/core/alpha_engine/dsl_executor.py": {
+   "points": 25,
+   "killed": 25,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/alpha_engine/test_dsl_edge_cases.py",
+    "tests/unit/alpha_engine/test_dsl_engine.py",
+    "tests/unit/alpha_engine/test_dsl_executor_pipeline.py",
+    "tests/unit/alpha_engine/test_dsl_operators.py",
+    "tests/unit/alpha_engine/test_leak_filter.py"
+   ],
+   "source": "progress_b_rerun_9.json",
+   "all_runs": [
+    36.0,
+    92.0,
+    96.0,
+    100.0
+   ]
+  },
+  "app/core/alpha_engine/fast_ops.py": {
+   "points": 145,
+   "killed": 127,
+   "survived": 18,
+   "kill_rate": 87.6,
+   "tests": [
+    "tests/unit/alpha_engine/test_dsl_edge_cases.py",
+    "tests/unit/alpha_engine/test_dsl_engine.py",
+    "tests/unit/alpha_engine/test_dsl_operators.py",
+    "tests/unit/alpha_engine/test_fast_ops_kernel.py"
+   ],
+   "source": "progress_b_rerun_7.json",
+   "all_runs": [
+    6.9,
+    84.1,
+    86.9,
+    87.6
+   ]
+  },
+  "app/core/alpha_engine/financial_diagnostics.py": {
+   "points": 35,
+   "killed": 35,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/alpha_engine/test_financial_diagnostics.py"
+   ],
+   "source": "progress_d_r2.json",
+   "all_runs": [
+    0.0,
+    88.6,
+    100.0
+   ]
+  },
+  "app/core/alpha_engine/financial_interpreter.py": {
+   "points": 50,
+   "killed": 50,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/meta/test_known_defects.py",
+    "tests/unit/alpha_engine/test_financial_interpreter.py"
+   ],
+   "source": "progress_d_fi2.json",
+   "all_runs": [
+    0.0,
+    66.0,
+    100.0
+   ]
+  },
+  "app/core/alpha_engine/parser.py": {
+   "points": 13,
+   "killed": 12,
+   "survived": 1,
+   "kill_rate": 92.3,
+   "tests": [
+    "tests/unit/alpha_engine/test_dsl_parser_and_validator_bounds.py"
+   ],
+   "source": "progress_b_newonly.json",
+   "all_runs": [
+    15.4,
+    92.3
+   ]
+  },
+  "app/core/alpha_engine/signal_processor.py": {
+   "points": 18,
+   "killed": 16,
+   "survived": 2,
+   "kill_rate": 88.9,
+   "tests": [
+    "tests/unit/alpha_engine/test_leak_filter.py",
+    "tests/unit/alpha_engine/test_signal_processor_pipeline.py"
+   ],
+   "source": "progress_b_rerun_5.json",
+   "all_runs": [
+    44.4,
+    83.3,
+    88.9
+   ]
+  },
+  "app/core/alpha_engine/typed_nodes.py": {
+   "points": 33,
+   "killed": 33,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/alpha_engine/test_dsl_edge_cases.py",
+    "tests/unit/alpha_engine/test_dsl_engine.py",
+    "tests/unit/alpha_engine/test_dsl_operators.py",
+    "tests/unit/alpha_engine/test_typed_nodes_semantics.py"
+   ],
+   "source": "progress_b_rerun_9.json",
+   "all_runs": [
+    30.3,
+    90.9,
+    93.9,
+    100.0
+   ]
+  },
+  "app/core/alpha_engine/validator.py": {
+   "points": 11,
+   "killed": 11,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/alpha_engine/test_dsl_parser_and_validator_bounds.py"
+   ],
+   "source": "progress_b_newonly.json",
+   "all_runs": [
+    27.3,
+    100.0
+   ]
+  },
+  "app/core/backtest_engine/alpha_combiner.py": {
+   "points": 25,
+   "killed": 24,
+   "survived": 1,
+   "kill_rate": 96.0,
+   "tests": [
+    "tests/unit/backtest_engine/test_alpha_combiner.py"
+   ],
+   "source": "progress_d_r13.json",
+   "all_runs": [
+    64.0,
+    96.0
+   ]
+  },
+  "app/core/backtest_engine/backtest_engine.py": {
+   "points": 15,
+   "killed": 15,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/golden/test_golden_backtest.py",
+    "tests/meta/test_invariants.py",
+    "tests/unit/backtest_engine/test_backtest_edge_cases.py",
+    "tests/unit/backtest_engine/test_backtest_engine.py",
+    "tests/unit/backtest_engine/test_backtest_engine_accounting.py"
+   ],
+   "source": "progress_final2.json",
+   "all_runs": [
+    20.0,
+    93.3,
+    100.0
+   ]
+  },
+  "app/core/backtest_engine/multi_dataset_backtester.py": {
+   "points": 14,
+   "killed": 14,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/backtest_engine/test_multi_dataset_backtester.py"
+   ],
+   "source": "progress_d_r15.json",
+   "all_runs": [
+    92.9,
+    100.0
+   ]
+  },
+  "app/core/backtest_engine/overfit_stats.py": {
+   "points": 10,
+   "killed": 8,
+   "survived": 2,
+   "kill_rate": 80.0,
+   "tests": [
+    "tests/meta/test_invariants.py",
+    "tests/unit/backtest_engine/test_overfit_stats_pbo.py"
+   ],
+   "source": "progress_final2.json",
+   "all_runs": [
+    20.0,
+    80.0
+   ]
+  },
+  "app/core/backtest_engine/performance_analyzer.py": {
+   "points": 92,
+   "killed": 88,
+   "survived": 4,
+   "kill_rate": 95.7,
+   "tests": [
+    "tests/golden/test_golden_backtest.py",
+    "tests/integration/test_supplementary_fixes.py",
+    "tests/unit/backtest_engine/test_performance_analyzer_formulas.py"
+   ],
+   "source": "progress_final.json",
+   "all_runs": [
+    30.4,
+    89.1,
+    95.7,
+    96.5
+   ]
+  },
+  "app/core/backtest_engine/portfolio_constructor.py": {
+   "points": 37,
+   "killed": 32,
+   "survived": 5,
+   "kill_rate": 86.5,
+   "tests": [
+    "tests/unit/backtest_engine/test_backtest_edge_cases.py",
+    "tests/unit/backtest_engine/test_portfolio_constructor_formulas.py"
+   ],
+   "source": "progress_final.json",
+   "all_runs": [
+    32.4,
+    86.5
+   ]
+  },
+  "app/core/backtest_engine/realistic_backtester.py": {
+   "points": 37,
+   "killed": 33,
+   "survived": 4,
+   "kill_rate": 89.2,
+   "tests": [
+    "tests/integration/test_supplementary_fixes.py",
+    "tests/unit/backtest_engine/test_realistic_backtester_contracts.py"
+   ],
+   "source": "progress_final.json",
+   "all_runs": [
+    32.4,
+    81.1,
+    89.2
+   ]
+  },
+  "app/core/backtest_engine/risk_report.py": {
+   "points": 32,
+   "killed": 30,
+   "survived": 2,
+   "kill_rate": 93.8,
+   "tests": [
+    "tests/unit/backtest_engine/test_risk_report_contracts.py"
+   ],
+   "source": "progress_final.json",
+   "all_runs": [
+    3.1,
+    84.4,
+    93.8
+   ]
+  },
+  "app/core/backtest_engine/transaction_cost.py": {
+   "points": 41,
+   "killed": 32,
+   "survived": 9,
+   "kill_rate": 78.0,
+   "tests": [
+    "tests/unit/backtest_engine/"
+   ],
+   "source": "progress_d_b2.json",
+   "all_runs": [
+    78.0
+   ]
+  },
+  "app/core/backtest_engine/visualizer.py": {
+   "points": 19,
+   "killed": 19,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/backtest_engine/test_backtest_plot_fidelity.py"
+   ],
+   "source": "progress_d_r14.json",
+   "all_runs": [
+    73.7,
+    100.0
+   ]
+  },
+  "app/core/data_engine/base.py": {
+   "points": 5,
+   "killed": 5,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/data_engine/test_provider_base.py"
+   ],
+   "source": "progress_d_r7.json",
+   "all_runs": [
+    0.0,
+    80.0,
+    100.0
+   ]
+  },
+  "app/core/data_engine/data_partitioner.py": {
+   "points": 54,
+   "killed": 45,
+   "survived": 9,
+   "kill_rate": 83.3,
+   "tests": [
+    "tests/unit/data_engine/test_data_partitioner_split.py"
+   ],
+   "source": "progress_b_rerun_8b.json",
+   "all_runs": [
+    18.5,
+    81.5,
+    83.3
+   ]
+  },
+  "app/core/data_engine/dataset_filters.py": {
+   "points": 54,
+   "killed": 53,
+   "survived": 1,
+   "kill_rate": 98.1,
+   "tests": [
+    "tests/unit/data_engine/test_dataset_filters.py"
+   ],
+   "source": "progress_d_r9.json",
+   "all_runs": [
+    77.8,
+    98.1
+   ]
+  },
+  "app/core/data_engine/dataset_registry.py": {
+   "points": 16,
+   "killed": 16,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/data_engine/test_dataset_registry_loading.py"
+   ],
+   "source": "progress_b_newonly.json",
+   "all_runs": [
+    0.0,
+    93.8,
+    100.0
+   ]
+  },
+  "app/core/data_engine/health_report.py": {
+   "points": 32,
+   "killed": 32,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/data_engine/test_health_report.py"
+   ],
+   "source": "progress_d_gap3.json",
+   "all_runs": [
+    0.0,
+    75.0,
+    100.0
+   ]
+  },
+  "app/core/data_engine/local_parquet_provider.py": {
+   "points": 21,
+   "killed": 18,
+   "survived": 3,
+   "kill_rate": 85.7,
+   "tests": [
+    "tests/meta/test_known_defects.py",
+    "tests/unit/data_engine/test_local_parquet_provider.py"
+   ],
+   "source": "progress_d_r12.json",
+   "all_runs": [
+    71.4,
+    85.7
+   ]
+  },
+  "app/core/data_engine/market_calendar.py": {
+   "points": 22,
+   "killed": 20,
+   "survived": 2,
+   "kill_rate": 90.9,
+   "tests": [
+    "tests/unit/data_engine/test_market_calendar_fail_closed.py"
+   ],
+   "source": "progress_final.json",
+   "all_runs": [
+    77.3,
+    86.4,
+    90.9
+   ]
+  },
+  "app/core/data_engine/multi_dataset.py": {
+   "points": 23,
+   "killed": 22,
+   "survived": 1,
+   "kill_rate": 95.7,
+   "tests": [
+    "tests/unit/data_engine/test_multi_dataset.py"
+   ],
+   "source": "progress_d_r13.json",
+   "all_runs": [
+    78.3,
+    95.7
+   ]
+  },
+  "app/core/data_engine/pit_store.py": {
+   "points": 24,
+   "killed": 19,
+   "survived": 5,
+   "kill_rate": 79.2,
+   "tests": [
+    "tests/unit/data_engine/test_pit_store_storage.py"
+   ],
+   "source": "progress_final.json",
+   "all_runs": [
+    70.8,
+    79.2
+   ]
+  },
+  "app/core/data_engine/providers/akshare_provider.py": {
+   "points": 9,
+   "killed": 9,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/data_engine/test_akshare_provider.py"
+   ],
+   "source": "progress_d_r11.json",
+   "all_runs": [
+    100.0
+   ]
+  },
+  "app/core/data_engine/providers/ccxt_provider.py": {
+   "points": 12,
+   "killed": 11,
+   "survived": 1,
+   "kill_rate": 91.7,
+   "tests": [
+    "tests/unit/data_engine/test_ccxt_provider.py"
+   ],
+   "source": "progress_d_r11.json",
+   "all_runs": [
+    91.7
+   ]
+  },
+  "app/core/data_engine/providers/moomoo_provider.py": {
+   "points": 13,
+   "killed": 13,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/data_engine/test_moomoo_paging_and_window.py"
+   ],
+   "source": "progress_b_rerun_3.json",
+   "all_runs": [
+    7.7,
+    92.3,
+    100.0
+   ]
+  },
+  "app/core/data_engine/regime_detector.py": {
+   "points": 17,
+   "killed": 16,
+   "survived": 1,
+   "kill_rate": 94.1,
+   "tests": [
+    "tests/unit/data_engine/test_regime_detector_labels.py"
+   ],
+   "source": "progress_b_rerun_5.json",
+   "all_runs": [
+    52.9,
+    94.1
+   ]
+  },
+  "app/core/data_engine/schema.py": {
+   "points": 11,
+   "killed": 11,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/data_engine/test_schema_enforcer.py"
+   ],
+   "source": "progress_d_r4.json",
+   "all_runs": [
+    0.0,
+    90.9,
+    100.0
+   ]
+  },
+  "app/core/data_engine/sector_mapper.py": {
+   "points": 5,
+   "killed": 5,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/data_engine/test_sector_mapper.py"
+   ],
+   "source": "progress_d_gap2.json",
+   "all_runs": [
+    0.0,
+    100.0
+   ]
+  },
+  "app/core/data_engine/yahoo_provider.py": {
+   "points": 3,
+   "killed": 3,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/data_engine/test_yahoo_provider.py"
+   ],
+   "source": "progress_d_gap2.json",
+   "all_runs": [
+    0.0,
+    100.0
+   ]
+  },
+  "app/core/discovery/discovery_engine.py": {
+   "points": 9,
+   "killed": 9,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_discovery_and_chat_router.py"
+   ],
+   "source": "progress_c_rerun_1.json",
+   "all_runs": [
+    33.3,
+    100.0
+   ]
+  },
+  "app/core/discovery/market_observer.py": {
+   "points": 22,
+   "killed": 22,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/discovery/test_market_observer_scoring.py"
+   ],
+   "source": "progress_b_rerun_3.json",
+   "all_runs": [
+    22.7,
+    72.7,
+    95.5,
+    100.0
+   ]
+  },
+  "app/core/execution/paper_broker.py": {
+   "points": 27,
+   "killed": 24,
+   "survived": 3,
+   "kill_rate": 88.9,
+   "tests": [
+    "tests/unit/db/test_paper_broker_accounting.py"
+   ],
+   "source": "MUTATION_LEDGER.md（A 档收口表）",
+   "state_file_missing": true,
+   "note": "L119（两个比较符）与 L127 原登记为等价变异，2026-09-15 外部审计给出反例推翻。2026-09-16 补 TestSubEpsilonPositionsAreADeliberatePolicy（5 条），逐个 verify_mutant 复核：三条全部 [OK] 变异被杀死。 2026-09-18 修 A-6 前半（target=1.0 → |tgt| 之和）新引入 1 个变异点（L108 `np.abs(` 删除 → 总敞口变净敞口），由新增的多空用例 [0.3,-0.3] 当场覆盖，verify_mutant 复核 [OK] 被杀死。",
+   "all_runs": [
+    88.5
+   ]
+  },
+  "app/core/gp_engine/alpha_pool.py": {
+   "points": 22,
+   "killed": 21,
+   "survived": 1,
+   "kill_rate": 95.5,
+   "tests": [
+    "tests/unit/gp_engine/test_alpha_pool_dedup.py",
+    "tests/unit/gp_engine/test_gp_alpha_pool.py"
+   ],
+   "source": "progress_c_rerun_3.json",
+   "all_runs": [
+    59.1,
+    77.3,
+    81.8,
+    95.5
+   ]
+  },
+  "app/core/gp_engine/evaluation_utils.py": {
+   "points": 10,
+   "killed": 8,
+   "survived": 2,
+   "kill_rate": 80.0,
+   "tests": [
+    "tests/unit/gp_engine/test_evaluation_utils.py"
+   ],
+   "source": "progress_d_r6.json",
+   "all_runs": [
+    0.0,
+    70.0,
+    80.0
+   ]
+  },
+  "app/core/gp_engine/fitness.py": {
+   "points": 20,
+   "killed": 20,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_supplementary_fixes.py",
+    "tests/unit/gp_engine/test_gp_fitness_weights.py"
+   ],
+   "source": "progress_c_rerun_3.json",
+   "all_runs": [
+    35.0,
+    90.0,
+    95.0,
+    100.0
+   ]
+  },
+  "app/core/gp_engine/gp_engine.py": {
+   "points": 15,
+   "killed": 11,
+   "survived": 4,
+   "kill_rate": 73.3,
+   "tests": [
+    "tests/integration/test_alpha_discovery.py",
+    "tests/unit/gp_engine/test_gp_engine_fitness.py"
+   ],
+   "source": "progress_c_rerun_2.json",
+   "all_runs": [
+    0.0,
+    66.7,
+    73.3
+   ]
+  },
+  "app/core/gp_engine/mutations.py": {
+   "points": 65,
+   "killed": 65,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_alpha_discovery.py",
+    "tests/meta/test_known_defects.py",
+    "tests/unit/gp_engine/test_gp_mutation_operators.py"
+   ],
+   "source": "progress_c_final.json",
+   "all_runs": [
+    4.6,
+    69.2,
+    96.9,
+    98.5,
+    100.0
+   ]
+  },
+  "app/core/gp_engine/population_evolver.py": {
+   "points": 48,
+   "killed": 48,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_alpha_discovery.py",
+    "tests/unit/gp_engine/test_gp_evolution_full.py",
+    "tests/unit/gp_engine/test_population_evolver_internals.py",
+    "tests/unit/gp_engine/test_population_evolver_round2.py",
+    "tests/unit/gp_engine/test_population_evolver_round3.py"
+   ],
+   "source": "progress_c_pe_final.json",
+   "all_runs": [
+    10.4,
+    56.2,
+    79.2,
+    93.8,
+    100.0
+   ]
+  },
+  "app/core/lifecycle/leak_filter.py": {
+   "points": 9,
+   "killed": 7,
+   "survived": 2,
+   "kill_rate": 77.8,
+   "tests": [
+    "tests/unit/alpha_engine/test_leak_filter.py"
+   ],
+   "source": "progress_d_b2.json",
+   "all_runs": [
+    77.8
+   ]
+  },
+  "app/core/lifecycle/promotion_gate.py": {
+   "points": 13,
+   "killed": 12,
+   "survived": 1,
+   "kill_rate": 92.3,
+   "tests": [
+    "tests/integration/test_graded_promotion_gates.py",
+    "tests/unit/lifecycle/"
+   ],
+   "source": "progress_d_b2.json",
+   "all_runs": [
+    92.3
+   ]
+  },
+  "app/core/lifecycle/validation_gate.py": {
+   "points": 8,
+   "killed": 6,
+   "survived": 2,
+   "kill_rate": 75.0,
+   "tests": [
+    "tests/integration/test_validation_gate_contracts.py"
+   ],
+   "source": "progress_final2.json",
+   "all_runs": [
+    25.0,
+    75.0
+   ]
+  },
+  "app/core/ml_engine/alpha_evaluator.py": {
+   "points": 22,
+   "killed": 22,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/ml_engine/test_alpha_evaluator_overfit.py"
+   ],
+   "source": "progress_b_rerun_7.json",
+   "all_runs": [
+    22.7,
+    95.5,
+    100.0
+   ]
+  },
+  "app/core/ml_engine/alpha_optimizer.py": {
+   "points": 24,
+   "killed": 23,
+   "survived": 1,
+   "kill_rate": 95.8,
+   "tests": [
+    "tests/unit/ml_engine/test_alpha_optimizer_search.py",
+    "tests/unit/ml_engine/test_ml_optimizer.py"
+   ],
+   "source": "progress_b_rerun_7.json",
+   "all_runs": [
+    4.2,
+    75.0,
+    95.8
+   ]
+  },
+  "app/core/ml_engine/proxy_model.py": {
+   "points": 8,
+   "killed": 5,
+   "survived": 3,
+   "kill_rate": 62.5,
+   "tests": [
+    "tests/integration/test_alpha_discovery.py",
+    "tests/unit/ml_engine/test_proxy_model_pruning.py"
+   ],
+   "source": "progress_b_rerun_2.json",
+   "all_runs": [
+    12.5,
+    62.5
+   ]
+  },
+  "app/core/monitor/alpha_monitor.py": {
+   "points": 12,
+   "killed": 12,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/monitor/test_alpha_monitor_decay.py"
+   ],
+   "source": "progress_b_rerun_5.json",
+   "all_runs": [
+    50.0,
+    58.3,
+    91.7,
+    100.0
+   ]
+  },
+  "app/core/portfolio_manager/horizon.py": {
+   "points": 7,
+   "killed": 7,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/portfolio_manager/test_horizon_band_and_classification.py"
+   ],
+   "source": "progress_d_r11.json",
+   "all_runs": [
+    85.7,
+    100.0
+   ]
+  },
+  "app/core/portfolio_manager/manager.py": {
+   "points": 14,
+   "killed": 12,
+   "survived": 2,
+   "kill_rate": 85.7,
+   "tests": [
+    "tests/unit/portfolio_manager/test_portfolio_manager_book.py"
+   ],
+   "source": "progress_a_recheck.json",
+   "all_runs": [
+    35.7,
+    78.6,
+    85.7
+   ]
+  },
+  "app/core/portfolio_manager/risk_gate.py": {
+   "points": 42,
+   "killed": 32,
+   "survived": 10,
+   "kill_rate": 76.2,
+   "tests": [
+    "tests/unit/portfolio_manager/"
+   ],
+   "source": "progress_d_b2.json",
+   "all_runs": [
+    76.2
+   ]
+  },
+  "app/core/portfolio_manager/strategy_builder.py": {
+   "points": 8,
+   "killed": 8,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/portfolio_manager/test_strategy_builder_assembly.py"
+   ],
+   "source": "progress_d_r10.json",
+   "all_runs": [
+    12.5,
+    100.0
+   ]
+  },
+  "app/core/portfolio_manager/strategy_gate.py": {
+   "points": 31,
+   "killed": 29,
+   "survived": 2,
+   "kill_rate": 93.5,
+   "tests": [
+    "tests/unit/portfolio_manager/test_daily_loop_money_and_gates.py",
+    "tests/unit/portfolio_manager/test_strategy_gate_contracts.py"
+   ],
+   "source": "progress_a_recheck.json",
+   "all_runs": [
+    0.0,
+    77.4,
+    93.5
+   ]
+  },
+  "app/core/strategies/baselines.py": {
+   "points": 3,
+   "killed": 1,
+   "survived": 2,
+   "kill_rate": 33.3,
+   "tests": [
+    "tests/unit/portfolio_manager/test_baseline_strategy_library.py"
+   ],
+   "source": "progress_d_b2.json",
+   "all_runs": [
+    33.3
+   ]
+  },
+  "app/core/trading_context/context.py": {
+   "points": 11,
+   "killed": 10,
+   "survived": 1,
+   "kill_rate": 90.9,
+   "tests": [
+    "tests/unit/trading_context/test_daily_loop_survivors.py",
+    "tests/unit/trading_context/test_trading_context_reality.py"
+   ],
+   "source": "progress_a_recheck.json",
+   "all_runs": [
+    45.5,
+    72.7,
+    90.9
+   ]
+  },
+  "app/core/trading_context/providers.py": {
+   "points": 4,
+   "killed": 4,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_diagnostics_and_providers.py"
+   ],
+   "source": "progress_final2.json",
+   "all_runs": [
+    50.0,
+    100.0
+   ]
+  },
+  "app/core/trading_context/spread.py": {
+   "points": 21,
+   "killed": 17,
+   "survived": 4,
+   "kill_rate": 81.0,
+   "tests": [
+    "tests/unit/trading_context/test_spread_estimators.py"
+   ],
+   "source": "progress_final.json",
+   "all_runs": [
+    47.6,
+    76.2,
+    81.0
+   ]
+  },
+  "app/core/workflows/alpha_workflows.py": {
+   "points": 69,
+   "killed": 64,
+   "survived": 5,
+   "kill_rate": 92.8,
+   "tests": [
+    "tests/integration/test_supplementary_fixes.py",
+    "tests/unit/workflows/test_alpha_workflows_internals.py",
+    "tests/unit/workflows/test_alpha_workflows_round2.py",
+    "tests/unit/workflows/test_alpha_workflows_round3.py"
+   ],
+   "source": "progress_c_rerun_8.json",
+   "all_runs": [
+    20.3,
+    52.2,
+    60.9,
+    87.0,
+    92.8
+   ]
+  },
+  "app/db/alpha_lifecycle.py": {
+   "points": 1,
+   "killed": 1,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [],
+   "source": "progress.json",
+   "all_runs": [
+    100.0
+   ]
+  },
+  "app/db/alpha_store.py": {
+   "points": 23,
+   "killed": 22,
+   "survived": 1,
+   "kill_rate": 95.7,
+   "tests": [
+    "tests/unit/db/test_alpha_store_schema.py"
+   ],
+   "source": "progress_final.json",
+   "all_runs": [
+    26.1,
+    87.0,
+    95.7
+   ]
+  },
+  "app/db/chat_store.py": {
+   "points": 17,
+   "killed": 17,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/db/test_chat_store_schema.py",
+    "tests/unit/db/test_db_chat_store.py"
+   ],
+   "source": "progress_final.json",
+   "all_runs": [
+    58.8,
+    100.0
+   ]
+  },
+  "app/db/diagnostics_store.py": {
+   "points": 7,
+   "killed": 6,
+   "survived": 1,
+   "kill_rate": 85.7,
+   "tests": [
+    "tests/integration/test_diagnostics_and_providers.py"
+   ],
+   "source": "progress_final2.json",
+   "all_runs": [
+    28.6,
+    85.7
+   ]
+  },
+  "app/db/position_store.py": {
+   "points": 25,
+   "killed": 24,
+   "survived": 1,
+   "kill_rate": 96.0,
+   "tests": [
+    "tests/unit/db/test_paper_broker_accounting.py",
+    "tests/unit/db/test_position_store_schema.py"
+   ],
+   "source": "progress_final.json",
+   "all_runs": [
+    24.0,
+    96.0
+   ]
+  },
+  "app/db/run_manifest.py": {
+   "points": 14,
+   "killed": 12,
+   "survived": 2,
+   "kill_rate": 85.7,
+   "tests": [
+    "tests/unit/db/test_run_manifest_reproducibility.py"
+   ],
+   "source": "progress_a_recheck.json",
+   "all_runs": [
+    14.3,
+    78.6,
+    85.7
+   ]
+  },
+  "app/db/strategy_store.py": {
+   "points": 13,
+   "killed": 12,
+   "survived": 1,
+   "kill_rate": 92.3,
+   "tests": [
+    "tests/unit/db/test_strategy_store_schema.py"
+   ],
+   "source": "progress_final2.json",
+   "all_runs": [
+    38.5,
+    92.3
+   ]
+  },
+  "app/db/trial_ledger.py": {
+   "points": 8,
+   "killed": 7,
+   "survived": 1,
+   "kill_rate": 87.5,
+   "tests": [
+    "tests/integration/test_validation_gate_contracts.py"
+   ],
+   "source": "progress_final2.json",
+   "all_runs": [
+    50.0,
+    87.5
+   ]
+  },
+  "app/main.py": {
+   "points": 21,
+   "killed": 21,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_api_health.py",
+    "tests/unit/entrypoint/test_main_startup_guards.py",
+    "tests/unit/entrypoint/test_production_defaults.py"
+   ],
+   "source": "progress_c_rerun_3.json",
+   "all_runs": [
+    9.5,
+    52.4,
+    85.7,
+    100.0
+   ]
+  },
+  "app/tasks/backup.py": {
+   "points": 14,
+   "killed": 14,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/tasks/test_backup.py",
+    "tests/unit/tasks/test_backup_failure_paths.py"
+   ],
+   "source": "progress_c_rerun_2.json",
+   "all_runs": [
+    57.1,
+    92.9,
+    100.0
+   ]
+  },
+  "app/tasks/cost_calibration.py": {
+   "points": 16,
+   "killed": 16,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/tasks/test_cost_calibration_report.py"
+   ],
+   "source": "progress_final2.json",
+   "all_runs": [
+    50.0,
+    87.5,
+    100.0
+   ]
+  },
+  "app/tasks/daily_ingest.py": {
+   "points": 22,
+   "killed": 22,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_daily_ingest_increment.py"
+   ],
+   "source": "progress_a_recheck.json",
+   "all_runs": [
+    31.8,
+    72.7,
+    90.9,
+    95.5,
+    100.0
+   ]
+  },
+  "app/tasks/daily_trading_loop.py": {
+   "points": 63,
+   "killed": 53,
+   "survived": 10,
+   "kill_rate": 84.1,
+   "tests": [],
+   "source": "MUTATION_LEDGER.md（A 档收口表）",
+   "state_file_missing": true
+  },
+  "app/tasks/reasoning_log.py": {
+   "points": 2,
+   "killed": 2,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/tasks/test_reasoning_log.py"
+   ],
+   "source": "progress_d_r7.json",
+   "all_runs": [
+    0.0,
+    100.0
+   ]
+  },
+  "app/tasks/scheduler.py": {
+   "points": 20,
+   "killed": 20,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/tasks/test_scheduler_registration.py"
+   ],
+   "source": "progress_c_rerun_2.json",
+   "all_runs": [
+    5.0,
+    70.0,
+    100.0
+   ]
+  },
+  "app/db/_sqlite_utils.py": {
+   "points": 1,
+   "killed": 1,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/unit/db/test_sqlite_hardening.py"
+   ],
+   "source": "2026-09-16 补测（算子补齐后首次进入范围）",
+   "all_runs": [
+    0.0,
+    100.0
+   ],
+   "note": "首测 0.0%（该模块此前一条测试都没有）。补 test_sqlite_hardening.py 后用 verify_mutant.py 单点复核：L28 `!=` → `==` 结论 [OK] 变异被杀死。"
   }
+ },
+ "proof_reconciliation": {
+  "_doc": "存活变异的处置对账状态。这是本轮交付**已知未闭合**的唯一缺口，写在这里是为了它不会被忘掉。",
+  "modules_with_survivors": 44,
+  "total_survivors": 136,
+  "proof_files_in_suite": 44,
+  "proof_entries_in_suite": 97,
+  "per_file_accounting": "自洽：44 个文件的 PROVEN_EQUIVALENT 条目数与各自声明的存活数逐个相等（由 test_lessons_enforced.py::TestLessonX 强制）",
+  "module_level_attribution": "已逐模块对账（2026-09-16）：见 survivor_disposition",
+  "why_not": "PROVEN_EQUIVALENT 的键是自由文本（如 'L124 (weights < -tol) → <='），不带模块路径；按 import 归属会错判（risk_gate 的 10 条证明在它自己的文件里，而那个文件并不直接 import 该模块）。所以无法机械地把 138 个存活逐条对上 97 条证明。",
+  "what_is_established": "① app/ 下 88 个有变异点的模块全部测量过（本文件对账）；② 每个写了证明的文件，条目数与它声明的存活数一致；③ 每条证明说明 ≥40 字、点名的验证用例真实存在。 ④ 已被反例推翻的证明单独登记在 REFUTED_EQUIVALENCE，并配一条固化反例的可执行用例。",
+  "how_to_close": "已完成：97 条键全部改写成 `<模块路径> ×<覆盖点数> — <描述>`，由 test_every_proof_key_declares_its_module_and_point_count 强制格式，由 test_survivor_disposition_reconciles_per_module 逐模块对账。遗留的不是『对不上账』，而是『22 个存活项确实没处置』，见 survivor_disposition。",
+  "ratchet": {
+   "proof_entries_min": 97,
+   "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
+   "refuted_entries_min": 2,
+   "unmeasured_points_max": 1119
+  },
+  "refuted_by_counterexample": {
+   "count": 2,
+   "where": "tests/unit/db/test_paper_broker_accounting.py :: REFUTED_EQUIVALENCE",
+   "_doc": "paper_broker L119/L127 的两条『等价性证明』已被反例推翻（外部审计 2026-09-15）：project_to_capped_l1([[1e-12, 1-1e-12]]) 逐位保留 1e-12，于是 `>` 与 `>=` 结论不同。原『机械验证』断言的是 (base+tol)-base != tol，证的是更弱的命题。这两个存活点现在既未被杀死也无有效证明。",
+   "resolved": "已处置：三个变异点（L119 的两个比较符 + L127）全部由 TestSubEpsilonPositionsAreADeliberatePolicy 杀死，verify_mutant 逐个复核确认。REFUTED_EQUIVALENCE 保留为历史记录 —— 那两条证明本身是错的，不许再写回去。"
+  }
+ },
+ "_provenance_repair": {
+  "_doc": "外部审计 2026-09-15 指出：本文件记录的测试出处有 104 个不重复路径在 Task 1 目录重组后已不存在 —— 点数没错，但照着清单跑不回『当初是哪些测试测的它』。",
+  "repaired_on": "2026-09-16",
+  "method": "按文件名唯一匹配重映射到重组后的路径；重组时被合并/删除的文件无法映射，置空。",
+  "remapped": 96,
+  "kept": 41,
+  "dropped_unmappable": 59,
+  "modules_with_no_surviving_provenance": 3,
+  "modules_list": [
+   "app/core/execution/paper_broker.py",
+   "app/db/alpha_lifecycle.py",
+   "app/tasks/daily_trading_loop.py"
+  ],
+  "caveat": "重映射是按**文件名**做的，不是重跑得来的。它保证清单里的路径现在都存在、可以照着跑；不保证当初那一版文件的内容与现在这一版相同。唯一能消除这个不确定性的办法是重测，本轮未做。"
+ },
+ "measurement_scope": {
+  "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
+  "measured_points": 1982,
+  "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
+  "current_plan_points": 3101,
+  "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
+  "unmeasured_points": 1119,
+  "newly_in_scope_modules": [],
+  "per_module_delta": {
+   "app/agent/_agent.py": {
+    "measured": 16,
+    "now_planned": 22
+   },
+   "app/agent/_chat_history.py": {
+    "measured": 2,
+    "now_planned": 3
+   },
+   "app/agent/_critic.py": {
+    "measured": 18,
+    "now_planned": 19
+   },
+   "app/agent/_data_utils.py": {
+    "measured": 22,
+    "now_planned": 30
+   },
+   "app/agent/_helpers.py": {
+    "measured": 1,
+    "now_planned": 5
+   },
+   "app/agent/_tools.py": {
+    "measured": 22,
+    "now_planned": 23
+   },
+   "app/agent/alpha_agent.py": {
+    "measured": 10,
+    "now_planned": 15
+   },
+   "app/api/router.py": {
+    "measured": 75,
+    "now_planned": 90
+   },
+   "app/core/alpha_engine/dsl_executor.py": {
+    "measured": 25,
+    "now_planned": 31
+   },
+   "app/core/alpha_engine/fast_ops.py": {
+    "measured": 145,
+    "now_planned": 237,
+    "_note": "now_planned 此前写的 219 已过期（C-1 给本模块加了 average_ranks_1d 却没同步这个数）。237 是 2026-09-20 修完 B-1/B-2/B-3/B-5/B-6/B-7 后按同一判据重新枚举的。"
+   },
+   "app/core/alpha_engine/financial_diagnostics.py": {
+    "measured": 35,
+    "now_planned": 44
+   },
+   "app/core/alpha_engine/financial_interpreter.py": {
+    "measured": 50,
+    "now_planned": 111
+   },
+   "app/core/alpha_engine/parser.py": {
+    "measured": 13,
+    "now_planned": 36
+   },
+   "app/core/alpha_engine/signal_processor.py": {
+    "measured": 18,
+    "now_planned": 25
+   },
+   "app/core/alpha_engine/typed_nodes.py": {
+    "measured": 33,
+    "now_planned": 86
+   },
+   "app/core/backtest_engine/alpha_combiner.py": {
+    "measured": 25,
+    "now_planned": 46
+   },
+   "app/core/backtest_engine/backtest_engine.py": {
+    "measured": 15,
+    "now_planned": 28
+   },
+   "app/core/backtest_engine/multi_dataset_backtester.py": {
+    "measured": 14,
+    "now_planned": 21
+   },
+   "app/core/backtest_engine/overfit_stats.py": {
+    "measured": 10,
+    "now_planned": 19
+   },
+   "app/core/backtest_engine/performance_analyzer.py": {
+    "measured": 92,
+    "now_planned": 138
+   },
+   "app/core/backtest_engine/portfolio_constructor.py": {
+    "measured": 37,
+    "now_planned": 61
+   },
+   "app/core/backtest_engine/realistic_backtester.py": {
+    "measured": 37,
+    "now_planned": 50
+   },
+   "app/core/backtest_engine/risk_report.py": {
+    "measured": 32,
+    "now_planned": 44
+   },
+   "app/core/backtest_engine/transaction_cost.py": {
+    "measured": 41,
+    "now_planned": 61
+   },
+   "app/core/data_engine/data_partitioner.py": {
+    "measured": 54,
+    "now_planned": 65
+   },
+   "app/core/data_engine/dataset_filters.py": {
+    "measured": 54,
+    "now_planned": 92
+   },
+   "app/core/data_engine/dataset_registry.py": {
+    "measured": 16,
+    "now_planned": 21
+   },
+   "app/core/data_engine/health_report.py": {
+    "measured": 32,
+    "now_planned": 39
+   },
+   "app/core/data_engine/local_parquet_provider.py": {
+    "measured": 21,
+    "now_planned": 29
+   },
+   "app/core/data_engine/market_calendar.py": {
+    "measured": 22,
+    "now_planned": 25
+   },
+   "app/core/data_engine/multi_dataset.py": {
+    "measured": 23,
+    "now_planned": 31
+   },
+   "app/core/data_engine/pit_store.py": {
+    "measured": 24,
+    "now_planned": 34
+   },
+   "app/core/data_engine/providers/akshare_provider.py": {
+    "measured": 9,
+    "now_planned": 14
+   },
+   "app/core/data_engine/providers/ccxt_provider.py": {
+    "measured": 12,
+    "now_planned": 23
+   },
+   "app/core/data_engine/providers/moomoo_provider.py": {
+    "measured": 13,
+    "now_planned": 18
+   },
+   "app/core/data_engine/regime_detector.py": {
+    "measured": 17,
+    "now_planned": 23
+   },
+   "app/core/data_engine/yahoo_provider.py": {
+    "measured": 3,
+    "now_planned": 6
+   },
+   "app/core/discovery/discovery_engine.py": {
+    "measured": 9,
+    "now_planned": 11
+   },
+   "app/core/discovery/market_observer.py": {
+    "measured": 22,
+    "now_planned": 41
+   },
+   "app/core/execution/paper_broker.py": {
+    "measured": 26,
+    "now_planned": 41
+   },
+   "app/core/gp_engine/alpha_pool.py": {
+    "measured": 22,
+    "now_planned": 26
+   },
+   "app/core/gp_engine/evaluation_utils.py": {
+    "measured": 10,
+    "now_planned": 15
+   },
+   "app/core/gp_engine/fitness.py": {
+    "measured": 20,
+    "now_planned": 24
+   },
+   "app/core/gp_engine/gp_engine.py": {
+    "measured": 15,
+    "now_planned": 21
+   },
+   "app/core/gp_engine/mutations.py": {
+    "measured": 65,
+    "now_planned": 98
+   },
+   "app/core/gp_engine/population_evolver.py": {
+    "measured": 48,
+    "now_planned": 72
+   },
+   "app/core/lifecycle/leak_filter.py": {
+    "measured": 9,
+    "now_planned": 17
+   },
+   "app/core/lifecycle/promotion_gate.py": {
+    "measured": 13,
+    "now_planned": 20
+   },
+   "app/core/lifecycle/validation_gate.py": {
+    "measured": 8,
+    "now_planned": 14
+   },
+   "app/core/ml_engine/alpha_evaluator.py": {
+    "measured": 22,
+    "now_planned": 28
+   },
+   "app/core/ml_engine/alpha_optimizer.py": {
+    "measured": 24,
+    "now_planned": 26
+   },
+   "app/core/ml_engine/proxy_model.py": {
+    "measured": 8,
+    "now_planned": 14
+   },
+   "app/core/monitor/alpha_monitor.py": {
+    "measured": 12,
+    "now_planned": 15
+   },
+   "app/core/portfolio_manager/horizon.py": {
+    "measured": 7,
+    "now_planned": 10
+   },
+   "app/core/portfolio_manager/manager.py": {
+    "measured": 14,
+    "now_planned": 17
+   },
+   "app/core/portfolio_manager/risk_gate.py": {
+    "measured": 42,
+    "now_planned": 54
+   },
+   "app/core/portfolio_manager/strategy_gate.py": {
+    "measured": 31,
+    "now_planned": 43
+   },
+   "app/core/strategies/baselines.py": {
+    "measured": 3,
+    "now_planned": 4
+   },
+   "app/core/trading_context/context.py": {
+    "measured": 11,
+    "now_planned": 18
+   },
+   "app/core/trading_context/providers.py": {
+    "measured": 4,
+    "now_planned": 5
+   },
+   "app/core/trading_context/spread.py": {
+    "measured": 21,
+    "now_planned": 33
+   },
+   "app/core/workflows/alpha_workflows.py": {
+    "measured": 69,
+    "now_planned": 88
+   },
+   "app/db/alpha_lifecycle.py": {
+    "measured": 1,
+    "now_planned": 2
+   },
+   "app/db/alpha_store.py": {
+    "measured": 23,
+    "now_planned": 33
+   },
+   "app/db/chat_store.py": {
+    "measured": 17,
+    "now_planned": 19
+   },
+   "app/db/diagnostics_store.py": {
+    "measured": 7,
+    "now_planned": 8
+   },
+   "app/db/position_store.py": {
+    "measured": 25,
+    "now_planned": 42
+   },
+   "app/db/run_manifest.py": {
+    "measured": 14,
+    "now_planned": 19
+   },
+   "app/db/strategy_store.py": {
+    "measured": 13,
+    "now_planned": 17
+   },
+   "app/db/trial_ledger.py": {
+    "measured": 8,
+    "now_planned": 9
+   },
+   "app/main.py": {
+    "measured": 21,
+    "now_planned": 26
+   },
+   "app/tasks/backup.py": {
+    "measured": 14,
+    "now_planned": 21
+   },
+   "app/tasks/cost_calibration.py": {
+    "measured": 16,
+    "now_planned": 23
+   },
+   "app/tasks/daily_ingest.py": {
+    "measured": 22,
+    "now_planned": 24
+   },
+   "app/tasks/daily_trading_loop.py": {
+    "measured": 63,
+    "now_planned": 84
+   }
+  },
+  "still_blind": [
+   "数值常量（阈值/窗口长度）",
+   "对象身份与 deepcopy 语义（C-2 那一类）",
+   "调用实参的增删与顺序",
+   "控制流结构（提前 return、循环边界）"
+  ],
+  "what_this_means": "『所选变异全部被处理』≠『检出能力已证明』。B-1 的除法归一化错误与 C-2 的对象身份错误都是**读代码**发现的，不是变异测试发现的。",
+  "owed": "对 2843 个点重跑一遍测量。本轮未做。",
+  "_closed": "app/db/_sqlite_utils.py 已补测：它是算子补齐后唯一新进入范围的模块，此前一条测试都没有。首测 0.0% → 补 tests/unit/db/test_sqlite_hardening.py → verify_mutant 单点复核确认被杀。其余 862 个点仍未测。",
+  "_product_fix_policy": "修产品代码会引入新的变异点，而新点默认是未测量的 —— 棘轮会立刻判红（2026-09-18 修 A-6 时实际发生）。规矩：**修完立刻用 verify_mutant 逐个复核新点**，杀掉就记进本清单、未测量数不变；杀不掉就当场补用例。不许靠调高 unmeasured_points_max 放行。 补充（2026-09-20 实践）：**批量复核不能与编辑并行** —— 沙箱复制实时工作区，改到一半的测试文件会让基线红、结论全部失真。 补充（2026-09-20，A-2）：**`_xfail(raises=...)` 挡不住同类型的错误原因**。A-2 那条用例的前置守卫 `assert np.nanstd(...) != 0.0` 与目标断言都是 AssertionError，而它构造的 `np.full(60, 0.001)` 的 nanstd 恰好是精确 0.0（该值给 0 还是 2e-19 取决于长度的浮点运气：n=30/80/100 给 2.168e-19，n=40/50/60/70 给 0.0），于是这条 xfail 从未验证过 A-2 —— 与 A-1、C-1 同一形态，第三例。构造\"无真实波动\"的序列要用 1 ulp 扰动（`np.nextafter`），与长度无关。",
+  "_raises": [
+   {
+    "date": "2026-09-20",
+    "from": 862,
+    "to": 912,
+    "why": "修复 A-6 / N-1..N-5 五条产品缺陷引入的新代码（simulate_partial_fills、_largest_feasible_scale、缓存指纹、日频 t 统计、昨仓并集）。",
+    "how_it_was_handled": "已为新原语补 tests/unit/backtest_engine/test_partial_fill_semantics.py（52 条），并用 verify_mutant 逐个确认 filled_w/unfilled_d/desired 三处符号变异与 net_tol 量级变异**均已被杀死**。其余新点的批量复核**尚未完成** —— 复核脚本的沙箱复制的是实时工作区，与编辑撞车会让基线变红（37 条报 no-marker）。规矩因此补一条：**批量复核必须在停止编辑之后单独跑**。",
+    "owed": "对本次新增的 50 个点做一次完整复核；存活的当场补用例。"
+   },
+   {
+    "date": "2026-09-20 (A-3/A-4)",
+    "from": 912,
+    "to": 921,
+    "why": "修 A-3（近零波动相对判据 `_has_meaningful_variation`）与 A-4（`_tdays` 提前判 DatetimeIndex）新增的代码。",
+    "how_it_was_handled": "两条都配了行为断言：A-3 除『全常数判 NaN』外另加**反向**对照（日波动 1e-6 的真实低波动序列不得被误杀）；A-4 断言报错消息里必须同时出现 DatetimeIndex 与 net_returns。批量 verify_mutant 复核仍待编辑停止后统一跑。",
+    "owed": "本次新增 9 个点待复核。"
+   },
+   {
+    "date": "2026-09-20 (B-8/D-6)",
+    "from": 921,
+    "to": 922,
+    "why": "修 B-8（should_prune 增加 `_fitted`/`_model` 判据）与 D-6（try 包住构造）新增的代码。",
+    "how_it_was_handled": "两条 xfail 均已转正为行为断言并通过；`_fitted` 另配 test_fitted_flag_actually_guards_the_model_branch。",
+    "owed": "本次新增 1 个点待批量复核。"
+   },
+   {
+    "date": "2026-09-20 (B-12)",
+    "from": 922,
+    "to": 924,
+    "why": "修 B-12 新增 `seq` 列与同事务取号逻辑。",
+    "how_it_was_handled": "两条行为断言（会话侧倒排、消息侧一问一答顺序）已转正通过。",
+    "owed": "本次新增 2 个点待批量复核。"
+   },
+   {
+    "date": "2026-09-20 (C-2)",
+    "from": 924,
+    "to": 927,
+    "why": "修 C-2 新增 `_child_slots` / `_path_to` 两个辅助函数。",
+    "how_it_was_handled": "两条原 xfail 已转正（内部节点确实被替换、add_ts_smoothing 不再是空操作）。",
+    "owed": "本次新增 3 个点待批量复核。"
+   },
+   {
+    "date": "2026-09-20 (D-1)",
+    "from": 927,
+    "to": 931,
+    "why": "修 D-1 新增 `_negated_operand`。",
+    "how_it_was_handled": "原 xfail 转正，并加反向对照（`(1-x)` 不得被判成取负）。",
+    "owed": "本次新增 4 个点待批量复核。"
+   },
+   {
+    "date": "2026-09-20 (D-2)",
+    "from": 931,
+    "to": 932,
+    "why": "修 D-2 在 fetch_panel 里新增不可用字段的前置校验。",
+    "how_it_was_handled": "xfail 转正为**全称断言**（宣称的每个字段都要能请求到），另加反向对照（合法字段组合不得被新校验误伤）。",
+    "owed": "本次新增 1 个点待批量复核。"
+   },
+   {
+    "date": "2026-09-20 (A-1)",
+    "from": 932,
+    "to": 934,
+    "why": "修 A-1 新增 `append_pit` 参数与分支。",
+    "how_it_was_handled": "xfail 转正（真跑一遍增量摄取、数 PIT vintage）；两条集成用例的基线同步到修复后的口径。",
+    "owed": "本次新增 2 个点待批量复核。"
+   },
+   {
+    "date": "2026-09-20 (B-1/B-2/B-3/B-5/B-6/B-7)",
+    "from": 934,
+    "to": 942,
+    "why": "一次修完 fast_ops 的六条算子缺陷：新增 `_too_short` 短面板守卫、`_avg_rank_fraction` 平均秩内核、`cs_rank` 按并列区间取中点的向量化重写，`ts_corr` 分子改 ddof=1，`ts_max/ts_min` 改用传播 NaN 的 np.max/np.min。本模块枚举点数 229 → 237（新增 34、消失 26）。",
+    "how_it_was_handled": "**本次新增的 34 个点已全部逐个复核，34/34 被杀死**（单沙箱批量驱动，判据与 verify_mutant 相同：基线绿 + 变异非绿）。首轮复核报 36 新增、2 个存活：`x.ndim >= 1`（`_ensure_2d` 之后 ndim 只能是 0 或 ≥2，`>= 1` 与 `> 1` 同值）与 `np.where(is_end, idx, N - 1)`（自右向左取最小，哨兵只需 ≥ N-1，`N+1` 同样正确）。两者都是**任何用例都杀不死的等价变异**。没有为它们写等价性证明，而是改写代码让这两个点不存在：前者写成真值判断 `bool(x.ndim and ...)`，后者哨兵改成 `N`（变量引用，无可变异的算术符）。改写后重新枚举得 34 个新增点，并对改写过的那一行的 2 个点单独重验 —— 均被杀死。",
+    "owed": "无。与此前各条不同，本次新增点的复核**已当场完成**，不留欠账。注意：942 这个数按『未被某一轮全量测量覆盖』统计，其中 34 个点实际已逐个验证过，所以它对真实盲区是**高估**的；真正的盲区仍是那 908 个从未跑过的点。"
+   },
+   {
+    "date": "2026-09-20 (D-3 迁移)",
+    "from": 942,
+    "to": 946,
+    "why": "迁移 _lc_agent 到 langchain 1.x 的 create_agent：新增 RECURSION_LIMIT 常数、wrap_tool_call 中间件、_SessionScopedAgent 适配器（会话历史读写），以及 _agent 的 AGENT_MODE_* 分类。",
+    "how_it_was_handled": "**新增的 8 个点已逐个复核，8/8 被杀死。** 首轮 5 杀 3 活，存活的三个都是 `and -> or` 条件放宽 —— **不是等价变异**，是当时没有用例走到那些形状。按它们真实的失败后果补了 3 条用例并复验通过：① 回复绝不能取到 ToolMessage 的原始输出（模型调完工具给空总结时会走到）；② content 可能是多模态块列表，放行会让 ChatResponse.reply 拿到非字符串；③ 缺 session_id 时不得拿 None 当会话 id 去写库。另有 2 个点是**删掉**的：`_agent.py` 里我自己写的一个空 `elif ... : pass` 分支，它什么也不做、两个点必然存活。没有为空操作写等价性证明 —— 删掉才是诚实的处理（与 fast_ops 那两个幻影点同一个判断：等价变异的出路是让它不存在）。",
+    "owed": "无。本次新增点复核已当场完成。"
+   },
+   {
+    "date": "2026-09-21 (B-4 / A-5 / D-5)",
+    "from": 946,
+    "to": 951,
+    "why": "按用户裁定的契约修 B-4（n_bins 守卫 + 负零）与 A-5（MVO 的「无有效目标」NaN 语义、显式回退开关、下游解析函数）。D-5 只改提示词文本，零新增点。",
+    "how_it_was_handled": "新增 11 个点，首轮 9 杀 2 活。两个存活分别处置：① `min_valid_assets < 2` 的 `<=` 变异 —— 真盲区（2 是文档写明的合法下界却没人测），补 test_min_valid_assets_boundary 并复验杀死；② `l1 <= 1e-12` 的 `<` 变异 —— 要穿过线性求解精确命中 1e-12 才分道，不现实，但**不等价**（真命中时旧写法拦下、新写法放行，权重被 1e-12 除到1e12 量级）。改写成 `np.isclose(l1, 0.0, atol=1e-12, rtol=0.0)`：恒等，但没有可变异的比较符 —— 与 fast_ops 那两个幻影点同一个判断，等价/不可达变异的出路是让它不存在，不是给它开证明。",
+    "owed": "无。本次新增点复核已当场完成。"
+   },
+   {
+    "date": "2026-09-21 (A-7)",
+    "from": 951,
+    "to": 954,
+    "why": "修 A-7：构建层三处 `project_to_capped_l1(..., target=1.0)` 改传逐行真实 gross （transaction_cost.LiquidityConstraint.apply / manager.apply_capacity / realistic_backtester 的单票上限）。",
+    "how_it_was_handled": "新增 3 个点（三处 `np.abs` 的「丢符号」变异），首轮 2 杀 1 活。存活的是 realistic_backtester 那处 —— **不是等价变异，是既有用例空真**：`test_max_single_weight_enforced_end_to_end` 断言 `max|w| <= cap`，而去掉 abs 后多空账本的带符号和≈0 → target 塌成 0 → 组合被清空，`0 <= 0.15` 照样成立，用例全绿而持仓已经没了。（该用例的 docstring 自己警告过空真，但防的是另一个方向。）补第三段断言：加了单票上限后总敞口相对不加上限的中位数比值必须 > 0.5 —— 上限的职责是压集中度、不是降敞口。复验确认杀死。",
+    "owed": "无。本次新增点复核已当场完成。"
+   },
+   {
+    "date": "2026-09-21 (A-6 后半：引擎统一)",
+    "from": 954,
+    "to": 957,
+    "why": "BacktestEngine 的流动性处理从 `LiquidityConstraint.apply`（整矩阵 water-filling 裁**持仓**、会再分配）换成逐日 `simulate_partial_fills`（按**交易差额**部分成交、不再分配），与 PaperBroker 同一份原语、同一个 cap 公式。新增 max_net 参数。",
+    "how_it_was_handled": "新增 3 个点，首轮 2 杀 1 活。存活的是 `if self.initial_capital > 0:` 的 `>=` 变异 —— `capital==0` 时两条分支都给 inf，**除非** `adv==0`（那时 0/0=nan vs inf）。执行侧早有同款用例 test_zero_initial_capital_falls_back_to_no_cap_not_nan，其 docstring 写明了构造要点（capital==0 **且** adv==0，只测前者不够）。镜像到回测侧 TestZeroInitialCapital —— 统一两个引擎本来就该包括守卫被同等地测到，否则「统一」只统一了正常路径。复验确认杀死。",
+    "owed": "无。本次新增点复核已当场完成。"
+   },
+   {
+    "date": "2026-09-22 (Phase S)",
+    "from": 957,
+    "to": 1119,
+    "why": "Phase S 统计地基：三段切割 ThreeWayPartitioner + PurgedKFold + holdout 使用台账 HoldoutLedger + CPCV（combinatorial_purged_splits / cpcv_pbo / cpcv_path_sharpes）+ purged_cv_sharpe 适应度，以及把全部 /api/backtest/*、/alpha/*、/gp/evolve、/agent/run、/alphas/{id}/retrain 与 ValidationGate 接到 selection 段上。",
+    "how_it_was_handled": "**新增 169 个点已全部逐个复核**（判据与 verify_mutant 相同：基线绿 + 变异非绿）。143 杀死 / 26 存活。存活项的处置写在 tests/unit/data_engine/test_phase_s_equivalence_proofs.py：18 个有等价性证明（每条都配一条可执行的验证断言），8 个**证不了**、如实登记在 NEW_POINT_UNPROVEN（主要是『sd 恰好等于 1e-12』这类边界，以及 CPCV 里 rank 差 1 才翻转的三处）。该文件的字典**故意不叫 PROVEN_EQUIVALENT**：那个名字被 test_survivor_disposition_reconciles_per_module 拿去与全量测量的逐模块存活数对账，而这 26 个点属于『尚未纳入任何一轮全量测量』的那本账，分母不同，混用会让对账判红。复核过程中发现并修掉两处真问题：① 比例回退的『夹子』按 n_val=1 估算留量，而 n_val 是按 val_ratio 分的，于是夹完 IS 仍然不够、照样抛错（夹子没兑现承诺）；② 复核脚本对 app/config.py 这类顶层模块没有回退到 tests/unit，把本该杀死的点记成了存活 —— 度量工具自己出错，偏向哪一边都是错的。",
+    "owed": "无。本次新增点的复核已当场完成。注意 1119 这个数按『未被某一轮全量测量覆盖』统计，其中 169 个点实际已逐个验证过，所以它对真实盲区是**高估**的；真正的盲区仍是那 950 个从未跑过的点。"
+   }
+  ]
+ },
+ "survivor_disposition": {
+  "_doc": "存活变异的**逐模块**处置对账。外部审计 2026-09-15 指出原来的『每个文件条目数 == 自己声明的存活数』只是文件内自洽，跨文件汇总从未对过账。现在证明键带模块前缀与覆盖点数（`<模块> ×N — 描述`），可以逐模块机械对账。",
+  "total_survivors": 136,
+  "proven_points": 112,
+  "unproven_points": 24,
+  "unproven_by_module": {
+   "app/core/alpha_engine/fast_ops.py": 3,
+   "app/core/backtest_engine/transaction_cost.py": 3,
+   "app/core/data_engine/data_partitioner.py": 4,
+   "app/core/strategies/baselines.py": 2,
+   "app/tasks/daily_trading_loop.py": 10,
+   "app/core/ml_engine/proxy_model.py": 2
+  },
+  "what_unproven_means": "这些变异点既没有被任何用例杀死，也没有书面的等价性证明 —— 改坏了不会有人知道，而且我们连『为什么可以不管它』都没写下来。两个模块（baselines / daily_trading_loop）是**一条证明都没有**。",
+  "how_to_close": "逐模块：要么补用例杀死（首选），要么写可机械验证的等价性证明并配反驳尝试。闭合一个就把 unproven_by_module 里对应的数字改小；test_survivor_disposition_reconciles_per_module 会逐模块核对。",
+  "ratchet": {
+   "unproven_max": 24,
+   "_doc": "未处置数只许减不许增。声明数多于存活数会直接判红（证明盖住了不存在的点）。"
+  },
+  "_raises": [
+   {
+    "date": "2026-09-20",
+    "module": "app/core/ml_engine/proxy_model.py",
+    "delta": 2,
+    "why": "修 B-8 时 `should_prune` 开始读 `_fitted`，于是 L110/L163 那条「`_fitted` 全库无人读 → 死存储 → 等价」的证明**失效**并撤销。那条证明当初自带失效告警（test_fitted_flag_has_no_reader），告警如期响了 —— 这正是它该起的作用。",
+    "status": "这 2 个点现在既未被杀死也无有效证明；已换上 test_fitted_flag_actually_guards_the_model_branch 作行为用例，待下一轮 verify_mutant 复核确认是否已被它杀死。"
+   }
+  ]
+ }
 }

@@ -38,6 +38,13 @@ EXPECTED_GATE_DEFAULTS = {
     "tr_enforce_active_gate":  False,   # →ACTIVE 门未过 → 仍可激活
     "tr_experiment_mode":      True,    # 实验模式：B/C 级也放进 paper
     "risk_target_vol_ann":     0.0,     # 0 = 关闭 vol targeting
+    # ── Phase S：统计地基。这几项决定"回测数字能不能当结论看"，
+    #    任何一项被关掉，汇报出去的样本外就不再是样本外。
+    "s_three_way_enabled":     True,    # 全路径三段切割（关掉 = 冻结段参与判定）
+    "s_test_freeze_years":     2.0,     # Test 段按日历冻结的年数
+    "s_holdout_budget":        1,       # 冻结段的一次性使用预算
+    "s_fitness_mode":          "purged_cv",  # GP 适应度口径（S.1）
+    "s_use_cpcv":              True,    # PBO 用 CPCV（CSCV 无 purge → PBO 偏低）
 }
 
 

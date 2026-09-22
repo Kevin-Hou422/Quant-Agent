@@ -140,19 +140,23 @@ def _partition_three_way(
 
     这修复了旧两段切割下"GP 直接按真实 OOS 择优 → OOS 退化为第二个样本内"的循环论证：
     现在 GP 只在 Validate 上选择，Test 从不参与选择。数据不足以三段时抛 ValueError。
+
+    **2026-09-22 起委托给 `data_engine.data_partitioner`**（S.2 收尾）。
+    本函数原先是一份独立的 iloc 切片实现，且**段之间没有 embargo** ——
+    与验证门/各 API 路径用的那份口径不同。同一个概念在仓库里有两份实现，
+    迟早对同一份数据给出不同的"样本外"。这里只保留签名（调用方不变）。
     """
-    ref  = next(iter(dataset.values()))
-    n    = len(ref)
-    n_test = max(1, int(n * test_ratio))
-    n_val  = max(1, int(n * oos_ratio) - n_test)
-    n_is   = n - n_val - n_test
-    if n_is < 20:
-        raise ValueError(f"数据不足以三段切割: n={n}, n_is={n_is}, n_val={n_val}, n_test={n_test}")
+    from ..data_engine.data_partitioner import split_from_settings
 
-    def _slice(a: int, b: int) -> Dict[str, Any]:
-        return {field: df.iloc[a:b] for field, df in dataset.items()}
-
-    return _slice(0, n_is), _slice(n_is, n_is + n_val), _slice(n_is + n_val, n)
+    # oos_ratio/test_ratio 是本函数的历史入参语义（占**总样本**的比例），
+    # 而 ThreeWayPartitioner 的 val_ratio 是占"剔除 Test 后剩余"的比例 —— 换算一次，
+    # 不要让两边的同名参数各表一意。
+    val_share = max(1e-6, float(oos_ratio) - float(test_ratio))
+    val_ratio = min(0.9, val_share / max(1e-6, 1.0 - float(test_ratio)))
+    split = split_from_settings(
+        dataset, test_ratio=test_ratio, val_ratio=val_ratio, min_train_days=20,
+    )
+    return split.train, split.validate, split.test
 
 
 def _quick_metrics(

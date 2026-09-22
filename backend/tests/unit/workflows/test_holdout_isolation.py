@@ -26,13 +26,29 @@ def _ds(T=300, N=12, seed=0) -> dict:
 
 
 def test_three_way_sizes_order_and_no_overlap():
-    is_d, val_d, test_d = _partition_three_way(_ds(300), oos_ratio=0.30, test_ratio=0.15)
+    """
+    **尺寸口径已变（Phase S.2，2026-09-22）**：三段委托给
+    `data_partitioner.ThreeWayPartitioner`，于是
+      · 段间各有一个 embargo 缺口（旧实现零间隔 → 滚动算子跨切点取数）；
+      · Test 段优先按**日历**冻结最近 2 年；300 天的面板兑现不了，
+        退到 `s_max_test_share` 份额封顶 —— 所以 test 占比是 ~35%，不再是 15%。
+    这里断言的是这个新口径本身，不是旧的比例。
+    """
+    from app.config import settings
+
+    ds = _ds(300)
+    is_d, val_d, test_d = _partition_three_way(ds, oos_ratio=0.30, test_ratio=0.15)
     ni, nv, nt = len(is_d["close"]), len(val_d["close"]), len(test_d["close"])
-    assert ni + nv + nt == 300                              # 无重叠、全覆盖
+    emb = settings.s_embargo_days
+    assert ni + nv + nt == 300 - 2 * emb, (
+        f"三段合计 {ni + nv + nt}，应为 300 − 两段 embargo({emb})")
     # 严格时序：IS < Validate < Test
     assert is_d["close"].index[-1] < val_d["close"].index[0]
     assert val_d["close"].index[-1] < test_d["close"].index[0]
-    assert abs(nt - 45) <= 2 and abs(nv - 45) <= 2          # test≈15%，val≈(0.30-0.15)=15%
+    # 短面板走份额封顶：Test 不得超过份额上限，且必须真的留出了一段
+    assert 0 < nt <= int(300 * settings.s_max_test_share) + 1, (
+        f"Test 段 {nt} 天超过份额上限 {settings.s_max_test_share:.0%}")
+    assert ni >= 20 and nv >= 1
 
 
 def test_three_way_raises_on_tiny_data():

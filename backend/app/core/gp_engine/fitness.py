@@ -27,10 +27,18 @@ def compute_fitness(
     """
     Multi-objective fitness combining OOS quality, cost, drawdown, and overfitting.
 
+    Phase S.1 口径提示
+    ------------------
+    `sharpe_oos` 的**含义由调用方的 fitness_mode 决定**，本函数不区分：
+      · ``holdout``   → 单段 Validate 的夏普（GP 可见，故不是真样本外）；
+      · ``purged_cv`` → IS 内部 purged K 折各留出块夏普的均值。
+    后者下 `sharpe_is - sharpe_oos` 这项惩罚比较的是"整段 IS"与"IS 分块留出"，
+    衡量的是**块间稳健性**，不是样本外退化。真正的样本外只有三段切割的 Test 段。
+
     Parameters
     ----------
     sharpe_is    : In-sample annualised Sharpe ratio
-    sharpe_oos   : Out-of-sample annualised Sharpe ratio
+    sharpe_oos   : Out-of-sample annualised Sharpe ratio（口径见上）
     turnover     : Annualised portfolio turnover (lower is better)
     max_drawdown : Maximum drawdown value (negative or zero; lower is worse)
 

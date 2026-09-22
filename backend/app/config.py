@@ -140,6 +140,34 @@ class Settings(BaseSettings):
     moomoo_host:  str = "127.0.0.1"           # OpenD 网关地址
     moomoo_port:  int = 11111                 # OpenD API 端口
 
+    # ── Phase S：统计地基（三段切割 / 冻结 holdout / purged CV / CPCV）──────
+    # 这一层的默认值决定"回测数字能不能当结论看"，所以全部显式、可配置。
+    #: 全路径强制三段切割（IS / Validate / Test）。关掉 = 退回两段，
+    #: 汇报的 OOS 就是选择时用过的那一段（循环论证）。默认 True。
+    s_three_way_enabled:   bool  = True
+    #: Test 段按**日历**冻结的年数（不随数据集长度漂移）。
+    s_test_freeze_years:   float = 2.0
+    #: Validate 占「剔除 Test 后剩余样本」的比例。
+    s_val_ratio:           float = 0.25
+    #: 段间隔离（purge/embargo）交易日数，三段切分与 purged CV 共用。
+    s_embargo_days:        int   = 20
+    #: 选择段（IS+embargo+Validate）的下限交易日数，默认 378（≈1.5 年）。
+    #: 冻结窗口若会让选择段低于它，Test 段按此下限反推压缩并标 degraded ——
+    #: 短面板上硬冻 2 年会让 WalkForward 一折都切不出来，门恒定失败不是"更严"。
+    s_min_selection_days:  int   = 378
+    #: 冻结窗口兑现不了时，Test 段占总样本的**份额上限**。按份额封顶（而不是把
+    #: 选择段钉在下限上）保证"数据变多 → 研究样本也变多"这条单调性不丢。
+    s_max_test_share:      float = 0.35
+    #: 冻结 Test 段的使用次数预算。1 = 字面意义的一次性；超了不阻断，但
+    #: `over_budget=True` 会跟着数字一起返回（见 HoldoutLedger）。
+    s_holdout_budget:      int   = 1
+    #: GP 适应度口径：``holdout`` = 单段 Validate；``purged_cv`` = IS 内部
+    #: purged K 折交叉验证（S.1 的目标口径，方差更低、不依赖"最后一段是什么行情"）。
+    s_fitness_mode:        str   = "purged_cv"   # holdout | purged_cv
+    s_cv_folds:            int   = 5
+    #: 策略门是否用 CPCV（组合式 purged CV）算 PBO。False = 用 CSCV（无 purge）。
+    s_use_cpcv:            bool  = True
+
     # ── 研究路径数据质量门（审计 #5）─────────────────────────────────────
     # 此前 load_registry_dataset 写死 warn_only=True：缺列/跳点/断档只记日志，
     # 随后照常进回测/GP/策略构建；而 ingest 路径是真拒的 —— 两条路口径不一致。

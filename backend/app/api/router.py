@@ -120,6 +120,65 @@ def _resolve_dataset(
     return full, is_, oos
 
 
+def _three_way(dataset, dataset_name: str, purpose: str):
+    """
+    Phase S.1+S.2：把**所有** /api/backtest/* 路径收进三段切割。
+
+    返回 `(work_panel, split, meta)`：
+      · `work_panel` —— 端点接下来唯一被允许看的数据（IS+embargo+Validate）。
+      · `split`      —— ThreeWaySplit 或 None（切不动时）。
+      · `meta`       —— 直接塞进响应体的口径说明。
+
+    为什么这件事必须在**端点**做而不是在引擎里做
+    ------------------------------------------------
+    `/backtest/run` 此前对全量数据跑一遍就把 Sharpe 返回了，`/backtest/realistic`
+    只切两段 —— 于是"最近两年"既参与了人挑因子，又被当成样本外证据汇报。
+    引擎不知道调用者会不会拿结果去做选择，所以口径只能在入口统一。
+
+    切不动时**不静默**：`meta["three_way"]=False` + `reason`，响应体里看得见。
+    """
+    meta = {"three_way": True}
+    try:
+        from app.config import settings
+        if not settings.s_three_way_enabled:
+            logger.warning("[S.2] s_three_way_enabled=False → %s 看到全部数据"
+                           "（含本该冻结的段），结果按样本内解读。", purpose)
+            return dataset, None, {"three_way": False, "reason": "disabled_by_config"}
+    except Exception as exc:
+        logger.error("[S.2] 读不到 s_three_way_enabled，按更严的一侧切三段: %s", exc)
+
+    try:
+        from app.core.data_engine.data_partitioner import split_from_settings
+        split = split_from_settings(dataset)
+    except Exception as exc:
+        logger.warning("[S.2] %s 三段切割失败（%s）→ 退回全量面板，本次无冻结 Test 段。",
+                       purpose, exc)
+        return dataset, None, {"three_way": False, "reason": str(exc)}
+
+    meta.update(split.to_dict())
+    meta["dataset_key"] = dataset_name or "synthetic"
+    return split.selection, split, meta
+
+
+def _held_out_report(split, dataset_name: str, purpose: str, fn) -> Dict[str, Any]:
+    """
+    动用一次冻结 Test 段：先记账（S.2），再用 `fn(split.test)` 算要汇报的数字。
+
+    记账**先于**计算：算失败也已经看过这段数据了，次数不能因为失败就不记
+    —— 否则反复"失败重试"就能把一个已被看过 N 次的段刷成"还没用过"。
+    """
+    from app.core.data_engine.data_partitioner import account_holdout_use
+
+    payload = account_holdout_use(split, dataset_key=dataset_name or "synthetic",
+                                  purpose=purpose)
+    try:
+        payload.update(fn(split.test))
+    except Exception as exc:
+        logger.warning("[S.2] %s 的 Test 段汇报失败: %s", purpose, exc)
+        payload["error"] = str(exc)
+    return payload
+
+
 # Task 6.5：可复现性台账写入点。best-effort（失败绝不影响主流程）。
 _run_manifest_store = None
 
@@ -199,6 +258,8 @@ class AgentRunResponse(BaseModel):
     # "agent 内部出错返回了空 log" —— 调用方无从分辨。显式给出结论与来源。
     passed: bool = False
     data_source: str = "unknown"
+    #: 三段切割口径（Phase S.2）。final_metrics 只来自 selection 段。
+    partition: Dict[str, Any] = Field(default_factory=dict)
 
 
 class GPEvolveRequest(BaseModel):
@@ -228,6 +289,9 @@ class GPEvolveResponse(BaseModel):
     n_hof: int
     hof: List[GPAlphaItem]
     saved_ids: List[int]
+    #: 三段切割口径（Phase S.2）。hof 里的 sharpe 来自 selection 段，
+    #: 且 GP 是照着它挑的 —— 不是样本外数字。
+    partition: Dict[str, Any] = Field(default_factory=dict)
 
 
 class BacktestRequest(BaseModel):
@@ -241,11 +305,19 @@ class BacktestRequest(BaseModel):
     n_tickers: int = Field(20, ge=5, le=200)
     n_days:    int = Field(120, ge=60, le=1000)
     seed:      int = Field(42)
+    # Phase S.2：是否**动用一次**冻结 Test 段做汇报。默认 False —— 常规回测
+    # 不该碰它；置 True 会被记进 holdout 使用台账，并在响应里带上已用次数。
+    report_test: bool = Field(False, description="动用一次冻结 holdout 汇报（会被记账）")
 
 
 class BacktestResponse(BaseModel):
     dsl: str
     report: Dict[str, Any]
+    #: 三段切割口径（Phase S.1/S.2）。`report` 里的数字**只来自 selection 段**；
+    #: `three_way=False` 时说明本次没切成，数字含本该冻结的数据。
+    partition: Dict[str, Any] = Field(default_factory=dict)
+    #: 冻结 Test 段的一次性汇报（仅 report_test=True 时非空）。
+    held_out_test: Optional[Dict[str, Any]] = None
 
 
 class SimulationConfigSchema(BaseModel):
@@ -269,14 +341,19 @@ class RealisticBacktestRequest(BaseModel):
     n_days:    int                  = Field(120, ge=60, le=1000)
     oos_ratio: float                = Field(0.30, ge=0.0, lt=1.0)
     seed:      int                  = Field(42)
+    report_test: bool = Field(False, description="动用一次冻结 holdout 汇报（会被记账）")
 
 
 class RealisticBacktestResponse(BaseModel):
     dsl:    str
     data_source: str = "unknown"      # "real:<name>" / "synthetic"
     is_report:  Dict[str, Any]
+    #: **Validate 段**的报告（Phase S.2 起）。此前这里是"最后一截"，
+    #: 既用来挑因子又用来报成绩；现在冻结 Test 段不在其中。
     oos_report: Optional[Dict[str, Any]]
     config: Dict[str, Any]
+    partition: Dict[str, Any] = Field(default_factory=dict)
+    held_out_test: Optional[Dict[str, Any]] = None
 
 
 class FilterConfigSchema(BaseModel):
@@ -328,6 +405,9 @@ class MultiDatasetBacktestResponse(BaseModel):
     per_dataset:       Dict[str, Any]
     filter_results:    Dict[str, Any]
     errors:            List[str]
+    #: 逐数据集的三段切割口径（Phase S.2）。per_dataset 的数字只来自各自的
+    #: selection 段；某个数据集 `three_way=False` 时，它那一份含冻结段数据。
+    partitions:        Dict[str, Any] = Field(default_factory=dict)
 
 
 class AlphaRecord(BaseModel):
@@ -361,10 +441,13 @@ def agent_run(
     """
     from app.agent.alpha_agent import AlphaAgent
 
-    dataset, _, _ = _resolve_dataset(
+    full, _, _ = _resolve_dataset(
         req.dataset_name, req.dataset_start, req.dataset_end,
         req.n_tickers, req.n_days, req.seed, oos_ratio=0.0,
     )
+    # Phase S.2：agent 会按 IC-IR 在候选之间挑 —— 那是一次选择，
+    # 所以它看的数据必须与其他选择路径同口径：冻结段不可见。
+    dataset, _, partition = _three_way(full, req.dataset_name, "agent/run")
     agent = AlphaAgent(store=store)
 
     try:
@@ -382,6 +465,7 @@ def agent_run(
         final_metrics = log.final_metrics or {},
         n_changes    = len(log.changes),
         summary      = log.summary(),
+        partition    = partition,
     )
 
 
@@ -407,10 +491,14 @@ def gp_evolve(
         from app.core.gp_engine.population_evolver import PopulationEvolver
         from app.db.alpha_store import AlphaResult
 
-        _, is_data, oos_data = _resolve_dataset(
+        full, _, _ = _resolve_dataset(
             req.dataset_name, req.dataset_start, req.dataset_end,
-            req.n_tickers, req.n_days, req.seed, oos_ratio=0.30,
+            req.n_tickers, req.n_days, req.seed, oos_ratio=0.0,
         )
+        # Phase S.1/S.2：GP 在 selection 段里搜索与择优，冻结 Test 段全程不可见。
+        # 此前这里是两段切割 —— GP 直接按最后一段择优，那段就成了第二个样本内。
+        selection, _, gp_partition = _three_way(full, req.dataset_name, "gp/evolve")
+        is_data, oos_data = _partition_dataset(selection, 0.30)
 
         evolver = PopulationEvolver(
             is_data       = is_data,
@@ -460,7 +548,9 @@ def gp_evolve(
         dataset=is_data,
         seed=req.seed,
         config={"pop_size": req.pop_size, "n_gen": req.n_gen,
-                "dataset_name": req.dataset_name, "oos_ratio": 0.30},
+                "dataset_name": req.dataset_name, "oos_ratio": 0.30,
+                # S.2：切割口径进台账 —— 否则回放时无从知道这次 GP 看过哪段数据
+                "partition": gp_partition},
         summary={"best_dsl": gp_result.best_dsl,
                  "metrics": gp_result.metrics,
                  "generations_run": gp_result.generations_run},
@@ -498,6 +588,7 @@ def gp_evolve(
         n_hof     = len(hof_items),
         hof       = hof_items,
         saved_ids = saved_ids,
+        partition = gp_partition,
     )
 
 
@@ -519,10 +610,13 @@ def backtest_run(req: BacktestRequest) -> BacktestResponse:
     )
     from app.core.backtest_engine.risk_report import RiskReport
 
-    dataset, _, _ = _resolve_dataset(
+    full, _, _ = _resolve_dataset(
         req.dataset_name, req.dataset_start, req.dataset_end,
         req.n_tickers, req.n_days, req.seed, oos_ratio=0.0,
     )
+    # Phase S.1/S.2：此前这里直接把**全量**数据（含本该冻结的最近两年）
+    # 跑成一份报告返回。现在只跑 selection 段。
+    dataset, split, partition = _three_way(full, req.dataset_name, "backtest/run")
 
     # 1. 解析 + 验证
     try:
@@ -531,32 +625,30 @@ def backtest_run(req: BacktestRequest) -> BacktestResponse:
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"DSL 解析/验证失败: {exc}")
 
-    # 2. 信号生成
-    try:
-        signal = Executor().run_expr(req.dsl, dataset)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"DSL 执行失败: {exc}")
-
-    # 3. 组合权重
-    weights = SignalWeightedPortfolio().construct(signal)
-    NeutralizationLayer.market_neutral(weights)
-
-    # 4. 回测
-    try:
+    def _run_on(panel) -> Dict[str, Any]:
+        signal = Executor().run_expr(req.dsl, panel)
+        weights = SignalWeightedPortfolio().construct(signal)
+        NeutralizationLayer.market_neutral(weights)
         result = BacktestEngine().run(
-            weights = weights,
-            prices  = dataset["close"],
-            volume  = dataset["volume"],
-            signal  = signal,
+            weights=weights, prices=panel["close"],
+            volume=panel["volume"], signal=signal,
         )
+        return RiskReport.from_result(result, prices=panel["close"]).to_dict()
+
+    # 2-5. 信号 → 权重 → 回测 → RiskReport
+    try:
+        report_dict = _run_on(dataset)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"回测失败: {exc}")
 
-    # 5. RiskReport
-    report = RiskReport.from_result(result, prices=dataset["close"])
-    report_dict = report.to_dict()
+    held_out = None
+    if req.report_test and split is not None and split.n_test > 0:
+        held_out = _held_out_report(
+            split, req.dataset_name, "backtest/run",
+            lambda panel: {"report": _run_on(panel)})
 
-    return BacktestResponse(dsl=req.dsl, report=report_dict)
+    return BacktestResponse(dsl=req.dsl, report=report_dict,
+                            partition=partition, held_out_test=held_out)
 
 
 # ---------------------------------------------------------------------------
@@ -607,12 +699,15 @@ class WalkForwardResponse(BaseModel):
     pct_positive:     float
     mean_overfitting: float
     fold_reports:     List[WalkForwardFoldReportSchema]
+    partition:        Dict[str, Any] = Field(default_factory=dict)
 
 
-def _walk_forward_to_response(dsl: str, result) -> WalkForwardResponse:
+def _walk_forward_to_response(dsl: str, result,
+                              partition: Optional[Dict[str, Any]] = None) -> WalkForwardResponse:
     """WalkForwardResult → WalkForwardResponse（/backtest/walk_forward 与
     /alphas/{id}/walk_forward 共用）。"""
     return WalkForwardResponse(
+        partition        = partition or {},
         dsl              = result.dsl or dsl,
         n_folds          = result.n_folds,
         mean_oos_sharpe  = result.mean_oos_sharpe,
@@ -640,16 +735,24 @@ def walk_forward_backtest(req: WalkForwardRequest) -> WalkForwardResponse:
         req.n_tickers, req.n_days, req.seed, oos_ratio=0.0,
     )
 
+    # Phase S.2：WF 的各折也只在 selection 段里滚，冻结 Test 段不参与。
+    wf_data, _, partition = _three_way(full_data, req.dataset_name,
+                                       "backtest/walk_forward")
+
     # B-1：数据不够是**调用方的请求问题**（4xx），不是服务端故障（5xx）。
     # 提前校验并给出可执行的修改建议，而不是让底层 ValueError 冒成 500。
-    n_available = len(next(iter(full_data.values())))
+    # 口径同步（S.2）：这里要按**切完之后**的可用天数校验 —— 按全量算会放过
+    # 那些"总长够、但 selection 段不够"的请求，随后在引擎里冒成 500。
+    n_available = len(next(iter(wf_data.values())))
     required    = req.min_train_days + req.n_splits * 30 + req.embargo_days
     if n_available < required:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"数据不足以做 Walk-Forward：可用 {n_available} 个交易日，"
-                f"需要 ≥{required}（min_train={req.min_train_days} + "
+                f"数据不足以做 Walk-Forward：三段切割后可用 {n_available} 个交易日"
+                f"（总 {len(next(iter(full_data.values())))} 天，"
+                f"最近一段已冻结为 holdout），需要 ≥{required}"
+                f"（min_train={req.min_train_days} + "
                 f"n_splits={req.n_splits}×30 + embargo={req.embargo_days}）。"
                 f"请增大 n_days、减少 n_splits/min_train_days，或改用更长历史的 dataset_name。"
             ),
@@ -668,7 +771,7 @@ def walk_forward_backtest(req: WalkForwardRequest) -> WalkForwardResponse:
     )
 
     try:
-        result = bt.run(req.dsl, full_data)
+        result = bt.run(req.dsl, wf_data)
     except ValueError as exc:
         # 参数/数据范围问题 → 422（可由调用方修正），不是服务端崩溃
         logger.warning("WalkForward 参数不可行: %s", exc)
@@ -677,7 +780,7 @@ def walk_forward_backtest(req: WalkForwardRequest) -> WalkForwardResponse:
         logger.exception("WalkForwardBacktester failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
-    return _walk_forward_to_response(req.dsl, result)
+    return _walk_forward_to_response(req.dsl, result, partition=partition)
 
 
 # ---------------------------------------------------------------------------
@@ -1056,10 +1159,12 @@ def alpha_retrain(
 
     _acquire_gp_slot()
     try:
-        dataset, _, _ = _resolve_dataset(
+        full, _, _ = _resolve_dataset(
             dataset_name, "2021-01-01", "2024-01-01",
-            n_tickers=20, n_days=180, seed=42, oos_ratio=0.30,
+            n_tickers=20, n_days=180, seed=42, oos_ratio=0.0,
         )
+        # Phase S.2：重训是一次再选择，冻结段同样不可见。
+        dataset, _, _ = _three_way(full, dataset_name, "alphas/retrain")
         wf = OptimizationWorkflow(
             pop_size        = pop_size,
             n_generations   = n_generations,
@@ -1110,10 +1215,12 @@ def alpha_walk_forward(
     from app.core.backtest_engine.realistic_backtester import WalkForwardBacktester
     from app.core.alpha_engine.signal_processor import SimulationConfig
 
-    dataset, _, _ = _resolve_dataset(
+    full, _, _ = _resolve_dataset(
         dataset_name, "2021-01-01", "2024-01-01",
         n_tickers=20, n_days=400, seed=42, oos_ratio=0.0,
     )
+    # Phase S.2：与 /backtest/walk_forward 同口径 —— 冻结段不参与各折。
+    dataset, _, partition = _three_way(full, dataset_name, "alphas/walk_forward")
     try:
         wf_bt  = WalkForwardBacktester(
             config       = SimulationConfig(),
@@ -1125,7 +1232,7 @@ def alpha_walk_forward(
         logger.exception("alpha_walk_forward failed for id=%d", alpha_id)
         raise HTTPException(status_code=500, detail=str(exc))
 
-    return _walk_forward_to_response(record.dsl, result)
+    return _walk_forward_to_response(record.dsl, result, partition=partition)
 
 
 # ---------------------------------------------------------------------------
@@ -1554,10 +1661,14 @@ def backtest_realistic(req: RealisticBacktestRequest) -> RealisticBacktestRespon
     from app.core.backtest_engine.realistic_backtester import RealisticBacktester
     from app.core.data_engine.data_partitioner import DataPartitioner
 
-    dataset, _, _ = _resolve_dataset(
+    full, _, _ = _resolve_dataset(
         req.dataset_name, req.dataset_start, req.dataset_end,
         req.n_tickers, req.n_days, req.seed, oos_ratio=0.0,
     )
+    # Phase S.2：先切三段，IS/OOS 再在 selection 段**内部**切 —— 于是这里汇报的
+    # "OOS" 是 Validate 段，冻结 Test 段不参与；此前两段切割下汇报的 OOS 就是
+    # 最后那一截，选因子和报成绩用的是同一段数据。
+    dataset, split, partition = _three_way(full, req.dataset_name, "backtest/realistic")
 
     # 构造 SimulationConfig
     cfg = SimulationConfig(
@@ -1595,12 +1706,21 @@ def backtest_realistic(req: RealisticBacktestRequest) -> RealisticBacktestRespon
         logger.exception("RealisticBacktester.run failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
+    held_out = None
+    if req.report_test and split is not None and split.n_test > 0:
+        held_out = _held_out_report(
+            split, req.dataset_name, "backtest/realistic",
+            lambda panel: {"report": RealisticBacktester(config=cfg)
+                           .run(req.dsl, panel).is_report.to_dict()})
+
     return RealisticBacktestResponse(
         dsl         = req.dsl,
         data_source = _data_source_label(req.dataset_name),
         is_report  = result.is_report.to_dict(),
         oos_report = result.oos_report.to_dict() if result.oos_report else None,
         config     = result.to_dict()["config"],
+        partition  = partition,
+        held_out_test = held_out,
     )
 
 
@@ -1725,6 +1845,15 @@ def backtest_multi(req: MultiDatasetBacktestRequest) -> MultiDatasetBacktestResp
                    "Relax filter conditions or choose different datasets.",
         )
 
+    # ── Phase S.2：逐数据集切三段，只把 selection 段交给回测器 ────────────
+    # 这里的 is_split 是**每个数据集内部**的 IS/OOS 切分；不先冻结最后一段的话，
+    # 跨数据集聚合出来的 "OOS Sharpe" 同样是选择时用过的那一截。
+    partitions: Dict[str, Any] = {}
+    for ds_name in list(datasets_raw):
+        panel, _, meta = _three_way(datasets_raw[ds_name], ds_name, "backtest/multi")
+        datasets_raw[ds_name] = panel
+        partitions[ds_name] = meta
+
     # ── Run multi-dataset backtest ─────────────────────────────────────
     backtester = MultiDatasetBacktester(
         aggregation = req.aggregation,
@@ -1749,6 +1878,7 @@ def backtest_multi(req: MultiDatasetBacktestRequest) -> MultiDatasetBacktestResp
         per_dataset       = result.to_dict()["per_dataset"],
         filter_results    = filter_results,
         errors            = result.errors,
+        partitions        = partitions,
     )
 
 
@@ -1809,6 +1939,9 @@ class EvalResponse(BaseModel):
     pnl_is:            List[float] = Field(default_factory=list)
     pnl_oos:           List[float] = Field(default_factory=list)
     split_date:        Optional[str] = None
+    #: 三段切割口径（Phase S.2）。`oos_metrics` 是 **Validate 段**的数字：
+    #: 参数就是照着它调的，所以它**不是**样本外证据；真正的样本外是冻结 Test 段。
+    partition:         Dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -1840,6 +1973,7 @@ def _run_evaluate(
     best_config: Optional[dict] = None,
     n_trials:    Optional[int]  = None,
     data_source: str            = "unknown",
+    partition:   Optional[Dict[str, Any]] = None,
 ) -> EvalResponse:
     """
     共享逻辑：用给定 config 执行 IS+OOS 回测 + AlphaEvaluator 高级评估。
@@ -1936,6 +2070,7 @@ def _run_evaluate(
         pnl_is            = pnl_is,
         pnl_oos           = pnl_oos,
         split_date        = split_dt,
+        partition         = partition or {},
     )
 
 
@@ -1963,10 +2098,13 @@ def alpha_simulate(req: SimulateRequest) -> EvalResponse:
             detail=f"[Syntax Error] {exc}",
         )
 
-    dataset, is_data, oos_data = _resolve_dataset(
+    full, _, _ = _resolve_dataset(
         req.dataset_name, req.dataset_start, req.dataset_end,
-        req.n_tickers, req.n_days, req.seed, oos_ratio=req.oos_ratio,
+        req.n_tickers, req.n_days, req.seed, oos_ratio=0.0,
     )
+    # Phase S.2：IS/OOS 在 selection 段**内部**切，冻结 Test 段不参与本次评估。
+    selection, _, partition = _three_way(full, req.dataset_name, "alpha/simulate")
+    is_data, oos_data = _partition_dataset(selection, req.oos_ratio)
 
     cfg = SimulationConfig(
         delay            = req.config.delay,
@@ -1979,7 +2117,8 @@ def alpha_simulate(req: SimulateRequest) -> EvalResponse:
 
     try:
         return _run_evaluate(req.dsl, cfg, is_data, oos_data,
-                             data_source=_data_source_label(req.dataset_name))
+                             data_source=_data_source_label(req.dataset_name),
+                             partition=partition)
     except Exception as exc:
         logger.exception("alpha_simulate failed")
         raise HTTPException(status_code=500, detail=str(exc))
@@ -2013,10 +2152,14 @@ def alpha_optimize(req: OptimizeRequest) -> EvalResponse:
             detail=f"[Syntax Error] {exc}",
         )
 
-    dataset, is_data, oos_data = _resolve_dataset(
+    full, _, _ = _resolve_dataset(
         req.dataset_name, req.dataset_start, req.dataset_end,
-        req.n_tickers, req.n_days, req.seed, oos_ratio=req.oos_ratio,
+        req.n_tickers, req.n_days, req.seed, oos_ratio=0.0,
     )
+    # Phase S.1/S.2：Optuna 照着 Validate 段调参，所以那段**不是**样本外。
+    # 冻结 Test 段在本端点全程不可见（连最终评估也不用它）。
+    selection, _, partition = _three_way(full, req.dataset_name, "alpha/optimize")
+    is_data, oos_data = _partition_dataset(selection, req.oos_ratio)
 
     # Step 2: 构造搜索空间
     ss = req.search_space
@@ -2053,6 +2196,7 @@ def alpha_optimize(req: OptimizeRequest) -> EvalResponse:
             best_config = study_summary.best_params,
             n_trials    = study_summary.n_trials,
             data_source = _data_source_label(req.dataset_name),
+            partition   = partition,
         )
     except Exception as exc:
         logger.exception("alpha_optimize final evaluation failed")

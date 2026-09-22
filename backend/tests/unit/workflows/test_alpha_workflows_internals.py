@@ -85,59 +85,98 @@ class TestWorkflowResultDict:
 
 class TestPartitionThreeWay:
 
-    def test_the_three_segments_tile_the_panel_without_gaps_or_overlap(self):
+    def test_the_three_segments_leave_exactly_one_embargo_gap_at_each_boundary(self):
+        """
+        **契约已变（Phase S.2，2026-09-22）**：三段不再"无缝铺满"面板。
+
+        旧实现是纯 iloc 切片、段间零间隔 —— 日频面板上 ts_mean(20) 这类算子
+        会让 Validate 的末尾与 Test 的开头共享原始 bar，"样本外"的头几天
+        其实被选择阶段摸到过。现在段间各丢掉 `s_embargo_days` 行。
+
+        所以这里断言的是**缺口恰好等于 embargo**：既不能没有（泄漏），
+        也不能更多（白白浪费样本，且说明切分算错了）。
+        """
+        from app.config import settings
+
         ds = _panel(1)
         is_d, val_d, test_d = W._partition_three_way(ds, 0.3, 0.15)
-        n = len(ds["close"])
+        all_dates = list(ds["close"].index)
+        pos = {d: i for i, d in enumerate(all_dates)}
+        emb = settings.s_embargo_days
+
+        gap1 = pos[val_d["close"].index[0]] - pos[is_d["close"].index[-1]] - 1
+        gap2 = pos[test_d["close"].index[0]] - pos[val_d["close"].index[-1]] - 1
+        assert gap1 == emb, f"IS→Validate 的缺口是 {gap1} 行，应为 embargo={emb}"
+        assert gap2 == emb, f"Validate→Test 的缺口是 {gap2} 行，应为 embargo={emb}"
+
         lens = [len(is_d["close"]), len(val_d["close"]), len(test_d["close"])]
-        assert sum(lens) == n, f"三段长度 {lens} 合计 {sum(lens)}，面板是 {n} 天"
+        assert sum(lens) == len(ds["close"]) - 2 * emb, (
+            f"三段合计 {sum(lens)} ≠ 面板 {len(ds['close'])} − 两段 embargo")
         # 时间上必须严格递增、不重叠
         assert is_d["close"].index[-1] < val_d["close"].index[0]
         assert val_d["close"].index[-1] < test_d["close"].index[0]
 
-    @pytest.mark.parametrize("n_days,should_raise", [
-        (200, False),
-        (40,  False),
-        (28,  False),     # n_is 刚好够
-        (24,  True),      # n_is < 20
-        (10,  True),
-    ])
-    def test_too_little_data_is_refused_rather_than_silently_shrunk(
-            self, n_days, should_raise):
+    def test_the_is_floor_holds_for_every_panel_size(self):
         """
-        `if n_is < 20: raise ValueError(...)` —— **严格小于 20**。
+        全称断言：在任何面板尺寸下，要么抛错，要么 IS 段 ≥ 20 天。
 
-        放宽成 `<=` 只差一天，看不出来；但这道闸的意义是"IS 段短到这个程度
-        就不要给数字了"。它一旦松掉，调用方拿到的不是异常而是一个
-        由十几天数据算出来的 Sharpe —— 上游会把它当成真结论。
+        这道闸的意义是"IS 段短到这个程度就不要给数字了"。松掉之后调用方
+        拿到的不是异常，而是一个由十几天数据算出来的 Sharpe —— 上游会把它
+        当成真结论。写成全称形式是因为切分公式改过一次（S.2 引入日历冻结
+        与份额封顶），把边界钉在某个具体 n 上会随公式漂走。
         """
-        ds = _panel(2, n=n_days)
-        if should_raise:
-            with pytest.raises(ValueError) as ei:
-                W._partition_three_way(ds, 0.3, 0.15)
-            assert "数据不足" in str(ei.value)
-        else:
-            is_d, _, _ = W._partition_three_way(ds, 0.3, 0.15)
-            assert len(is_d["close"]) >= 20
+        raised, accepted = 0, 0
+        for n in range(24, 220, 4):
+            try:
+                is_d, _, _ = W._partition_three_way(_panel(2, n=n), 0.3, 0.15)
+            except ValueError as exc:
+                assert "数据不足" in str(exc), f"n={n} 抛的不是数据不足：{exc}"
+                raised += 1
+                continue
+            accepted += 1
+            assert len(is_d["close"]) >= 20, (
+                f"n={n} 被接受，但 IS 只有 {len(is_d['close'])} 天 —— 下限失效")
+        assert raised > 0, "这一段区间里没有任何尺寸被拒 —— 下限可能根本没生效"
+        assert accepted > 0, "这一段区间里没有任何尺寸被接受 —— 断言是空真的"
 
-    def test_the_boundary_value_itself_is_accepted(self):
+    def test_asking_for_a_larger_validate_share_actually_enlarges_it(self):
         """
-        构造一个 `n_is` **恰好等于 20** 的面板：`< 20` 放行、`<= 20` 拒绝。
-        这是唯一能把两种取值分开的一格。
+        本函数的历史入参是"占**总样本**的比例"，而底层切分器的 `val_ratio`
+        是"占剔除 Test 后剩余的比例" —— 中间有一次换算。换算里的符号或乘除
+        写反了，切出来的三段**仍然合法**（有序、不重叠、长度合理），
+        只是不再对应调用方要的比例。能分开的只有单调性。
         """
-        # n_test = max(1, int(n*0.15)); n_val = max(1, int(n*0.3) - n_test)
-        # 找到使 n_is == 20 的 n
-        target = None
-        for n in range(20, 120):
-            n_test = max(1, int(n * 0.15))
-            n_val = max(1, int(n * 0.3) - n_test)
-            if n - n_val - n_test == 20:
-                target = n
-                break
-        assert target is not None, "找不到 n_is 恰好为 20 的面板尺寸"
-        is_d, _, _ = W._partition_three_way(_panel(3, n=target), 0.3, 0.15)
-        assert len(is_d["close"]) == 20, (
-            f"n_is 恰好 20 的面板被拒了 —— `n_is < 20` 被收紧成了 `<= 20`")
+        ds = _panel(5, n=600)
+        _, small_val, _ = W._partition_three_way(ds, 0.30, 0.15)
+        _, large_val, _ = W._partition_three_way(ds, 0.55, 0.15)
+        assert len(large_val["close"]) > len(small_val["close"]), (
+            f"把 oos_ratio 从 0.30 提到 0.55，Validate 段却是 "
+            f"{len(small_val['close'])} → {len(large_val['close'])} —— "
+            f"比例换算疑似算错了方向")
+
+    @pytest.mark.parametrize("oos_ratio,test_ratio", [(0.30, 0.15), (0.55, 0.15),
+                                                      (0.40, 0.10)])
+    def test_the_share_conversion_matches_the_documented_formula(
+            self, oos_ratio, test_ratio):
+        """
+        单调性只能抓住方向反了，抓不住**量**错了：把 `/(1 − test_ratio)`
+        写成乘法，Validate 段仍然随 oos_ratio 单调变大，只是比例不对。
+
+        换算口径（写在函数注释里）：入参是占**总样本**的比例，底层要的是占
+        "剔除 Test 后剩余"的比例，所以
+            val_ratio = (oos_ratio − test_ratio) / (1 − test_ratio)
+        这里按同一公式反算 Validate 的应有长度。
+        """
+        from app.config import settings
+
+        ds = _panel(6, n=600)
+        is_d, val_d, _ = W._partition_three_way(ds, oos_ratio, test_ratio)
+        remaining = len(is_d["close"]) + settings.s_embargo_days + len(val_d["close"])
+        expected_ratio = min(0.9, max(1e-6, oos_ratio - test_ratio) / (1.0 - test_ratio))
+        assert len(val_d["close"]) == max(1, round(remaining * expected_ratio)), (
+            f"oos={oos_ratio} test={test_ratio}：Validate 应为 "
+            f"{max(1, round(remaining * expected_ratio))} 天，实际 "
+            f"{len(val_d['close'])} 天 —— 比例换算的量算错了")
 
     def test_every_field_is_sliced_the_same_way(self):
         """`_slice` 对 dataset 的每个字段做同样的切片 —— 漏一个就会对不齐。"""

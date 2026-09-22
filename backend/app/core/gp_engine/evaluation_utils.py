@@ -99,3 +99,76 @@ def quick_ic_eval(
     turn  = float(np.nanmean(np.abs(np.diff(ranks, axis=0)))) * 252
 
     return {"ic_ir": ic_ir, "ann_turnover": turn, "sharpe": ic_ir}
+
+
+# ---------------------------------------------------------------------------
+# Purged K-fold CV 的适应度口径（Phase S.1 收尾）
+# ---------------------------------------------------------------------------
+
+def purged_cv_sharpe(
+    net_returns: "pd.Series",
+    n_splits: int = 5,
+    embargo_days: int = 20,
+    periods_per_year: int = 252,
+) -> Dict[str, float]:
+    """
+    把一条**已经算好**的日净收益序列，按 purged K 折切成 K 个留出块，
+    返回各块年化夏普的均值/标准差/最差值（Phase S.1）。
+
+    这买到了什么
+    ------------
+    适应度不再取决于"最后那一段恰好是什么行情"：单段 Validate 的结论会随切点
+    大幅漂移，K 折让**每个样本都当过一次留出**，方差与段位偏倚都降下来。
+    块两侧各 purge `embargo_days` 个样本，避免滚动算子跨块借数。
+
+    这**没有**买到什么（别把它当更强的保证）
+    -------------------------------------------
+    GP 的"训练"是搜索本身，它看得见整个 IS —— 这里没有逐折重新拟合参数，
+    所以这不是"样本外"，而是**样本内的稳健性度量**。真正的样本外仍然只有
+    三段切割里那段 GP 全程看不见的 Test（S.2）。
+
+    Returns
+    -------
+    {"mean", "std", "min", "n_folds"}；折数不足时 n_folds=0 且其余为 0.0
+    （**不抛异常**：适应度路径上抛异常会让候选被静默丢弃，见审计 #9）。
+    """
+    from ..data_engine.data_partitioner import PurgedKFold
+
+    empty = {"mean": 0.0, "std": 0.0, "min": 0.0, "n_folds": 0.0}
+    s = pd.Series(net_returns).dropna()
+    if len(s) < 30:
+        return empty
+    if not isinstance(s.index, pd.DatetimeIndex):
+        s.index = pd.RangeIndex(len(s))
+        dates = pd.DatetimeIndex(pd.date_range("2000-01-03", periods=len(s), freq="B"))
+    else:
+        dates = pd.DatetimeIndex(s.index)
+
+    try:
+        folds = PurgedKFold(n_splits=n_splits, embargo_days=embargo_days).split(dates)
+    except ValueError as exc:
+        logger.debug("purged CV 折数不足，退回单段口径: %s", exc)
+        return empty
+
+    vals = s.to_numpy(dtype=float)
+    pos = {d: i for i, d in enumerate(dates)}
+    sharpes: list[float] = []
+    for f in folds:
+        idx = [pos[d] for d in f.test_idx if d in pos]
+        if len(idx) < 5:
+            continue
+        block = vals[idx]
+        sd = float(np.nanstd(block, ddof=1)) if len(block) > 1 else 0.0
+        if sd <= 1e-12:
+            continue
+        sharpes.append(float(np.nanmean(block) / sd) * float(np.sqrt(periods_per_year)))
+
+    if not sharpes:
+        return empty
+    arr = np.array(sharpes, dtype=float)
+    return {
+        "mean": float(np.mean(arr)),
+        "std":  float(np.std(arr, ddof=1)) if len(arr) > 1 else 0.0,
+        "min":  float(np.min(arr)),
+        "n_folds": float(len(arr)),
+    }
