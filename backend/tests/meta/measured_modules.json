@@ -1370,7 +1370,7 @@
    "proof_entries_min": 97,
    "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
    "refuted_entries_min": 2,
-   "unmeasured_points_max": 1119
+   "unmeasured_points_max": 1159
   },
   "refuted_by_counterexample": {
    "count": 2,
@@ -1398,10 +1398,12 @@
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
   "measured_points": 1982,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-  "current_plan_points": 3101,
+  "current_plan_points": 3141,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-  "unmeasured_points": 1119,
-  "newly_in_scope_modules": [],
+  "unmeasured_points": 1159,
+  "newly_in_scope_modules": [
+   "app/core/risk_engine/factor_model.py"
+  ],
   "per_module_delta": {
    "app/agent/_agent.py": {
     "measured": 16,
@@ -1827,6 +1829,14 @@
     "why": "Phase S 统计地基：三段切割 ThreeWayPartitioner + PurgedKFold + holdout 使用台账 HoldoutLedger + CPCV（combinatorial_purged_splits / cpcv_pbo / cpcv_path_sharpes）+ purged_cv_sharpe 适应度，以及把全部 /api/backtest/*、/alpha/*、/gp/evolve、/agent/run、/alphas/{id}/retrain 与 ValidationGate 接到 selection 段上。",
     "how_it_was_handled": "**新增 169 个点已全部逐个复核**（判据与 verify_mutant 相同：基线绿 + 变异非绿）。143 杀死 / 26 存活。存活项的处置写在 tests/unit/data_engine/test_phase_s_equivalence_proofs.py：18 个有等价性证明（每条都配一条可执行的验证断言），8 个**证不了**、如实登记在 NEW_POINT_UNPROVEN（主要是『sd 恰好等于 1e-12』这类边界，以及 CPCV 里 rank 差 1 才翻转的三处）。该文件的字典**故意不叫 PROVEN_EQUIVALENT**：那个名字被 test_survivor_disposition_reconciles_per_module 拿去与全量测量的逐模块存活数对账，而这 26 个点属于『尚未纳入任何一轮全量测量』的那本账，分母不同，混用会让对账判红。复核过程中发现并修掉两处真问题：① 比例回退的『夹子』按 n_val=1 估算留量，而 n_val 是按 val_ratio 分的，于是夹完 IS 仍然不够、照样抛错（夹子没兑现承诺）；② 复核脚本对 app/config.py 这类顶层模块没有回退到 tests/unit，把本该杀死的点记成了存活 —— 度量工具自己出错，偏向哪一边都是错的。",
     "owed": "无。本次新增点的复核已当场完成。注意 1119 这个数按『未被某一轮全量测量覆盖』统计，其中 169 个点实际已逐个验证过，所以它对真实盲区是**高估**的；真正的盲区仍是那 950 个从未跑过的点。"
+   },
+   {
+    "date": "2026-09-23 (Phase R.2)",
+    "from": 1119,
+    "to": 1159,
+    "why": "新建 app/core/risk_engine/factor_model.py（Barra-lite 风险因子模型）：风格暴露 build_exposures、逐日截面回归 fit_risk_model、结构化协方差 Σ=BΣ_fBᵀ+D、风险归因 RiskModel.attribute，并接进 run_portfolio 的诊断返回值。",
+    "how_it_was_handled": "**新增 40 个点已全部逐个复核**（判据同 verify_mutant：基线绿 + 变异非绿）。首轮 24 杀 16 活，补 10 条用例后 33 杀 7 活；余下 7 个的处置写在 tests/unit/risk_engine/test_equivalence_proofs.py：6 个有等价性证明（每条配可执行验证），1 个证不了（`sd > 1e-12` 的 epsilon 边界）如实登记为未处置。接线所在的 daily_trading_loop 那段与 config 的新配置项**枚举出 0 个新点** —— 不是漏了：变异器刻意跳过 logger 调用跨度（格式串里的 </> 会产生假点），而那段的逻辑正好全在 logger.info(...) 与 try/except 里；config 的新行是数值常量，本工具不变异数值（见 measurement_scope.still_blind）。复核中抓到一条**我自己写的用例不合格**：流动性那条让所有股票都在同一价位，于是『美元成交额 = volume×price』与『volume÷price』给出相同排序，断言对量纲反转没有区分力。改成让『高价低量』与『低价高量』打架后复验杀死 —— 与 Phase S 那次『断言看起来在测那件事、实际测的是更弱的命题』同型。",
+    "owed": "无。本次新增点的复核已当场完成。该模块**尚未做过整模块的全量测量**，故登记在 newly_in_scope_modules；它的 40 个点计入未测量总数，但其中每一个都已单独验过。"
    }
   ]
  },

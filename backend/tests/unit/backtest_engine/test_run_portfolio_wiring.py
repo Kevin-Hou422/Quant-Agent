@@ -61,6 +61,28 @@ def test_risk_gate_actually_clips_positions(tmp_path):
     assert rr["n_name_clipped"] > 0 or rr["n_sector_scaled"] > 0
 
 
+def test_risk_attribution_is_wired_into_the_daily_diagnostics(tmp_path):
+    """
+    Phase R.2：风险归因必须真的出现在 run_portfolio 的返回值里（§K：写了 ≠ 接线）。
+
+    这条同时守住"**数字带着自己的局限一起走**"：size/value 需要基本面数据
+    （Phase 10 之前没有），`styles_missing` 若丢了，面板上的"因子风险占比"
+    会被读成"覆盖了主要风格"。
+    """
+    loop = _loop_with_paper_factors(tmp_path, ["rank(ts_delta(close,5))",
+                                               "rank((-ts_std(returns,20)))"])
+    out = loop.run_portfolio(_ds(T=400, seed=7), aum=10_000.0)
+    assert "risk_attribution" in out, "run_portfolio 没有产出 risk_attribution"
+    ra = out["risk_attribution"]
+    assert ra is not None, "风险归因是 None —— 拟合失败了（应当能在 400 天面板上算出来）"
+
+    # 方差分解恒等式在**实线路径**上也必须成立，不只在单测的造数上
+    assert ra["factor_var"] + ra["specific_var"] == pytest.approx(ra["total_var"], abs=1e-18)
+    assert ra["styles_missing"] == ["size", "value"], (
+        "归因结果没有带上『哪些风格没覆盖』—— 占比数字会被过度解读")
+    assert ra["n_assets"] > 0 and 0.0 <= ra["factor_share"] <= 1.0
+
+
 def test_strategy_gate_produces_verdict(tmp_path):
     loop = _loop_with_paper_factors(tmp_path, ["rank(ts_delta(close,5))",
                                                "rank(ts_delta(log(close),60))"])

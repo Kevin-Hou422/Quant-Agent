@@ -629,6 +629,38 @@ AST 扫描全部 `tests/`，按"这个断言可能失败吗"分类，查出 **90
   - **复用**：`data_engine`（因子暴露构造）、现有 `signal_processor` 中性化钩子。
   - **验收**：对已知风格暴露的构造组合，风险归因能还原其暴露来源；MVO 可切换用结构化协方差。
 
+  #### 进度（2026-09-22）：**2 和 3 已完成并接线；1 和 4 未做**
+
+  已建 `app/core/risk_engine/factor_model.py`：
+  - **风格暴露** `build_exposures`：动量(12-1，跳过近月)、反转、波动、流动性(Amihud)、
+    市场 beta，逐日截面 z-score + ±3σ 截断；行业哑变量取自数据集的 `sector` 字段。
+  - **因子收益**：逐日截面回归 `r_t = B_t·f_t + u_t`（`np.linalg.lstsq`，自由度不足的
+    截面跳过；有效天数 < `min_obs` **直接抛错**——10 天估出来的协方差与 400 天的长得
+    一模一样，只是错的）。
+  - **结构化协方差** `RiskModel.covariance()`：`Σ = BΣ_fBᵀ + D`（= 第 3 项）。
+  - **风险归因** `RiskModel.attribute()`（= 第 2 项）：方差拆成因子/特异，因子部分按
+    **Euler 分解**摊到各因子（含交叉项，合计恒等于因子方差；实现成"各因子单独方差
+    相加"会漏掉因子间相关性、合计对不上）。
+  - **接线**：`run_portfolio` → `result["risk_attribution"]` → `DiagnosticsStore` →
+    `GET /api/portfolio/diagnostics` → 前端交易现实面板。**只读，不改任何交易决策。**
+  - 测试 `tests/unit/risk_engine/test_factor_model.py`(23) + 接线 1 条。核心是三条
+    **恒等式**（逐位核对，不是近似）：`factor_var + specific_var == total_var`、
+    `Σ by_factor == factor_var`、`w'Σw == total_var`。风险归因的危险在于**它永远
+    给得出一个数字** —— 样本太短的协方差、漏掉行业哑变量的分解、丢了交叉项的逐因子
+    贡献，产出的 JSON 和正确结果长得一模一样。
+
+  **⚠️ 本轮的诚实边界（已写进返回值，不只写在文档里）**：
+  - **size 与 value 缺席**：需要股数/账面价值等基本面数据，Phase 10 之前拿不到。
+    每份归因都带 `styles_missing: ["size","value"]` —— 否则"因子风险占比 66%"会被
+    读成"覆盖了主要风格"。所以当前的分解应读作"在这 5 个价量风格 + 行业上的分解"。
+  - **第 1 项（风格中性化替换）未做**：它会**改变信号**（残差化替代 rank/行业 demean），
+    属于另一次变更，需要单独验证对因子表现的影响。
+  - **第 4 项（alpha vs 风险溢价区分）未做**：依赖第 1 项的残差。
+  - **B6（beta 中性数学不闭合）仍未闭合**：按 PM.5 的既有决策，留待开启做空之后 ——
+    当前 long-only，net=gross，beta 对冲不适用。
+  - 无 `sector` 字段时行业哑变量缺席，**行业共同风险会被算进"特异"里**（低估因子风险）。
+    这时会记 warning，`sector_included=False` 也随结果返回。
+
 - **R.3 容量 → 已落地为 PM.2（容量建模）+ TradingContext 容量**：AUM→容量上限已在 live 路径实现
   （water-filling），Sharpe-AUM 衰减曲线为其自然可视化（FE-R）。此处不再展开。
 
@@ -707,6 +739,10 @@ fetch/SSE、`components/analysis/*` 图表、`AlphaDashboard`。**前端只读 +
   **autonomy_mode 手动/全自动切换**（人工可随时切回）；数据质量哨兵告警。
 - **FE-R 研究可信度图表**（配 Phase R）：PBO/CPCV 结果、**因子风险归因**（暴露分解）、
   **容量-AUM 衰减曲线**——复用 `components/analysis/*`，天然图表化。
+  **后端数据已就绪（2026-09-22）**：`GET /api/portfolio/diagnostics` 的每条记录已含
+  `risk_attribution`（因子/特异方差、逐因子贡献、组合净暴露、`styles_missing`）与
+  `strategy_verdict.pbo/pbo_method`。前端只差把它画出来 —— 画的时候**必须把
+  `styles_missing` 一起显示**，否则"因子风险占比"会被读成"覆盖了主要风格"。
 
 > 每个 FE-* 的验收并入对应 Phase 的"真实启动前后端端到端"验证（沿用 Phase 7 做法）。
 
@@ -729,7 +765,10 @@ Phase 12（**moomoo** 执行，同 TR.2 源）── 依赖 PM（消费美元账
 Phase 13（多 agent + 全自动）── 依赖 9 + 12
 Phase 14 ── 长期验证期
 
-Phase R ── ⚠️ 已被 S/PM 吸收（R.1→S.3、R.2→PM.5、R.3→PM.2、R.4→PM.1/3），仅留方法参考，非独立待办
+Phase R ── R.1→S.3(✅) · R.3→PM.2(✅) · R.4→PM.1/3(⬜ Ledoit-Wolf/HRP/换手进目标仍未做)
+  R.2 风险引擎 ── **不再是"被 PM.5 吸收"**：PM.5 做的是敞口/集中度上限，回答不了
+  "风险从哪来"。已建 app/core/risk_engine（2026-09-22）：归因 + 结构化协方差(✅，已接进
+  run_portfolio 诊断)；风格中性化替换与 alpha/风险溢价区分(⬜)；B6 beta 闭合仍待做空开启
 
 前端 FE-9(✅) · FE-PM(✅) · FE-TR 交易现实面板(✅,含诊断持久化+两端点) · FE-8/10/11/12/13/R(⬜)
 ```

@@ -477,6 +477,27 @@ class DailyTradingLoop:
         except Exception as exc:
             logger.warning("[portfolio] 策略衰减检查失败（不阻断）: %s", exc)
 
+        # ── Phase R.2：风险归因（只读诊断，不改任何交易决策）──────────────
+        #    PM.5 的 gross/net/单票上限回答不了"风险从哪来"：一篮子彼此不相关的
+        #    股票和一篮子同时押在"低波动"上的股票，敞口可以一样、真实风险差一个量级。
+        risk_attribution = None
+        try:
+            from app.core.risk_engine import fit_risk_model
+            _rm = fit_risk_model(
+                dataset, lookback=int(getattr(settings, "risk_attr_lookback", 252)))
+            _attr = _rm.attribute(weights.iloc[-1])
+            risk_attribution = _attr.to_dict()
+            logger.info("[portfolio] R.2 风险归因 | 年化波动=%.2f%% | 因子占比=%.0f%% "
+                        "| 行业哑变量=%s | 最大暴露=%s",
+                        _attr.total_vol_ann * 100, _attr.factor_share * 100,
+                        _attr.sector_included,
+                        max(_attr.exposures.items(), key=lambda kv: abs(kv[1]),
+                            default=("n/a", 0.0)))
+        except Exception as exc:
+            # 归因失败不阻断交易，但**必须留痕**：没有它，面板上"风险构成"那一块
+            # 会是空的，而使用者无从判断是"没算"还是"算出来就是这样"。
+            logger.warning("[portfolio] R.2 风险归因失败（不阻断交易）: %s", exc)
+
         logger.info("[portfolio] 组合账本 | AUM=%.0f | %d 因子 | %d 交易日 | 末净值=%.4f",
                     aum, len(signals), n_days, equity)
         result = {"n_factors": len(signals), "days_processed": n_days,
@@ -491,6 +512,7 @@ class DailyTradingLoop:
                 "turnover_ann": round(to_after, 3),    # PM.6 带后年化换手
                 "horizon": horizon_info,               # PM.6 因子快慢分类
                 "strategy_decay": strategy_decay,      # PM.7 策略级衰减告警
+                "risk_attribution": risk_attribution,  # R.2 风险从哪来（因子 vs 特异）
                 "t3": t3_state,                        # TR.3 T3 providers(模式/买入力/持仓数)
                 "trading_context": tc_summary}         # TR.1 交易现实(价差/可交易/可做空/带)
 

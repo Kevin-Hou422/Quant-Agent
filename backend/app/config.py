@@ -130,6 +130,11 @@ class Settings(BaseSettings):
     risk_target_vol_ann:     float = 0.0     # 目标年化波动（0=关闭 vol targeting）
     risk_vol_lookback:       int   = 60      # 估计组合已实现波动的回看交易日数（≥20 才缩放）
 
+    #: Phase R.2 风险归因的回看交易日数（估因子协方差用）。
+    #: 只影响**诊断**，不改任何交易决策；太短的协方差看起来与正常结果无异，
+    #: 所以 fit_risk_model 对有效回归天数另有硬下限，不足直接拒绝返回。
+    risk_attr_lookback:      int   = 252
+
     risk_max_drawdown:       float = 0.20    # 回撤熔断阈值
     risk_halt_on_drawdown:   bool  = False   # 熔断触发是否停交易（默认否：先记录告警）
 
