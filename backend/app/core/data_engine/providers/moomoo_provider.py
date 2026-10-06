@@ -152,6 +152,13 @@ class MoomooProvider(DataProvider):
 
     def _open_quote_ctx(self):
         moomoo = self._sdk()
+        # 建连前先探端口：OpenD 不在时 OpenQuoteContext 不抛错，而是每 8 秒重连、永不返回
+        # （实测 moomoo-api 10.10，见 broker_gateway.opend_reachable）—— 每日摄取会被永久卡住。
+        from app.core.execution.broker_gateway import opend_reachable
+        if not opend_reachable(self.host, self.port):
+            raise RuntimeError(
+                f"OpenD 网关 {self.host}:{self.port} 未在监听 —— 不建连（SDK 会无限阻塞重连）。"
+                f"请确认 OpenD 已启动并登录。")
         try:
             return moomoo.OpenQuoteContext(host=self.host, port=self.port)
         except Exception as exc:  # pragma: no cover - 需网关

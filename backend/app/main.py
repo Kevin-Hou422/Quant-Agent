@@ -55,6 +55,10 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    # 前向交易开启时，活库/调度库/PIT 解析后落在云同步目录 → 拒绝启动（§Q；
+    # 默认 ./alphas.db 从仓库目录启动时就在 OneDrive 里，只查配置字符串看不出来）。
+    from app.core.execution.golive import assert_live_storage_safe
+    assert_live_storage_safe(settings)
     # Phase 12.4：执行层开启时，启动即对账一次（补记停机期间成交、找回崩溃前写了
     # 意图的订单、按券商持仓重建账本）。放后台线程：OpenD 未启动时 SDK 建连可能阻塞，
     # 不能卡住服务启动；对账失败也不影响后续交易周期的 fail-closed 判断。

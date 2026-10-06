@@ -94,7 +94,8 @@ def test_api_request_models_default_to_real_dataset():
 # ---------------------------------------------------------------------------
 
 _ENTRY_POINTS = {"app.main", "app.api.router", "app.api.chat_router",
-                 "app.tasks.scheduler", "app.config"}
+                 "app.tasks.scheduler", "app.config",
+                 "app.tasks.forward"}      # `python -m app.tasks.forward preflight|run-now`
 
 
 def _module_graph():

@@ -590,10 +590,17 @@ AST 扫描全部 `tests/`，按"这个断言可能失败吗"分类，查出 **90
 > - 12.3：月度任务 `run_monthly_fidelity` 产出保真度报告（实际成交 vs 决策价 / 次日开盘 / 内部模拟），
 >   成交 < 20 笔不校准；永久冲击目前**不可识别**，报告里明说。
 > - **实测发现**：OpenD 不在时 moomoo SDK 建连会**无限阻塞**并留下非守护线程 → 建连前 2 秒端口探测。
->   同样的问题在行情侧 `MoomooProvider`（`PRICE_SOURCE=moomoo`）也存在，**本 Phase 未修**。
+>   同样的问题在行情侧 `MoomooProvider`（`PRICE_SOURCE=moomoo`）也存在 —— 已在上线工具批次修复。
 >
 > **只能在真 OpenD 上验证的两件事**：纸交易环境是否支持历史订单查询（不支持时对账会保守地挂起
 > "待确认"而非乐观判定）；收盘后下的单次日是否出现在当日订单列表。
+>
+> **上线工具（2026-10-06 第二批）**：`golive.py` 上线预检（`python -m app.tasks.forward preflight` /
+> `POST /api/execution/preflight`，9 项逐项检查，会对账一次、不下单）+ `run-now`（预检全过才跑调度器的
+> 同一个 `daily_trading_job`）；**启动保险**：前向交易开启时活库/调度库/PIT **解析后**落在云同步目录 → 拒绝
+> 启动（默认 `./alphas.db` 从 OneDrive 里的仓库启动就在 OneDrive，原 TestLessonQ 只查字符串看不见）；
+> `MoomooProvider` 建连前端口探测（上面那条"本 Phase 未修"已修）；`.env.forward.example` +
+> `scripts/start_forward.ps1`。**真 OpenD 端到端仍待做**：需要人在 OpenD 窗口登录。
 >
 > 测试：`tests/unit/execution/*`、`test_execution_store_schema.py`、`test_live_providers.py`、
 > `test_monthly_fidelity.py`、`integration/test_api_execution.py`、`integration/test_phase12_execution_wiring.py`；

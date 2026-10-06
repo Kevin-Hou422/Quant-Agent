@@ -300,9 +300,11 @@ class TestJobBodies:
         monkeypatch.setattr(di, "run_daily_pipeline",
                             lambda *a, **kw: (seen.update(args=a, kw=kw),
                                               {"ingest_accepted": True})[1])
-        sched_mod.daily_trading_job()
+        out = sched_mod.daily_trading_job()
         assert seen["kw"].get("incremental") is True, (
             f"每日交易任务传的是 incremental={seen['kw'].get('incremental')}")
+        # run-now 打印的就是这个返回值（管线结果原样透传）
+        assert out == {"ingest_accepted": True}
 
     def test_daily_trading_skips_on_non_trading_days(self, monkeypatch):
         called = {"n": 0}
@@ -311,8 +313,9 @@ class TestJobBodies:
         monkeypatch.setattr(mc, "is_trading_day", lambda d: False)
         monkeypatch.setattr(di, "run_daily_pipeline",
                             lambda *a, **kw: called.update(n=called["n"] + 1))
-        sched_mod.daily_trading_job()
+        out = sched_mod.daily_trading_job()
         assert called["n"] == 0, "非交易日仍然跑了交易循环"
+        assert out["skipped"] == "not_a_trading_day" and set(out) == {"skipped", "date"}
 
     def test_daily_trading_is_fail_closed_when_the_calendar_is_unavailable(self, monkeypatch):
         """日历判不出来 → **不交易**，而不是退回工作日启发式。"""
@@ -327,8 +330,9 @@ class TestJobBodies:
         monkeypatch.setattr(mc, "is_trading_day", _boom)
         monkeypatch.setattr(di, "run_daily_pipeline",
                             lambda *a, **kw: called.update(n=called["n"] + 1))
-        sched_mod.daily_trading_job()
+        out = sched_mod.daily_trading_job()
         assert called["n"] == 0, "日历不可用时仍然跑了交易循环 —— fail-closed 失效"
+        assert out == {"skipped": "calendar_unavailable", "error": "no calendar"}
 
     def test_nightly_discovery_bypasses_the_health_gate(self, monkeypatch):
         """

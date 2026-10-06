@@ -448,7 +448,8 @@ class TestLessonE_IdentifiersMustExist:
 # ===========================================================================
 
 _ENTRY_POINTS = {"app.main", "app.api.router", "app.api.chat_router",
-                 "app.tasks.scheduler", "app.config"}
+                 "app.tasks.scheduler", "app.config",
+                 "app.tasks.forward"}      # `python -m app.tasks.forward preflight|run-now`
 
 
 def _module_graph():
@@ -829,6 +830,20 @@ class TestLessonQ_LiveDbNotInCloudSync:
             assert not any(k in low for k in ("onedrive", "dropbox", "google drive", "icloud")), (
                 f"settings.{attr} 指向云同步目录（活库会被同步进程撕裂）：{val}"
             )
+
+    def test_launching_forward_trading_from_a_synced_dir_is_refused(self, tmp_path):
+        """
+        上一条只看**配置字符串**：默认 `sqlite:///./alphas.db` 不含 "onedrive"，所以它绿着；
+        可仓库就在 OneDrive 里，从 backend/ 启动时活库解析到的正是 OneDrive（§Y 的又一例：
+        断言了文本，没断言行为）。真正的防线是启动保险 —— 这里按**解析后的路径**验它会拦。
+        """
+        from app.config import Settings
+        from app.core.execution.golive import assert_live_storage_safe
+        synced = tmp_path / "OneDrive" / "Desktop" / "Quant Agent" / "backend"
+        synced.mkdir(parents=True)
+        s = Settings(_env_file=None).model_copy(update={"execution_mode": "moomoo_paper"})
+        with pytest.raises(RuntimeError, match="database_url"):
+            assert_live_storage_safe(s, cwd=synced)
 
 
 # ===========================================================================

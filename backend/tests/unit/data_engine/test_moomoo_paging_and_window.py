@@ -346,3 +346,36 @@ class TestIncrementWindow:
         MoomooProvider().fetch_latest(["AAPL"], n_recent=1)
         span = (pd.Timestamp(seen["end"]) - pd.Timestamp(seen["start"])).days
         assert span == 7, f"n_recent=1 的回看窗口是 {span} 天，应为下限 7 天"
+
+
+# ===========================================================================
+# 建连前端口探测（Phase 12 收尾）
+# ===========================================================================
+
+class TestOpenDProbe:
+    """
+    OpenD 不在时 `OpenQuoteContext(...)` 不抛错，而是每 8 秒重连、永不返回（实测 10.10）。
+    行情侧若不先探端口，每日摄取会被**永久卡住**：调度线程占死，当天也不会有任何告警。
+    """
+
+    def test_refuses_to_construct_the_context_when_opend_is_down(self, monkeypatch):
+        import app.core.execution.broker_gateway as bg
+        mod = _fake_moomoo()
+        built = []
+        mod.OpenQuoteContext = lambda host=None, port=None: built.append((host, port))
+        monkeypatch.setitem(sys.modules, "moomoo", mod)
+        seen = []
+        monkeypatch.setattr(bg, "opend_reachable", lambda h, p: seen.append((h, p)) or False)
+        with pytest.raises(RuntimeError, match="未在监听"):
+            MoomooProvider(host="10.1.2.3", port=4321)._open_quote_ctx()
+        assert built == [] and seen == [("10.1.2.3", 4321)]
+
+    def test_connects_when_opend_is_listening(self, monkeypatch):
+        import app.core.execution.broker_gateway as bg
+        mod = _fake_moomoo()
+        built = []
+        mod.OpenQuoteContext = lambda host=None, port=None: built.append((host, port)) or "ctx"
+        monkeypatch.setitem(sys.modules, "moomoo", mod)
+        monkeypatch.setattr(bg, "opend_reachable", lambda h, p: True)
+        assert MoomooProvider(host="10.1.2.3", port=4321)._open_quote_ctx() == "ctx"
+        assert built == [("10.1.2.3", 4321)]

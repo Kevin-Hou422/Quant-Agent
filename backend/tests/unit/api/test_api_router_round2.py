@@ -118,14 +118,11 @@ class TestTradingRealitySnapshot:
                 pass
 
         monkeypatch.setattr(_socket, "socket", lambda *a, **kw: _Sock())
-        fn = None
-        for name in dir(R):
-            obj = getattr(R, name)
-            if callable(obj) and "opend" in (inspect.getsource(obj)
-                                             if inspect.isfunction(obj) else ""):
-                fn = obj
-                break
-        assert fn is not None, "找不到交易现实快照端点"
+        # 按路由取端点，不按"源码里含 opend 的第一个函数"猜 —— 后者在新增
+        # /execution/preflight（字母序更靠前）后就取错了函数
+        fn = next((r.endpoint for r in R.router.routes
+                   if getattr(r, "path", "") == "/api/trading/status"), None)
+        assert fn is not None, "找不到交易现实快照端点 /api/trading/status"
         return fn()
 
     def test_a_reachable_opend_is_reported_up(self, monkeypatch):

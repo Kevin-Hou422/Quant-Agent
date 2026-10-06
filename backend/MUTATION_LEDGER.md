@@ -191,8 +191,8 @@ txt 漏了 `scikit-learn`（CI 连红三次的根因），而 2026-07-30 那版 
 - CI 不再排除 `tests/performance`：那组此前长期在量一个 422 的延迟
   （`n_days=50` 违反接口的 `ge=60`），改对之后才真的在测东西
 
-**（二）变异点从未做过整模块测量：862 → 现为 1599。** 见上面「结果总览」。补齐算子后应测
-2843 点，已测 1981 点；之后 Phase S（+160 余）、R.2（+40）、Phase 12（+440）新增的点**都已逐点
+**（二）变异点从未做过整模块测量：862 → 现为 1625。** 见上面「结果总览」。补齐算子后应测
+2843 点，已测 1981 点；之后 Phase S（+160 余）、R.2（+40）、Phase 12（+440）、上线工具（+26）新增的点**都已逐点
 复核**，但所在模块没进过整模块全量测量，所以仍计入这个数（每次抬高都写在
 `measured_modules.json` 的 `measurement_scope._raises` 里）。
 棘轮：`test_the_unmeasured_scope_stays_visible_and_only_shrinks`。**欠一次重测。**
@@ -263,6 +263,25 @@ python tools/mutation/runner.py plan_full.json --state progress_full.json --stat
   验证方式是**对源码施加同一变异并执行**，断言确实崩、且崩在声称的原因上，并以原文能执行作对照。
 
 **仍欠**：六个新模块没做过整模块全量测量（登记在 `newly_in_scope_modules`）。
+
+#### 第二批：前向交易上线工具（2026-10-06）
+
+`golive.py`（上线预检 + 活数据位置启动保险）、`tasks/forward.py`（preflight / run-now）、
+`MoomooProvider` 建连前端口探测，共 26 点。
+
+| 轮次 | 点数 | 杀死 | 存活 | 其他 |
+|---|---:|---:|---:|---:|
+| 第一轮 | 27 | 24 | 2 | 1（导入期中断） |
+| 处置后两模块整体重跑 | 26 | 25 | 0 | 1 |
+
+- 存活 `Check.blocking` 的 dataclass 默认值：`add()` 总会显式传，默认值从不生效 → 删掉默认值，点消失。
+- 存活 run-now 打印的 `ensure_ascii=False`：转义后中文拒单原因在终端里不可读 → 补用例断言原样打印。
+- 导入期中断 `__name__ == "__main__"` 取反：导入即执行 main，argparse 拒绝宿主 argv → SystemExit(2)。
+  登记 `NEW_POINT_LOUD_AT_IMPORT`，由 `test_inverted_main_guard_exits_on_import` 施加变异并执行源码验证。
+
+同批顺带发现：`TestLessonQ` 只断言配置**字符串**不含 "onedrive"，而默认 `./alphas.db` 从 OneDrive
+里的仓库启动时解析到的正是 OneDrive（§Y：断言了文本，没断言行为）。已补行为级检查
+`test_launching_forward_trading_from_a_synced_dir_is_refused`，真正的防线是启动保险。
 
 **（四）击杀率是上界，不是测量值。** 工具缺陷 #10 修复前，超时 / 收集错误 /
 导入失败 / 任何无关的偶发失败都被记成"杀死"。**已测的 1980 个点全部是在那个

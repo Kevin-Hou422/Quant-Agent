@@ -1370,7 +1370,7 @@
    "proof_entries_min": 97,
    "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
    "refuted_entries_min": 2,
-   "unmeasured_points_max": 1599
+   "unmeasured_points_max": 1625
   },
   "refuted_by_counterexample": {
    "count": 2,
@@ -1398,9 +1398,9 @@
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
   "measured_points": 1982,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-  "current_plan_points": 3581,
+  "current_plan_points": 3607,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-  "unmeasured_points": 1599,
+  "unmeasured_points": 1625,
   "newly_in_scope_modules": [
    "app/core/risk_engine/factor_model.py",
    "app/core/execution/broker_gateway.py",
@@ -1408,7 +1408,9 @@
    "app/core/execution/pretrade_gate.py",
    "app/core/execution/order_manager.py",
    "app/core/execution/fidelity.py",
-   "app/db/execution_store.py"
+   "app/db/execution_store.py",
+   "app/core/execution/golive.py",
+   "app/tasks/forward.py"
   ],
   "per_module_delta": {
    "app/agent/_agent.py": {
@@ -1851,6 +1853,14 @@
     "why": "Phase 12 执行层（moomoo 纸交易）：新建 broker_gateway / order_builder / pretrade_gate / order_manager / fidelity / db/execution_store 六个模块（397 点），并改动 providers（live T3）、daily_trading_loop（执行层接线与不调仓日的维护）、router（执行端点）、cost_calibration / scheduler（月度保真度）、main（启动恢复）共新增 44 点；改动中删掉 1 个旧点，计划总数 +440。",
     "how_it_was_handled": "**新增 441 个点全部逐个复核**（判据同 verify_mutant：基线绿 + 变异非绿；窄集判存活的再用宽集复核；只有 pytest 退出码 1 算杀死）。第一轮 456 点：348 杀 / 100 活 / 8 其他（导入期中断 6、超时 2）。存活项里查出的不只是缺用例，还有真缺陷，已修：OpenD 不在时 SDK 建连**无限阻塞**且留下非守护线程（第一轮的两个超时就是它）→ 建连前端口探测；全平端点在连券商之前不落熔断状态；熔断解除后残留全平单与新调仓冲突；下单调用超时当日重试可能重复挂单；总资产为 0 时除零；两个 `history_ok` 默认 True（乐观方向）；订单合并在同一时间戳下用陈旧历史行覆盖当日行；回补空头不检查买入力。另把散落的 1e-9/1e-12/1e-6 统一成 DUST_QTY = 2^-30（浮点下精确可表示，边界才能被测到），风控门的 epsilon 余量改为按位数取整后比较。改完后行号变化，**六个新模块与改动模块整体重跑**：441 点，430 杀 / 5 活 / 6 导入期即崩。5 个存活全是真等价（差异只在被前置守卫排除的输入上），6 个导入期即崩（5 张表去掉主键 → SQLAlchemy 映射报错；限额校验取反 → 合法限额被拒），处置与机械验证写在 tests/unit/execution/test_equivalence_proofs.py（NEW_POINT_EQUIVALENCE / NEW_POINT_LOUD_AT_IMPORT；导入期那类是对源码施加同一变异再执行、断言确实崩）。复核中有一条**我自己的证明测试**用 AST 把 `dq > 0` 的运算符钉死成 `>`，把一个等价点虚记成『杀死』——已改为只钉前提（比较位于零股守卫之内），重测后如实记为存活。",
     "owed": "无逐点复核欠账。六个新模块**尚未做过整模块的全量测量**（进 modules 需要按 runner 的判据重测一遍），故登记在 newly_in_scope_modules；它们的 397 点与改动模块的新增点计入未测量总数，但其中每一个都已单独验过。"
+   },
+   {
+    "date": "2026-10-06 (Phase 12 上线工具)",
+    "from": 1599,
+    "to": 1625,
+    "why": "前向交易上线：新建 core/execution/golive.py（上线预检 + 活数据位置启动保险，21 点）与 tasks/forward.py（preflight / run-now 命令行入口，4 点）；MoomooProvider 建连前端口探测 +1 点。scheduler / main / router 的改动未引入新变异点。",
+    "how_it_was_handled": "**新增 26 点全部逐个复核**（判据同 verify_mutant；只有退出码 1 算杀死）。第一轮 27 点：24 杀 / 2 活 / 1 导入期中断。存活其一是 Check.blocking 的 dataclass 默认值（add() 总会显式传，默认值从不生效）→ 删掉默认值，该点消失；其二是 run-now 打印 JSON 的 ensure_ascii=False → 补用例断言中文拒单原因原样打印。导入期中断是 `__name__ == \"__main__\"` 取反（导入即执行 main，argparse 拒绝宿主 argv → SystemExit(2)），登记进 NEW_POINT_LOUD_AT_IMPORT，由 test_inverted_main_guard_exits_on_import 施加变异并执行源码验证。两模块修改后整体重跑，结果见 MUTATION_LEDGER.md。",
+    "owed": "无逐点复核欠账。golive / forward 未做过整模块全量测量，登记在 newly_in_scope_modules。"
    }
   ]
  },

@@ -53,12 +53,14 @@ def daily_monitor_job() -> None:
         )
 
 
-def daily_trading_job() -> None:
+def daily_trading_job() -> dict:
     """
     Task 7.1/7.3 + Phase 11：每日**前向增量**摄取（健康门）→ 交易循环。
 
     - 非交易日直接跳过（美股日历，节假日/周末）——不空转、不产生噪声日志。
     - 摄取走增量：PIT 空则回填，之后每天只拉新 bar；无新 bar 就不交易。
+
+    返回管线结果（调度器忽略；`python -m app.tasks.forward run-now` 打印给人看）。
     """
     from app.tasks.daily_ingest import run_daily_pipeline
     from app.core.data_engine.market_calendar import is_trading_day, CalendarUnavailable
@@ -73,10 +75,10 @@ def daily_trading_job() -> None:
         # 让异常直接冒出去会变成一条不透明的 APScheduler job error；
         # 而退回工作日启发式又会在休市日下单。两者都不可接受。
         logger.error("[scheduler] 交易日历不可用 → 本日**不交易**（fail-closed）: %s", exc)
-        return
+        return {"skipped": "calendar_unavailable", "error": str(exc)}
     if not trading:
         logger.info("[scheduler] %s 非美股交易日 → 跳过每日摄取/交易", today.date())
-        return
+        return {"skipped": "not_a_trading_day", "date": str(today.date())}
     out = run_daily_pipeline(settings.paper_dataset, settings.paper_start, incremental=True)
     if out.get("ingest_accepted"):
         logger.info(
@@ -86,6 +88,7 @@ def daily_trading_job() -> None:
         )
     else:
         logger.warning("[daily_trading_job] 摄取被拒（%s）→ 已跳过交易循环", out.get("reject_reason"))
+    return out
 
 
 def nightly_discovery_job() -> None:

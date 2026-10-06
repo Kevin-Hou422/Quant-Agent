@@ -246,3 +246,30 @@ def test_startup_recovery_runs_when_execution_is_enabled(monkeypatch):
     monkeypatch.setattr(settings, "execution_mode", "off")
     with TestClient(app):
         assert not called.wait(0.5), "执行层关闭时不该连券商"
+
+
+def test_preflight_endpoint_reports_each_check(api, tmp_path, monkeypatch):
+    from app.api.router import get_opend_probe
+    from app.config import settings
+    from app.main import app
+    client, ctx, _ = api
+    monkeypatch.setattr(settings, "execution_mode", "moomoo_paper")
+    monkeypatch.setattr(settings, "enable_scheduler", True)
+    monkeypatch.setattr(settings, "enable_paper_trading", True)
+    monkeypatch.setattr(settings, "scheduler_db_url", f"sqlite:///{(tmp_path / 's.db').as_posix()}")
+    monkeypatch.setattr(settings, "pit_store_dir", str(tmp_path / "pit"))
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{(tmp_path / 'exec.db').as_posix()}")
+    app.dependency_overrides[get_opend_probe] = lambda: (lambda h, p: True)
+    try:
+        body = client.post("/api/execution/preflight").json()
+        checks = {c["name"]: c for c in body["checks"]}
+        assert body["ready"] is True, [c for c in body["checks"] if not c["ok"]]
+        assert checks["account_funds"]["ok"]          # 60k 现金 + 20k 持仓 vs 100k：偏离 20%
+        assert body["reconcile"]["status"] == "baseline"
+        assert ctx.calls_of("place_order") == [] and ctx.closed
+
+        app.dependency_overrides[get_opend_probe] = lambda: (lambda h, p: False)
+        body = client.post("/api/execution/preflight").json()
+        assert body["ready"] is False and body["checks"][-1]["name"] == "opend"
+    finally:
+        app.dependency_overrides.pop(get_opend_probe, None)

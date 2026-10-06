@@ -401,6 +401,30 @@ the gap to the simulated close fill is exactly what the fidelity report measures
 > Real forward operation requires the OpenD gateway to stay online each trading day; no forward
 > track record has been accumulated yet (see [§16](#16-status--roadmap)).
 
+### Going live on the moomoo paper account
+
+```powershell
+copy backend\.env.forward.example backend\.env      # then edit PAPER_AUM etc.
+cd backend
+..\venv\Scripts\python -m app.tasks.forward preflight   # every check must be OK
+..\venv\Scripts\python -m app.tasks.forward run-now     # optional: first supervised run now
+cd ..
+powershell -ExecutionPolicy Bypass -File scripts\start_forward.ps1 [-RegisterLogonTask]
+```
+
+- **Preflight** (`python -m app.tasks.forward preflight`, or `POST /api/execution/preflight`) checks,
+  in order: execution mode, scheduler switches, live-data location, trading calendar, OpenD
+  listening, simulate account resolved, account size vs `PAPER_AUM`, kill switch, and a reconcile
+  (the first one establishes the trusted baseline). It never places an order. `run-now` refuses to
+  run unless every blocking check passes, then runs the scheduler's own `daily_trading_job`.
+- **Live data must not sit in a cloud-synced folder.** With forward trading enabled, the service
+  refuses to start if the resolved database, scheduler store or PIT directory is inside
+  OneDrive/Dropbox/Google Drive/iCloud. The default `./alphas.db` resolves into OneDrive when the
+  repo lives there, so `.env.forward.example` uses absolute paths under `C:\QuantAgentData`.
+- `scripts/start_forward.ps1` starts OpenD if needed, waits for it to listen (log in once in its
+  window, or enable auto-login), runs the preflight, and only then starts the API with the scheduler.
+  The machine must be on with OpenD logged in at 21:30 UTC on trading days.
+
 ---
 
 ## 10. API Reference
@@ -433,7 +457,8 @@ Base URL `http://localhost:8000/api` (interactive docs at `/docs`).
 
 **Execution (moomoo paper)** — `GET /execution/status` · `POST /execution/reconcile` ·
 `POST /execution/reconcile/accept` · `POST /execution/kill_switch/arm?action=engage|reset` →
-`POST /execution/kill_switch/confirm` · `GET /execution/fidelity?start&end`
+`POST /execution/kill_switch/confirm` · `GET /execution/fidelity?start&end` ·
+`POST /execution/preflight`
 
 ---
 
@@ -567,7 +592,7 @@ the file itself is the authority and documents *why* each default is what it is.
 ## 15. Testing & Engineering Discipline
 
 ```bash
-cd backend  && pytest -q          # 4448 passed, 1 skipped  (173 test files)
+cd backend  && pytest -q          # 4492 passed, 1 skipped  (175 test files)
 cd frontend && npm run test       # 101 passed (9 files)
 cd frontend && npm run build      # tsc type check
 ```

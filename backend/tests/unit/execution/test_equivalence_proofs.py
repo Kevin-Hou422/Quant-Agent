@@ -67,6 +67,11 @@ NEW_POINT_LOUD_AT_IMPORT = {
         "变异后**合法**的限额（正有限数）会被拒，构造即抛 ValueError；"
         "生产里 from_settings、测试里模块级的限额常量都在导入 / 收集时崩。"
         "由 test_inverted_limit_validation_rejects_valid_limits 施加变异并执行源码验证。",
+
+    "app/tasks/forward.py ×1 — `if __name__ == \"__main__\"` -> `!=`":
+        "变异后模块被**导入**时就执行 main()：argparse 解析的是宿主进程的 argv（pytest 的参数），"
+        "不认识 → SystemExit(2)，导入 app.tasks.forward 的测试文件收集即失败（变异工具记为"
+        "internal_error）。由 test_inverted_main_guard_exits_on_import 施加变异并执行源码验证。",
 }
 
 
@@ -195,6 +200,19 @@ def test_inverted_limit_validation_rejects_valid_limits():
         mut.PreTradeLimits(**valid)
     orig = _exec_source("_orig_pretrade_gate", src)                  # 对照：原文接受合法限额
     assert orig.PreTradeLimits(**valid).max_gross == 1.0
+
+
+def test_inverted_main_guard_exits_on_import(monkeypatch):
+    import sys
+    from app.tasks import forward
+    src = Path(inspect.getfile(forward)).read_text(encoding="utf-8")
+    guard = 'if __name__ == "__main__":'
+    assert src.count(guard) == 1, "入口守卫的形态变了 —— 证明需要重写"
+    monkeypatch.setattr(sys, "argv", ["pytest", "-q", "tests/"])
+    with pytest.raises(SystemExit) as ei:
+        _exec_source("_mut_forward", src.replace(guard, guard.replace("==", "!="), 1))
+    assert ei.value.code == 2                                        # argparse 拒绝未知参数
+    assert hasattr(_exec_source("_orig_forward", src), "main")       # 对照：原文导入不执行
 
 
 def test_every_disposition_is_written_out():

@@ -1605,6 +1605,23 @@ def _open_gateway(factory):
         raise HTTPException(status_code=502, detail=f"券商不可用：{exc}")
 
 
+def get_opend_probe():
+    """依赖注入点：(host, port) -> OpenD 是否在监听。测试用 dependency_overrides 替换。"""
+    from app.core.execution.broker_gateway import opend_reachable
+    return opend_reachable
+
+
+@router.post("/execution/preflight", tags=["Execution"])
+def execution_preflight(factory=Depends(get_gateway_factory),
+                        probe=Depends(get_opend_probe)) -> dict:
+    """
+    上线预检：执行模式 / 调度开关 / 活数据不在云盘 / 日历 / OpenD / 模拟账户 / 资金对得上 /
+    熔断 / 对账。**会对账一次**（与 /execution/reconcile 同一路径），不会下单。
+    """
+    from app.core.execution.golive import run_preflight
+    return run_preflight(gateway_factory=factory, probe=probe).to_dict()
+
+
 @router.get("/execution/status", tags=["Execution"])
 def execution_status_ep() -> dict:
     """执行层只读状态（不连券商）：模式、熔断、最近快照、在途单、近期订单/成交/事件。"""
