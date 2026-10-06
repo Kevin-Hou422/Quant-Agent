@@ -61,6 +61,11 @@ langchain-core>=1.0,<2.0
 yfinance>=0.2
 requests>=2.31
 pyarrow>=14.0
+# moomoo OpenAPI（Phase TR.2 行情源 / Phase 12 纸交易执行）。**必须显式声明**：
+# 行情源与执行层都是懒加载它，缺失时只会在真正连券商的那一刻才报错；而
+# tests/unit/execution 要用**已安装 SDK** 的方法签名与源码列名核对网关契约，没装就核对不了。
+# 上界：交易接口的参数名与默认值（trd_env 默认 'REAL'！）可能随大版本变化，变了必须重新核对。
+moomoo-api>=10.10,<11
 
 # ── Visualisation ────────────────────────────────────────────────────────
 plotly>=5.20

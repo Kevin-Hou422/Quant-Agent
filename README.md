@@ -343,15 +343,59 @@ hidden defaults in the code. They are split into three disciplines:
 - **T2 — derived estimates** (recomputed from data): per-name effective spread via Corwin-Schultz /
   Abdi-Ranaldi from free high/low, one-way cost, tradability filters, no-trade band.
 - **T3 — knowable only at trade time** (must go through a provider): quotes, borrow availability,
-  buying power. `get_trade_providers("live")` **raises by design** — estimates are never allowed to
-  masquerade as live data. The moomoo live implementation is Phase 12 work.
+  buying power. `get_trade_providers("live")` reads the moomoo paper account through the broker
+  gateway and quotes through market snapshots; if either source is missing it **raises** —
+  estimates are never allowed to masquerade as live data. Live borrow fees are deliberately not
+  wired (the snapshot's unit is unverified; long-only does not need it).
 
 `PaperBroker` fills at the close reusing the exact cost and liquidity primitives of the backtester
 (reconciles to ~2.2e-16). `PositionStore` keeps idempotent positions/fills/PnL with
 `state_before()` so an interrupted day can be replayed deterministically. Every `run_portfolio` call
 persists a diagnostics record (`DiagnosticsStore`) exposing selection trace, strategy verdict, risk
-report, horizon, T3 state, trading context and **risk attribution** at
+report, horizon, T3 state, trading context, **risk attribution** and the **execution report** at
 `GET /api/portfolio/diagnostics`.
+
+### Execution on moomoo paper trading (Phase 12)
+
+Off by default (`EXECUTION_MODE=off`). With `EXECUTION_MODE=moomoo_paper`, after the simulated book
+has traded each day, the **last row** of the same risk-gated target weights is turned into share
+orders on a moomoo **paper** account:
+
+1. **Reconcile first** (this is also crash recovery): read broker orders and positions, difference
+   cumulative fills into increments, and check *last trusted snapshot + our fills = broker
+   positions*. Any mismatch (a split, a manual trade, an order that cannot be located) **stops
+   trading** until a human accepts the broker state.
+2. **Freshness** — the decision date must be the most recent *closed* session (real NYSE calendar).
+3. **Account size** must agree with `PAPER_AUM` (one money figure, two descriptions of it).
+4. Stale open orders from earlier decision dates are cancelled.
+5. Targets → integer shares (always rounded toward zero) → **pre-trade gate** → **write intent,
+   then place**. Each order carries a deterministic client id in moomoo's `remark` field, so a re-run
+   never places a second order and a crash between "placed" and "recorded" is recovered by remark.
+
+Limit orders (`ref close × (1 ± 50bps)`, DAY) are placed after the close and fill at the next open;
+the gap to the simulated close fill is exactly what the fidelity report measures.
+
+- **Pre-trade gate** (fail-closed on every rule): kill switch, daily-loss breaker (only risk-reducing
+  orders pass), reference price vs broker price, no accidental shorts, order notional vs ADV
+  (same `max_participation_pct` as the cost model), post-trade name and gross limits (same settings
+  as the portfolio risk gate), and buying power at the limit price without counting same-batch sell
+  proceeds.
+- **Kill switch** — two-step (one-time token, actor and reason): persist the halt first, then cancel
+  every open order and place flatten orders for every position. If the broker is unreachable the
+  halt still takes effect and flattening resumes on the next cycle.
+- **Real money is refused in code**, not by configuration: the moomoo SDK defaults `trd_env` to
+  `REAL`, so every trading call passes `SIMULATE` explicitly and the gateway rejects anything else.
+- **OpenD offline fails fast.** Measured: when OpenD is not listening, constructing an SDK context
+  never returns (it retries every 8 s and leaves a non-daemon thread behind). Every connection is
+  therefore preceded by a 2-second TCP probe; if the port is closed the cycle is skipped with a clear
+  reason instead of hanging the scheduler.
+- **Fidelity ladder** (`GET /api/execution/fidelity`, and monthly with the cost calibration) —
+  internal sim (close fill) vs moomoo paper (next-open fill), split into overnight gap and at-open
+  execution, fill ratios, and a bounded `impact_coef` suggestion that is never auto-applied.
+  Permanent impact is reported as **unidentifiable** from paper fills rather than estimated.
+
+> The moomoo simulate account is assumed to be **dedicated** to this system: broker positions are
+> the book's truth, and positions outside the target are traded down to zero.
 
 > The daily loop replays a **historical** window and then appends incrementally as new bars arrive.
 > Real forward operation requires the OpenD gateway to stay online each trading day; no forward
@@ -387,6 +431,10 @@ Base URL `http://localhost:8000/api` (interactive docs at `/docs`).
 `/trading/status` · `/scheduler/status` · `/datasets` · `/datasets/{name}/health` · `/regime` ·
 `/report/query`
 
+**Execution (moomoo paper)** — `GET /execution/status` · `POST /execution/reconcile` ·
+`POST /execution/reconcile/accept` · `POST /execution/kill_switch/arm?action=engage|reset` →
+`POST /execution/kill_switch/confirm` · `GET /execution/fidelity?start&end`
+
 ---
 
 ## 11. Frontend
@@ -405,6 +453,9 @@ React 19 + TypeScript + Vite + Zustand + ECharts, styled as an OS-style workspac
 - **TradingRealityPanel** — data source and OpenD connectivity, estimated spreads and one-way cost,
   tradability/shortability, **T3 provider mode (sim vs live shown prominently)**, and gate grading
   with the thresholds actually in force.
+- **ExecutionPanel** — moomoo paper positions, open and recent orders (gate rejections included),
+  fills with slippage against the simulated close, reconciliation status and discrepancies with an
+  accept action, the two-step kill switch, the sim-vs-paper fidelity report and the audit log.
 
 ---
 
@@ -464,7 +515,9 @@ cloud-sync folder (a lesson learned the hard way — see `DEV_LESSONS.md` §Q).
 | `paper_positions` / `paper_fills` / `paper_daily_pnl` | idempotent paper trading state |
 | `trial_ledger` | global multiple-testing counter (cross-session) |
 | `holdout_usages` | append-only frozen-Test usage ledger |
-| `portfolio_diagnostics` | per-run diagnostics (verdicts, risk, horizon, T3, attribution) |
+| `portfolio_diagnostics` | per-run diagnostics (verdicts, risk, horizon, T3, attribution, execution) |
+| `exec_orders` / `exec_fills` | moomoo paper orders (write-ahead intent, unique client id) and fill increments (unique per cumulative quantity) |
+| `exec_snapshots` / `exec_events` / `exec_state` | reconciliation snapshots, audit log (kill switch, accepts, recovery), kill-switch state |
 | `run_manifests` | reproducibility ledger |
 | `chat_sessions` / `chat_messages` | agent memory |
 
@@ -485,6 +538,10 @@ the file itself is the authority and documents *why* each default is what it is.
 | `DEFAULT_DATASET` / `DEFAULT_START` / `DEFAULT_END` | `us_tech_large` / `2020-01-01` / `2024-01-01` | research window |
 | `PRICE_SOURCE` | `yahoo` | `yahoo` \| `moomoo` (single authoritative source for research+execution) |
 | `MOOMOO_HOST` / `MOOMOO_PORT` | `127.0.0.1` / `11111` | OpenD gateway |
+| `EXECUTION_MODE` | `off` | `moomoo_paper` = place real orders on the moomoo **paper** account (real money is refused in code) |
+| `MOOMOO_SECURITY_FIRM` / `MOOMOO_TRD_ACC_ID` | `FUTUINC` / `0` | broker entity; `0` = first US paper account |
+| `EXEC_LIMIT_BAND_BPS` / `EXEC_FLATTEN_BAND_BPS` | `50` / `500` | limit band for rebalancing and for flattening |
+| `EXEC_MAX_DAILY_LOSS` / `EXEC_MAX_PRICE_DEVIATION` / `EXEC_MAX_AUM_MISMATCH` | `0.05` / `0.15` / `0.5` | daily-loss breaker, stale-price guard, account-vs-`PAPER_AUM` tolerance |
 | `ENABLE_SCHEDULER` / `ENABLE_PAPER_TRADING` / `ENABLE_DISCOVERY` | `false` | nothing starts trading or mining by itself |
 | `AUTONOMY_MODE` | `manual` | `manual` = human approves every promotion |
 | `PAPER_AUM` | `1_000_000` | the single source of AUM for PM capacity and broker costs |
@@ -510,8 +567,8 @@ the file itself is the authority and documents *why* each default is what it is.
 ## 15. Testing & Engineering Discipline
 
 ```bash
-cd backend  && pytest -q          # 4139 passed, 1 skipped  (152 test files)
-cd frontend && npm run test       # 94 passed (8 files)
+cd backend  && pytest -q          # 4448 passed, 1 skipped  (173 test files)
+cd frontend && npm run test       # 101 passed (9 files)
 cd frontend && npm run build      # tsc type check
 ```
 
@@ -549,12 +606,15 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
 | Statistical foundations: three-way split, frozen metered holdout, purged-CV fitness, CPCV/PBO | ✅ Phase S |
 | Forward incremental ingest, PIT append, DST-aware calendar, replay/forward split | ✅ Phase 11 (code; not yet exercised live) |
 | Risk attribution + structured covariance | ✅ Phase R.2 (part) |
+| moomoo paper execution: reconciliation/crash recovery, pre-trade gate, two-step kill switch, sim-vs-paper fidelity, live T3 providers, execution panel | ✅ Phase 12 + FE-12 (code; **not yet run against a live OpenD gateway**) |
 
 **Not built yet** — the honest list:
 
-- **Phase 12 — real execution.** There is **no order-placement code anywhere in the repo**. Turning
-  the PM dollar book into moomoo paper orders (with reconciliation, idempotency, risk gate and kill
-  switch) is the single largest gap between this system and its stated goal.
+- **Phase 12 — live verification.** Everything is tested against a fake trading context whose call
+  signatures and returned columns are checked mechanically against the installed moomoo SDK, but no
+  order has been placed on a real paper account yet. Two behaviours can only be confirmed there:
+  whether the paper account serves history-order queries, and whether orders placed after the close
+  appear in the next session's order list.
 - **Phase 10 — alternative data.** Fundamentals/earnings with point-in-time visibility and sparse
   quarterly fields in the DSL. Blocks the `size`/`value` risk styles and any valuation factor.
 - **Phase 13/14 — red-team agent, fully autonomous mode, validation-period operations.**
@@ -562,9 +622,9 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
   validation) and alpha-vs-risk-premium separation; `beta_neutral` closure is deferred until shorting
   is enabled.
 - **R.4** — Ledoit-Wolf shrinkage, HRP, turnover in the optimisation objective.
-- **Frontend** — FE-8/10/11/12/13/R panels (cost calibration, alt-data, forward status, execution
-  monitor, red-team, research-credibility charts). Backend data for the research-credibility panel is
-  already available at `/api/portfolio/diagnostics`.
+- **Frontend** — FE-8/10/11/13/R panels (cost calibration, alt-data, forward status, red-team,
+  research-credibility charts). Backend data for the research-credibility panel is already available
+  at `/api/portfolio/diagnostics`.
 - **Operational milestone M5** — 60 trading days of forward paper evidence and a first validation
   report. Not started; this is what would turn "research-grade estimate" into "measured".
 

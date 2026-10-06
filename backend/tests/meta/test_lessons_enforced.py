@@ -293,7 +293,16 @@ class TestLessonB_GatesMustNotFailOpen:
             APP / "core" / "backtest_engine" / "alpha_combiner.py",
             APP / "core" / "backtest_engine" / "portfolio_constructor.py",
             APP / "tasks" / "daily_trading_loop.py",
+            # Phase 12 执行层：这里的静默 except 会让"券商没响应"变成"没有持仓 / 没有订单"
+            APP / "core" / "execution" / "broker_gateway.py",
+            APP / "core" / "execution" / "order_builder.py",
+            APP / "core" / "execution" / "pretrade_gate.py",
+            APP / "core" / "execution" / "order_manager.py",
+            APP / "core" / "execution" / "fidelity.py",
+            APP / "db" / "execution_store.py",
         ]
+        missing = [_rel(p) for p in watch if not p.exists()]
+        assert not missing, f"监视名单里的文件不存在（改名后检查会对空集合恒真）：{missing}"
         bad = []
         for p in watch:
             if not p.exists():
@@ -492,6 +501,11 @@ class TestLessonK_WrittenMeansWired:
     #  §K 上一版只查到模块粒度，于是 port_vol_ann 这类"参数级孤儿"从下面走过去了。
     CRITICAL_PARAMS = [
         ("app.core.portfolio_manager.risk_gate", "PortfolioRiskGate.apply", "port_vol_ann"),
+        # Phase 12：fat-finger 要 ADV、日亏熔断要账户日收益、全平要熔断标志 ——
+        # 任何一个没有调用点传值，对应那条下单前风控就永远拿到默认值（=不生效）。
+        ("app.core.execution.order_manager", "OrderManager.run_cycle", "adv_usd"),
+        ("app.core.execution.pretrade_gate", "GateContext", "day_return"),
+        ("app.core.execution.pretrade_gate", "GateContext", "kill_switch"),
     ]
 
     @pytest.mark.parametrize("mod,qual,param", CRITICAL_PARAMS)
@@ -1049,6 +1063,26 @@ class TestLessonU_FallbacksMustLeanConservative:
         prov._book = 0
         with pytest.raises(RuntimeError):
             prov.positions()
+
+    def test_live_positions_reader_refuses_to_fake_empty_book(self):
+        """Phase 12 的实时账户与券商网关同一纪律：读不到就抛错，绝不返回 {}。"""
+        from app.core.execution.broker_gateway import BrokerError, MoomooGateway
+        from app.core.trading_context.providers import LiveAccountProvider
+
+        class _DownGateway:
+            def account(self):
+                raise BrokerError("OpenD down")
+
+            def positions(self):
+                raise BrokerError("OpenD down")
+
+        with pytest.raises(BrokerError):
+            LiveAccountProvider(_DownGateway()).positions()
+
+        gw = MoomooGateway.__new__(MoomooGateway)
+        gw._m = __import__("types").SimpleNamespace(RET_OK=0)
+        with pytest.raises(BrokerError):
+            gw._ok(-1, "disconnected", what="position_list_query")
 
     def test_business_exceptions_are_not_swallowed_by_generic_handler(self):
         """

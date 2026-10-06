@@ -72,6 +72,8 @@ class DailyTradingLoop:
         store=None,          # AlphaStore
         broker=None,         # PaperBroker
         monitor=None,        # AlphaMonitor
+        gateway_factory=None,    # Phase 12：() -> BrokerGateway（默认按 settings 连 moomoo）
+        execution_store=None,    # Phase 12：ExecutionStore（默认 settings.database_url）
     ) -> None:
         from app.db.alpha_store import AlphaStore
         from app.core.execution.paper_broker import PaperBroker
@@ -85,6 +87,8 @@ class DailyTradingLoop:
             initial_capital=float(settings.paper_aum),
         )
         self.monitor = monitor or AlphaMonitor(self.store)
+        self._gateway_factory = gateway_factory
+        self._execution_store = execution_store
 
     @staticmethod
     def _shared_position_store():
@@ -201,9 +205,10 @@ class DailyTradingLoop:
             if signals:
                 logger.info("[portfolio] 无自研 PAPER/ACTIVE 因子，回退经典基准策略库（%d 个）交易", len(signals))
         if not signals:
-            return {"n_factors": 0, "days_processed": 0,
-                    "reason": "no active factors" if not recs else "no valid signals",
-                    "used_baseline": used_baseline}
+            reason = "no active factors" if not recs else "no valid signals"
+            return {"n_factors": 0, "days_processed": 0, "reason": reason,
+                    "used_baseline": used_baseline,
+                    "execution": self._maintain_live(reason)}
 
         from app.config import settings
 
@@ -307,7 +312,8 @@ class DailyTradingLoop:
                     logger.warning("[portfolio] 策略门未过且 block=True → 本轮不交易")
                     return {"n_factors": len(signals), "days_processed": 0,
                             "reason": "strategy_gate_failed", "strategy_verdict": strategy_verdict,
-                            "selection": selection_info, "used_baseline": used_baseline}
+                            "selection": selection_info, "used_baseline": used_baseline,
+                            "execution": self._maintain_live("strategy_gate_failed")}
             except Exception as exc:
                 logger.warning("[portfolio] PM.S1 策略门评估失败（不阻断）: %s", exc)
 
@@ -450,6 +456,10 @@ class DailyTradingLoop:
             equity = pnl.equity
             n_days += 1
 
+        # ── Phase 12：执行层 —— 把**最后一行**目标权重（已过 PM.5 风控、熔断、无交易带，
+        #    与模拟账本当日交易的是同一行）下成 moomoo 纸交易订单。默认 off。
+        execution, t3_live = self._execute_live(weights, prices_f, adv_df)
+
         # ── TR.3：T3 providers（盘口/借券/账户）——仿真背 TR.1 估计、实盘背 moomoo，同接口切换。
         #    这里取账户真实记账状态（买入力/持仓），避免任何"交易当时才知道的量"被写死。
         t3_state = None
@@ -464,6 +474,8 @@ class DailyTradingLoop:
                         tp.mode, tp.account.buying_power(), len(tp.account.positions()))
         except Exception as exc:
             logger.warning("[portfolio] TR.3 providers 获取失败（不阻断）: %s", exc)
+        if t3_live is not None:
+            t3_state = t3_live              # 执行层在线时以券商实时账户为准（mode=live）
 
         # ── PM.7 gap 修复：**策略级衰减监控**（交易的组合账本，不只因子级）。
         strategy_decay = None
@@ -514,6 +526,7 @@ class DailyTradingLoop:
                 "strategy_decay": strategy_decay,      # PM.7 策略级衰减告警
                 "risk_attribution": risk_attribution,  # R.2 风险从哪来（因子 vs 特异）
                 "t3": t3_state,                        # TR.3 T3 providers(模式/买入力/持仓数)
+                "execution": execution,                # Phase 12 执行层（订单/对账/风控/全平）
                 "trading_context": tc_summary}         # TR.1 交易现实(价差/可交易/可做空/带)
 
         # FE-TR 前置：把本轮诊断只增不改地存下来（失败绝不影响交易）
@@ -524,6 +537,81 @@ class DailyTradingLoop:
             logger.warning("[portfolio] 诊断持久化失败（不阻断）: %s", exc)
 
         return result
+
+    # ------------------------------------------------------------------
+    # Phase 12：执行层
+    # ------------------------------------------------------------------
+
+    def _open_live_gateway(self):
+        """返回 (gateway, None) 或 (None, 不下单的原因报告)。"""
+        from app.config import settings
+        mode = str(getattr(settings, "execution_mode", "off"))
+        if mode == "off":
+            return None, {"mode": "off"}
+        if mode != "moomoo_paper":
+            logger.error("[portfolio] 未知的 execution_mode=%r → 本轮不下单", mode)
+            return None, {"mode": mode, "blocked": "unknown_execution_mode"}
+        from app.core.execution.broker_gateway import make_gateway_from_settings
+        try:
+            return (self._gateway_factory or make_gateway_from_settings)(), None
+        except Exception as exc:
+            logger.error("[portfolio] Phase 12 连不上券商 → 本轮不下单: %s", exc)
+            return None, {"mode": mode, "blocked": f"gateway_unavailable: {exc}"}
+
+    def _maintain_live(self, reason: str) -> dict:
+        """不调仓的日子：只对账 + 熔断开启时续做全平（见 OrderManager.maintain）。"""
+        gw, early = self._open_live_gateway()
+        if gw is None:
+            return early
+        from app.core.execution.order_manager import OrderManager
+        try:
+            return OrderManager.from_settings(
+                gw, store=self._execution_store, position_store=self.broker.store,
+            ).maintain(reason).to_dict()
+        except Exception as exc:
+            logger.error("[portfolio] Phase 12 维护周期失败: %s", exc)
+            return {"mode": "moomoo_paper", "blocked": f"execution_error: {exc}"}
+        finally:
+            gw.close()
+
+    def _execute_live(self, weights: pd.DataFrame, prices_f: pd.DataFrame,
+                      adv_df: pd.DataFrame):
+        """
+        返回 (执行报告, 实时 T3 状态或 None)。任何失败都是**不下单**，并把原因写进报告：
+        执行层出错时继续下单才是危险方向（§U），而模拟账本已经照常记完了。
+        """
+        from app.config import settings
+        gw, early = self._open_live_gateway()
+        if gw is None:
+            return early, None
+        from app.core.execution.order_manager import OrderManager
+        mode = "moomoo_paper"
+
+        t3_live = None
+        try:
+            try:
+                rep = OrderManager.from_settings(
+                    gw, store=self._execution_store, position_store=self.broker.store,
+                ).run_cycle(
+                    target_weights=weights.iloc[-1], ref_prices=prices_f.iloc[-1],
+                    adv_usd=adv_df.iloc[-1], decision_date=weights.index[-1].date())
+                execution = rep.to_dict()
+            except Exception as exc:
+                logger.error("[portfolio] Phase 12 执行周期失败 → 本轮不下单: %s", exc)
+                execution = {"mode": mode, "blocked": f"execution_error: {exc}"}
+            try:
+                from app.core.trading_context import get_trade_providers
+                from app.core.trading_context.providers import moomoo_snapshot_fn
+                tp = get_trade_providers(
+                    "live", gateway=gw,
+                    snapshot_fn=moomoo_snapshot_fn(settings.moomoo_host, settings.moomoo_port),
+                    allow_short=bool(settings.trading_allow_short))
+                t3_live = tp.to_dict()
+            except Exception as exc:
+                logger.warning("[portfolio] TR.3 live providers 读取失败（退回仿真 t3 展示）: %s", exc)
+        finally:
+            gw.close()
+        return execution, t3_live
 
     # ------------------------------------------------------------------
     # 单因子（隔离）

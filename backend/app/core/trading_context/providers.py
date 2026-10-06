@@ -137,6 +137,111 @@ class SimAccountProvider(AccountProvider):
 
 
 # ---------------------------------------------------------------------------
+# 实时实现（Phase 12）：背 moomoo 券商网关 / 行情快照（**实时，不是估计**）
+# ---------------------------------------------------------------------------
+
+class LiveAccountProvider(AccountProvider):
+    """账户 = moomoo 纸交易账户的实时状态（经 BrokerGateway）。失败一律抛错，不给空仓假象。"""
+
+    def __init__(self, gateway) -> None:
+        self._gw = gateway
+
+    def buying_power(self) -> float:
+        return float(self._gw.account().power)
+
+    def cash(self) -> float:
+        return float(self._gw.account().cash)
+
+    def positions(self) -> Dict[str, float]:
+        """与仿真同口径：权重 = 市值 / 账户总资产。"""
+        acct = self._gw.account()
+        if not (acct.total_assets > 0):
+            raise RuntimeError(f"账户总资产非正（{acct.total_assets}），无法折算持仓权重")
+        return {tk: p.market_val / acct.total_assets for tk, p in self._gw.positions().items()}
+
+
+class LiveQuoteProvider(QuoteProvider):
+    """
+    盘口 = moomoo 行情快照的买一/卖一。`snapshot_fn(tickers) -> DataFrame`
+    （列至少含 code / bid_price / ask_price，即 OpenQuoteContext.get_market_snapshot 的返回）。
+    买一或卖一不是正数（休市、停牌、无报价）→ 抛错，绝不回退到估计价差。
+    """
+
+    def __init__(self, snapshot_fn) -> None:
+        self._snap = snapshot_fn
+
+    def _quote(self, ticker: str):
+        from app.core.data_engine.providers.moomoo_provider import _from_moomoo_code
+        df = self._snap([ticker])
+        rows = df[df["code"].map(lambda c: _from_moomoo_code(str(c))) == ticker]
+        if rows.empty:
+            raise RuntimeError(f"{ticker} 没有行情快照")
+        r = rows.iloc[0]
+        bid, ask = float(r["bid_price"]), float(r["ask_price"])
+        if not (np.isfinite(bid) and np.isfinite(ask) and bid > 0 and ask >= bid):
+            raise RuntimeError(f"{ticker} 当前无有效买卖报价（bid={bid}, ask={ask}）")
+        return bid, ask
+
+    def spread_bps(self, ticker: str) -> float:
+        bid, ask = self._quote(ticker)
+        return (ask - bid) / ((ask + bid) / 2.0) * 1e4
+
+    def mid_price(self, ticker: str) -> float:
+        bid, ask = self._quote(ticker)
+        return (ask + bid) / 2.0
+
+
+class LiveBorrowProvider(BorrowProvider):
+    """
+    long-only 阶段（trading_allow_short=False）恒为不可做空 —— 与配置一致，不是估计。
+    借券费：快照里的 short_sell_rate **单位未经核实**，猜错单位会让成本差两个数量级，
+    所以这里拒绝给数，等开启做空时再按券商文档核实后接入。
+    """
+
+    def __init__(self, allow_short: bool = False, snapshot_fn=None) -> None:
+        self._allow = bool(allow_short)
+        self._snap = snapshot_fn
+
+    def is_shortable(self, ticker: str) -> bool:
+        if not self._allow:
+            return False
+        if self._snap is None:
+            raise RuntimeError("允许做空时必须提供行情快照来源以查询可卖空性")
+        from app.core.data_engine.providers.moomoo_provider import _from_moomoo_code
+        df = self._snap([ticker])
+        rows = df[df["code"].map(lambda c: _from_moomoo_code(str(c))) == ticker]
+        if rows.empty:
+            raise RuntimeError(f"{ticker} 没有行情快照")
+        return bool(rows.iloc[0]["enable_short_sell"])
+
+    def borrow_fee_bps(self, ticker: str) -> float:
+        raise NotImplementedError(
+            "实时借券费未接入：short_sell_rate 的单位未经核实，拒绝猜测（long-only 阶段不需要）")
+
+
+def moomoo_snapshot_fn(host: str, port: int):
+    """
+    生产用的行情快照来源：每次调用开一个 OpenQuoteContext、取完即关。
+    建连前先探测端口 —— OpenD 不在时 SDK 构造会无限阻塞（见 broker_gateway.opend_reachable）。
+    """
+    def _fn(tickers):
+        from app.core.data_engine.providers.moomoo_provider import _to_moomoo_code
+        from app.core.execution.broker_gateway import opend_reachable
+        import moomoo
+        if not opend_reachable(host, port):
+            raise RuntimeError(f"OpenD {host}:{port} 未在监听 —— 不建行情连接")
+        ctx = moomoo.OpenQuoteContext(host=host, port=port)
+        try:
+            ret, df = ctx.get_market_snapshot([_to_moomoo_code(t) for t in tickers])
+            if ret != moomoo.RET_OK:
+                raise RuntimeError(f"get_market_snapshot 失败: {df}")
+            return df
+        finally:
+            ctx.close()
+    return _fn
+
+
+# ---------------------------------------------------------------------------
 # 工厂：同接口切换 sim ↔ live
 # ---------------------------------------------------------------------------
 
@@ -156,16 +261,25 @@ class TradeProviders:
 def get_trade_providers(mode: str = "sim", *, dataset: Optional[WidePanel] = None,
                         aum: float = 0.0, broker=None, book_id: int = 0,
                         account_type: str = "margin",
-                        allow_short: bool = False) -> TradeProviders:
+                        allow_short: bool = False,
+                        gateway=None, snapshot_fn=None) -> TradeProviders:
     """
-    `mode="sim"` → 仿真三件套（背 TR.1 估计 + 纸账户）。
-    `mode="live"` → moomoo 实时三件套（**Phase 12 实现**；此处显式抛错，绝不静默退回估计，
-                    否则会把"估计"当成"实时"用——那正是 T3 纪律要防的事）。
+    `mode="sim"`  → 仿真三件套（背 TR.1 估计 + 纸账户）。
+    `mode="live"` → moomoo 实时三件套（Phase 12）：账户走 `gateway`（BrokerGateway），
+                    盘口/可卖空走 `snapshot_fn`。缺任何一个就抛错 —— **绝不静默退回估计**，
+                    否则会把"估计"当成"实时"用，那正是 T3 纪律要防的事。
     """
     if mode == "live":
-        raise NotImplementedError(
-            "live T3 providers（moomoo 实时盘口/借券/账户）待 Phase 12 接入 OpenD 交易上下文；"
-            "在此之前不要以 live 模式运行——绝不用估计冒充实时。")
+        if gateway is None or snapshot_fn is None:
+            raise ValueError("live 模式需要 gateway（账户）与 snapshot_fn（盘口）；不会退回估计")
+        return TradeProviders(
+            quote=LiveQuoteProvider(snapshot_fn),
+            borrow=LiveBorrowProvider(allow_short=allow_short, snapshot_fn=snapshot_fn),
+            account=LiveAccountProvider(gateway),
+            mode="live",
+        )
+    if mode != "sim":
+        raise ValueError(f"未知的 providers 模式 {mode!r}（sim | live）")
     if dataset is None or broker is None:
         raise ValueError("sim 模式需要 dataset 与 broker")
     return TradeProviders(

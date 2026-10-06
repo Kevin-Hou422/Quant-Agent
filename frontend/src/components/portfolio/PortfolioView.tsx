@@ -9,6 +9,7 @@ import {
 } from '../../api/client'
 import type { StrategyConfigItem } from '../../types'
 import TradingRealityPanel from './TradingRealityPanel'
+import ExecutionPanel from './ExecutionPanel'
 
 /**
  * FE-PM (Phase PM.7): 组合策略配置控制台。
@@ -159,7 +160,7 @@ function StrategyCard({ cfg, onDecision }: {
   )
 }
 
-type PMTab = 'configs' | 'reality'
+type PMTab = 'configs' | 'reality' | 'execution'
 
 function TabBar({ tab, setTab }: { tab: PMTab; setTab: (t: PMTab) => void }) {
   const item = (t: PMTab, label: string) => (
@@ -178,6 +179,7 @@ function TabBar({ tab, setTab }: { tab: PMTab; setTab: (t: PMTab) => void }) {
     <div className="flex items-center gap-1 px-4 border-b border-slate-800 bg-slate-950 shrink-0">
       {item('configs', '策略配置')}
       {item('reality', '交易现实')}
+      {item('execution', '执行监控')}
     </div>
   )
 }
@@ -238,12 +240,14 @@ export default function PortfolioView() {
 
   const active = useMemo(() => others.filter(c => c.status === 'active'), [others])
 
-  // FE-TR：交易现实作为并列标签页（不再加顶层导航）
-  if (tab === 'reality') {
+  // FE-TR / FE-12：交易现实、执行监控作为并列标签页（不再加顶层导航）
+  if (tab === 'reality' || tab === 'execution') {
     return (
       <div className="h-full flex flex-col bg-slate-950">
         <TabBar tab={tab} setTab={setTab} />
-        <div className="flex-1 min-h-0"><TradingRealityPanel /></div>
+        <div className="flex-1 min-h-0">
+          {tab === 'reality' ? <TradingRealityPanel /> : <ExecutionPanel />}
+        </div>
       </div>
     )
   }

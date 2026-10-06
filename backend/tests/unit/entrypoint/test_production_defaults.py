@@ -45,6 +45,19 @@ EXPECTED_GATE_DEFAULTS = {
     "s_holdout_budget":        1,       # 冻结段的一次性使用预算
     "s_fitness_mode":          "purged_cv",  # GP 适应度口径（S.1）
     "s_use_cpcv":              True,    # PBO 用 CPCV（CSCV 无 purge → PBO 偏低）
+    # ── Phase 12：执行层。装好就跑 = 不向券商下任何单（显式 opt-in 才下纸交易单）。
+    "execution_mode":          "off",
+}
+
+#: Phase 12 下单前风控与执行参数的发布默认值（风险偏好，T1）。改任何一项都要改这张表。
+EXPECTED_EXECUTION_DEFAULTS = {
+    "moomoo_security_firm":     "FUTUINC",
+    "moomoo_trd_acc_id":        0,
+    "exec_limit_band_bps":      50.0,
+    "exec_flatten_band_bps":    500.0,
+    "exec_max_daily_loss":      0.05,
+    "exec_max_price_deviation": 0.15,
+    "exec_max_aum_mismatch":    0.5,
 }
 
 
@@ -61,6 +74,25 @@ class TestGateDefaultsAreExplicit:
             + "\n  ".join(f"{k}: {a!r} vs {b!r}" for k, (a, b) in drift.items())
             + "\n若这是有意变更，请同步更新 EXPECTED_GATE_DEFAULTS 并在 roadmap 说明。"
         )
+
+    def test_execution_defaults_match_documented_snapshot(self, fresh_settings):
+        drift = {k: (getattr(fresh_settings, k), v)
+                 for k, v in EXPECTED_EXECUTION_DEFAULTS.items()
+                 if getattr(fresh_settings, k) != v}
+        assert not drift, f"执行层默认值与快照不符（实际, 期望）：{drift}"
+
+    def test_no_setting_can_switch_execution_to_real_money(self, fresh_settings):
+        """
+        实盘不是配置项：Settings 里不得出现能把交易环境切到 REAL 的字段，
+        网关也必须在任何参数下拒绝非 SIMULATE。
+        """
+        from app.core.execution.broker_gateway import LiveTradingRefused, MoomooGateway, TRD_ENV
+        suspicious = [k for k in type(fresh_settings).model_fields
+                      if "trd_env" in k or k.endswith("_real") or "live_trading" in k]
+        assert not suspicious, f"出现了可能切到实盘的配置项：{suspicious}"
+        assert TRD_ENV == "SIMULATE"
+        with pytest.raises(LiveTradingRefused):
+            MoomooGateway(trd_env="REAL", context_factory=lambda: None)
 
     def test_all_hard_gates_are_off_by_default_is_a_conscious_choice(self, fresh_settings):
         """

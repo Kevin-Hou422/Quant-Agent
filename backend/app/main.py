@@ -55,6 +55,14 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    # Phase 12.4：执行层开启时，启动即对账一次（补记停机期间成交、找回崩溃前写了
+    # 意图的订单、按券商持仓重建账本）。放后台线程：OpenD 未启动时 SDK 建连可能阻塞，
+    # 不能卡住服务启动；对账失败也不影响后续交易周期的 fail-closed 判断。
+    if getattr(settings, "execution_mode", "off") == "moomoo_paper":
+        import threading
+        from app.core.execution.order_manager import recover_on_startup
+        threading.Thread(target=recover_on_startup, name="exec-startup-recovery",
+                         daemon=True).start()
     if settings.enable_scheduler:
         from app.tasks.scheduler import start_scheduler
         start_scheduler(

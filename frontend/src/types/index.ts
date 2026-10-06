@@ -22,6 +22,7 @@ export interface TradingStatus {
   allow_short:  boolean
   paper_aum:    number
   paper_dataset: string
+  execution_mode?: string        // Phase 12：off | moomoo_paper
   gates: {
     experiment_mode:     boolean
     enforce_active_gate: boolean
@@ -59,6 +60,97 @@ export interface PortfolioDiagnostic {
   strategy_decay?:  { reason: string; rolling_mean_ic: number } | null
   t3?:              { mode: string; buying_power: number; n_positions: number } | null
   trading_context?: TradingContextSummary | null
+  execution?:       Record<string, unknown> | null   // Phase 12 执行层报告
+}
+
+// ── FE-12: 执行监控（Phase 12 moomoo 纸交易）─────────────────────────────
+export interface ExecOrderRow {
+  client_id:       string
+  decision_date:   string
+  purpose:         string          // rebalance | flatten
+  ticker:          string
+  side:            string          // BUY | SELL
+  qty:             number
+  limit_price:     number
+  ref_price:       number
+  status:          string          // PENDING_SUBMIT | SUBMITTED | FILLED | PARTIAL | CANCELLED | FAILED | NOT_SUBMITTED | REJECTED_BY_GATE
+  broker_status:   string
+  broker_order_id: string | null
+  dealt_qty:       number
+  dealt_avg_price: number
+  reject_reason:   string
+  last_err_msg:    string
+}
+
+export interface ExecFillRow {
+  client_id:     string
+  ticker:        string
+  side:          string
+  qty:           number            // 有符号：买正卖负
+  price:         number
+  ref_price:     number            // 决策日收盘（模拟账本的成交价口径）
+  decision_date: string
+  fill_date:     string
+}
+
+export interface ExecSnapshotView {
+  taken_at:      string
+  market_date:   string
+  status:        string            // baseline | clean | discrepancy | unresolved | unstable | accepted
+  total_assets:  number
+  cash:          number
+  power:         number
+  positions:     Record<string, { qty: number; price: number; market_val: number }>
+  discrepancies: Array<Record<string, unknown>>
+  note:          string
+}
+
+export interface KillSwitchState {
+  engaged: boolean
+  actor?:  string
+  reason?: string
+  at?:     string
+}
+
+export interface ExecutionStatus {
+  mode:          string
+  kill_switch:   KillSwitchState
+  last_snapshot: ExecSnapshotView | null
+  open_orders:   ExecOrderRow[]
+  recent_orders: ExecOrderRow[]
+  recent_fills:  ExecFillRow[]
+  events:        Array<{ at: string; kind: string; actor: string; reason: string }>
+}
+
+export interface FidelityStats {
+  n:      number
+  mean:   number | null
+  median: number | null
+  p90:    number | null
+}
+
+export interface FidelityReport {
+  period_start:            string
+  period_end:              string
+  n_live_orders:           number
+  n_live_fills:            number
+  n_matched_sim:           number
+  n_ref_mismatch:          number
+  live_fill_ratio_median:  number | null
+  sim_fill_ratio_median:   number | null
+  n_live_unfilled:         number
+  total_slippage_bps:      FidelityStats
+  overnight_gap_bps:       FidelityStats
+  at_open_exec_bps:        FidelityStats
+  assumed_spread_bps:      number
+  current_impact_coef:     number
+  recommended_impact_coef: number
+  recommended_scale:       number
+  permanent_impact_bps:    number | null
+  permanent_impact_note:   string
+  notes:                   string[]
+  warnings:                string[]
+  markdown:                string
 }
 
 export interface StrategyConfigItem {

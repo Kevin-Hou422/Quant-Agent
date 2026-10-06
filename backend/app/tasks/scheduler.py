@@ -144,6 +144,18 @@ def monthly_cost_calibration_job() -> None:
             report.current_impact_coef, report.recommended_impact_coef, report.recommended_scale,
         )
 
+    # Phase 12.3：执行层开着时，同一月度任务再出一份"内部模拟 vs moomoo 纸交易"保真度报告
+    if getattr(settings, "execution_mode", "off") != "off":
+        from app.tasks.cost_calibration import run_monthly_fidelity
+        fid = run_monthly_fidelity(
+            settings.paper_dataset, first_prev.isoformat(), last_prev.isoformat(),
+            write_path=f"exec_fidelity_{first_prev:%Y%m}.md")
+        if fid is None:
+            logger.info("[monthly_cost_calibration_job] 上月无纸交易成交，跳过保真度报告")
+        else:
+            logger.info("[monthly_cost_calibration_job] 保真度：%d 笔纸交易成交，总滑点中位 %s bps",
+                        fid.n_live_fills, fid.total_slippage_bps.get("median"))
+
 
 # ---------------------------------------------------------------------------
 # Scheduler lifecycle

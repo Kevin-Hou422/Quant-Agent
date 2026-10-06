@@ -1,6 +1,7 @@
 # 终极目标路线图：美股实盘全链路自主模拟交易
 
-> 状态：**Phase S/8/9/TR/PM/A/B 已完成（S 于 2026-09-22 关闭），Phase 10/12/13/14 + R.2/R.4 未实现** · 地基 Phase 6–8 见
+> 状态：**Phase S/8/9/TR/PM/A/B 已完成（S 于 2026-09-22 关闭）；Phase 12 + FE-12 代码完成（2026-10-06，
+> 真 OpenD 端到端验收待做）；Phase 10/13/14 + R.4 未实现，R.2 部分完成** · 地基 Phase 6–8 见
 > `backend_retired_report/PAPER_TRADING_ROADMAP.md`（已归档）· 遵循 RESEARCH_OPERATING_MODEL.md
 > 生成日期：2026-08-18
 
@@ -576,6 +577,28 @@ AST 扫描全部 `tests/`，按"这个断言可能失败吗"分类，查出 **90
 - **验收**：策略美元账本 → moomoo 纸交易订单 → 成交对账回 PositionStore；风控门拦截超限单；
   kill switch 全平；校准报告显示内部模拟 vs moomoo 纸交易的成交差。
 
+> **进度（2026-10-06）**：12.1–12.4 + FE-12 **代码完成，离线验收全绿；真 OpenD 端到端未做**（需要本机
+> 起 OpenD + 纸交易账户）。默认 `execution_mode="off"`，不开不连券商。
+>
+> 实际落地与原规划的差异：
+> - 文件名：`moomoo_broker.py` 拆成 `broker_gateway.py`（SDK 边界，**写死 `trd_env=SIMULATE`**，遇真实账户
+>   直接拒绝）+ `order_builder.py`（账本→股数/限价）+ `order_manager.py`（对账/下单/熔断/恢复）；
+>   `risk_gate.py` 叫 `pretrade_gate.py`（避免与 PM 已有的策略级门混名）。执行台账独立成
+>   `app/db/execution_store.py`（订单/成交/快照/事件/状态五张表），对账后的持仓仍写回 `PositionStore`（book −1）。
+> - 幂等：先落**写前意图**再下单，client id 写进 moomoo `remark`（≤64 字节）；下单调用超时**当天不重试**
+>   （等券商侧出现或次日确认未提交），防重复挂单。
+> - 12.3：月度任务 `run_monthly_fidelity` 产出保真度报告（实际成交 vs 决策价 / 次日开盘 / 内部模拟），
+>   成交 < 20 笔不校准；永久冲击目前**不可识别**，报告里明说。
+> - **实测发现**：OpenD 不在时 moomoo SDK 建连会**无限阻塞**并留下非守护线程 → 建连前 2 秒端口探测。
+>   同样的问题在行情侧 `MoomooProvider`（`PRICE_SOURCE=moomoo`）也存在，**本 Phase 未修**。
+>
+> **只能在真 OpenD 上验证的两件事**：纸交易环境是否支持历史订单查询（不支持时对账会保守地挂起
+> "待确认"而非乐观判定）；收盘后下的单次日是否出现在当日订单列表。
+>
+> 测试：`tests/unit/execution/*`、`test_execution_store_schema.py`、`test_live_providers.py`、
+> `test_monthly_fidelity.py`、`integration/test_api_execution.py`、`integration/test_phase12_execution_wiring.py`；
+> 新增变异点逐点复核 441 点（430 杀 / 5 等价 / 6 导入期即崩），见 `MUTATION_LEDGER.md`。
+
 ---
 
 ## Phase 13 — 多 agent（条件触发：红队优先）+ 全自动模式
@@ -735,6 +758,8 @@ fetch/SSE、`components/analysis/*` 图表、`AlphaDashboard`。**前端只读 +
 - **FE-12 执行监控面板**（配 Phase 12，**重**）：moomoo 纸交易的持仓/挂单/成交、**本地 vs 券商
   对账差**、风控门状态与 **kill switch（一键全平，带二次确认的人工动作）**、三级保真度对比
   （内部模拟 vs moomoo 纸交易成交）。
+  **✅（2026-10-06）**：`ExecutionPanel.tsx`（Portf 视图「执行监控」标签页）；全平/解除走 arm→输入确认词→confirm
+  两步，接受对账差必须填理由。真启动端到端随 Phase 12 一起待做。
 - **FE-13 红队报告 + 自主度开关**（配 Phase 13）：每个 PAPER 候选的"反方报告"在谱系内可查；
   **autonomy_mode 手动/全自动切换**（人工可随时切回）；数据质量哨兵告警。
 - **FE-R 研究可信度图表**（配 Phase R）：PBO/CPCV 结果、**因子风险归因**（暴露分解）、
@@ -762,6 +787,7 @@ Phase PM（组合与资金管理层）★ ── 依赖 9；与 S 并列最高�
   第一批(✅) · ★核心重构:策略级门 PM.S1(✅)+边际准入 PM.S2(✅)+经典基准库 PM.S3(✅) · 第二批 PM.5/6/7(✅) · FE-PM(✅) · 收拢 R.2/R.4
 Phase 10（另类数据：基本面，价格仍走 moomoo）·  Phase 11（前向增量，价格源=moomoo/TR.2）
 Phase 12（**moomoo** 执行，同 TR.2 源）── 依赖 PM（消费美元账本）+ TR.2 + 11
+  12.1 网关+OrderManager(✅) · 12.2 风控门+熔断(✅) · 12.3 保真度报告(✅) · 12.4 启动恢复(✅) ── 真 OpenD 端到端(⬜)
 Phase 13（多 agent + 全自动）── 依赖 9 + 12
 Phase 14 ── 长期验证期
 
@@ -770,7 +796,7 @@ Phase R ── R.1→S.3(✅) · R.3→PM.2(✅) · R.4→PM.1/3(⬜ Ledoit-Wolf
   "风险从哪来"。已建 app/core/risk_engine（2026-09-22）：归因 + 结构化协方差(✅，已接进
   run_portfolio 诊断)；风格中性化替换与 alpha/风险溢价区分(⬜)；B6 beta 闭合仍待做空开启
 
-前端 FE-9(✅) · FE-PM(✅) · FE-TR 交易现实面板(✅,含诊断持久化+两端点) · FE-8/10/11/12/13/R(⬜)
+前端 FE-9(✅) · FE-PM(✅) · FE-TR 交易现实面板(✅,含诊断持久化+两端点) · FE-12 执行监控(✅) · FE-8/10/11/13/R(⬜)
 ```
 
 ## 关键复用点（避免重造）

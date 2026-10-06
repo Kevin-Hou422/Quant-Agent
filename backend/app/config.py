@@ -145,6 +145,32 @@ class Settings(BaseSettings):
     moomoo_host:  str = "127.0.0.1"           # OpenD 网关地址
     moomoo_port:  int = 11111                 # OpenD API 端口
 
+    # ── Phase 12：执行层（moomoo 纸交易）──────────────────────────────────
+    # 默认 off：**不下任何单**。设 EXECUTION_MODE=moomoo_paper 后，每日组合账本
+    # 跑完会把最后一行目标权重换成股数订单，经 OpenD 交易上下文下到 **模拟账户**。
+    # 实盘（TrdEnv.REAL）在代码层面被拒绝，不是配置项 —— 接真钱另立规划（Phase 14）。
+    # 假设该模拟账户**专供本系统**：券商持仓即账本真相，账本外的持仓会被调到目标。
+    execution_mode:        str   = "off"       # off | moomoo_paper
+    #: 券商主体（T1 现实事实）。moomoo 美国 = FUTUINC；新加坡 = FUTUSG …
+    #: SDK 的默认值是 'N/A'，多主体账户下会挑错账户，所以必须显式给。
+    moomoo_security_firm:  str   = "FUTUINC"
+    #: 模拟账户 id；0 = 由 SDK 取该市场第一个模拟账户（状态端点会回显实际 acc_id）。
+    moomoo_trd_acc_id:     int   = 0
+    #: 调仓限价 = 参考收盘价 × (1 ± band)。收盘后下单、次日开盘成交，
+    #: 限价把"开盘跳空过大时追价"挡在外面；挡住的部分如实记为未成交。
+    exec_limit_band_bps:   float = 50.0
+    #: 一键全平的限价带。全平以**可成交性**优先，所以比调仓宽得多。
+    exec_flatten_band_bps: float = 500.0
+    #: 日亏熔断：账户总资产较上一交易日快照跌幅 ≥ 此值 → 当日只允许减仓单。
+    exec_max_daily_loss:   float = 0.05
+    #: 参考价（数据集收盘）与券商现价的最大偏离。超了说明数据陈旧或复权口径
+    #: 错位 —— 按错的价格算股数是 fat-finger 的典型来源，拒单。
+    exec_max_price_deviation: float = 0.15
+    #: 账户总资产与 paper_aum 的最大相对偏离。两者是同一笔钱的两个说法（§J
+    #: 单一来源）：PM 按 paper_aum 算容量，下单按账户真实资产算股数。
+    #: 偏离过大 = 配置与现实不符，拒绝交易而不是悄悄按其中一个算。
+    exec_max_aum_mismatch: float = 0.5
+
     # ── Phase S：统计地基（三段切割 / 冻结 holdout / purged CV / CPCV）──────
     # 这一层的默认值决定"回测数字能不能当结论看"，所以全部显式、可配置。
     #: 全路径强制三段切割（IS / Validate / Test）。关掉 = 退回两段，

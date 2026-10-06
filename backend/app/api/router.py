@@ -1546,6 +1546,7 @@ def trading_status() -> dict:
         "allow_short":    bool(getattr(settings, "trading_allow_short", False)),
         "paper_aum":      float(getattr(settings, "paper_aum", 0.0)),
         "paper_dataset":  getattr(settings, "paper_dataset", ""),
+        "execution_mode": getattr(settings, "execution_mode", "off"),   # Phase 12：off | moomoo_paper
         "gates": {                       # TR.4 门开关——让人一眼看出门是否在真拦
             "experiment_mode":     bool(getattr(settings, "tr_experiment_mode", True)),
             "enforce_active_gate": bool(getattr(settings, "tr_enforce_active_gate", False)),
@@ -1554,6 +1555,176 @@ def trading_status() -> dict:
             "factor_gate_mode":    getattr(settings, "factor_gate_mode", "leak"),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 12：执行层（moomoo 纸交易）—— 状态 / 对账 / 一键全平 / 保真度
+# ---------------------------------------------------------------------------
+#
+# 本服务零认证且只绑回环地址（审计 #10）。全平与解除熔断是**影响资金的人工动作**，
+# 因此是两步：先 arm 拿一次性令牌（120 秒有效），再 confirm 带上令牌、操作人与原因。
+# 单次误触的 POST 不会触发任何券商动作。
+
+_EXEC_TOKEN_TTL_S = 120
+_exec_tokens: Dict[str, tuple] = {}
+_exec_tokens_lock = Lock()
+
+
+def get_gateway_factory():
+    """依赖注入点：返回一个 () -> BrokerGateway。测试用 dependency_overrides 替换。"""
+    from app.core.execution.broker_gateway import make_gateway_from_settings
+    return make_gateway_from_settings
+
+
+def get_open_price_loader():
+    """依赖注入点：(start, end) -> 开盘价宽表。默认从 paper 数据集加载。"""
+    def _load(start: str, end: str) -> pd.DataFrame:
+        from app.config import settings
+        from app.core.data_engine.dataset_registry import load_registry_dataset
+        return load_registry_dataset(settings.paper_dataset, start=start, end=end,
+                                     health_check=False).data["open"]
+    return _load
+
+
+class ExecActionRequest(BaseModel):
+    actor:  str = Field(..., min_length=1, max_length=64, description="操作人（写进审计日志）")
+    reason: str = Field(..., min_length=1, max_length=500, description="原因（写进审计日志）")
+
+
+class KillSwitchConfirmRequest(ExecActionRequest):
+    token: str = Field(..., min_length=8, max_length=64)
+
+
+def _open_gateway(factory):
+    from app.core.execution.broker_gateway import BrokerError, LiveTradingRefused
+    try:
+        return factory()
+    except LiveTradingRefused as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except BrokerError as exc:
+        raise HTTPException(status_code=502, detail=f"券商不可用：{exc}")
+
+
+@router.get("/execution/status", tags=["Execution"])
+def execution_status_ep() -> dict:
+    """执行层只读状态（不连券商）：模式、熔断、最近快照、在途单、近期订单/成交/事件。"""
+    from app.core.execution.order_manager import execution_status
+    return execution_status()
+
+
+@router.post("/execution/reconcile", tags=["Execution"])
+def execution_reconcile(factory=Depends(get_gateway_factory)) -> dict:
+    """立即对账一次（也是崩溃恢复的手动入口）。"""
+    from app.core.data_engine.market_calendar import CalendarUnavailable
+    from app.core.execution.broker_gateway import BrokerError
+    from app.core.execution.order_manager import OrderManager
+    gw = _open_gateway(factory)
+    try:
+        return OrderManager.from_settings(gw).reconcile().to_dict()
+    except BrokerError as exc:
+        raise HTTPException(status_code=502, detail=f"券商调用失败：{exc}")
+    except CalendarUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    finally:
+        gw.close()
+
+
+@router.post("/execution/reconcile/accept", tags=["Execution"])
+def execution_reconcile_accept(req: ExecActionRequest,
+                               factory=Depends(get_gateway_factory)) -> dict:
+    """人工确认对账差异：以券商当前状态为新的可信基准（写审计日志）。"""
+    from app.core.data_engine.market_calendar import CalendarUnavailable
+    from app.core.execution.broker_gateway import BrokerError
+    from app.core.execution.order_manager import OrderManager
+    gw = _open_gateway(factory)
+    try:
+        return OrderManager.from_settings(gw).accept_discrepancies(req.actor, req.reason).to_dict()
+    except BrokerError as exc:
+        raise HTTPException(status_code=502, detail=f"券商调用失败：{exc}")
+    except CalendarUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    finally:
+        gw.close()
+
+
+@router.post("/execution/kill_switch/arm", tags=["Execution"])
+def kill_switch_arm(action: str = Query(..., pattern="^(engage|reset)$")) -> dict:
+    """第一步：申请一次性确认令牌（engage = 全平并停止调仓；reset = 解除熔断）。"""
+    import secrets
+    import time
+    token = secrets.token_urlsafe(16)
+    with _exec_tokens_lock:
+        now = time.monotonic()
+        for k in [k for k, (_, exp) in _exec_tokens.items() if exp < now]:
+            _exec_tokens.pop(k, None)
+        _exec_tokens[token] = (action, now + _EXEC_TOKEN_TTL_S)
+    return {"token": token, "action": action, "expires_in_s": _EXEC_TOKEN_TTL_S}
+
+
+def _consume_token(token: str) -> str:
+    import time
+    with _exec_tokens_lock:
+        item = _exec_tokens.pop(token, None)
+    if item is None:
+        raise HTTPException(status_code=409, detail="确认令牌无效或已使用 —— 请重新 arm")
+    action, exp = item
+    if exp < time.monotonic():
+        raise HTTPException(status_code=409, detail="确认令牌已过期 —— 请重新 arm")
+    return action
+
+
+@router.post("/execution/kill_switch/confirm", tags=["Execution"])
+def kill_switch_confirm(req: KillSwitchConfirmRequest,
+                        factory=Depends(get_gateway_factory)) -> dict:
+    """
+    第二步：执行。engage 时**先把熔断状态落库再连券商** —— 券商连不上也要保证之后
+    不再调仓（下个周期连上后会继续全平），这正是熔断最需要生效的场景。
+    """
+    from app.core.execution.broker_gateway import BrokerError
+    from app.core.execution.order_manager import OrderManager
+    from app.db.execution_store import ExecutionStore
+    action = _consume_token(req.token)
+    store = ExecutionStore()
+    if action == "reset":
+        st = store.set_kill_switch(False, req.actor, req.reason)
+        store.add_event("kill_switch_reset", req.actor, req.reason)
+        return {"action": "reset", "state": st}
+    # 先落状态：连券商这一步本身就可能失败（OpenD 没开、网络断），熔断必须在那之前生效
+    st = store.set_kill_switch(True, req.actor, req.reason)
+    store.add_event("kill_switch_engaged", req.actor, req.reason)
+    try:
+        gw = factory()
+    except BrokerError as exc:
+        store.add_event("kill_switch_broker_unavailable", req.actor, str(exc))
+        logger.error("[exec] 全平熔断已开启，但券商不可用、全平单未发出（下周期续做）: %s", exc)
+        return {"action": "engage", "state": st, "flatten": None,
+                "error": f"券商不可用，熔断已生效、全平待续：{exc}"}
+    try:
+        return {"action": "engage", **OrderManager.from_settings(gw, store=store)
+                .engage_kill_switch(req.actor, req.reason, persist_state=False)}
+    finally:
+        gw.close()
+
+
+@router.get("/execution/fidelity", tags=["Execution"])
+def execution_fidelity(start: str = Query(...), end: str = Query(...),
+                       loader=Depends(get_open_price_loader)) -> dict:
+    """Phase 12.3 保真度：内部模拟（收盘成交）vs moomoo 纸交易（次日开盘成交）。"""
+    from app.core.execution.fidelity import fidelity_from_stores
+    try:
+        s, e = pd.Timestamp(start), pd.Timestamp(end)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"日期格式错误：{exc}")
+    if e < s:
+        raise HTTPException(status_code=400, detail="end 早于 start")
+    try:
+        open_px = loader(s.strftime("%Y-%m-%d"),
+                         (e + pd.Timedelta(days=10)).strftime("%Y-%m-%d"))
+    except Exception as exc:
+        logger.error("[exec] 保真度报告取开盘价失败: %s", exc)
+        raise HTTPException(status_code=502, detail=f"开盘价加载失败：{exc}")
+    rep = fidelity_from_stores(s.date(), e.date(), open_px)
+    return {**rep.to_dict(), "markdown": rep.to_markdown()}
 
 
 @router.get("/scheduler/status", tags=["Lifecycle"])

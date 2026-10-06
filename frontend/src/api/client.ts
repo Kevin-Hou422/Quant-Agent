@@ -4,6 +4,7 @@ import type {
   WorkflowResponse, DatasetInfo, WalkForwardResult, DatasetHealth,
   RegimeInfo, AlphaDashboardRow, ICHistoryData, SchedulerStatus, PaperPnLData,
   PendingAlpha, AlphaDecision, StrategyConfigItem, TradingStatus, PortfolioDiagnostic,
+  ExecutionStatus, FidelityReport,
 } from '../types'
 
 const http = axios.create({ baseURL: '/api', timeout: 120_000 })
@@ -361,3 +362,25 @@ export const apiFetchTradingStatus = () =>
 
 export const apiFetchPortfolioDiagnostics = (limit = 20) =>
   http.get<PortfolioDiagnostic[]>('/portfolio/diagnostics', { params: { limit } })
+
+// ── FE-12: 执行监控（Phase 12）──────────────────────────────────────────────
+export const apiFetchExecutionStatus = () =>
+  http.get<ExecutionStatus>('/execution/status')
+
+export const apiReconcileExecution = () =>
+  http.post<Record<string, unknown>>('/execution/reconcile')
+
+export const apiAcceptReconcile = (actor: string, reason: string) =>
+  http.post<Record<string, unknown>>('/execution/reconcile/accept', { actor, reason })
+
+/** 全平 / 解除熔断第一步：申请一次性确认令牌（120 秒有效）。 */
+export const apiArmKillSwitch = (action: 'engage' | 'reset') =>
+  http.post<{ token: string; action: string; expires_in_s: number }>(
+    '/execution/kill_switch/arm', null, { params: { action } })
+
+/** 第二步：带令牌、操作人与原因执行。令牌绑定动作，用过即作废。 */
+export const apiConfirmKillSwitch = (token: string, actor: string, reason: string) =>
+  http.post<Record<string, unknown>>('/execution/kill_switch/confirm', { token, actor, reason })
+
+export const apiFetchFidelity = (start: string, end: string) =>
+  http.get<FidelityReport>('/execution/fidelity', { params: { start, end } })

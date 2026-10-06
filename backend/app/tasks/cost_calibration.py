@@ -37,6 +37,8 @@ WidePanel = Dict[str, pd.DataFrame]
 
 # 缩放建议的边界：单次校准最多把 impact_coef 调整到 [0.5×, 2×]
 _SCALE_LO, _SCALE_HI = 0.5, 2.0
+#: 对外的同一组边界（Phase 12.3 的纸交易保真度校准复用，单一来源）
+SCALE_BOUNDS = (_SCALE_LO, _SCALE_HI)
 
 
 @dataclass
@@ -218,4 +220,30 @@ def run_monthly_calibration(
             logger.info("[cost_calib] 报告已写入 %s", write_path)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[cost_calib] 写报告失败: %s", exc)
+    return report
+
+
+def run_monthly_fidelity(dataset_name: str, start: str, end: str,
+                         write_path: Optional[str] = None):
+    """
+    Phase 12.3 月度保真度：内部模拟（组合账本）vs moomoo 纸交易。区间内没有纸交易成交 → None。
+    开盘价多取几天：月末决策日的单在下个月第一个交易日开盘成交。
+    """
+    from app.core.data_engine.dataset_registry import load_registry_dataset
+    from app.core.execution.fidelity import fidelity_from_stores
+    from app.db.execution_store import ExecutionStore
+
+    es = ExecutionStore()
+    if not es.fills(start=start, end=end, book_id=-1):
+        return None
+    end_px = (pd.Timestamp(end) + pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+    ds = load_registry_dataset(dataset_name, start=start, end=end_px, health_check=False)
+    report = fidelity_from_stores(start, end, ds.data["open"], exec_store=es)
+    if write_path:
+        try:
+            with open(write_path, "w", encoding="utf-8") as f:
+                f.write(report.to_markdown())
+            logger.info("[exec_fidelity] 报告已写入 %s", write_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[exec_fidelity] 写报告失败: %s", exc)
     return report

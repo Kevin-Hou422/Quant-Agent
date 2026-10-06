@@ -65,9 +65,14 @@ def test_sim_account_provider_reads_paper_book(tmp_path):
 
 
 def test_live_mode_refuses_rather_than_faking():
-    # T3 纪律：live 未接入时必须显式抛错，不能静默退回估计
-    with pytest.raises(NotImplementedError, match="Phase 12"):
+    # T3 纪律：live 缺实时来源时必须显式抛错，不能静默退回估计。
+    # Phase 12 之前这里断言 NotImplementedError；接入后契约变为"缺 gateway/快照即拒绝"。
+    with pytest.raises(ValueError, match="不会退回估计"):
         get_trade_providers("live")
+    with pytest.raises(ValueError, match="不会退回估计"):
+        get_trade_providers("live", gateway=object())        # 有账户、没盘口 → 仍拒绝
+    with pytest.raises(ValueError, match="未知"):
+        get_trade_providers("paper")                         # 拼错模式不能落到 sim
 
 
 def test_factory_sim_requires_dataset_and_broker():

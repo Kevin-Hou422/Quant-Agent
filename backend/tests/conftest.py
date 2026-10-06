@@ -29,6 +29,9 @@ def _hermetic_run_flags(tmp_path_factory):
     settings.enable_scheduler     = False
     settings.enable_paper_trading = False
     settings.enable_discovery     = False
+    # Phase 12：部署 .env 可能设 EXECUTION_MODE=moomoo_paper（真实下纸交易单）。
+    # 测试一律关掉；需要执行层的用例自己注入假券商并显式打开（§H）。
+    settings.execution_mode       = "off"
     # 部署 .env 可能设 PRICE_SOURCE=moomoo（真实运行用）；测试强制回 yahoo，
     # 否则加载 US 数据集会去打 OpenD 网关（依赖运行时 + 烧历史K线额度）。见 DEV_LESSONS §H。
     settings.price_source = "yahoo"
