@@ -52,6 +52,21 @@ NEW_POINT_EQUIVALENCE = {
         "or 短路：intended == 0 时第一项已为真，第二项不求值。由 "
         "test_match_direction_is_short_circuited_by_the_dust_check 用 AST 确认左右顺序。",
 
+    "app/core/execution/order_builder.py ×1 — build_rebalance_orders `side = \"BUY\" if delta > 0` -> `>=`":
+        "差异只在 delta == 0。之前有 `if delta == 0: continue`（审计修复批把带宽判断挪到它之后），"
+        "delta == 0 到不了这里。由 test_side_is_decided_after_the_zero_delta_skip 用 AST 确认顺序，"
+        "并实测目标 = 持仓时不产生订单。",
+
+    "app/core/execution/order_manager.py ×1 — 撤旧单的筛选 `status == SUBMITTED and broker_order_id` -> `or`":
+        "两式只在 (SUBMITTED 且无订单号) 或 (非 SUBMITTED 且有订单号) 时不同。执行账本里每一条"
+        "把状态设为 SUBMITTED 的路径（mark_submitted / adopt_broker_order / apply_broker_state）"
+        "都在同一函数里写订单号；写意图（PENDING）时订单号一律置 None —— 两种组合都不可达。"
+        "由 test_submitted_rows_always_carry_a_broker_order_id 用 AST 逐函数核对。",
+
+    "app/core/portfolio_manager/manager.py ×1 — 首段等权 `1.0 / len(factor_signals)` -> `*`":
+        "两式给出的权重只差一个正的公共倍数（1/n 与 n）。AlphaCombiner.combine 对权重做归一化，"
+        "合成信号与权重的整体尺度无关。由 test_combine_is_invariant_to_weight_scale 实算验证前提。",
+
     "app/core/execution/fidelity.py ×1 — 成交方向 `q > 0` -> `>=`":
         "差异只在 q == 0。该行之前 `if ref <= 0 or px <= 0 or abs(q) <= DUST_QTY: continue` "
         "已排除 q == 0。由 test_fill_sign_is_guarded_by_the_dust_check 用 AST 确认守卫在前。",
@@ -158,6 +173,53 @@ def test_fill_sign_is_guarded_by_the_dust_check():
         if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", None) == "s":
             sign_line = n.lineno
     assert guard_line and sign_line and guard_line < sign_line, "零股守卫不在方向判断之前"
+
+
+def test_side_is_decided_after_the_zero_delta_skip():
+    fn = _func(_tree(ob), "build_rebalance_orders")
+    skip = side = None
+    for n in ast.walk(fn):
+        if (isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
+                and getattr(n.test.left, "id", None) == "delta"
+                and isinstance(n.test.ops[0], ast.Eq)
+                and getattr(n.test.comparators[0], "value", None) == 0
+                and isinstance(n.body[0], ast.Continue)):
+            skip = n.lineno
+        if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", None) == "side":
+            side = n.lineno
+    assert skip and side and skip < side, "`if delta == 0: continue` 不在方向判断之前"
+    import pandas as pd
+    from datetime import date
+    res = ob.build_rebalance_orders(pd.Series({"A": .25}), {"A": 256.0}, pd.Series({"A": 1.0}),
+                                    1024.0, date(2025, 3, 3), book_id=-1, band_bps=0.)
+    assert res.orders == [] and res.skipped == []
+
+
+def test_submitted_rows_always_carry_a_broker_order_id():
+    tree = _tree(es)
+    dumps = {fn.name: ast.dump(fn) for fn in ast.walk(tree) if isinstance(fn, ast.FunctionDef)}
+    sets_submitted = [name for name, d in dumps.items()
+                      if ("ST_SUBMITTED" in d or "local_status_from_broker" in d)
+                      and name not in ("local_status_from_broker", "open_orders")]
+    assert {"mark_submitted", "adopt_broker_order", "apply_broker_state"} <= set(sets_submitted)
+    missing = [name for name in sets_submitted if "broker_order_id" not in dumps[name]]
+    assert missing == [], f"这些函数设置了 SUBMITTED 却没写订单号：{missing}"
+    planned = _func(tree, "_upsert_planned")
+    assert any(isinstance(n, ast.Assign) and getattr(n.targets[0], "attr", None) == "broker_order_id"
+               and getattr(n.value, "value", "x") is None for n in ast.walk(planned)), \
+        "写意图时没有把订单号置 None"
+
+
+def test_combine_is_invariant_to_weight_scale():
+    import numpy as np
+    import pandas as pd
+    from app.core.backtest_engine.alpha_combiner import AlphaCombiner
+    rng = np.random.default_rng(0)
+    idx = pd.bdate_range("2025-01-01", periods=30)
+    sig = {k: pd.DataFrame(rng.normal(size=(30, 6)), index=idx) for k in ("a", "b", "c")}
+    c = AlphaCombiner()
+    base = c.combine(sig, weights={k: 1 / 3 for k in sig})
+    pd.testing.assert_frame_equal(base, c.combine(sig, weights={k: 3.0 for k in sig}))
 
 
 def _exec_source(name: str, source: str) -> types.ModuleType:

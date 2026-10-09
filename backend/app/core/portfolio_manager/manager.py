@@ -97,16 +97,29 @@ class PortfolioManager:
 
     # ------------------------------------------------------------------ PM.1
     def combined_weights(self, factor_signals: Dict[str, pd.DataFrame],
-                         prices: pd.DataFrame):
-        """合成多因子信号 → 净持仓权重面板 (T×N) + 因子组合权重。"""
+                         prices: pd.DataFrame,
+                         fixed_combo_weights: Optional[Dict[str, float]] = None):
+        """
+        合成多因子信号 → 净持仓权重面板 (T×N) + 因子组合权重。
+
+        fixed_combo_weights : 已批准策略版本里**冻结**的因子权重。给了就不再拟合 ——
+            每天用截至当天的全样本重新拟合，会把新权重回放到整段历史（审计 F10），
+            也意味着实际交易的不是被批准的那一份配置（审计 F08）。
+        """
         from app.core.backtest_engine.alpha_combiner import AlphaCombiner
         from app.core.backtest_engine.portfolio_constructor import SignalWeightedPortfolio
 
         if not factor_signals:
             raise ValueError("factor_signals 为空")
         combiner = AlphaCombiner()
-        returns = prices.pct_change()
-        combo_w = combiner.optimize_weights(factor_signals, returns=returns, method=self.method)
+        if fixed_combo_weights is not None:
+            missing = sorted(set(factor_signals) - set(fixed_combo_weights))
+            if missing:
+                raise ValueError(f"冻结的组合权重缺少因子 {missing}")
+            combo_w = {k: float(fixed_combo_weights[k]) for k in factor_signals}
+        else:
+            combo_w = combiner.optimize_weights(factor_signals, returns=prices.pct_change(),
+                                                method=self.method)
         composite = combiner.combine(factor_signals, weights=combo_w)      # 合成信号（含跨因子净化）
         # 净持仓：多空 L1≈1；long_only 时 Σw≈1（满仓做多，不留一半闲置现金）
         weights = SignalWeightedPortfolio(clip_z=self.clip_z,
@@ -136,11 +149,58 @@ class PortfolioManager:
                                       target=np.abs(w_arr).sum(axis=1))
         return pd.DataFrame(capped, index=weights.index, columns=cols)
 
+    def walk_forward_composite(self, factor_signals: Dict[str, pd.DataFrame],
+                               prices: pd.DataFrame, n_folds: int):
+        """
+        **滚动前推**合成（审计 F10）：日期切成 n_folds 段，第 k 段的组合权重只用第 k 段
+        **开始之前**的数据拟合；第 1 段没有历史 → 等权（不拟合，因而也是样本外）。
+        返回 (净持仓权重面板, 末段使用的组合权重, 合成信号)。
+
+        对照：combined_weights 用整个窗口拟合一套权重再回放到整个窗口 —— 拿它的收益
+        切段叫"分段 OOS"，每一段其实都被拟合用过。
+        """
+        from app.core.backtest_engine.alpha_combiner import AlphaCombiner
+        from app.core.backtest_engine.portfolio_constructor import SignalWeightedPortfolio
+
+        if not factor_signals:
+            raise ValueError("factor_signals 为空")
+        idx = next(iter(factor_signals.values())).index
+        bounds = np.array_split(np.arange(len(idx)), max(1, int(n_folds)))
+        combiner = AlphaCombiner()
+        returns = prices.pct_change()
+        pieces, combo_w = [], {}
+        for k, pos in enumerate(bounds):
+            if len(pos) == 0:
+                continue
+            start, end = idx[pos[0]], idx[pos[-1]]
+            if k == 0:
+                combo_w = {f: 1.0 / len(factor_signals) for f in factor_signals}
+            else:
+                hist = {f: s.loc[s.index < start] for f, s in factor_signals.items()}
+                combo_w = combiner.optimize_weights(
+                    hist, returns=returns.loc[returns.index < start], method=self.method)
+            seg = {f: s.loc[(s.index >= start) & (s.index <= end)] for f, s in factor_signals.items()}
+            pieces.append(combiner.combine(seg, weights=combo_w))
+        composite = pd.concat(pieces).sort_index()
+        weights = SignalWeightedPortfolio(clip_z=self.clip_z,
+                                          long_only=self.long_only).construct(composite)
+        return weights, combo_w, composite
+
     # ------------------------------------------------------------------ 编排
     def build_book(self, factor_signals: Dict[str, pd.DataFrame],
-                   prices: pd.DataFrame, volume: pd.DataFrame) -> PortfolioResult:
-        """PM.1→PM.2→(PM.3 view)：产出一个真实 AUM 下、容量约束后的组合账本。"""
-        weights, combo_w, composite = self.combined_weights(factor_signals, prices)
+                   prices: pd.DataFrame, volume: pd.DataFrame,
+                   fixed_combo_weights: Optional[Dict[str, float]] = None,
+                   walk_forward_folds: Optional[int] = None) -> PortfolioResult:
+        """
+        PM.1→PM.2→(PM.3 view)：产出一个真实 AUM 下、容量约束后的组合账本。
+        walk_forward_folds : 给了就按滚动前推合成（验证用，见 walk_forward_composite）。
+        """
+        if walk_forward_folds and fixed_combo_weights is None and len(factor_signals) > 1:
+            weights, combo_w, composite = self.walk_forward_composite(
+                factor_signals, prices, walk_forward_folds)
+        else:
+            weights, combo_w, composite = self.combined_weights(factor_signals, prices,
+                                                                fixed_combo_weights)
         capped = self.apply_capacity(weights, prices, volume)
         logger.info(
             "[portfolio_manager] AUM=%.0f | 因子=%d | 末日 gross=%.3f net=%.3f",

@@ -101,14 +101,14 @@ class TestJobRegistration:
         assert "daily_trading" not in ids and "nightly_discovery" not in ids
         assert "daily_backup" not in ids
 
-    def test_all_five_jobs_register_when_enabled(self, jobs_db, all_jobs_on):
+    def test_all_six_jobs_register_when_enabled(self, jobs_db, all_jobs_on):
         s = create_scheduler(db_url=jobs_db)
         try:
             ids = {j.id for j in s.get_jobs()}
         finally:
             _safe_shutdown(s)
-        assert ids == {"daily_monitor", "daily_trading", "monthly_cost_calibration",
-                       "nightly_discovery", "daily_backup"}, ids
+        assert ids == {"daily_monitor", "daily_trading", "daily_trading_retry",
+                       "monthly_cost_calibration", "nightly_discovery", "daily_backup"}, ids
 
     def test_backup_defaults_to_on_when_the_setting_is_absent(self, jobs_db, monkeypatch):
         """
@@ -139,7 +139,7 @@ class TestJobRegistration:
         first = create_scheduler(db_url=jobs_db)
         first.start()
         try:
-            assert len(first.get_jobs()) == 5
+            assert len(first.get_jobs()) == 6
         finally:
             first.shutdown(wait=False)
 
@@ -150,8 +150,8 @@ class TestJobRegistration:
             ids = {j.id for j in second.get_jobs()}
         finally:
             second.shutdown(wait=False)
-        assert ids == {"daily_monitor", "daily_trading", "monthly_cost_calibration",
-                       "nightly_discovery", "daily_backup"}, (
+        assert ids == {"daily_monitor", "daily_trading", "daily_trading_retry",
+                       "monthly_cost_calibration", "nightly_discovery", "daily_backup"}, (
             f"复用同一个 jobstore 重建后任务不全：{ids} —— "
             f"replace_existing 疑似被改成了 False")
 
@@ -219,8 +219,18 @@ class TestJobRegistration:
             _safe_shutdown(s)
         assert "hour='21'" in trig["daily_monitor"]
         assert "hour='21'" in trig["daily_trading"] and "minute='30'" in trig["daily_trading"]
+        # 补跑：数据源延迟兜底，在首跑之后、发现任务之前，且同一个任务函数
+        assert "hour='22'" in trig["daily_trading_retry"] and "minute='45'" in trig["daily_trading_retry"]
         assert "hour='23'" in trig["nightly_discovery"]
         assert "hour='23'" in trig["daily_backup"] and "minute='45'" in trig["daily_backup"]
+
+    def test_the_retry_runs_the_same_job_not_a_second_path(self, jobs_db, all_jobs_on):
+        s = create_scheduler(db_url=jobs_db)
+        try:
+            funcs = {j.id: j.func for j in s.get_jobs()}
+        finally:
+            _safe_shutdown(s)
+        assert funcs["daily_trading_retry"] is funcs["daily_trading"] is sched_mod.daily_trading_job
 
 
 # ===========================================================================
@@ -383,3 +393,35 @@ class TestJobBodies:
             f"校准区间的终点是 {seen['end']}，应为上月最后一天 {last_prev}")
         assert seen["start"] == last_prev.replace(day=1).isoformat()
         assert seen["end"] < today.isoformat(), "校准区间跑到了今天或未来"
+
+
+class TestJobVerdictLogging:
+    """执行开着时每日任务把执行结论写进日志（ERROR 级 = 没有按计划完成）；关着时不写。"""
+
+    def _run(self, monkeypatch, caplog, mode, out):
+        import logging
+        import app.tasks.daily_ingest as di
+        import app.core.data_engine.market_calendar as mc
+        from app.config import settings
+        monkeypatch.setattr(settings, "execution_mode", mode)
+        monkeypatch.setattr(mc, "is_trading_day", lambda d: True)
+        monkeypatch.setattr(di, "run_daily_pipeline", lambda *a, **k: out)
+        with caplog.at_level(logging.INFO, logger="app.tasks.scheduler"):
+            sched_mod.daily_trading_job()
+        return [r for r in caplog.records if "执行结论" in r.getMessage()]
+
+    def test_a_blocked_execution_is_logged_as_an_error(self, monkeypatch, caplog):
+        out = {"ingest_accepted": True, "portfolio": {"execution": {"blocked": "stale_decision_date"}}}
+        recs = self._run(monkeypatch, caplog, "moomoo_paper", out)
+        assert len(recs) == 1 and recs[0].levelname == "ERROR"
+        assert "stale_decision_date" in recs[0].getMessage()
+
+    def test_a_completed_execution_is_logged_as_info(self, monkeypatch, caplog):
+        out = {"ingest_accepted": True,
+               "portfolio": {"execution": {"blocked": "", "n_submitted": 2}}}
+        recs = self._run(monkeypatch, caplog, "moomoo_paper", out)
+        assert len(recs) == 1 and recs[0].levelname == "INFO"
+
+    def test_nothing_is_logged_when_execution_is_off(self, monkeypatch, caplog):
+        out = {"ingest_accepted": True, "portfolio": {"execution": {"mode": "off"}}}
+        assert self._run(monkeypatch, caplog, "off", out) == []

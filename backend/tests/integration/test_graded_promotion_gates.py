@@ -110,7 +110,7 @@ def test_paper_grade_is_wired_into_run_portfolio(tmp_path):
     assert (out["strategy_verdict"] or {}).get("paper_grade") in ("A", "B", "C")
 
 
-def test_activate_records_tr4_gate_in_lineage(test_client):
+def test_activate_records_tr4_gate_in_lineage(test_client, fresh_db):
     from app.dependencies import get_strategy_store
     from app.db.strategy_store import StrategyConfig
     ss = get_strategy_store()

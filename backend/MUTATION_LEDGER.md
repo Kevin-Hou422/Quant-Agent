@@ -191,9 +191,9 @@ txt 漏了 `scikit-learn`（CI 连红三次的根因），而 2026-07-30 那版 
 - CI 不再排除 `tests/performance`：那组此前长期在量一个 422 的延迟
   （`n_days=50` 违反接口的 `ge=60`），改对之后才真的在测东西
 
-**（二）变异点从未做过整模块测量：862 → 现为 1625。** 见上面「结果总览」。补齐算子后应测
-2843 点，已测 1981 点；之后 Phase S（+160 余）、R.2（+40）、Phase 12（+440）、上线工具（+26）新增的点**都已逐点
-复核**，但所在模块没进过整模块全量测量，所以仍计入这个数（每次抬高都写在
+**（二）变异点从未做过整模块测量：862 → 现为 1785。** 见上面「结果总览」。补齐算子后应测
+2843 点，已测 1981 点；之后 Phase S（+160 余）、R.2（+40）、Phase 12（+440）、上线工具（+26）、
+审计修复批（+160）新增的点**都已逐点复核**，但所在模块没进过整模块全量测量，所以仍计入这个数（每次抬高都写在
 `measured_modules.json` 的 `measurement_scope._raises` 里）。
 棘轮：`test_the_unmeasured_scope_stays_visible_and_only_shrinks`。**欠一次重测。**
 
@@ -279,6 +279,20 @@ python tools/mutation/runner.py plan_full.json --state progress_full.json --stat
 - 导入期中断 `__name__ == "__main__"` 取反：导入即执行 main，argparse 拒绝宿主 argv → SystemExit(2)。
   登记 `NEW_POINT_LOUD_AT_IMPORT`，由 `test_inverted_main_guard_exits_on_import` 施加变异并执行源码验证。
 
+#### 第三批：外部审计修复批（2026-10-09）
+
+外部审计 16 条（NO-GO）的修复，17 个文件的新增 / 改动行。
+
+| 轮次 | 点数 | 杀死 | 存活 |
+|---|---:|---:|---:|
+| 第一轮 | 232 | 163 | 69 |
+| 补用例 + 去掉测不出的 epsilon / 冗余守卫后重跑 | 205 | 202 | 3（均为真等价） |
+
+第一轮的 69 个存活说明：**修复时写的回归用例本身有盲区**——集中在新风控门的边界（恰好等于
+上限）、订单层无交易带（价格取 1 时乘除不可分）、在途单剩余量（没有部分成交的用例）、净敞口
+投影的冗余比较、预检的存储检查。3 个等价点（`delta==0` 已先跳过、SUBMITTED 行恒有订单号、
+合成对权重尺度不变）登记在 `NEW_POINT_EQUIVALENCE`，各配可执行验证。
+
 同批顺带发现：`TestLessonQ` 只断言配置**字符串**不含 "onedrive"，而默认 `./alphas.db` 从 OneDrive
 里的仓库启动时解析到的正是 OneDrive（§Y：断言了文本，没断言行为）。已补行为级检查
 `test_launching_forward_trading_from_a_synced_dir_is_refused`，真正的防线是启动保险。
@@ -342,6 +356,8 @@ python tools/mutation/runner.py plan_full.json --state progress_full.json --stat
 | 12 | **xfail 的失败原因不受约束** —— A-1 在 `inspect.getsource(di.ingest_incremental)` 处抛 AttributeError（那是 `DailyIngest` 的方法，模块上没有这个属性），C-1 在 `_evaluate_individual()` 签名变更处抛 TypeError。两条都在**碰到目标行为之前**就"失败"了，汇总行里的 `xfailed` 计数一直很好看 | `strict=True` 只保证"意外通过要报错"，对"因为别的原因失败"一无所知。把一个 bit（失败/没失败）当成了"登记的原因仍然成立" | `_xfail(defect_id, raises=...)` 默认限定 `AssertionError`；缺陷本身就是抛异常的显式传类型。前置条件必须拆成**不带 xfail** 的独立用例（D-4 已拆） |
 | 13 | **教训被代码化成"不许变得更糟"，而不是"把现有的查一遍"** —— `TestLessonY` 的源码文本断言棘轮基线定在 65，于是 A-2/A-5 这两条**正是该教训的实例**被永久豁免；`TestEveryModuleIsMeasured` 只对账模块不对账出处，所以目录重组把 104 个出处路径变成死链它完全看不见 | 棘轮只管增量。写棘轮的时候我知道存量有问题，但把"先止血"当成了"已解决" | A-2/A-5 已改成行为断言并把基线降到 63；出处对账补 `test_every_recorded_test_path_still_exists`；点数对账补 `test_the_unmeasured_scope_stays_visible_and_only_shrinks` |
 | 14 | **等价证明的验证用例顺手把运算符钉死了** —— Phase 12 `execution_store` 的 `if dq > 0`（外层已有 `abs(dq) > DUST_QTY`，dq≠0，与 `>=` 等价）。我写的 AST 验证要求那个比较是 `ast.Gt`，于是 `>=` 变异被它"杀死"，一个真等价点被虚记成击杀 | 验证本该钉**前提**（比较位于守卫之内），我钉的是**结论的文本形态**——等于一条源码字面断言换了个 AST 的外壳（#6 的变体） | 已改为只钉前提，重测后如实记为存活 + 证明；`test_equivalence_proofs.py` 模块文档写明"不钉运算符本身" |
+| 15 | **替身与实现犯同一个错，4492 绿 + 变异 97.5% 照样被外部审计 NO-GO** —— 增量摄取的假 Yahoo 按"包含结束日"返回（真 yfinance 的 end 是排他的），假券商撤单即终态、下单即可见；没有一条测试从每日管线出发连跑几天 | 替身是照着我对接口的**假设**写的，不是照着官方契约写的（§R 的又一例）；变异测试只能发现"已有代码没被测到"，发现不了"缺失的逻辑"和"共同的错误假设" | 替身改按官方契约且默认悲观（end 排他、撤单异步、新单延迟可见）；新增多日端到端 `test_forward_daily_e2e.py` |
+| 16 | **测试经共享库互相污染** —— 一条端点用例在 session 级共享库里激活了策略配置并留着，之后每条跑 `run_portfolio` 的用例都去交易它；修 F08 后表现为 8 条无关用例同时变红 | 隔离只做了一半：conftest 把库指到临时文件，但整个 session 共用一份；`test_daily_loop_survivors` 早就撞见过，只在自己文件里打了补丁 | conftest 加 `fresh_db`（连同 API 依赖注入的单例一起换掉），所有会激活策略 / 写前向 IC 的用例改用它 |
 
 **#11/#12/#13 是同一件事的三个侧面：判据的独立性从来没有被检验过。**
 期望值来自实现（#11）、失败的一个 bit 被当成原因成立（#12）、

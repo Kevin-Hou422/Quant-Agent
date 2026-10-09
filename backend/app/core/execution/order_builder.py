@@ -111,17 +111,31 @@ def build_rebalance_orders(
     book_id: int,
     band_bps: float,
     allow_short: bool = False,
+    no_trade_band: float = 0.0,
+    name_cap: Optional[float] = None,
+    gross_cap: Optional[float] = None,
 ) -> BuildResult:
+    """
+    no_trade_band : 目标权重与**券商实际持仓权重**之差小于它就不调（PM.6 的无交易带，
+        按真实持仓而不是模拟账本重建的历史目标判断 —— 审计 F07）。
+        例外：持仓已超单票上限（name_cap），或账户已超总敞口上限（gross_cap）时，
+        **减仓单永远不被带宽吞掉** —— 降风险优先于省换手。
+    """
     if not _finite_pos(equity):
         raise ValueError(f"账户总资产必须是正的有限数：{equity!r}")
     if not (math.isfinite(band_bps) and band_bps >= 0):
         raise ValueError(f"限价带必须 ≥ 0：{band_bps!r}")
+    if not (math.isfinite(no_trade_band) and no_trade_band >= 0):
+        raise ValueError(f"无交易带必须 ≥ 0：{no_trade_band!r}")
     band = band_bps * 1e-4
     stamp = f"{decision_date:%Y%m%d}"
     out = BuildResult()
 
     tw = target_weights.astype(float)
     universe = sorted(set(tw.index) | {tk for tk, q in current_qty.items() if abs(float(q)) > DUST_QTY})
+    cur_w_all = {tk: float(current_qty.get(tk, 0.0)) * float(ref_prices.get(tk, 0.0)) / equity
+                 for tk in universe if _finite_pos(ref_prices.get(tk, np.nan))}
+    over_gross = gross_cap is not None and sum(abs(v) for v in cur_w_all.values()) > gross_cap
     sells: List[PlannedOrder] = []
     buys:  List[PlannedOrder] = []
     for tk in universe:
@@ -141,12 +155,18 @@ def build_rebalance_orders(
         target = float(math.trunc(w * equity / px))
         out.rounding[tk] = target * px / equity - w
         delta = target - cur
-        if delta > 0:
-            qty, side = int(math.floor(delta + 1e-9)), "BUY"
-        elif delta < 0:
-            qty, side = int(math.floor(-delta + 1e-9)), "SELL"
-        else:
+        if delta == 0:
             continue
+        cur_w = cur_w_all[tk]
+        if abs(w - cur_w) < no_trade_band:              # 带宽 0 时恒不成立 = 关闭
+            reducing = abs(target) < abs(cur)           # 按股数判断：反手（+x → −x）不算减仓
+            over_name = name_cap is not None and abs(cur_w) > name_cap
+            if not (reducing and (over_name or over_gross)):
+                out.skipped.append({"ticker": tk, "reason": "no_trade_band",
+                                    "current_weight": round(cur_w, 6), "target_weight": w})
+                continue
+        side = "BUY" if delta > 0 else "SELL"
+        qty = int(math.floor(abs(delta) + 1e-9))
         if qty <= 0:
             # 只剩碎股差额（账户里有零碎股时会出现）：整股单下不了
             out.skipped.append({"ticker": tk, "reason": "fractional_remainder",

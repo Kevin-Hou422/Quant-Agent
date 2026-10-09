@@ -52,52 +52,57 @@ class DailyIngest:
     # ------------------------------------------------------------------
 
     def ingest_incremental(self, dataset_name: str,
-                           backfill_start: Optional[str] = None) -> IngestResult:
+                           backfill_start: Optional[str] = None,
+                           now: Optional[datetime] = None) -> IngestResult:
         """
         **前向增量**摄取（Phase 11 核心）：
           1. 从 PIT 读该数据集**已有的最新 bar 日期**；
-          2. 空库 → 一次性**历史回填**（mode=full，这些 IC 是"回放"，非前向）；
-             非空 → 只拉 `last+1 .. 今天` 的**增量**（mode=incremental）；
-          3. 无新 bar → `no_new_bar`，不写库、不交易（周末/节假日/尚未收盘的自然结果）；
-          4. 增量过健康门后**只追加增量**进 PIT（旧实现每天重写整段，去重键含 as_of → 1000× 膨胀）；
-          5. 与交易日历**交叉校验**并记录说明（数据仍是权威，只是让不一致被看见）。
+          2. 目标日 = **最近一个已收盘的交易日**（交易所日历 + 收盘时刻，与执行层同一定义）；
+             晚于目标日的 bar（盘中未收盘的半根）一律丢弃；
+          3. 空库 → 一次性**历史回填**到目标日（mode=full，这些 IC 是"回放"，非前向）；
+             非空 → 拉 `last .. 目标日` 的**增量**（mode=incremental），**故意重叠 last 那一根**：
+             provider 在窗口内用 close.shift(1) 派生 returns，不重叠的话每根新 bar 的
+             returns 都是 NaN（外部审计 F11）；
+          4. 无新 bar → `no_new_bar`，不写库（周末/节假日/尚未收盘的自然结果）；
+          5. 增量过健康门后**只追加 > last 的部分**进 PIT；
+          6. 与交易日历**交叉校验**并记录说明（数据仍是权威，只是让不一致被看见）。
 
         返回的 `dataset` 是**从 PIT 读出的完整面板**（回填+历次增量），供交易循环消费；
         `forward_from` 是本次新增的第一根 bar 日期，交易循环据此把之后的 IC 标为真前向。
         """
         from app.config import settings
         from app.core.data_engine.pit_store import PITStore
-        from app.core.data_engine.market_calendar import cross_check, last_trading_day
+        from app.core.data_engine.market_calendar import cross_check, last_closed_session
 
-        as_of = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = now or datetime.now(timezone.utc)
+        as_of = now.isoformat(timespec="seconds")
         store = PITStore(settings.pit_store_dir)
         last = store.latest_timestamp(dataset_name)
-
-        today = pd.Timestamp.utcnow().tz_localize(None).normalize()
-        target = last_trading_day(today)          # 最近应有数据的交易日
+        target = last_closed_session(now)          # 此刻应已有日 bar 的最近交易日
+        end = target.strftime("%Y-%m-%d")
 
         # ---- 1) 空库 → 历史回填（回放种子） ----
         if last is None:
             start = backfill_start or settings.paper_start
-            res = self.ingest(dataset_name, start, today.strftime("%Y-%m-%d"))
+            res = self.ingest(dataset_name, start, end, as_of=as_of, upto=target,
+                              pit_required=True)
             res.mode = "full"
             res.forward_from = None               # 回填全部算回放，不是前向证据
             res.n_new_bars = res.n_dates
             logger.info("[daily_ingest] PIT 为空 → 历史回填 %s..%s（%d 日，计为回放）",
-                        start, today.date(), res.n_dates)
+                        start, end, res.n_dates)
             return res
 
         # ---- 2) 已有数据 → 只拉增量 ----
-        nxt = (last + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
         if last.normalize() >= target.normalize():
-            note = f"PIT 最新 bar {last.date()} 已是最近交易日 {target.date()}"
+            note = f"PIT 最新 bar {last.date()} 已是最近已收盘交易日 {target.date()}"
             logger.info("[daily_ingest] 无新 bar（%s）→ 跳过", note)
             return IngestResult(False, dataset_name, as_of, mode="no_new_bar",
                                 reject_reason="no_new_bar", calendar_note=note)
 
         # `append_pit=False`：本方法在第 3 步自己按 `> last` 过滤后写 PIT（缺陷 A-1）。
-        inc = self.ingest(dataset_name, nxt, today.strftime("%Y-%m-%d"),
-                          append_pit=False)
+        inc = self.ingest(dataset_name, last.strftime("%Y-%m-%d"), end,
+                          append_pit=False, as_of=as_of, upto=target)
         if not inc.accepted:
             inc.mode = "incremental"
             return inc
@@ -144,12 +149,18 @@ class DailyIngest:
         start:        str,
         end:          str,
         append_pit:   bool = True,
+        as_of:        Optional[str] = None,
+        upto:         Optional[pd.Timestamp] = None,
+        pit_required: bool = False,
     ) -> IngestResult:
         """
         拉取 + 健康验收。返回 IngestResult；accepted=False 时调用方应跳过当日循环并告警。
         任何加载/校验异常都视为**拒绝**（不静默降级）。
+
+        upto         : 丢弃晚于该日的 bar（尚未收盘的盘中半根不得进入 PIT / 决策）。
+        pit_required : PIT 写入失败时**拒绝**（首次回填：没落盘的数据不能成为前向记录的起点）。
         """
-        as_of = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        as_of = as_of or datetime.now(timezone.utc).isoformat(timespec="seconds")
         try:
             from app.core.data_engine.dataset_registry import (
                 load_registry_dataset, check_dataset_health,
@@ -160,6 +171,14 @@ class DailyIngest:
             return IngestResult(False, dataset_name, as_of, reject_reason=f"load_failed: {exc}")
 
         data = ds.data
+        if upto is not None and data.get("close") is not None:     # 没有 close 的面板下面会被拒
+            cut = pd.Timestamp(upto).normalize()
+            late = [d for d in data["close"].index if pd.Timestamp(d).normalize() > cut]
+            if late:
+                logger.warning("[daily_ingest] 丢弃 %d 根晚于最近已收盘交易日 %s 的 bar（未收盘）: %s",
+                               len(late), cut.date(), [str(pd.Timestamp(d).date()) for d in late])
+            data = {f: (df.loc[[pd.Timestamp(i).normalize() <= cut for i in df.index]]
+                        if isinstance(df, pd.DataFrame) else df) for f, df in data.items()}
         close = data.get("close")
         if close is None or close.empty:
             return IngestResult(False, dataset_name, as_of, reject_reason="empty_close")
@@ -197,6 +216,11 @@ class DailyIngest:
             try:
                 self._append_pit(dataset_name, data, as_of)
             except Exception as exc:  # noqa: BLE001
+                if pit_required:
+                    logger.error("[daily_ingest] PIT 写入失败 → 拒绝（未落盘的数据不能作为前向起点）: %s",
+                                 exc)
+                    return IngestResult(False, dataset_name, as_of, health_score=score,
+                                        reject_reason=f"pit_append_failed: {exc}")
                 logger.warning("[daily_ingest] PIT 追加失败（不阻塞交易循环）: %s", exc)
 
         logger.info(
@@ -218,8 +242,26 @@ class DailyIngest:
         store.append(data, as_of=as_of, name=dataset_name)
 
 
+def _execution_on() -> bool:
+    from app.config import settings
+    return str(getattr(settings, "execution_mode", "off")) != "off"
+
+
+def _run_portfolio_safely(loop, dataset, forward_from) -> Dict[str, Any]:
+    """组合账本失败不拖垮 per-factor 监控；但执行层仍要对账/续做全平（失败时不加新风险）。"""
+    try:
+        return loop.run_portfolio(dataset, forward_from=forward_from)
+    except Exception as exc:
+        logger.error("[daily_pipeline] 组合账本失败 → 本轮不调仓，只做对账/熔断维护: %s", exc)
+        pf = {"n_factors": 0, "days_processed": 0, "error": str(exc)}
+        if _execution_on():
+            pf["execution"] = loop._maintain_live(f"portfolio_error: {exc}")
+        return pf
+
+
 def run_daily_pipeline(dataset_name: str, start: str = "", end: str = "",
-                       incremental: bool = True) -> Dict[str, Any]:
+                       incremental: bool = True,
+                       now: Optional[datetime] = None) -> Dict[str, Any]:
     """
     完整每日管线：摄取 → 健康门 → （通过则）交易循环。供调度器调用。
     数据坏 → 跳过循环 + 返回拒绝原因（A2：绝不用坏数据继续）。
@@ -229,28 +271,42 @@ def run_daily_pipeline(dataset_name: str, start: str = "", end: str = "",
     `forward_from` 会传给交易循环，把新 bar 之后的 IC 标为**真前向**（TR.4 →ACTIVE 门只认这些）。
     """
     if incremental:
-        ing = DailyIngest().ingest_incremental(dataset_name, backfill_start=start or None)
+        ing = DailyIngest().ingest_incremental(dataset_name, backfill_start=start or None, now=now)
     else:
         ing = DailyIngest().ingest(dataset_name, start, end)
 
-    if not ing.accepted:
-        if ing.mode == "no_new_bar":
-            logger.info("[daily_pipeline] 无新 bar → 今日不交易（%s）", ing.calendar_note)
-            return {"ingest_accepted": False, "reason": "no_new_bar",
-                    "mode": ing.mode, "calendar_note": ing.calendar_note, "as_of": ing.as_of}
-        logger.warning("[daily_pipeline] 摄取被拒（%s）→ 跳过当日交易循环", ing.reject_reason)
-        return {"ingest_accepted": False, "reject_reason": ing.reject_reason,
-                "mode": ing.mode, "as_of": ing.as_of}
-
     from app.tasks.daily_trading_loop import DailyTradingLoop
+    if not ing.accepted:
+        # 【外部审计 F02】以前这两个分支直接 return：数据游标顶替了交易完成游标。
+        # 摄取成功后若券商当时不可用 / 进程崩溃，同日重跑会因"无新 bar"跳过执行，
+        # 熔断后的续做全平、停机期间的成交补记也都不会发生。
+        if ing.mode == "no_new_bar":
+            out = {"ingest_accepted": False, "reason": "no_new_bar",
+                   "mode": ing.mode, "calendar_note": ing.calendar_note, "as_of": ing.as_of}
+            if _execution_on():
+                # 数据已是最新 → 用 PIT 面板重跑组合 + 执行。模拟账本按 last_pnl_date 幂等续跑、
+                # 执行层按 client id 去重，重跑安全；决策日不新鲜时执行层自己会拒（只对账/续做全平）。
+                from app.config import settings
+                from app.core.data_engine.pit_store import PITStore
+                panel = PITStore(settings.pit_store_dir).load_pit(name=dataset_name) or {}
+                if panel.get("close") is not None and not panel["close"].empty:
+                    out["portfolio"] = _run_portfolio_safely(DailyTradingLoop(), panel, None)
+                else:
+                    out["portfolio"] = {"execution": DailyTradingLoop()._maintain_live("no_data")}
+            logger.info("[daily_pipeline] 无新 bar（%s）", ing.calendar_note)
+            return out
+        logger.warning("[daily_pipeline] 摄取被拒（%s）→ 不调仓，只做对账/熔断维护", ing.reject_reason)
+        out = {"ingest_accepted": False, "reject_reason": ing.reject_reason,
+               "mode": ing.mode, "as_of": ing.as_of}
+        if _execution_on():
+            out["portfolio"] = {"execution": DailyTradingLoop()._maintain_live(
+                f"ingest_rejected: {ing.reject_reason}")}
+        return out
+
     loop = DailyTradingLoop()
-    report = loop.run(ing.dataset)                       # per-factor：realized IC 监控 + 衰减
+    report = loop.run(ing.dataset, forward_from=ing.forward_from)   # per-factor：IC 监控 + 衰减
     # Phase PM.4：组合账本（真实 AUM 的美元账本，多因子净持仓 + 容量）
-    try:
-        pf = loop.run_portfolio(ing.dataset, forward_from=ing.forward_from)
-    except Exception as exc:                             # 组合账本失败不拖垮 per-factor 监控
-        logger.warning("[daily_pipeline] 组合账本失败（不阻断）: %s", exc)
-        pf = {"n_factors": 0, "days_processed": 0, "error": str(exc)}
+    pf = _run_portfolio_safely(loop, ing.dataset, ing.forward_from)
     return {
         "ingest_accepted": True, "as_of": ing.as_of, "health_score": ing.health_score,
         "mode": ing.mode, "forward_from": ing.forward_from, "n_new_bars": ing.n_new_bars,

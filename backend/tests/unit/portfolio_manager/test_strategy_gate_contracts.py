@@ -598,8 +598,37 @@ class TestPboGate:
         res = StrategyGate(use_global_trials=False).evaluate(
             {"only": pd.DataFrame(1.0, index=idx, columns=["T0"])}, _panel())
         assert res.pbo is None
-        assert res.pbo_method == "none", (
-            f"没算 PBO 却报了口径 {res.pbo_method!r}")
+        # 审计 F16 之后"为什么没算"要显式标注：single_factor（豁免） ≠ 计算失败（不通过）
+        assert res.pbo_method == "single_factor", (
+            f"单因子没算 PBO，口径应标 single_factor，实际 {res.pbo_method!r}")
+        assert not any("PBO" in r for r in res.reasons)
+
+    def test_pbo_failure_fails_the_gate(self, monkeypatch):
+        """审计 F16：PBO 计算异常以前只打日志"不作为门"，等于异常即豁免。"""
+        monkeypatch.setattr(sg, "strategy_net_returns",
+                            lambda *a, **k: (_rets(0.002, 0.01, n=100, seed=13),
+                                             pd.DataFrame()))
+        gate = StrategyGate(use_global_trials=False)
+
+        def boom(*a, **k):
+            raise RuntimeError("pbo engine down")
+        monkeypatch.setattr(gate, "_pbo", boom)
+        idx = pd.bdate_range("2023-01-02", periods=60)
+        sig = pd.DataFrame(1.0, index=idx, columns=["T0"])
+        res = gate.evaluate({"a": sig, "b": sig}, _panel())
+        assert not res.passed and res.pbo is None
+        assert any("PBO 计算失败" in r and "pbo engine down" in r for r in res.reasons)
+
+    def test_short_samples_mark_pbo_as_insufficient(self, monkeypatch):
+        # 35 行：够过"净收益样本 ≥30"那道，但不够 PBO 的 2×pbo_n_splits=40 行
+        monkeypatch.setattr(sg, "strategy_net_returns",
+                            lambda *a, **k: (_rets(0.002, 0.01, n=35, seed=13), pd.DataFrame()))
+        idx = pd.bdate_range("2023-01-02", periods=60)
+        sig = pd.DataFrame(1.0, index=idx, columns=["T0"])
+        res = StrategyGate(use_global_trials=False, pbo_n_splits=20).evaluate(
+            {"a": sig, "b": sig}, _panel())
+        assert res.pbo is None and res.pbo_method == "insufficient_data"
+        assert not any("PBO" in r for r in res.reasons)
 
 
 # ===========================================================================

@@ -170,11 +170,11 @@ class TestIncrementWindow:
             f"前向起点应是第 6 根 bar，实际 {res.forward_from} —— "
             f"重叠的旧 bar 疑似被算成了新 bar")
 
-    def test_increment_window_starts_the_day_after_the_last_bar(self, ingest,
-                                                               monkeypatch):
+    def test_increment_window_overlaps_exactly_the_last_bar(self, ingest, monkeypatch):
         """
-        `nxt = (last + pd.Timedelta(days=1))`。写成 `-` 会让增量窗口
-        从**最后一根 bar 的前一天**开始，重复拉取已有数据。
+        增量窗口**从最后一根已有 bar 本身**开始（重叠一根，审计 F11）：provider 在窗口内用
+        close.shift(1) 派生 returns，从次日开始拉的话每根新 bar 的 returns 都是 NaN。
+        只重叠一根 —— 更早开始就是重复拉取（重叠的 bar 不写回 PIT，见下面的过滤用例）。
         通过记录 loader 收到的 start 参数来验证。
         """
         self._seed(ingest, monkeypatch, seeded_days=5)
@@ -195,9 +195,9 @@ class TestIncrementWindow:
                             type("R", (), {"overall_score": 1.0})())
         _freeze_today(monkeypatch, str(real_close.index[-1].date()))
         ingest.ingest_incremental("px")
-        expected = (real_close.index[4] + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        expected = real_close.index[4].strftime("%Y-%m-%d")
         assert seen["start"] == expected, (
-            f"增量窗口起点应为最后一根 bar 的次日 {expected}，实际 {seen['start']}")
+            f"增量窗口起点应为最后一根已有 bar {expected}（重叠一根），实际 {seen['start']}")
 
     def _stub_sloppy_provider(self, monkeypatch, panel: dict):
         """
@@ -526,7 +526,7 @@ class TestDailyPipelineContract:
         monkeypatch.setattr(dtl.DailyTradingLoop, "__init__",
                             lambda self, *a, **k: None)
         monkeypatch.setattr(dtl.DailyTradingLoop, "run",
-                            lambda self, ds: _Report())
+                            lambda self, ds, forward_from=None: _Report())
         monkeypatch.setattr(dtl.DailyTradingLoop, "run_portfolio",
                             lambda self, ds, **k: {"n_factors": 1, "days_processed": 1})
 

@@ -1,7 +1,8 @@
 # 终极目标路线图：美股实盘全链路自主模拟交易
 
 > 状态：**Phase S/8/9/TR/PM/A/B 已完成（S 于 2026-09-22 关闭）；Phase 12 + FE-12 代码完成（2026-10-06，
-> 真 OpenD 端到端验收待做）；Phase 10/13/14 + R.4 未实现，R.2 部分完成** · 地基 Phase 6–8 见
+> 真 OpenD 端到端验收待做；2026-10-08 外部审计 16 条已修复 15 条、F15 部分修复）；
+> Phase 10/13/14 + R.4 未实现，R.2 部分完成** · 地基 Phase 6–8 见
 > `backend_retired_report/PAPER_TRADING_ROADMAP.md`（已归档）· 遵循 RESEARCH_OPERATING_MODEL.md
 > 生成日期：2026-08-18
 
@@ -601,6 +602,34 @@ AST 扫描全部 `tests/`，按"这个断言可能失败吗"分类，查出 **90
 > 启动（默认 `./alphas.db` 从 OneDrive 里的仓库启动就在 OneDrive，原 TestLessonQ 只查字符串看不见）；
 > `MoomooProvider` 建连前端口探测（上面那条"本 Phase 未修"已修）；`.env.forward.example` +
 > `scripts/start_forward.ps1`。**真 OpenD 端到端仍待做**：需要人在 OpenD 窗口登录。
+>
+> **外部审计（2026-10-07）→ NO-GO，16 条，全部复现属实；修复批（2026-10-08）**：
+>
+> | 编号 | 问题 | 处置 |
+> |---|---|---|
+> | F01 | Yahoo `end` 排他 → 收盘后永远拿不到当天 bar，执行层天天判陈旧 | provider 契约统一为闭区间，Yahoo 内部 +1 天；摄取目标日 = 最近已收盘交易日（与执行层同一定义 `market_calendar.last_closed_session`），丢弃未收盘半根 |
+> | F02 | 无新 bar / 摄取被拒直接 return，不对账不续做全平 | no_new_bar 时用 PIT 面板重跑组合 + 执行（幂等）；摄取被拒 / 组合异常只做维护；新增 22:45 UTC 补跑 |
+> | F03 | 下单后落库前崩溃 + 券商延迟可见 → 同日重下 | 下单调用**之前**落 `submit_attempted_at`；同一 remark 出现在两张券商单上 → 阻断 |
+> | F04 | 撤单受理即下新单 / 全平 | 轮询到终态再重新对账后建单；全平按撤单之后的真实持仓；超时不下单 |
+> | F05 | 风控看不见在途单、假设同批卖单全成交 | 最坏情况包络：卖单确认成交前不释放预算；在途买单占买入力；日亏熔断撤在途加仓单 |
+> | F06 | max_net 只声明不施加 | 组合层按占优一侧投影；下单层加净敞口与行业上限；限额必须为有限正数 |
+> | F07 | 无交易带撤销风控 | 带后再施加并独立 check；券商侧按**实际持仓**判断带宽，超限时减仓不被吞 |
+> | F08 | active 配置不可用时改交易其他因子；基准库无审批直接下单 | 券商只交易已激活策略；配置不可用 → 只维护；使用冻结的 combo_weights / method |
+> | F09 | 硬门异常放行；非实验模式分级不用 | 异常 / 未过 / 分级不允许都只维护 |
+> | F10 | 全样本拟合组合权重再切段称 OOS | 策略门改滚动前推拟合（第 k 段只用之前数据）；实盘用冻结权重 |
+> | F11 | 增量窗口首日 returns 为 NaN | 增量窗口重叠上一根 bar，只写入新增部分 |
+> | F12 | PIT 原地覆盖 | 临时文件 → 读回校验 → `os.replace`；首次回填写失败即拒绝 |
+> | F13 | 预检 ready 名不副实 | 分 `connected` / `ready` 两层；新增调度任务、存储可写、数据集、已激活策略、**真实取数**检查 |
+> | F14 | run-now 失败也返回 0 | 按真实结果给退出码（执行被拦 / 下单异常 / 组合报错 / 摄取被拒 → 3） |
+> | F15 | ACTIVE 门借用他人前向证据；先改状态再 409 | 门先于状态变更；只计本策略创建之后的 IC；激活新策略退役旧的。**部分修复**：组合账本仍是一个，未按策略版本分账 |
+> | F16 | 因子级 IC 不标前向；PBO 异常即豁免 | 透传 is_forward；PBO 失败判不通过，样本不足显式标注 |
+>
+> 同批修正：`.env.forward.example` 按 TR.2 改为 `PRICE_SOURCE=moomoo` + `us_broad_large`（上一版照抄了
+> 代码默认值）。测试：16 条审计复现全部改写为正确行为回归（`test_audit_order_regressions.py`、
+> `test_audit_portfolio_regressions.py` 等），新增**多日端到端** `integration/test_forward_daily_e2e.py`
+> （yfinance 契约替身：end 排他 + 数据延迟发布；券商悲观替身：异步撤单 + 新单延迟可见）。
+> **仍未做**：真 OpenD 上的完整交易日闭环；按策略版本分账（F15 余项）；审计"设计与运营问题"
+> 7 条（复权口径、鉴权、跨进程锁、外部告警、静态 universe、前端竞态、性能合同）未在本批处理。
 >
 > 测试：`tests/unit/execution/*`、`test_execution_store_schema.py`、`test_live_providers.py`、
 > `test_monthly_fidelity.py`、`integration/test_api_execution.py`、`integration/test_phase12_execution_wiring.py`；

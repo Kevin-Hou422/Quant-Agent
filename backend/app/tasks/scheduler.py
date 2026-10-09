@@ -87,7 +87,12 @@ def daily_trading_job() -> dict:
             out.get("n_alerts", 0), out.get("n_errors", 0),
         )
     else:
-        logger.warning("[daily_trading_job] 摄取被拒（%s）→ 已跳过交易循环", out.get("reject_reason"))
+        logger.warning("[daily_trading_job] 摄取未产生新 bar（%s）",
+                       out.get("reject_reason") or out.get("reason"))
+    if str(getattr(settings, "execution_mode", "off")) != "off":
+        from app.tasks.forward import EXIT_OK, classify_run
+        code, verdict = classify_run(out)
+        (logger.info if code == EXIT_OK else logger.error)("[daily_trading_job] 执行结论：%s", verdict)
     return out
 
 
@@ -205,6 +210,16 @@ def create_scheduler(
                 trigger = CronTrigger(hour=21, minute=30, timezone=timezone),  # 巡检之后
                 id      = "daily_trading",
                 name    = "每日数据摄取 + 交易循环",
+                replace_existing = True,
+            )
+            # 补跑：数据源收盘后更新有延迟时，21:30 那次拿不到当日 bar（no_new_bar → 不调仓）。
+            # 同一个任务再跑一次：已摄取则复用 PIT 面板、执行层按 client id 去重，重跑安全；
+            # 收盘后挂的 DAY 单仍在次日开盘前（审计设计问题 #4："每天只触发一次"）。
+            sched.add_job(
+                daily_trading_job,
+                trigger = CronTrigger(hour=22, minute=45, timezone=timezone),
+                id      = "daily_trading_retry",
+                name    = "每日交易循环补跑（数据延迟兜底）",
                 replace_existing = True,
             )
             # Task 8.2：每月 1 号成本模型校准（产出建议报告，不自动改 CostParams）

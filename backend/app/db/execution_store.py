@@ -94,6 +94,9 @@ class ExecOrder(_Base):
     dealt_avg_price: float = Column(Float, default=0.0)
     reject_reason:   str   = Column(String(64), default="")
     last_err_msg:    str   = Column(Text, default="")
+    #: 下单调用**发出之前**落的时间戳（审计 F03）。非空 = 请求可能已到达券商，
+    #: 对账时找不到也不得判"未提交"后自动重下 —— 进程可能死在券商收单与 mark_submitted 之间。
+    submit_attempted_at: datetime = Column(DateTime, nullable=True)
     created_at:      datetime = Column(DateTime, default=_now)
     updated_at:      datetime = Column(DateTime, default=_now)
 
@@ -180,7 +183,16 @@ class ExecutionStore:
         from ._sqlite_utils import harden_sqlite_engine
         harden_sqlite_engine(self._engine)
         _Base.metadata.create_all(self._engine)
+        self._add_missing_columns()
         self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
+
+    def _add_missing_columns(self) -> None:
+        """create_all 不会给已存在的表补列；新增的可空列在这里补（只加、不改、不删）。"""
+        from sqlalchemy import inspect, text
+        have = {c["name"] for c in inspect(self._engine).get_columns("exec_orders")}
+        if "submit_attempted_at" not in have:
+            with self._engine.begin() as conn:
+                conn.execute(text("ALTER TABLE exec_orders ADD COLUMN submit_attempted_at DATETIME"))
 
     # ------------------------------------------------------------------
     # 订单：写意图 / 下单结果 / 风控拒单
@@ -219,9 +231,18 @@ class ExecutionStore:
             row.dealt_avg_price = 0.0
             row.reject_reason = reject_reason
             row.last_err_msg = ""
+            row.submit_attempted_at = None
             row.updated_at = _now()
             s.commit()
             return True
+
+    def mark_attempting(self, client_id: str) -> None:
+        """下单调用发出前调用：之后无论进程在哪一步死掉，这张单都按"可能已到达券商"处理。"""
+        with self._Session() as s:
+            row = s.scalars(select(ExecOrder).where(ExecOrder.client_id == client_id)).one()
+            row.submit_attempted_at = _now()
+            row.updated_at = _now()
+            s.commit()
 
     def add_intent(self, order, book_id: int, decision_date) -> bool:
         """写前日志。返回 False = 同一 client_id 已发过（幂等跳过）。"""

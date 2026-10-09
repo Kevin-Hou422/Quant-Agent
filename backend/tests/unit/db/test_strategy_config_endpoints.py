@@ -19,7 +19,7 @@ def _save_cfg(status="proposed", factors=("1", "2")):
                                     aum=10_000, passed=True, status=status, name="ep-test"))
 
 
-def test_strategy_endpoints_lifecycle(test_client):
+def test_strategy_endpoints_lifecycle(test_client, fresh_db):
     s, sid = _save_cfg()
     # pending 含它
     r = test_client.get("/api/strategies/pending")
@@ -34,7 +34,7 @@ def test_strategy_endpoints_lifecycle(test_client):
     assert test_client.post(f"/api/strategies/{sid}/approve").status_code == 409
 
 
-def test_strategy_reject_endpoint(test_client):
+def test_strategy_reject_endpoint(test_client, fresh_db):
     s, sid = _save_cfg()
     r = test_client.post(f"/api/strategies/{sid}/reject", json={"reason": "no"})
     assert r.status_code == 200 and r.json()["status"] == "rejected"
@@ -156,3 +156,83 @@ def test_propose_creates_proposed_config_with_evidence(test_client, monkeypatch)
     # 提案必须真的进了审批队列
     pend = test_client.get("/api/strategies/pending").json()
     assert any(x["id"] == cfg["id"] for x in pend), "提案未出现在 pending 队列"
+
+
+# ---------------------------------------------------------------------------
+# 审计 F15：→ACTIVE 门先于状态变更；前向证据只算本策略创建之后；同一时刻只有一份 active
+# ---------------------------------------------------------------------------
+
+def _forward_ics(days, start, ic_mean=0.08, seed=0):
+    """往组合账本（book 0）写 days 个**真前向** IC，起始日 start。"""
+    from app.config import settings
+    from app.db.alpha_store import AlphaStore
+    from app.tasks.daily_trading_loop import PORTFOLIO_BOOK_ID
+    store = AlphaStore(db_url=settings.database_url)
+    rng = np.random.default_rng(seed)
+    for d in pd.bdate_range(start, periods=days):
+        store.record_ic(PORTFOLIO_BOOK_ID, d.date(), float(ic_mean + rng.normal(0, 0.02)),
+                        is_forward=True)
+
+
+def test_a_failed_active_gate_leaves_the_strategy_proposed(test_client, fresh_db, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "tr_enforce_active_gate", True)
+    s, sid = _save_cfg()
+    r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True})
+    assert r.status_code == 409 and "→ACTIVE 门未过" in r.json()["detail"]
+    assert s.get(sid).status == "proposed", "门没过却已经被改成 approved —— 之后再也批不了"
+    r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": False})
+    assert r.status_code == 200 and r.json()["status"] == "approved"
+
+
+def test_forward_evidence_before_the_strategy_existed_is_not_borrowed(test_client, fresh_db, monkeypatch):
+    """创建之前的组合 IC 来自别的成分 / 基准库：哪怕足够好，也不能借来给新策略过门。"""
+    from app.config import settings
+    monkeypatch.setattr(settings, "tr_enforce_active_gate", True)
+    _forward_ics(80, "2019-01-02")                       # 远早于任何策略的创建时间，且足够通过门
+    s, sid = _save_cfg()
+    r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True})
+    assert r.status_code == 409 and s.get(sid).status == "proposed"
+
+
+def test_forward_evidence_after_creation_counts(test_client, fresh_db, monkeypatch):
+    from datetime import datetime
+    from app.config import settings
+    monkeypatch.setattr(settings, "tr_enforce_active_gate", True)
+    s, sid = _save_cfg()
+    created = s.get(sid).created_at
+    _forward_ics(80, created.strftime("%Y-%m-%d"), seed=1)
+    r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True})
+    assert r.status_code == 200 and r.json()["status"] == "active", r.json()
+    assert datetime.utcnow() >= created
+
+
+def test_activating_a_new_strategy_retires_the_old_one(test_client, fresh_db):
+    s, old = _save_cfg()
+    assert test_client.post(f"/api/strategies/{old}/approve",
+                            json={"activate": True}).json()["status"] == "active"
+    _, new = _save_cfg(factors=("3",))
+    assert test_client.post(f"/api/strategies/{new}/approve",
+                            json={"activate": True, "actor": "kevin"}).json()["status"] == "active"
+    assert s.get(old).status == "retired"
+    assert [x.id for x in s.query(status="active")] == [new]
+    retire = [d for d in s.get_decisions(old) if d.decision == "retire"]
+    assert retire and f"#{new}" in retire[0].reason and retire[0].actor == "kevin"
+
+
+def test_an_ic_on_the_creation_date_itself_counts(test_client, fresh_db, monkeypatch):
+    """边界：恰好 N 天前向 IC、第一天就是创建当天 —— 创建当天那一天必须计入（≥，不是 >）。"""
+    from app.config import settings
+    from app.db.alpha_store import AlphaStore
+    from app.tasks.daily_trading_loop import PORTFOLIO_BOOK_ID
+    monkeypatch.setattr(settings, "tr_enforce_active_gate", True)
+    monkeypatch.setattr(settings, "tr_min_forward_days", 60)
+    s, sid = _save_cfg()
+    created = pd.Timestamp(s.get(sid).created_at).normalize()
+    store = AlphaStore(db_url=settings.database_url)
+    rng = np.random.default_rng(3)
+    for d in pd.date_range(created, periods=60, freq="D"):
+        store.record_ic(PORTFOLIO_BOOK_ID, d.date(), float(0.08 + rng.normal(0, 0.02)),
+                        is_forward=True)
+    r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True})
+    assert r.status_code == 200 and r.json()["status"] == "active", r.json()

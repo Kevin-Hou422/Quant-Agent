@@ -150,7 +150,8 @@ def resolve_cost_params(dataset: WidePanel, aum: float, cost_params=None):
 
 def strategy_net_returns(factor_signals: Signals, dataset: WidePanel,
                          aum: float = 1_000_000.0, method: str = "ic_weighted",
-                         cost_params=None, apply_risk: bool = True) -> Tuple[pd.Series, pd.DataFrame]:
+                         cost_params=None, apply_risk: bool = True,
+                         walk_forward_folds: Optional[int] = None) -> Tuple[pd.Series, pd.DataFrame]:
     """
     把多因子信号经 PortfolioManager 合成组合权重，再经 BacktestEngine 得**策略净收益序列**。
     返回 (net_returns, composite_signal)。
@@ -158,6 +159,7 @@ def strategy_net_returns(factor_signals: Signals, dataset: WidePanel,
     `apply_risk=True`（默认）：对权重施加**与实盘同一套**风控(PM.5)与无交易带(PM.6)，
     使**门评估的账本 == 实际交易的账本**（修"验证的和交易的不是同一个组合"）。
     成本参数 None → grounded（见 `resolve_cost_params`）。
+    `walk_forward_folds`：组合权重按滚动前推拟合（审计 F10）；策略门的分段 OOS 必须用它。
     """
     from app.core.portfolio_manager.manager import PortfolioManager
     from app.core.backtest_engine.backtest_engine import BacktestEngine
@@ -169,7 +171,7 @@ def strategy_net_returns(factor_signals: Signals, dataset: WidePanel,
 
     cp = resolve_cost_params(dataset, aum, cost_params)
     pm = PortfolioManager(aum=aum, method=method, cost_params=cp)
-    book = pm.build_book(factor_signals, prices, volume)
+    book = pm.build_book(factor_signals, prices, volume, walk_forward_folds=walk_forward_folds)
     weights = book.weights
 
     if apply_risk:
@@ -361,8 +363,11 @@ class StrategyGate:
 
         # ---- 策略净收益 ----
         try:
+            # 审计 F10：组合权重按与分段相同的边界**滚动前推**拟合 —— 否则每一段收益都
+            # 来自用全样本（含该段本身）拟合出的权重，"分段 OOS"名不副实。
             rets, _ = strategy_net_returns(factor_signals, dataset, aum=self.aum,
-                                           method=self.method, cost_params=cost_params)
+                                           method=self.method, cost_params=cost_params,
+                                           walk_forward_folds=self.n_segments)
         except Exception as exc:  # fail-closed
             logger.warning("[strategy_gate] 策略回测失败 → 不通过: %s", exc)
             res.reasons = [f"策略回测失败: {exc}"]
@@ -413,8 +418,12 @@ class StrategyGate:
             reasons.append(f"DSR/t 计算失败: {exc}")
 
         # ---- 3. PBO：候选各因子单因子策略收益构成矩阵 → CSCV 过拟合概率（S.3）----
-        #    量化"从这些因子里挑最优"是否过拟合；单因子(<2)无法算 → 跳过、不作为门。
-        if len(factor_signals) >= 2:
+        #    量化"从这些因子里挑最优"是否过拟合；单因子(<2)无法算 → 跳过、不作为门
+        #    （pbo_method="single_factor" 显式标注）。样本太短同样显式标注 "insufficient_data"。
+        #    **计算失败 = 不通过**（审计 F16：以前只打日志"不作为门"，异常就等于豁免）。
+        if len(factor_signals) < 2:
+            res.pbo_method = "single_factor"
+        else:
             try:
                 cols = []
                 for name, sig in factor_signals.items():
@@ -430,8 +439,13 @@ class StrategyGate:
                     if pbo > self.pbo_threshold:
                         reasons.append(
                             f"PBO {pbo:.2f} > {self.pbo_threshold}（{method}，选择流程过拟合）")
-            except Exception as exc:
-                logger.warning("[strategy_gate] PBO 计算失败（不作为门）: %s", exc)
+                else:
+                    res.pbo_method = "insufficient_data"
+                    logger.info("[strategy_gate] PBO 样本不足（%d 行 × %d 列），本次不算 PBO",
+                                mat.shape[0], mat.shape[1])
+            except Exception as exc:  # fail-closed
+                logger.warning("[strategy_gate] PBO 计算失败 → 不通过: %s", exc)
+                reasons.append(f"PBO 计算失败: {exc}")
 
         res.reasons = reasons
         res.passed = len(reasons) == 0

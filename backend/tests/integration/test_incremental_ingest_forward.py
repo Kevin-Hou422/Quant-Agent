@@ -72,31 +72,33 @@ def test_ingest_incremental_backfill_then_increment(tmp_path, monkeypatch):
 
     full = _panel("2024-01-02", 30)
 
-    # 用可控的"当前面板"替代真实 provider：ingest() 直接返回给定窗口的切片
-    def fake_ingest(self, name, start, end):
-        # 复刻真实 ingest 的关键副作用：通过健康门后**写 PIT**
+    # 用可控的"当前面板"替代 registry 加载：ingest() 返回给定**闭区间**窗口的切片。
+    # 这里测的是 ingest_incremental 的游标逻辑；provider 的真实区间语义（yfinance 的 end
+    # 是排他的）由 test_forward_daily_e2e.py 用契约替身覆盖 —— 本替身不冒充 Yahoo。
+    def fake_ingest(self, name, start, end, append_pit=True, as_of=None, upto=None,
+                    pit_required=False):
         from app.tasks.daily_ingest import IngestResult
         s, e = pd.Timestamp(start), pd.Timestamp(end)
         sl = {k: v.loc[(v.index >= s) & (v.index <= e)] for k, v in full.items()}
         if sl["close"].empty:
             return IngestResult(False, name, "as_of", reject_reason="empty_close")
-        DailyIngest._append_pit(name, sl, f"{start}T00:00:00")
+        if append_pit:
+            DailyIngest._append_pit(name, sl, f"{start}T00:00:00")
         return IngestResult(True, name, "as_of", health_score=1.0,
                             n_dates=len(sl["close"]), n_tickers=sl["close"].shape[1], dataset=sl)
     monkeypatch.setattr(DailyIngest, "ingest", fake_ingest)
-    # 把"今天"固定在面板末日，避免依赖真实日期
-    monkeypatch.setattr("app.tasks.daily_ingest.pd.Timestamp.utcnow",
-                        staticmethod(lambda: full["close"].index[-1]))
+    from app.core.data_engine.market_calendar import session_close_utc
+    now = session_close_utc(full["close"].index[-1]) + pd.Timedelta(hours=1)
 
     ing = DailyIngest()
-    r1 = ing.ingest_incremental("d")                      # 空库 → 回填
+    r1 = ing.ingest_incremental("d", now=now)             # 空库 → 回填到最近已收盘交易日
     assert r1.accepted and r1.mode == "full"
     assert r1.forward_from is None                        # 回填不算前向证据
     from app.core.data_engine.pit_store import PITStore
     s = PITStore(str(tmp_path / "pit"))
-    assert s.latest_timestamp("d") is not None
+    assert s.latest_timestamp("d") == full["close"].index[-1]
 
-    r2 = ing.ingest_incremental("d")                      # 再跑一次 → 无新 bar
+    r2 = ing.ingest_incremental("d", now=now)             # 再跑一次 → 无新 bar
     assert (not r2.accepted) and r2.mode == "no_new_bar"
 
 

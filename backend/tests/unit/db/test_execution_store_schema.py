@@ -59,6 +59,7 @@ NULLABLE = {
         "limit_price": False, "target_weight": True, "status": False,
         "broker_order_id": True, "broker_status": True, "dealt_qty": True,
         "dealt_avg_price": True, "reject_reason": True, "last_err_msg": True,
+        "submit_attempted_at": True,
         "created_at": True, "updated_at": True},
     "exec_fills": {
         "id": False, "client_id": False, "broker_order_id": False, "book_id": False,
@@ -427,3 +428,42 @@ class TestSnapshotsAndState:
         with store._engine.connect() as c:
             raw = c.execute(text("SELECT payload FROM exec_events WHERE kind='c'")).scalar()
         assert "熔断" in raw
+
+
+# ===========================================================================
+# 审计 F03：下单调用之前先落"尝试过"
+# ===========================================================================
+
+class TestSubmitAttempt:
+
+    def test_attempt_marker_is_set_before_the_broker_call(self, store):
+        o = _po()
+        assert store.add_intent(o, -1, D1)
+        assert store.get(o.client_id).submit_attempted_at is None
+        store.mark_attempting(o.client_id)
+        row = store.get(o.client_id)
+        assert row.submit_attempted_at is not None and row.status == ST_PENDING
+
+    def test_a_retryable_row_reused_for_a_new_intent_starts_unattempted(self, store):
+        o = _po()
+        store.add_intent(o, -1, D1)
+        store.mark_attempting(o.client_id)
+        store.mark_not_submitted(o.client_id, "confirmed absent")
+        assert store.add_intent(o, -1, D1)          # NOT_SUBMITTED 可重试 → 复用这一行
+        assert store.get(o.client_id).submit_attempted_at is None
+
+    def test_old_databases_get_the_new_column(self, tmp_path):
+        """create_all 不给已存在的表补列；没补的话旧库上每次 mark_attempting 都会报错。"""
+        url = f"sqlite:///{tmp_path / 'old.db'}"
+        store = ExecutionStore(db_url=url)
+        with store._engine.begin() as conn:
+            conn.execute(text("ALTER TABLE exec_orders DROP COLUMN submit_attempted_at"))
+        cols = {c["name"] for c in inspect(store._engine).get_columns("exec_orders")}
+        assert "submit_attempted_at" not in cols
+        again = ExecutionStore(db_url=url)
+        cols = {c["name"] for c in inspect(again._engine).get_columns("exec_orders")}
+        assert "submit_attempted_at" in cols
+        o = _po()
+        again.add_intent(o, -1, D1)
+        again.mark_attempting(o.client_id)
+        assert again.get(o.client_id).submit_attempted_at is not None

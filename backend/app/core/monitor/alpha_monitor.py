@@ -107,16 +107,19 @@ class AlphaMonitor:
         date,                          # datetime.date | "YYYY-MM-DD"
         realized_ic:     float,
         realized_return: float = 0.0,
+        is_forward:      bool = False,
     ) -> MonitorStatus:
         """
         记录当日 realized IC 并返回即时监控快照。
         幂等：同 (alpha_id, date) 重复调用覆盖旧值，不重复记账。
         因子不存在时抛 KeyError。
+        is_forward : 该日是否真前向（以前这里不收这个参数，因子级 IC 一律被记成回放 —— 审计 F16）。
         """
         if self.store.get_by_id(alpha_id) is None:
             raise KeyError(f"Alpha id={alpha_id} 不存在")
 
-        self.store.record_ic(alpha_id, date, realized_ic, realized_return)
+        self.store.record_ic(alpha_id, date, realized_ic, realized_return,
+                             is_forward=bool(is_forward))
 
         ics = self._ic_values(alpha_id)
         roll = ics[-self.rolling_window:]

@@ -50,6 +50,28 @@ def _hermetic_run_flags(tmp_path_factory):
     yield
 
 
+@pytest.fixture
+def fresh_db(tmp_path, monkeypatch):
+    """
+    本条用例自己的库（含 API 依赖注入的 AlphaStore / StrategyStore 单例）。
+
+    会**激活策略配置**或往组合账本写前向 IC 的用例必须用它：session 级共享库里留下一份
+    active 配置，之后每一条跑 `run_portfolio` 的用例都会去交易它（审计 F08 之后，配置成分
+    缺失还会让组合直接停摆）—— 一条用例的结论不能取决于前面跑过什么。
+    """
+    import app.dependencies as deps
+    from app.config import settings
+    from app.db.alpha_store import AlphaStore
+    from app.db.strategy_store import StrategyStore
+    url = f"sqlite:///{(tmp_path / 'fresh.db').as_posix()}"
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(settings, "database_url", url)
+    a, s = AlphaStore(db_url=url), StrategyStore(db_url=url)
+    monkeypatch.setattr(deps, "_get_store_singleton", lambda: a)
+    monkeypatch.setattr(deps, "_get_strategy_store_singleton", lambda: s)
+    return url
+
+
 # ---------------------------------------------------------------------------
 # Dataset factory
 # ---------------------------------------------------------------------------

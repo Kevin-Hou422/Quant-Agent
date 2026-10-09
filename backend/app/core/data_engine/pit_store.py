@@ -25,6 +25,7 @@ pit_store.py — Point-in-Time（时点）数据存储（Phase 8.1，2026-08-19�
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
@@ -224,8 +225,29 @@ class PITStore:
                     raise
 
             group = group.sort_values(["timestamp", "ticker", "as_of"]).reset_index(drop=True)
-            group.to_parquet(out_path, compression="snappy", index=False)
+            self._atomic_write(group, out_path)
             logger.debug("[pit_store] 写入 %s (%d 行)", out_path, len(group))
+
+    @staticmethod
+    def _atomic_write(df: pd.DataFrame, out_path: Path) -> None:
+        """
+        先写同目录临时文件 → 读回校验行数 → os.replace 原子替换。
+
+        【外部审计 F12】原先直接 `to_parquet(out_path)` 覆盖年度分区：写到一半中断
+        （断电 / 磁盘满 / 进程被杀），**之前的全部历史**就被一个残缺文件替换，前向数据不可再生。
+        os.replace 在同一文件系统上是原子的：失败时旧文件原样保留。
+        （跨年度的一次追加涉及多个分区，各分区独立原子；不提供跨分区事务。）
+        """
+        tmp = out_path.with_name(out_path.name + ".tmp")
+        try:
+            df.to_parquet(tmp, compression="snappy")        # RangeIndex 只进元数据，不成列
+            n = len(pd.read_parquet(tmp, columns=["timestamp"]))
+            if n != len(df):
+                raise OSError(f"PIT 临时分区校验失败：写入 {len(df)} 行，读回 {n} 行")
+            os.replace(tmp, out_path)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
 
     def _load_long(
         self,

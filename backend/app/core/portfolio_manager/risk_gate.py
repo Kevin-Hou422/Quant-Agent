@@ -41,6 +41,11 @@ class RiskLimits:
     long_only:         bool  = True
 
     def __post_init__(self):
+        # 审计 F06：约束值必须是有限正数（目标波动可为 None）；NaN 会让每一条比较都为假 = 不限制
+        for k in ("max_gross", "max_net", "max_name_weight", "max_sector_weight", "max_drawdown"):
+            v = getattr(self, k)
+            if not (isinstance(v, (int, float)) and np.isfinite(v) and v > 0):
+                raise ValueError(f"RiskLimits.{k} 必须是正的有限数：{v!r}")
         if self.long_only:
             self.max_net = min(self.max_net, self.max_gross)
 
@@ -207,5 +212,15 @@ class PortfolioRiskGate:
         gscaled = False
         if g > lim.max_gross + 1e-12:
             a *= (lim.max_gross / g)
+            gscaled = True
+        # 5. 净敞口上限（审计 F06：以前 RiskLimits 声明了 max_net、check 也会报，apply 却从不施加）。
+        #    只缩**占优的那一侧**：多头过量就按比例缩多头，空头过量就缩空头 —— 只缩不放，
+        #    单票 / 行业 / gross 约束因此保持成立。long-only 下等价于整体缩到 max_net。
+        net = float(a.sum())
+        if abs(net) > lim.max_net:
+            sign = np.sign(net)                              # 占优的一侧
+            side = np.sign(a) == sign
+            side_sum = float(a[side].sum())                  # 同号且 |side_sum| ≥ |net| > 0
+            a[side] *= (sign * lim.max_net - (net - side_sum)) / side_sum
             gscaled = True
         return pd.Series(a, index=idx), nclip, nsec, gscaled

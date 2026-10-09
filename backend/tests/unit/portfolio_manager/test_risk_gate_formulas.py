@@ -128,7 +128,9 @@ def test_apply_single_name_cap_is_the_product():
     """
     # **必须让 max_gross ≠ 1.0**：否则 w*1.0 与 w/1.0 完全相同，
     # 这个断言就区分不了 `cap = max_name_weight * max_gross` 里的乘除。
-    lim = RiskLimits(max_gross=2.0, max_name_weight=0.25, max_sector_weight=10.0,
+    # max_net 必须显式放到 2.0：long-only 下 net = gross，默认 max_net=1.0 时净敞口投影
+    # （审计 F06 之后真的会施加）会把整体缩到 1.0。这条原先能绿，正是因为 apply 从不施加 net。
+    lim = RiskLimits(max_gross=2.0, max_net=2.0, max_name_weight=0.25, max_sector_weight=10.0,
                      long_only=True)
     out, rep = PortfolioRiskGate(lim).apply(_w([[1.60, 0.20, 0.10, 0.10]]))
     row = out.iloc[0]

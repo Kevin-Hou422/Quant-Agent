@@ -73,6 +73,14 @@ class FakeTradeContext:
         self.extra_position_rows: List[dict] = []
         #: 历史订单接口返回前对行做变换（模拟历史接口给出陈旧副本）
         self.history_transform: Optional[Callable[[List[dict]], List[dict]]] = None
+        #: 【悲观契约，审计 F04】撤单**异步**：modify_order(CANCEL) 只受理请求、订单仍在途，
+        #: 直到 settle_cancels()（或撮合时先成交）—— 真实券商的撤单回执不等于订单已结束。
+        self.async_cancel = False
+        self.cancel_requested: set = set()
+        #: 【悲观契约，审计 F03】新单**延迟可见**：下单成功后暂不出现在订单列表 / 历史订单里，
+        #: 直到 reveal_orders() —— 列表查询成功 ≠ 刚收的单已经能查到。
+        self.hide_new_orders = False
+        self.hidden: set = set()
         self.closed = False
 
     # -- 工具 ------------------------------------------------------------------
@@ -128,6 +136,8 @@ class FakeTradeContext:
             "create_time": self.now, "updated_time": self.now, "dealt_qty": 0.0,
             "dealt_avg_price": 0.0, "last_err_msg": "", "remark": kw.get("remark") or "",
             "time_in_force": kw.get("time_in_force"), "currency": "USD"}
+        if self.hide_new_orders:
+            self.hidden.add(oid)
         if self.accept_then_error:
             return RET_ERROR, self.accept_then_error
         return RET_OK, self._df("place_order", [self.orders[oid]])
@@ -136,7 +146,7 @@ class FakeTradeContext:
         self._rec("order_list_query", kw)
         if "order_list_query" in self.fail:
             return RET_ERROR, self.fail["order_list_query"]
-        out = self._df("order_list_query", list(self.orders.values()))
+        out = self._df("order_list_query", self._visible())
         if self.on_order_read is not None:
             self.on_order_read(self)
         return RET_OK, out
@@ -145,7 +155,7 @@ class FakeTradeContext:
         self._rec("history_order_list_query", kw)
         if not self.history_supported:
             return RET_ERROR, "simulate trading does not support history orders"
-        rows = [dict(o) for o in self.orders.values()]
+        rows = [dict(o) for o in self._visible()]
         if self.history_transform is not None:
             rows = self.history_transform(rows)
         return RET_OK, self._df("history_order_list_query", rows)
@@ -158,12 +168,32 @@ class FakeTradeContext:
         o = self.orders.get(str(order_id))
         if o is None or o["order_status"] not in _OPEN:
             return RET_ERROR, f"order {order_id} not cancellable"
-        o["order_status"] = "CANCELLED_PART" if o["dealt_qty"] > 0 else "CANCELLED_ALL"
-        o["updated_time"] = self.now
+        if self.async_cancel:
+            self.cancel_requested.add(str(order_id))          # 受理，但订单仍在途
+        else:
+            o["order_status"] = "CANCELLED_PART" if o["dealt_qty"] > 0 else "CANCELLED_ALL"
+            o["updated_time"] = self.now
         return RET_OK, self._df("modify_order", [{"trd_env": kw.get("trd_env"), "order_id": order_id}])
 
     def close(self):
         self.closed = True
+
+    # -- 悲观契约的推进 ----------------------------------------------------------
+
+    def _visible(self) -> List[dict]:
+        return [o for oid, o in self.orders.items() if oid not in self.hidden]
+
+    def reveal_orders(self) -> None:
+        self.hidden.clear()
+
+    def settle_cancels(self) -> None:
+        """异步撤单生效：受理过撤单、仍在途的订单进入撤销终态。"""
+        for oid in list(self.cancel_requested):
+            o = self.orders[oid]
+            if o["order_status"] in _OPEN:
+                o["order_status"] = "CANCELLED_PART" if o["dealt_qty"] > 0 else "CANCELLED_ALL"
+                o["updated_time"] = self.now
+        self.cancel_requested.clear()
 
     # -- 撮合市场 ------------------------------------------------------------------
 

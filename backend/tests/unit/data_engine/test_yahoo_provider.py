@@ -141,8 +141,16 @@ class TestDownloadParameters:
         seen = {}
         _install(monkeypatch, spy=seen)
         YahooFinanceProvider().fetch(TICKERS, "2020-02-02", "2021-03-03")
-        assert seen["start"] == "2020-02-02" and seen["end"] == "2021-03-03"
+        # DataProvider 契约是闭区间 [start, end]；yfinance 的 end 是**排他**的（官方文档），
+        # 所以必须传 end 的**下一天**。原先原样转发 end，永远少最后一天（外部审计 F01）。
+        assert seen["start"] == "2020-02-02" and seen["end"] == "2021-03-04"
         assert seen["group_by"] == "column"
+
+    def test_month_and_year_boundaries_roll_over(self, monkeypatch):
+        seen = {}
+        _install(monkeypatch, spy=seen)
+        YahooFinanceProvider().fetch(TICKERS, "2023-12-01", "2023-12-31")
+        assert seen["end"] == "2024-01-01"
 
     def test_tickers_are_upper_cased_before_the_request(self, monkeypatch):
         seen = {}

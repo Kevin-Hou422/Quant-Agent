@@ -259,17 +259,25 @@ def test_preflight_endpoint_reports_each_check(api, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "scheduler_db_url", f"sqlite:///{(tmp_path / 's.db').as_posix()}")
     monkeypatch.setattr(settings, "pit_store_dir", str(tmp_path / "pit"))
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{(tmp_path / 'exec.db').as_posix()}")
+    import app.core.execution.golive as gl
+    monkeypatch.setattr(settings, "price_source", "moomoo")
+    monkeypatch.setattr(gl, "_probe_data", lambda s, t: (True, f"bar {t.date()}"))
+    monkeypatch.setattr(gl, "_active_strategy_problem", lambda s: (True, "active #1"))
     app.dependency_overrides[get_opend_probe] = lambda: (lambda h, p: True)
     try:
         body = client.post("/api/execution/preflight").json()
         checks = {c["name"]: c for c in body["checks"]}
-        assert body["ready"] is True, [c for c in body["checks"] if not c["ok"]]
+        assert body["ready"] is True and body["connected"] is True, \
+            [c for c in body["checks"] if not c["ok"]]
+        assert checks["scheduler_jobs"]["ok"]         # 真的按当前配置构建了调度器
         assert checks["account_funds"]["ok"]          # 60k 现金 + 20k 持仓 vs 100k：偏离 20%
         assert body["reconcile"]["status"] == "baseline"
         assert ctx.calls_of("place_order") == [] and ctx.closed
 
         app.dependency_overrides[get_opend_probe] = lambda: (lambda h, p: False)
         body = client.post("/api/execution/preflight").json()
-        assert body["ready"] is False and body["checks"][-1]["name"] == "opend"
+        checks = {c["name"]: c for c in body["checks"]}
+        assert body["ready"] is False and body["connected"] is False
+        assert not checks["opend"]["ok"] and "broker_account" not in checks
     finally:
         app.dependency_overrides.pop(get_opend_probe, None)

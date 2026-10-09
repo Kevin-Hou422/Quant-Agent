@@ -124,6 +124,22 @@ def session_close_utc(d: Optional[DateLike] = None,
     return close.to_pydatetime().astimezone(timezone.utc)
 
 
+def last_closed_session(now: datetime, exchange: str = _DEFAULT_EXCHANGE) -> pd.Timestamp:
+    """
+    收盘时刻 ≤ now 的最近一个交易日（按**交易所所在地日期**算，不按 UTC 日期）。
+
+    这是"此刻应该有哪一根日 bar"的唯一定义：摄取用它决定拉到哪天、哪些 bar 尚未收盘
+    必须丢弃；执行层用它判断决策日是否新鲜。两边各算各的就会出现"数据说有、执行说旧"。
+    日历库不可用时 session_close_utc 返回 None → 视为未收盘，往前退一天（保守）。
+    """
+    local = pd.Timestamp(now).tz_convert("America/New_York").tz_localize(None).normalize()
+    d = last_trading_day(local, exchange)
+    close = session_close_utc(d, exchange)
+    if close is None or close > now:
+        d = last_trading_day(d - pd.Timedelta(days=1), exchange)
+    return d
+
+
 def minutes_after_close_utc(minutes: int = 30, d: Optional[DateLike] = None,
                             exchange: str = _DEFAULT_EXCHANGE) -> Optional[datetime]:
     """收盘后 N 分钟的 UTC 时刻（用于安排"收盘后摄取"）。非交易日 None。"""

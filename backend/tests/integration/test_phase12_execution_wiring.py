@@ -1,12 +1,13 @@
 """
-test_phase12_execution_wiring.py — §K：执行层**接进了主线**，而且下的是**模拟账本当天交易的那一行**
+test_phase12_execution_wiring.py — §K：执行层**接进了主线**，下的是**已激活策略**风控后的那一行
 
 只测 OrderManager 本身证明不了"每日组合账本真的会下单"。这里从 `run_portfolio` 入口走：
 数据集以"最近一个已收盘的交易日"结尾（真实美股日历 + 真实时钟，新鲜度检查走真路径），
 券商换成与已安装 SDK 契约对齐的替身。
 
-判别性断言：纸交易订单的股数 = trunc(模拟账本当日目标权重 × 账户资产 / 当日收盘价)，
-逐名比对 —— 执行层若取错行（例如倒数第二行、或未过风控的原始权重），股数就对不上。
+判别性断言：纸交易订单的股数 = trunc(决策日风控后目标权重 × 账户资产 / 当日收盘价)，
+逐名比对；无交易带按**券商实际持仓**判断（审计 F07）—— 执行层若取错行、取了带后的模拟
+账本权重、或未过风控的原始权重，股数就对不上。没有激活策略时券商侧只对账（审计 F08）。
 """
 
 from __future__ import annotations
@@ -67,43 +68,97 @@ def loop_env(tmp_path, monkeypatch):
     return ctx, made, build, settings
 
 
-def test_paper_execution_trades_the_same_row_the_sim_book_traded(loop_env, monkeypatch):
+def _activate_strategy(loop, settings, monkeypatch, tmp_path, dsls=("rank(ts_delta(close, 5))",
+                                                                   "rank(-ts_delta(close, 20))")):
+    """PAPER 因子 + 一份**已批准并激活**的策略配置（冻结等权组合权重）。返回因子 id 列表。"""
+    from app.db.alpha_store import AlphaResult
+    from app.db.strategy_store import StrategyConfig, StrategyStore
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'a.db'}")
+    ids = []
+    for dsl in dsls:
+        aid = loop.store.save(AlphaResult(dsl=dsl, status="candidate"))
+        loop.store.update_status(aid, "validated")
+        loop.store.update_status(aid, "paper")
+        ids.append(str(aid))
+    ss = StrategyStore()
+    sid = ss.save(StrategyConfig(factors=ids, combo_weights={i: 1.0 / len(ids) for i in ids},
+                                 aum=AUM, method="ic_weighted"))
+    ss.update_status(sid, "approved")
+    ss.update_status(sid, "active")
+    return ids, sid
+
+
+def test_paper_execution_trades_the_risk_gated_row_of_the_active_strategy(loop_env, monkeypatch,
+                                                                        tmp_path):
     ctx, made, build, settings = loop_env
     monkeypatch.setattr(settings, "execution_mode", "moomoo_paper")
     snap = lambda tks: pd.DataFrame([{"code": "US.S0", "bid_price": 1.0, "ask_price": 1.0}])  # noqa: E731
     monkeypatch.setattr("app.core.trading_context.providers.moomoo_snapshot_fn",
                         lambda host, port: snap)
     loop = build()
+    _, sid = _activate_strategy(loop, settings, monkeypatch, tmp_path)
     ds = _dataset()
     out = loop.run_portfolio(ds, aum=AUM)
 
+    assert out["active_config"] == sid and out["combo_weights"] == pytest.approx(
+        {k: 0.5 for k in out["combo_weights"]}), "没有用策略配置里冻结的组合权重"
     ex = out["execution"]
     assert made == [1] and ctx.closed, "网关没有被建立或没有被关闭"
     assert ex["blocked"] == "", ex
     assert ex["decision_date"] == str(ds["close"].index[-1].date())
     assert ex["reconcile"]["status"] == "baseline"
+    assert out["post_band_violations"] == []
 
-    last = ds["close"].index[-1]
-    sim_fills = loop.broker.store.fills_on(0, last)
-    assert sim_fills, "模拟账本最后一天没有成交记录 —— 无从比对"
-    expected = {}
-    for f in sim_fills:
-        q = math.trunc(f.target_weight * AUM / f.fill_price)
-        if q > 0:
-            expected[f.ticker] = q
-    assert expected, "模拟账本最后一天没有正目标 —— 用例失去判别力"
+    # 券商收到的 = 风控后、无交易带前的决策日目标；空账户上带宽相对实际持仓（0）判断
+    target, band = out["execution_target"], out["no_trade_band"]
+    assert target and all(np.isfinite(w) and w != 0 for w in target.values()), "目标里混进了 0 / NaN 权重"
+    px = ds["close"].iloc[-1]
+    expected = {tk: math.trunc(w * AUM / px[tk]) for tk, w in target.items()
+                if w >= band and math.trunc(w * AUM / px[tk]) > 0}
+    assert expected, "目标里没有超过无交易带的正权重 —— 用例失去判别力"
     placed = {kw["code"].split(".", 1)[1]: kw["qty"] for kw in ctx.calls_of("place_order")}
     rejected = {r["ticker"]: (r["qty"], r["reason"]) for r in ex["gate"]["rejected"]}
-    # 下了的 + 被买入力拦下的 = 模拟账本当日目标，逐名、逐股对得上
     assert {**placed, **{t: q for t, (q, _) in rejected.items()}} == expected
     assert {r for _, r in rejected.values()} <= {"insufficient_buying_power"}
     assert ex["n_submitted"] == len(placed) > 0
+    skipped_band = {s["ticker"] for s in ex["build"]["skipped"] if s["reason"] == "no_trade_band"}
+    assert skipped_band == {tk for tk, w in target.items() if 0 < w < band}
 
     assert out["t3"]["mode"] == "live", "执行层在线时 T3 应来自券商实时账户"
     assert out["t3"]["buying_power"] == pytest.approx(AUM)
 
     from app.db.diagnostics_store import DiagnosticsStore
     assert DiagnosticsStore().recent(1)[0]["execution"]["n_submitted"] == ex["n_submitted"]
+
+
+def test_without_an_active_strategy_the_broker_only_reconciles(loop_env, monkeypatch):
+    """审计 F08：没有被批准并激活的策略版本 → 基准库只进模拟账本，券商侧只对账、不下单。"""
+    ctx, made, build, settings = loop_env
+    monkeypatch.setattr(settings, "execution_mode", "moomoo_paper")
+    out = build().run_portfolio(_dataset(), aum=AUM)
+    assert out["used_baseline"] is True and out["days_processed"] > 0
+    assert out["strategy_verdict"] is None, "基准库不是被评审的策略，不该跑策略门"
+    assert out["execution"]["blocked"] == "maintenance_only: no_active_strategy"
+    assert out["execution"]["reconcile"]["status"] == "baseline"
+    assert ctx.calls_of("place_order") == []
+
+
+def test_unusable_active_strategy_halts_new_risk_instead_of_trading_other_factors(
+        loop_env, monkeypatch, tmp_path):
+    """审计 F08：active 配置引用的因子缺信号 → 不得改用其他 PAPER 因子，只维护。"""
+    from app.db.alpha_store import AlphaResult
+    ctx, made, build, settings = loop_env
+    monkeypatch.setattr(settings, "execution_mode", "moomoo_paper")
+    loop = build()
+    _activate_strategy(loop, settings, monkeypatch, tmp_path,
+                       dsls=("no_such_operator(close)", "rank(ts_delta(close, 5))"))
+    other = loop.store.save(AlphaResult(dsl="rank(close)", status="candidate"))
+    loop.store.update_status(other, "validated")
+    loop.store.update_status(other, "paper")
+    out = loop.run_portfolio(_dataset(), aum=AUM)
+    assert out["reason"] == "active_config_unusable" and out["days_processed"] == 0
+    assert out["execution"]["blocked"] == "maintenance_only: active_config_unusable"
+    assert ctx.calls_of("place_order") == []
 
 
 def test_default_mode_never_touches_the_broker(loop_env):

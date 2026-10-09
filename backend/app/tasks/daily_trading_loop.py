@@ -99,7 +99,7 @@ class DailyTradingLoop:
     # 主入口
     # ------------------------------------------------------------------
 
-    def run(self, dataset: Dict[str, pd.DataFrame]) -> LoopReport:
+    def run(self, dataset: Dict[str, pd.DataFrame], forward_from=None) -> LoopReport:
         """
         对全部 PAPER / ACTIVE 因子跑交易循环（每个因子从其续跑点到 dataset 末日）。
         逐 alpha 隔离——任一因子失败不影响其他。
@@ -131,7 +131,7 @@ class DailyTradingLoop:
             n_alphas=len(candidates),
         )
         for rec in candidates:
-            res = self._run_one_alpha(rec, dataset)
+            res = self._run_one_alpha(rec, dataset, forward_from)
             report.results.append(res)
             if res.error:
                 report.n_errors += 1
@@ -212,23 +212,49 @@ class DailyTradingLoop:
 
         from app.config import settings
 
-        # ── PM.7：若已有 **active 策略配置**，只交易它已批准的成分（配置=资金决策单位）。
+        # ── PM.7 / 审计 F08：**active 策略配置 = 资金决策单位**。
+        #
+        # 原先只有"过滤后非空"才按配置交易；配置里的因子全部退役 / 取信号失败 / 读库异常时
+        # 继续交易**其他** PAPER 因子 —— 被批准的是 A，交易的是 B。现在：
+        #   · 有 active 配置 → 必须**全部**成分都可用，否则本轮不调仓（只对账/熔断维护）；
+        #     用它审批时冻结的 combo_weights / method，不再每天重新拟合。
+        #   · 读不到配置（库异常）→ 本轮不调仓。
+        #   · 没有 active 配置 → 模拟账本照常（PAPER 因子或基准库），但**券商执行不加新风险**：
+        #     下真单必须有一份被人批准并激活的策略版本（live_block_reason）。
         using_active_config = None
+        frozen_combo = None
+        combo_method = "ic_weighted"
+        live_block_reason = ""
         if not used_baseline:
             try:
                 import json as _json
                 from app.db.strategy_store import StrategyStore
                 active = StrategyStore().latest_active()
-                if active is not None:
-                    cfg_factors = set(_json.loads(active.factors or "[]"))
-                    filtered = {k: v for k, v in signals.items() if k in cfg_factors}
-                    if filtered:
-                        signals = filtered
-                        using_active_config = active.id
-                        logger.info("[portfolio] PM.7 按 active 策略配置 #%d 交易，成分 %d 因子",
-                                    active.id, len(signals))
             except Exception as exc:
-                logger.warning("[portfolio] PM.7 读取 active 配置失败（忽略）: %s", exc)
+                logger.error("[portfolio] PM.7 读取 active 策略配置失败 → 本轮不调仓: %s", exc)
+                return {"n_factors": 0, "days_processed": 0,
+                        "reason": "active_config_unreadable", "used_baseline": used_baseline,
+                        "execution": self._maintain_live("active_config_unreadable")}
+            if active is not None:
+                cfg_factors = [str(f) for f in _json.loads(active.factors or "[]")]
+                missing = [f for f in cfg_factors if f not in signals]
+                cw = {str(k): float(v) for k, v in _json.loads(active.combo_weights or "{}").items()}
+                if not cfg_factors or missing or (cw and set(cfg_factors) - set(cw)):
+                    why = (f"active 策略 #{active.id} 不可用：成分 {cfg_factors}，"
+                           f"缺信号 {missing}，冻结权重覆盖 {sorted(cw)}")
+                    logger.error("[portfolio] %s → 本轮不调仓", why)
+                    return {"n_factors": 0, "days_processed": 0,
+                            "reason": "active_config_unusable", "detail": why,
+                            "used_baseline": used_baseline,
+                            "execution": self._maintain_live("active_config_unusable")}
+                signals = {k: signals[k] for k in cfg_factors}
+                using_active_config = active.id
+                frozen_combo = cw or None
+                combo_method = str(active.method or "ic_weighted")
+                logger.info("[portfolio] PM.7 按 active 策略配置 #%d 交易，成分 %d 因子，权重%s",
+                            active.id, len(signals), "冻结" if frozen_combo else "按 method 拟合")
+        if using_active_config is None:
+            live_block_reason = "no_active_strategy"
 
         # ── PM.S2：多因子（自研）时按**边际贡献**准入（策略级），而非"全纳入"。
         #    冗余/无边际的因子被拒，单独弱但分散化好的能进（要"好策略"而非"漂亮因子"）。
@@ -249,7 +275,8 @@ class DailyTradingLoop:
             except Exception as exc:                       # 选择失败不阻断，退回全纳入
                 logger.warning("[portfolio] PM.S2 边际准入失败（退回全纳入）: %s", exc)
 
-        res = PortfolioManager(aum=aum, method="ic_weighted").build_book(signals, prices, volume)
+        res = PortfolioManager(aum=aum, method=combo_method).build_book(
+            signals, prices, volume, fixed_combo_weights=frozen_combo)
         weights, composite = res.weights, res.composite
 
         # TR.3：组合账本用**真实/推导成本**（moomoo 佣金免费 + Corwin-Schultz 数据估价差），
@@ -290,32 +317,49 @@ class DailyTradingLoop:
         # ── PM.S1：对**组合策略**跑策略级验证门（分段 OOS + DSR 去膨胀 + 夏普 t），记录 verdict。
         #    严门加在真正交易的策略上、不加单因子。默认只记录不阻断（paper 期先收前向证据）。
         strategy_verdict = None
-        if getattr(settings, "pm_strategy_gate_eval", True) and not used_baseline:
+        # 审计 F09：硬门（block=True）下，**评估异常 / 结果缺失 / 未通过**都必须拦住新增风险；
+        # 非实验模式下分级不允许（或分级本身失败）同样拦。原先异常被 except 吞掉后继续下单，
+        # `_allowed` 只写进诊断从不使用 —— TR_EXPERIMENT_MODE=false 形同虚设。
+        gate_block = bool(settings.pm_strategy_gate_block)
+        experiment = bool(settings.tr_experiment_mode)
+        halt_reason = ""
+        if (settings.pm_strategy_gate_eval or gate_block) and not used_baseline:
             from app.core.portfolio_manager import StrategyGate
             try:
                 sv = StrategyGate(aum=aum).evaluate(signals, dataset, cost_params=gp)
+            except Exception as exc:
+                logger.error("[portfolio] PM.S1 策略门评估失败（无证据）: %s", exc)
+                sv = None
+                strategy_verdict = {"gate_error": str(exc), "evaluated": False}
+                if gate_block:
+                    halt_reason = "strategy_gate_error"
+            if sv is not None:
                 strategy_verdict = sv.to_dict()
-                # TR.4 第 4 步：进 PAPER 的 A/B/C 分级（实验模式放行 B/C 但如实标注等级）
-                try:
-                    from app.core.lifecycle.promotion_gate import grade_paper_entry
-                    _allowed, _g = grade_paper_entry(strategy_verdict)
-                    strategy_verdict["paper_grade"] = _g["grade"]
-                    strategy_verdict["paper_entry"] = _g
-                    logger.info("[portfolio] TR.4 进 PAPER 分级=%s（allowed=%s, 实验模式=%s）",
-                                _g["grade"], _allowed, _g["experiment_mode"])
-                except Exception as exc:
-                    logger.warning("[portfolio] TR.4 分级失败（不阻断）: %s", exc)
                 logger.info("[portfolio] PM.S1 策略门：passed=%s Sharpe=%.3f DSR=%.3f t=%.2f | %s",
                             sv.passed, sv.sharpe, sv.deflated_sharpe, sv.t_stat,
                             "OK" if sv.passed else "; ".join(sv.reasons))
-                if not sv.passed and getattr(settings, "pm_strategy_gate_block", False):
-                    logger.warning("[portfolio] 策略门未过且 block=True → 本轮不交易")
-                    return {"n_factors": len(signals), "days_processed": 0,
-                            "reason": "strategy_gate_failed", "strategy_verdict": strategy_verdict,
-                            "selection": selection_info, "used_baseline": used_baseline,
-                            "execution": self._maintain_live("strategy_gate_failed")}
+                if not sv.passed and gate_block:
+                    halt_reason = "strategy_gate_failed"
+            # TR.4 第 4 步：进 PAPER 的 A/B/C 分级（实验模式放行 B/C 但如实标注等级）
+            try:
+                from app.core.lifecycle.promotion_gate import grade_paper_entry
+                _allowed, _g = grade_paper_entry(strategy_verdict)
+                strategy_verdict["paper_grade"] = _g["grade"]
+                strategy_verdict["paper_entry"] = _g
+                logger.info("[portfolio] TR.4 进 PAPER 分级=%s（allowed=%s, 实验模式=%s）",
+                            _g["grade"], _allowed, _g["experiment_mode"])
+                if not _allowed and not halt_reason:
+                    halt_reason = "paper_grade_not_allowed"
             except Exception as exc:
-                logger.warning("[portfolio] PM.S1 策略门评估失败（不阻断）: %s", exc)
+                logger.error("[portfolio] TR.4 分级失败: %s", exc)
+                if not experiment and not halt_reason:
+                    halt_reason = "paper_grading_error"
+        if halt_reason:
+            logger.warning("[portfolio] %s → 本轮不调仓（只对账/熔断维护）", halt_reason)
+            return {"n_factors": len(signals), "days_processed": 0,
+                    "reason": halt_reason, "strategy_verdict": strategy_verdict,
+                    "selection": selection_info, "used_baseline": used_baseline,
+                    "execution": self._maintain_live(halt_reason)}
 
         # ── PM.5：组合级风控（敞口/集中度/目标波动）——在容量后、下单前施加到权重面板。
         from app.core.portfolio_manager import PortfolioRiskGate, RiskLimits
@@ -412,7 +456,18 @@ class DailyTradingLoop:
                 logger.error("[portfolio] 无交易带推导失败 → 本轮按 band=0（全额调仓）: %s", exc)
                 band = 0.0
         to_before = annualized_turnover(weights)
+        gated_last = weights.iloc[-1].copy()            # 风控之后、无交易带之前 → 券商执行的目标
         weights = apply_no_trade_band(weights, band)
+        # 【审计 F07】无交易带会取消小幅减仓、保留大幅加仓，重新引入上游已削掉的超限
+        # （例：[.085,.085,.13] 在 band=.02 下变回 [.10,.10,.13]，gross 33% > 30%）。
+        # 风控优先于省换手：带后再施加一次，并独立 check —— 还不过就是 bug，执行层不加风险。
+        weights, _ = PortfolioRiskGate(limits).apply(weights, sectors=sectors,
+                                                     port_vol_ann=port_vol_ann)
+        post_band_violations = PortfolioRiskGate(limits).check(weights.tail(1), sectors=sectors)
+        if post_band_violations:
+            logger.error("[portfolio] 无交易带 + 二次风控后仍违规：%s → 券商执行不加新风险",
+                         post_band_violations)
+            live_block_reason = live_block_reason or "post_band_risk_violation"
         to_after = annualized_turnover(weights)
         horizon_info = [h.to_dict() for h in horizon_profile(
             signals, fast_threshold=float(getattr(settings, "pm_horizon_fast_thresh", 4.0)))]
@@ -456,9 +511,17 @@ class DailyTradingLoop:
             equity = pnl.equity
             n_days += 1
 
-        # ── Phase 12：执行层 —— 把**最后一行**目标权重（已过 PM.5 风控、熔断、无交易带，
-        #    与模拟账本当日交易的是同一行）下成 moomoo 纸交易订单。默认 off。
-        execution, t3_live = self._execute_live(weights, prices_f, adv_df)
+        # ── Phase 12：执行层 —— 风控之后、无交易带之前的**最后一行**目标权重下成 moomoo 纸交易单；
+        #    无交易带改在订单层按**券商实际持仓**判断（审计 F07：模拟账本重建的历史目标
+        #    不等于账户里真正拿着的股数）。没有被批准的 active 策略时只对账/维护（审计 F08）。
+        if live_block_reason:
+            execution, t3_live = self._maintain_live(live_block_reason), None
+        else:
+            sector_map = ({} if sectors is None else
+                          {str(k): v for k, v in sectors.items()})
+            execution, t3_live = self._execute_live(
+                gated_last, weights.index[-1], prices_f, adv_df,
+                sectors=sector_map, no_trade_band=band)
 
         # ── TR.3：T3 providers（盘口/借券/账户）——仿真背 TR.1 估计、实盘背 moomoo，同接口切换。
         #    这里取账户真实记账状态（买入力/持仓），避免任何"交易当时才知道的量"被写死。
@@ -527,6 +590,10 @@ class DailyTradingLoop:
                 "risk_attribution": risk_attribution,  # R.2 风险从哪来（因子 vs 特异）
                 "t3": t3_state,                        # TR.3 T3 providers(模式/买入力/持仓数)
                 "execution": execution,                # Phase 12 执行层（订单/对账/风控/全平）
+                # 送给券商的目标（风控后、无交易带前的决策日那一行）—— 留痕，可复核
+                "execution_target": {str(k): float(v) for k, v in gated_last.items()
+                                     if np.isfinite(v) and abs(v) > 0},
+                "post_band_violations": post_band_violations,
                 "trading_context": tc_summary}         # TR.1 交易现实(价差/可交易/可做空/带)
 
         # FE-TR 前置：把本轮诊断只增不改地存下来（失败绝不影响交易）
@@ -574,11 +641,13 @@ class DailyTradingLoop:
         finally:
             gw.close()
 
-    def _execute_live(self, weights: pd.DataFrame, prices_f: pd.DataFrame,
-                      adv_df: pd.DataFrame):
+    def _execute_live(self, target_last: pd.Series, decision_ts, prices_f: pd.DataFrame,
+                      adv_df: pd.DataFrame, *, sectors=None, no_trade_band: float = 0.0):
         """
         返回 (执行报告, 实时 T3 状态或 None)。任何失败都是**不下单**，并把原因写进报告：
         执行层出错时继续下单才是危险方向（§U），而模拟账本已经照常记完了。
+
+        target_last : 决策日（decision_ts）风控之后的目标权重（一行）。
         """
         from app.config import settings
         gw, early = self._open_live_gateway()
@@ -593,8 +662,9 @@ class DailyTradingLoop:
                 rep = OrderManager.from_settings(
                     gw, store=self._execution_store, position_store=self.broker.store,
                 ).run_cycle(
-                    target_weights=weights.iloc[-1], ref_prices=prices_f.iloc[-1],
-                    adv_usd=adv_df.iloc[-1], decision_date=weights.index[-1].date())
+                    target_weights=target_last, ref_prices=prices_f.loc[decision_ts],
+                    adv_usd=adv_df.loc[decision_ts], decision_date=pd.Timestamp(decision_ts).date(),
+                    sectors=sectors, no_trade_band=no_trade_band)
                 execution = rep.to_dict()
             except Exception as exc:
                 logger.error("[portfolio] Phase 12 执行周期失败 → 本轮不下单: %s", exc)
@@ -617,7 +687,8 @@ class DailyTradingLoop:
     # 单因子（隔离）
     # ------------------------------------------------------------------
 
-    def _run_one_alpha(self, rec, dataset: Dict[str, pd.DataFrame]) -> AlphaDayResult:
+    def _run_one_alpha(self, rec, dataset: Dict[str, pd.DataFrame],
+                       forward_from=None) -> AlphaDayResult:
         res = AlphaDayResult(alpha_id=rec.id)
         try:
             from app.core.alpha_engine.dsl_executor import Executor
@@ -666,8 +737,10 @@ class DailyTradingLoop:
                 if t > 0:
                     ic = _cs_spearman(raw_arr[t-1], ret_df.iloc[t].to_numpy(dtype=float))
                     if not np.isnan(ic):
+                        # 与组合账本同一口径：只有 forward_from 之后的日子算真前向（审计 F16）
+                        fwd = bool(forward_from is not None and d.date() >= _as_date(forward_from))
                         self.monitor.update(rec.id, d, float(ic),
-                                            realized_return=float(pnl.net_ret))
+                                            realized_return=float(pnl.net_ret), is_forward=fwd)
                 res.days_processed += 1
                 res.last_date = str(d.date())
                 res.equity = pnl.equity

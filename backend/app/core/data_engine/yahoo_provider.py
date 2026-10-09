@@ -76,10 +76,14 @@ class YahooFinanceProvider(DataProvider):
         tickers = [t.upper() for t in tickers]
         logger.info("Downloading %d tickers from Yahoo Finance [%s → %s]", len(tickers), start, end)
 
+        # DataProvider 契约是 [start, end] **闭区间**；yfinance.download 的 end 是**排他**的
+        # （官方文档）。原样传 end 会永远少最后一天 —— 收盘后跑的每日摄取因此拿不到当天 bar，
+        # 执行层每天判 stale_decision_date（外部审计 F01）。
+        end_exclusive = (pd.Timestamp(end).normalize() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
         raw = yf.download(
             tickers=tickers,
             start=start,
-            end=end,
+            end=end_exclusive,
             auto_adjust=self.auto_adjust,
             progress=self.progress,
             group_by="column",

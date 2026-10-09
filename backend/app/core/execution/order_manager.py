@@ -28,9 +28,10 @@ import logging
 import math
 import re
 import threading
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Mapping, Optional
 
 import pandas as pd
 
@@ -42,7 +43,9 @@ from app.core.execution.order_builder import (
     PURPOSE_FLATTEN, PURPOSE_REBALANCE, build_flatten_orders, build_rebalance_orders,
     is_own_client_id,
 )
-from app.core.execution.pretrade_gate import GateContext, PreTradeLimits, check
+from app.core.execution.pretrade_gate import (
+    GateContext, OpenOrder, PreTradeLimits, check, increases_risk,
+)
 from app.db.execution_store import (
     ST_PENDING, ST_SUBMITTED, ExecutionStore,
 )
@@ -56,6 +59,10 @@ LIVE_BOOK_ID = -1
 _LOCK = threading.RLock()
 _CID_RE = re.compile(r"^qa([RF])(-?\d+)-(\d{8})(\d{6})?-(.+)-([BS])$")
 _STABLE_READ_ATTEMPTS = 3
+#: 撤单后等待券商确认终态：轮询次数 × 间隔秒。moomoo 的撤单是**异步**的 —— 请求被受理
+#: 不等于订单已结束，期间原单仍可能成交（审计 F04）。等不到就本轮不下新单。
+_CANCEL_WAIT_POLLS = 10
+_CANCEL_WAIT_S = 1.0
 
 
 def _utcnow() -> datetime:
@@ -88,13 +95,9 @@ def market_today(now: datetime) -> date:
 
 
 def last_closed_session(now: datetime) -> date:
-    """收盘时刻 ≤ now 的最近一个交易日。日历不可用时抛 CalendarUnavailable（fail-closed）。"""
-    from app.core.data_engine.market_calendar import last_trading_day, session_close_utc
-    d = last_trading_day(market_today(now)).date()
-    close = session_close_utc(d)
-    if close is None or close > now:
-        d = last_trading_day(d - timedelta(days=1)).date()
-    return d
+    """收盘时刻 ≤ now 的最近一个交易日（与摄取共用 market_calendar 的同一定义）。"""
+    from app.core.data_engine import market_calendar
+    return market_calendar.last_closed_session(now).date()
 
 
 def freshness_problem(decision_date: date, now: datetime) -> str:
@@ -183,9 +186,15 @@ class OrderManager:
         max_aum_mismatch: float,
         book_id: int = LIVE_BOOK_ID,
         clock: Optional[Callable[[], datetime]] = None,
+        sleep: Optional[Callable[[float], None]] = None,
+        cancel_wait_polls: int = _CANCEL_WAIT_POLLS,
+        cancel_wait_s: float = _CANCEL_WAIT_S,
     ) -> None:
         if not (math.isfinite(paper_aum) and paper_aum > 0):
             raise ValueError(f"paper_aum 必须为正：{paper_aum!r}")
+        self._sleep = sleep or time.sleep
+        self.cancel_wait_polls = int(cancel_wait_polls)
+        self.cancel_wait_s = float(cancel_wait_s)
         self.gw = gateway
         self.store = store or ExecutionStore()
         if position_store is None:
@@ -266,8 +275,21 @@ class OrderManager:
             # 盘中成交进行中时把券商状态立成基准，基准本身就和成交记录对不上
             raise RuntimeError("券商读数不稳定（盘中成交进行中），不能作为新基准 —— 请稍后再接受")
 
-        own = {o.client_id: o for o in q.orders if is_own_client_id(o.client_id)}
-        unresolved: List[dict] = []
+        # remark 只是券商侧的备注，**不保证唯一**（官方文档没有任何去重承诺）。同一 remark
+        # 出现在两张券商订单上 = 重复下单已经发生：不能用 dict 静默覆盖成一张，必须阻断等人看。
+        own: Dict[str, object] = {}
+        dupes: Dict[str, set] = {}
+        for o in q.orders:
+            if not is_own_client_id(o.client_id):
+                continue
+            prev = own.get(o.client_id)
+            if prev is not None and prev.broker_order_id != o.broker_order_id:
+                dupes.setdefault(o.client_id, {prev.broker_order_id}).add(o.broker_order_id)
+                continue
+            own[o.client_id] = o
+        unresolved: List[dict] = [
+            {"client_id": cid, "reason": "duplicate_remark", "broker_order_ids": sorted(ids)}
+            for cid, ids in sorted(dupes.items())]
         awaiting: List[dict] = []
 
         # 1) 本地在途单：在券商侧找得到 → 交给第 2 步落账；找不到 → 判定
@@ -281,17 +303,21 @@ class OrderManager:
                     self.store.apply_broker_state(row.client_id, _missing_order(row), market_date)
                 continue
             if row.status == ST_PENDING:
-                attempted = bool(row.last_err_msg)
+                # 【审计 F03】"发出过没有"以前靠 last_err_msg 推断：只有下单**报错**才非空。
+                # 进程死在"券商已收单 → 本地 mark_submitted"之间时它同样为空，于是被判成
+                # "从未发出"、同日重下 —— 而刚收的单完全可能还没出现在订单列表里。
+                # 现在下单调用之前先落 submit_attempted_at：只有它为空才能确定没发出去。
+                attempted = row.submit_attempted_at is not None or bool(row.last_err_msg)
                 if not attempted and q.history_ok:
                     # 写了意图、但下单调用从未发出（崩在下单之前）→ 券商不可能收到
                     self.store.mark_not_submitted(row.client_id, "券商侧不存在该 remark，确认未提交")
                     continue
                 if attempted and row.decision_date >= market_date:
-                    # 下单调用报错（如超时）的当天：券商可能已收单只是还没出现在列表里。
+                    # 发出过（或报错 / 超时）的当天：券商可能已收单只是还没出现在列表里。
                     # 判成"未提交"会触发同日重试 → 可能挂出两张同 remark 的单。
-                    # 保持待确认：不重试（PENDING 不可重试）、也不阻断其他交易。
+                    # 保持待确认：不重试（PENDING 不可重试），并计入风控的在途包络。
                     awaiting.append({"client_id": row.client_id, "ticker": row.ticker,
-                                     "error": row.last_err_msg})
+                                     "error": row.last_err_msg or "submit_attempted"})
                     continue
                 if attempted and q.history_ok:
                     # 之后的交易日、历史订单里仍查不到 → 确认券商没收到
@@ -421,9 +447,43 @@ class OrderManager:
     # ------------------------------------------------------------------
 
     def run_cycle(self, target_weights: pd.Series, ref_prices: pd.Series,
-                  adv_usd: pd.Series, decision_date: date) -> ExecutionReport:
+                  adv_usd: pd.Series, decision_date: date, *,
+                  sectors: Optional[Mapping[str, object]] = None,
+                  no_trade_band: float = 0.0) -> ExecutionReport:
+        """
+        sectors       : 标的 → 行业（下单层行业上限用；缺失则只按单票约束）。
+        no_trade_band : 相对**券商实际持仓**的无交易带（权重单位），见 build_rebalance_orders。
+        """
         with _LOCK:
-            return self._run_cycle(target_weights, ref_prices, adv_usd, decision_date)
+            return self._run_cycle(target_weights, ref_prices, adv_usd, decision_date,
+                                   dict(sectors or {}), float(no_trade_band))
+
+    def _await_terminal(self, broker_ids: List[str]) -> List[str]:
+        """
+        撤单之后轮询券商，直到这些订单都进入终态。返回仍未确认的 id（空 = 全部确认）。
+        订单列表里**查不到**的也算未确认 —— 不知道 ≠ 已结束。
+        """
+        pending = {str(b) for b in broker_ids if b}
+        if not pending:
+            return []
+        since = market_today(self._clock()) - timedelta(days=7)
+        for i in range(max(1, self.cancel_wait_polls)):
+            st = {o.broker_order_id: o.status for o in self.gw.orders(since).orders}
+            pending = {b for b in pending if b not in st or is_open_status(st[b])}
+            if not pending:
+                return []
+            if i < self.cancel_wait_polls - 1:
+                self._sleep(self.cancel_wait_s)
+        logger.error("[exec] %d 张撤单在 %d 次轮询后仍未进入终态：%s",
+                     len(pending), self.cancel_wait_polls, sorted(pending))
+        return sorted(pending)
+
+    def _open_order_envelope(self) -> List[OpenOrder]:
+        """本地仍在途（含下单结果未知的 PENDING）的我方订单 → 风控门的最坏情况包络。"""
+        return [OpenOrder(ticker=r.ticker, side=r.side,
+                          remaining_qty=max(float(r.qty) - float(r.dealt_qty or 0.0), 0.0),
+                          limit_price=float(r.limit_price))
+                for r in self.store.open_orders(self.book_id)]
 
     def maintain(self, reason: str) -> ExecutionReport:
         """
@@ -445,7 +505,8 @@ class OrderManager:
                 rep.flatten = self._ensure_flatten(rec)
             return rep
 
-    def _run_cycle(self, target_weights, ref_prices, adv_usd, decision_date) -> ExecutionReport:
+    def _run_cycle(self, target_weights, ref_prices, adv_usd, decision_date,
+                   sectors=None, no_trade_band: float = 0.0) -> ExecutionReport:
         from app.core.data_engine.market_calendar import CalendarUnavailable
         rep = ExecutionReport(decision_date=str(decision_date))
         rep.gateway = self.gw.describe()
@@ -483,24 +544,55 @@ class OrderManager:
             rep.blocked = "aum_mismatch"
             return rep
 
-        # 撤掉与本次调仓冲突的在途单：更早决策日的调仓单，以及**任何**残留的全平单
-        # （熔断解除后，没成交完的全平卖单若不撤，会和新的调仓买单对冲打架）。
+        # 撤掉与本次调仓冲突的在途单：更早决策日的调仓单、**任何**残留的全平单
+        # （熔断解除后，没成交完的全平卖单若不撤，会和新的调仓买单对冲打架），
+        # 以及日亏熔断时一切仍在途的**加风险**单（审计 F05：只拒新单不撤旧单，旧单照样成交）。
+        daily_halt = (rec.day_return is not None
+                      and rec.day_return <= -self.limits.max_daily_loss)
+        cur_qty = {tk: p.qty for tk, p in rec.position_objs.items()}
+        cancelled_ids: List[str] = []
         for row in self.store.open_orders(self.book_id):
-            if (row.status == ST_SUBMITTED and row.broker_order_id
-                    and (row.purpose == PURPOSE_FLATTEN or row.decision_date < decision_date)):
+            if not (row.status == ST_SUBMITTED and row.broker_order_id):
+                continue
+            remaining = float(row.qty) - float(row.dealt_qty or 0.0)
+            signed = remaining if row.side == "BUY" else -remaining
+            if (row.purpose == PURPOSE_FLATTEN or row.decision_date < decision_date
+                    or (daily_halt and increases_risk(cur_qty.get(row.ticker, 0.0), signed))):
                 try:
                     self.gw.cancel(row.broker_order_id)
                     rep.cancelled_stale.append(row.client_id)
+                    cancelled_ids.append(row.broker_order_id)
                 except BrokerError as exc:
                     logger.error("[exec] 撤销过期单 %s 失败 → 本轮不下新单: %s", row.client_id, exc)
                     rep.blocked = "stale_cancel_failed"
                     return rep
 
+        # 【审计 F04】撤单请求被受理 ≠ 订单已结束：等券商确认终态，再**重新对账**
+        # （撤单期间可能有新成交），用撤单之后的持仓 / 资金建单。等不到就不下新单。
+        if cancelled_ids:
+            left = self._await_terminal(cancelled_ids)
+            if left:
+                rep.blocked = "cancel_unconfirmed"
+                return rep
+            try:
+                rec = self._reconcile(accept=False)
+            except (BrokerError, CalendarUnavailable) as exc:
+                logger.error("[exec] 撤单确认后的重新对账失败 → 本轮不下新单: %s", exc)
+                rep.blocked = f"reconcile_failed: {exc}"
+                return rep
+            rep.reconcile = rec.to_dict()
+            if rec.blocking:
+                rep.blocked = f"reconcile_{rec.status}"
+                return rep
+            acct = rec.account_obj
+
         pos = rec.position_objs
         build = build_rebalance_orders(
             target_weights, {tk: p.qty for tk, p in pos.items()}, ref_prices,
             acct.total_assets, decision_date, book_id=self.book_id,
-            band_bps=self.limit_band_bps, allow_short=self.limits.allow_short)
+            band_bps=self.limit_band_bps, allow_short=self.limits.allow_short,
+            no_trade_band=no_trade_band, name_cap=self.limits.max_name_weight,
+            gross_cap=self.limits.max_gross)
         rep.build = {"skipped": build.skipped, "notes": build.notes,
                      "max_rounding_drift": max((abs(v) for v in build.rounding.values()), default=0.0)}
         fresh = [o for o in build.orders if not self.store.is_final_for_day(o.client_id)]
@@ -511,7 +603,8 @@ class OrderManager:
             equity=acct.total_assets, buying_power=acct.power,
             current_qty={tk: p.qty for tk, p in pos.items()},
             broker_prices={tk: p.nominal_price for tk, p in pos.items()},
-            adv_usd=adv_usd, day_return=rec.day_return, kill_switch=False), self.limits)
+            adv_usd=adv_usd, day_return=rec.day_return, kill_switch=False,
+            open_orders=self._open_order_envelope(), sectors=sectors or {}), self.limits)
         rep.gate = dec.to_dict()
         for o, reason in dec.rejected:
             self.store.record_gate_rejection(o, self.book_id, decision_date, reason)
@@ -534,6 +627,7 @@ class OrderManager:
             rep.n_duplicate += 1
             info["result"] = "duplicate"
             return info
+        self.store.mark_attempting(o.client_id)          # 审计 F03：发出之前先落"尝试过"
         try:
             oid = self.gw.place(OrderRequest(client_id=o.client_id, ticker=o.ticker, side=o.side,
                                              qty=o.qty, limit_price=o.limit_price))
@@ -574,7 +668,7 @@ class OrderManager:
             out = {"state": st}
             try:
                 out["cancelled"] = self._cancel_all_open()
-                out["flatten"] = self._place_flatten(self.gw.positions())
+                out["flatten"] = self._flatten_after_cancel(out["cancelled"])
             except BrokerError as exc:
                 logger.error("[exec] 全平执行中券商调用失败（熔断保持开启，下周期续做）: %s", exc)
                 out["error"] = str(exc)
@@ -626,14 +720,27 @@ class OrderManager:
         pending = [r for r in self.store.open_orders(self.book_id) if r.purpose == PURPOSE_FLATTEN]
         if pending:
             return {"status": "waiting", "open_flatten_orders": [r.client_id for r in pending]}
-        if not rec.position_objs:
-            return {"status": "flat"}
         try:
-            self._cancel_all_open()
-            return {"status": "resubmitted", **self._place_flatten(rec.position_objs)}
+            cancelled = self._cancel_all_open()
+            res = self._flatten_after_cancel(cancelled)      # 撤单确认后按真实持仓判断是否已平
+            return {"status": "resubmitted", **res} if "orders" in res else res
         except BrokerError as exc:
             logger.error("[exec] 续做全平失败: %s", exc)
             return {"status": "error", "error": str(exc)}
+
+    def _flatten_after_cancel(self, cancelled: List[str]) -> dict:
+        """
+        【审计 F04】撤单受理后**等终态**，再重新读持仓、按撤单之后的真实持仓下全平单。
+        以前撤完立刻按撤单前的持仓全平：原买单若在撤单生效前成交，就会重新开仓且没人平。
+        等不到确认 → 本轮不下全平单（熔断保持开启，下个周期续做）。
+        """
+        left = self._await_terminal(cancelled)
+        if left:
+            return {"status": "waiting_cancel", "unconfirmed": left}
+        positions = self.gw.positions()
+        if not positions:
+            return {"status": "flat"}
+        return self._place_flatten(positions)
 
 
 def _missing_order(row):

@@ -1370,7 +1370,7 @@
    "proof_entries_min": 97,
    "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
    "refuted_entries_min": 2,
-   "unmeasured_points_max": 1625
+   "unmeasured_points_max": 1785
   },
   "refuted_by_counterexample": {
    "count": 2,
@@ -1398,9 +1398,9 @@
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
   "measured_points": 1982,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-  "current_plan_points": 3607,
+  "current_plan_points": 3767,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-  "unmeasured_points": 1625,
+  "unmeasured_points": 1785,
   "newly_in_scope_modules": [
    "app/core/risk_engine/factor_model.py",
    "app/core/execution/broker_gateway.py",
@@ -1861,6 +1861,14 @@
     "why": "前向交易上线：新建 core/execution/golive.py（上线预检 + 活数据位置启动保险，21 点）与 tasks/forward.py（preflight / run-now 命令行入口，4 点）；MoomooProvider 建连前端口探测 +1 点。scheduler / main / router 的改动未引入新变异点。",
     "how_it_was_handled": "**新增 26 点全部逐个复核**（判据同 verify_mutant；只有退出码 1 算杀死）。第一轮 27 点：24 杀 / 2 活 / 1 导入期中断。存活其一是 Check.blocking 的 dataclass 默认值（add() 总会显式传，默认值从不生效）→ 删掉默认值，该点消失；其二是 run-now 打印 JSON 的 ensure_ascii=False → 补用例断言中文拒单原因原样打印。导入期中断是 `__name__ == \"__main__\"` 取反（导入即执行 main，argparse 拒绝宿主 argv → SystemExit(2)），登记进 NEW_POINT_LOUD_AT_IMPORT，由 test_inverted_main_guard_exits_on_import 施加变异并执行源码验证。两模块修改后整体重跑，结果见 MUTATION_LEDGER.md。",
     "owed": "无逐点复核欠账。golive / forward 未做过整模块全量测量，登记在 newly_in_scope_modules。"
+   },
+   {
+    "date": "2026-10-09 (外部审计修复批)",
+    "from": 1625,
+    "to": 1785,
+    "why": "外部审计（2026-10-07，16 条 NO-GO）修复：风控门最坏情况包络与净敞口/行业上限、订单层无交易带、撤单终态确认、下单前尝试标记、两层上线预检、run-now 退出码、摄取区间与重叠窗口、PIT 原子写入、净敞口投影、冻结组合权重与滚动前推、硬门 fail-closed、→ACTIVE 门先于状态变更等。17 个文件的新增 / 改动行，计划总数净增 160。",
+    "how_it_was_handled": "**改动行上的点全部逐个复核**（判据同 verify_mutant；只有退出码 1 算杀死）。第一轮 232 点：163 杀 / 69 活 —— 存活集中在新风控门的边界、订单层带宽、在途单剩余量、净敞口投影与预检的存储检查，说明修复时写的回归用例本身有盲区。补用例并删掉无法测量的 epsilon / 冗余守卫后整体重跑，最终 205 点：202 杀 / 3 活，3 个存活全部是真等价（delta==0 已先跳过；SUBMITTED 行恒有订单号；合成对权重尺度不变），登记在 NEW_POINT_EQUIVALENCE 并配可执行验证。",
+    "owed": "无逐点复核欠账；所在模块未做整模块全量测量（同前）。"
    }
   ]
  },

@@ -1462,20 +1462,32 @@ def strategy_approve(sid: int, req: StrategyDecisionRequest = StrategyDecisionRe
         raise HTTPException(status_code=409, detail=f"仅 proposed 可批准，当前={rec.status}")
     from app.config import settings
     try:
-        sstore.update_status(sid, "approved")
-        sstore.record_decision(sid, "approve", "proposed", "approved", req.reason, req.actor)
         if req.activate:
             # TR.4 第 5 步：→ACTIVE 是"逼近真钱"的最严门 —— 需 ≥N 交易日前向 realized IC 且 t>阈值。
-            # 阈值全配置化；默认只**记录不阻断**（因 ic_history 尚未分离回放/前向，见 Phase 11）。
+            # 【审计 F15】门**先于**任何状态变更判定：以前先改成 approved 再抛 409，
+            # 重试时 approve 又只接受 proposed，这份策略就卡死了。
             from app.core.lifecycle.promotion_gate import check_active_promotion
             from app.tasks.daily_trading_loop import PORTFOLIO_BOOK_ID
-            # Phase 11：**只用真前向样本**（is_forward=True），历史回放一律排除——
-            # 否则会把回放段当成前向战绩，这正是该门此前只能"仅记录"的原因。
-            ics = [h.realized_ic for h in store.get_forward_ic(PORTFOLIO_BOOK_ID)]
+            # 只用真前向样本（is_forward=True），且只用**这份策略创建之后**的日子 —— 之前的
+            # 组合 IC 来自别的成分 / 基准库，不能借来给新策略过门。
+            # 局限（如实）：组合账本仍只有一个（book 0），创建之后到激活之前的 IC 也来自当时
+            # 在交易的配置；按策略版本分账见 MUTATION_LEDGER / 路线图的未修项。
+            since = rec.created_at.date() if rec.created_at else None
+            ics = [h.realized_ic for h in store.get_forward_ic(PORTFOLIO_BOOK_ID)
+                   if since is None or pd.Timestamp(h.date).date() >= since]
             ok, detail = check_active_promotion(ics)
             if not ok and getattr(settings, "tr_enforce_active_gate", False):
                 raise HTTPException(status_code=409,
                                     detail=f"→ACTIVE 门未过：{'; '.join(detail.get('reasons', []))}")
+        sstore.update_status(sid, "approved")
+        sstore.record_decision(sid, "approve", "proposed", "approved", req.reason, req.actor)
+        if req.activate:
+            # 同一时刻只交易一份策略：激活新版本时，旧的 active 一并退役（留谱系）
+            for other in sstore.query(status="active"):
+                if other.id != sid:
+                    sstore.update_status(other.id, "retired")
+                    sstore.record_decision(other.id, "retire", "active", "retired",
+                                           f"被策略 #{sid} 取代", req.actor)
             sstore.update_status(sid, "active")
             sstore.record_decision(
                 sid, "activate", "approved", "active",

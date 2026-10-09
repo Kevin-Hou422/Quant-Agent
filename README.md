@@ -412,11 +412,22 @@ cd ..
 powershell -ExecutionPolicy Bypass -File scripts\start_forward.ps1 [-RegisterLogonTask]
 ```
 
-- **Preflight** (`python -m app.tasks.forward preflight`, or `POST /api/execution/preflight`) checks,
-  in order: execution mode, scheduler switches, live-data location, trading calendar, OpenD
-  listening, simulate account resolved, account size vs `PAPER_AUM`, kill switch, and a reconcile
-  (the first one establishes the trusted baseline). It never places an order. `run-now` refuses to
-  run unless every blocking check passes, then runs the scheduler's own `daily_trading_job`.
+- **Preflight** (`python -m app.tasks.forward preflight`, or `POST /api/execution/preflight`) has
+  two layers and reports both: `connected` (OpenD listening, simulate account resolved, account size
+  vs `PAPER_AUM`, kill switch, reconcile — the first reconcile establishes the trusted baseline) and
+  `ready` (additionally: execution mode, scheduler switches *and* the jobs the scheduler actually
+  registers, live-data location and writability, trading calendar, a US dataset, an **approved and
+  activated strategy**, and a live fetch proving the data source already has the last closed
+  session's bar). It never places an order. `run-now` refuses to run unless every blocking check
+  passes, runs the scheduler's own `daily_trading_job`, and exits non-zero unless execution actually
+  completed (blocked, submit errors, portfolio errors and rejected ingests are all failures).
+- **Only an activated strategy trades at the broker.** Without an active strategy config the daily
+  loop still runs the simulated book (PAPER factors or the baseline library) but the broker side only
+  reconciles. An active config whose components are unavailable halts new risk instead of trading
+  other factors; its frozen combination weights are used as approved, not refitted daily.
+- **The daily job runs twice** (21:30 UTC and a 22:45 UTC retry for late data). Every run reconciles
+  and continues a pending flatten even when there is no new bar or the ingest is rejected; reruns are
+  idempotent (client-id dedupe at the broker, `last_pnl_date` resume in the simulated book).
 - **Live data must not sit in a cloud-synced folder.** With forward trading enabled, the service
   refuses to start if the resolved database, scheduler store or PIT directory is inside
   OneDrive/Dropbox/Google Drive/iCloud. The default `./alphas.db` resolves into OneDrive when the
@@ -424,6 +435,16 @@ powershell -ExecutionPolicy Bypass -File scripts\start_forward.ps1 [-RegisterLog
 - `scripts/start_forward.ps1` starts OpenD if needed, waits for it to listen (log in once in its
   window, or enable auto-login), runs the preflight, and only then starts the API with the scheduler.
   The machine must be on with OpenD logged in at 21:30 UTC on trading days.
+- The template follows the roadmap's TR.2 decision: `PRICE_SOURCE=moomoo` (research and execution
+  from one source) on `us_broad_large` (≤100 names, fits the free account's monthly kline quota).
+
+> An external audit (2026-10-07, 16 findings) blocked go-live. 15 are fixed and F15 partially
+> (forward evidence is filtered to dates after the strategy's creation, but the portfolio book is
+> still shared rather than kept per strategy version). Each fix has a correct-behaviour regression
+> test, including a multi-day end-to-end test that drives the real
+> daily pipeline through a contract fake of `yfinance` (exclusive `end`, delayed publication) and a
+> pessimistic broker fake (asynchronous cancels, delayed order visibility). A full trading-session
+> loop against a live OpenD gateway has still **not** been run.
 
 ---
 
@@ -592,7 +613,7 @@ the file itself is the authority and documents *why* each default is what it is.
 ## 15. Testing & Engineering Discipline
 
 ```bash
-cd backend  && pytest -q          # 4492 passed, 1 skipped  (175 test files)
+cd backend  && pytest -q          # 4635 passed, 1 skipped  (178 test files)
 cd frontend && npm run test       # 101 passed (9 files)
 cd frontend && npm run build      # tsc type check
 ```
