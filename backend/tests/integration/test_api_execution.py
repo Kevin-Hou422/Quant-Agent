@@ -261,6 +261,7 @@ def test_preflight_endpoint_reports_each_check(api, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{(tmp_path / 'exec.db').as_posix()}")
     import app.core.execution.golive as gl
     monkeypatch.setattr(settings, "price_source", "moomoo")
+    monkeypatch.setattr(settings, "paper_aum", 50_000.0)      # 账户 80k，划 50k 给本系统
     monkeypatch.setattr(gl, "_probe_data", lambda s, t: (True, f"bar {t.date()}"))
     monkeypatch.setattr(gl, "_active_strategy_problem", lambda s: (True, "active #1"))
     app.dependency_overrides[get_opend_probe] = lambda: (lambda h, p: True)
@@ -270,7 +271,7 @@ def test_preflight_endpoint_reports_each_check(api, tmp_path, monkeypatch):
         assert body["ready"] is True and body["connected"] is True, \
             [c for c in body["checks"] if not c["ok"]]
         assert checks["scheduler_jobs"]["ok"]         # 真的按当前配置构建了调度器
-        assert checks["account_funds"]["ok"]          # 60k 现金 + 20k 持仓 vs 100k：偏离 20%
+        assert checks["account_funds"]["ok"]          # 账户 60k 现金 + 20k 持仓 ≥ 划拨的 50k
         assert body["reconcile"]["status"] == "baseline"
         assert ctx.calls_of("place_order") == [] and ctx.closed
 

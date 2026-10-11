@@ -286,7 +286,9 @@ def run_preflight(
                 rep.gateway = gw.describe()
                 rep.add("broker_account", True, f"模拟账户 acc_id={rep.gateway.get('acc_id')}",
                         layer=LAYER_CONNECT)
-                _check_funds(rep, gw, settings)
+                from app.db.execution_store import ExecutionStore
+                store = store or ExecutionStore(db_url=str(settings.database_url))
+                _check_funds(rep, gw, settings, store)
                 _check_kill_switch_and_reconcile(rep, gw, settings, store, position_store)
             finally:
                 gw.close()
@@ -327,7 +329,7 @@ def storage_not_writable(settings, cwd: Optional[Path] = None) -> List[str]:
     return out
 
 
-def _check_funds(rep: PreflightReport, gw, settings) -> None:
+def _check_funds(rep: PreflightReport, gw, settings, store) -> None:
     try:
         acct = gw.account()
     except Exception as exc:
@@ -336,23 +338,24 @@ def _check_funds(rep: PreflightReport, gw, settings) -> None:
         return
     rep.account = asdict(acct)
     aum = float(settings.paper_aum)
-    tol = float(settings.exec_max_aum_mismatch)
     if not acct.total_assets > 0:
         rep.add("account_funds", False, f"账户总资产 {acct.total_assets} ≤ 0", layer=LAYER_CONNECT)
         return
-    gap = abs(acct.total_assets / aum - 1.0)
-    rep.add("account_funds", gap <= tol,
-            f"账户总资产 ${acct.total_assets:,.2f} vs PAPER_AUM ${aum:,.2f}（偏离 {gap:.1%}，"
-            f"上限 {tol:.0%}）" + ("" if gap <= tol else
-                                 f" —— 把 PAPER_AUM 设为 {acct.total_assets:.0f}"), layer=LAYER_CONNECT)
+    # 资金切片：只动用 PAPER_AUM，账户里多出来的闲置。能不能划得出这笔钱，看的是**建立基准时**
+    # 的账户资产（之后的盈亏不改变"当初划了多少"）；还没有基准时，这次对账就会用当前资产建立。
+    raw = store.get_state("baseline_total_assets")
+    base = float(raw) if raw is not None else float(acct.total_assets)
+    ok = base >= aum
+    rep.add("account_funds", ok,
+            f"账户总资产 ${acct.total_assets:,.2f}，划给本系统 PAPER_AUM ${aum:,.2f}"
+            f"（基准资产 ${base:,.2f}，其余闲置）" + ("" if ok else
+            f" —— PAPER_AUM 超过了账户实有资金，把它调到不超过 {base:.0f}"), layer=LAYER_CONNECT)
 
 
 def _check_kill_switch_and_reconcile(rep: PreflightReport, gw, settings, store,
                                      position_store) -> None:
     from app.core.execution.order_manager import OrderManager
     from app.core.execution.pretrade_gate import PreTradeLimits
-    from app.db.execution_store import ExecutionStore
-    store = store or ExecutionStore(db_url=str(settings.database_url))
     ks = store.kill_switch()
     rep.add("kill_switch", not ks.get("engaged"),
             "未开启" if not ks.get("engaged") else
@@ -364,7 +367,6 @@ def _check_kill_switch_and_reconcile(rep: PreflightReport, gw, settings, store,
             paper_aum=float(settings.paper_aum),
             limit_band_bps=float(settings.exec_limit_band_bps),
             flatten_band_bps=float(settings.exec_flatten_band_bps),
-            max_aum_mismatch=float(settings.exec_max_aum_mismatch),
         ).reconcile()
     except Exception as exc:
         logger.warning("[golive] 对账失败: %s", exc)

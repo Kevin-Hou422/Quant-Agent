@@ -587,7 +587,8 @@ the file itself is the authority and documents *why* each default is what it is.
 | `EXECUTION_MODE` | `off` | `moomoo_paper` = place real orders on the moomoo **paper** account (real money is refused in code) |
 | `MOOMOO_SECURITY_FIRM` / `MOOMOO_TRD_ACC_ID` | `FUTUINC` / `0` | broker entity; `0` = first US paper account |
 | `EXEC_LIMIT_BAND_BPS` / `EXEC_FLATTEN_BAND_BPS` | `50` / `500` | limit band for rebalancing and for flattening |
-| `EXEC_MAX_DAILY_LOSS` / `EXEC_MAX_PRICE_DEVIATION` / `EXEC_MAX_AUM_MISMATCH` | `0.05` / `0.15` / `0.5` | daily-loss breaker, stale-price guard, account-vs-`PAPER_AUM` tolerance |
+| `EXEC_MAX_DAILY_LOSS` / `EXEC_MAX_PRICE_DEVIATION` | `0.05` / `0.15` | daily-loss breaker, stale-price guard |
+| `PAPER_AUM` | `1000000` | capital **allocated to the system** inside the broker account (a slice). Share counts, risk limits, the daily-loss breaker and the equity curve all use slice equity = `PAPER_AUM` + account P&L since the baseline; the rest of the account stays idle and the slice never borrows. Must not exceed the account's assets |
 | `ENABLE_SCHEDULER` / `ENABLE_PAPER_TRADING` / `ENABLE_DISCOVERY` | `false` | nothing starts trading or mining by itself |
 | `AUTONOMY_MODE` | `manual` | `manual` = human approves every promotion |
 | `PAPER_AUM` | `1_000_000` | the single source of AUM for PM capacity and broker costs |
@@ -613,7 +614,7 @@ the file itself is the authority and documents *why* each default is what it is.
 ## 15. Testing & Engineering Discipline
 
 ```bash
-cd backend  && pytest -q          # 4635 passed, 1 skipped  (178 test files)
+cd backend  && pytest -q          # 4640 passed  (178 test files; 1 live-OpenD test skips when OpenD is down)
 cd frontend && npm run test       # 101 passed (9 files)
 cd frontend && npm run build      # tsc type check
 ```

@@ -1370,7 +1370,7 @@
    "proof_entries_min": 97,
    "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
    "refuted_entries_min": 2,
-   "unmeasured_points_max": 1785
+   "unmeasured_points_max": 1791
   },
   "refuted_by_counterexample": {
    "count": 2,
@@ -1398,9 +1398,9 @@
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
   "measured_points": 1982,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-  "current_plan_points": 3767,
+  "current_plan_points": 3773,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-  "unmeasured_points": 1785,
+  "unmeasured_points": 1791,
   "newly_in_scope_modules": [
    "app/core/risk_engine/factor_model.py",
    "app/core/execution/broker_gateway.py",
@@ -1869,6 +1869,14 @@
     "why": "外部审计（2026-10-07，16 条 NO-GO）修复：风控门最坏情况包络与净敞口/行业上限、订单层无交易带、撤单终态确认、下单前尝试标记、两层上线预检、run-now 退出码、摄取区间与重叠窗口、PIT 原子写入、净敞口投影、冻结组合权重与滚动前推、硬门 fail-closed、→ACTIVE 门先于状态变更等。17 个文件的新增 / 改动行，计划总数净增 160。",
     "how_it_was_handled": "**改动行上的点全部逐个复核**（判据同 verify_mutant；只有退出码 1 算杀死）。第一轮 232 点：163 杀 / 69 活 —— 存活集中在新风控门的边界、订单层带宽、在途单剩余量、净敞口投影与预检的存储检查，说明修复时写的回归用例本身有盲区。补用例并删掉无法测量的 epsilon / 冗余守卫后整体重跑，最终 205 点：202 杀 / 3 活，3 个存活全部是真等价（delta==0 已先跳过；SUBMITTED 行恒有订单号；合成对权重尺度不变），登记在 NEW_POINT_EQUIVALENCE 并配可执行验证。",
     "owed": "无逐点复核欠账；所在模块未做整模块全量测量（同前）。"
+   },
+   {
+    "date": "2026-10-11 (资金切片)",
+    "from": 1785,
+    "to": 1791,
+    "why": "资金切片：纸账户 $1,000,000、PAPER_AUM $10,000 —— 订单股数 / 风控上限 / 日亏熔断 / 净值改按切片权益（paper_aum + 账户自基准以来的盈亏）计算，买入力取账户买入力与切片剩余现金的较小者；删除 exec_max_aum_mismatch，改为\"账户基准资产不得小于 paper_aum\"。order_manager / golive 净增 6 点。",
+    "how_it_was_handled": "**未做逐点变异复核**（用户明确表示这一步不在其要求之内）。行为由 test_order_manager 的切片用例（按切片定股数、不向账户其余资金借钱、切片盈亏驱动日亏熔断与净值、基准资产不足拒绝、切片亏完停止）与 test_golive 的资金检查用例覆盖，并在真实 moomoo 纸账户上跑过预检。",
+    "owed": "这 6 个点（及本批改动行上的其余点）欠逐点复核。"
    }
   ]
  },

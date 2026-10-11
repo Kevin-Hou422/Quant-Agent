@@ -57,7 +57,6 @@ EXPECTED_EXECUTION_DEFAULTS = {
     "exec_flatten_band_bps":    500.0,
     "exec_max_daily_loss":      0.05,
     "exec_max_price_deviation": 0.15,
-    "exec_max_aum_mismatch":    0.5,
 }
 
 

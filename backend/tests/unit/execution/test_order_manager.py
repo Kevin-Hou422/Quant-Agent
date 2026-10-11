@@ -54,7 +54,7 @@ def _env(tmp_path, cash=100_000.0, **ctx_kw):
     ps = PositionStore(db_url=f"sqlite:///{tmp_path / 'p.db'}")
     clock = Clock()
     om = OrderManager(gw, es, ps, limits=LIM, paper_aum=100_000.0, limit_band_bps=50.0,
-                      flatten_band_bps=500.0, max_aum_mismatch=0.5, clock=clock)
+                      flatten_band_bps=500.0, clock=clock)
     return SimpleNamespace(ctx=ctx, gw=gw, es=es, ps=ps, clock=clock, om=om)
 
 
@@ -161,7 +161,7 @@ def test_crash_after_place_before_persist_is_adopted_not_resubmitted(tmp_path):
     e.gw.place(OrderRequest(aaa.client_id, "AAA", "BUY", aaa.qty, aaa.limit_price))
     # ……进程在 mark_submitted 之前死掉。新进程：
     om2 = OrderManager(e.gw, e.es, e.ps, limits=LIM, paper_aum=100_000.0, limit_band_bps=50.0,
-                       flatten_band_bps=500.0, max_aum_mismatch=0.5, clock=e.clock)
+                       flatten_band_bps=500.0, clock=e.clock)
     rep = om2.run_cycle(pd.Series(W), pd.Series(PX1), pd.Series(ADV), D1)
     assert rep.blocked == ""
     codes = [p[0] for p in _placed(e)]
@@ -332,14 +332,83 @@ def test_freshness_rules_on_the_real_calendar():
     assert freshness_problem(fri, mon_after) == "stale_decision_date"
 
 
-@pytest.mark.parametrize("cash,blocked", [(300_000.0, "aum_mismatch"), (150_000.0, ""),
-                                          (149_000.0, ""), (51_000.0, ""), (50_000.0, ""),
-                                          (49_000.0, "aum_mismatch")])
-def test_account_size_must_match_paper_aum(tmp_path, cash, blocked):
+# ---------------------------------------------------------------------------
+# 资金切片：只动用 paper_aum，账户里多出来的闲置
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("cash,blocked", [
+    (1_000_000.0, ""), (100_000.0, ""),                 # 账户 ≥ 划拨额：可以（恰好相等也可以）
+    (99_999.0, "account_smaller_than_paper_aum"),       # 划不出这么多钱
+    (0.0, "account_smaller_than_paper_aum"),            # 从未出现过正资产 → 没有基准
+])
+def test_the_account_must_be_able_to_fund_the_slice(tmp_path, cash, blocked):
     e = _env(tmp_path, cash=cash)
     rep = _cycle(e, D1)
     assert rep.blocked == blocked
     assert (len(_placed(e)) == 0) == bool(blocked)
+
+
+def test_orders_are_sized_by_the_slice_not_the_account(tmp_path):
+    """$1M 的账户、$100k 的切片：股数与 $100k 账户时完全一样（10% → $10,000 → 200 股 @50）。"""
+    e = _env(tmp_path, cash=1_000_000.0)
+    rep = _cycle(e, D1)
+    assert sorted(_placed(e)) == [
+        ("US.AAA", "BUY", 200, 50.25, "qaR-1-20250303-AAA-B"),
+        ("US.BBB", "BUY", 400, 20.10, "qaR-1-20250303-BBB-B"),
+        ("US.CCC", "BUY", 500, 10.05, "qaR-1-20250303-CCC-B"),
+    ]
+    assert rep.reconcile["account"]["paper_aum"] == 100_000.0
+    assert rep.reconcile["account"]["slice_equity"] == 100_000.0
+    assert rep.reconcile["account"]["total_assets"] == 1_000_000.0
+
+
+def test_the_slice_does_not_borrow_from_the_rest_of_the_account(tmp_path):
+    """账户买入力 $1M，但切片只有 $100k：目标合计 150% 时，买到 $100k 为止，其余被拒。"""
+    e = _env(tmp_path, cash=1_000_000.0)
+    e.om.limits = PreTradeLimits(max_name_weight=1.0, max_gross=2.0, max_participation_pct=.10,
+                                 max_daily_loss=.05, max_price_deviation=.15)
+    rep = _cycle(e, D1, w={"AAA": .6, "BBB": .5, "CCC": .4})
+    spent = sum(q * p for _, _, q, p, _ in _placed(e))
+    assert spent <= 100_000.0
+    assert {r["reason"] for r in rep.gate["rejected"]} == {"insufficient_buying_power"}
+    assert rep.n_submitted >= 1 and spent > 50_000.0
+
+
+def test_slice_pnl_drives_the_day_return_and_the_equity_curve(tmp_path):
+    """
+    切片 $100k 在 $1M 账户里：账户少了 $6,000 = 切片 −6%（不是账户的 −0.6%）。
+    日亏熔断（5%）必须因此触发；LIVE 账本的净值是切片净值。
+    """
+    e = _env(tmp_path, cash=1_000_000.0)
+    _cycle(e, D1)
+    e.ctx.now = "2025-03-04 09:30:01.000"
+    e.ctx.open_session({"AAA": 50.2, "BBB": 20.05, "CCC": 10.02})
+    e.ctx.now = "2025-03-04 16:30:00.000"
+    e.ctx.account_override = {"total_assets": 994_000.0}
+    rep = _cycle(e, D2, w={"AAA": .10, "BBB": .08, "CCC": .05, "DDD": .02},
+                 px={"AAA": 50.0, "BBB": 20.0, "CCC": 10.0, "DDD": 5.0},
+                 adv={"AAA": 1e9, "BBB": 1e9, "CCC": 1e9, "DDD": 1e9})
+    assert rep.reconcile["day_return"] == pytest.approx(-0.06)
+    assert rep.reconcile["account"]["slice_equity"] == pytest.approx(94_000.0)
+    assert rep.gate["halted"] == "daily_loss_halt"
+    assert e.ps.latest_equity(LIVE_BOOK_ID) == pytest.approx(0.94)
+
+
+def test_slice_equity_is_unknown_before_any_baseline(tmp_path):
+    e = _env(tmp_path, cash=0.0)
+    assert e.om.slice_equity(0.0) is None
+    e.clock.after_close(D1)
+    e.om.reconcile()                       # 资产为 0：不建立基准
+    assert e.om.slice_equity(0.0) is None
+
+
+def test_a_depleted_slice_stops_trading(tmp_path):
+    e = _env(tmp_path, cash=1_000_000.0)
+    _cycle(e, D1)
+    e.ctx.expire_day()
+    e.ctx.account_override = {"total_assets": 900_000.0}       # 账户亏掉 $100k = 整个切片
+    rep = _cycle(e, D2)
+    assert rep.blocked == "slice_depleted"
 
 
 def test_gate_rejections_are_recorded_and_retryable(tmp_path):
@@ -512,7 +581,7 @@ def test_paper_aum_must_be_a_positive_finite_number(tmp_path, aum):
     e = _env(tmp_path)
     with pytest.raises(ValueError, match="paper_aum"):
         OrderManager(e.gw, e.es, e.ps, limits=LIM, paper_aum=aum, limit_band_bps=50.0,
-                     flatten_band_bps=500.0, max_aum_mismatch=0.5, clock=e.clock)
+                     flatten_band_bps=500.0, clock=e.clock)
 
 
 def test_history_window_starts_a_week_before_the_oldest_relevant_date(tmp_path):

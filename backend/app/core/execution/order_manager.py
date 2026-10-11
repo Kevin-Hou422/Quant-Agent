@@ -11,7 +11,9 @@ PM 美元账本的最后一行目标权重 → moomoo 纸交易订单 → 成交
 2. 全平熔断已开启 → 只继续全平，不调仓。
 3. 对账不干净（持仓对不上 / 有找不到的在途单 / 读数不稳定）→ **不交易**，等人确认。
 4. 数据新鲜度：决策日必须是"最近一个已收盘的交易日"，且当前时刻在其收盘之后。
-5. 账户总资产与 paper_aum 偏离过大 → 不交易（配置与现实不符）。
+5. 资金切片：只动用 paper_aum 这么多钱（账户里多出来的闲置）。切片权益 = paper_aum +
+   账户自建立基准以来的盈亏；股数、风控上限、日亏熔断、净值全部按切片算。
+   账户建立基准时的资产 < paper_aum → 不交易（不能分配比账户实有更多的钱）。
 6. 撤掉更早决策日仍在途的我方调仓单。
 7. 目标权重 → 股数订单 → 幂等去重 → 下单前风控门 → 先写意图、再下单。
 
@@ -183,7 +185,6 @@ class OrderManager:
         paper_aum: float,
         limit_band_bps: float,
         flatten_band_bps: float,
-        max_aum_mismatch: float,
         book_id: int = LIVE_BOOK_ID,
         clock: Optional[Callable[[], datetime]] = None,
         sleep: Optional[Callable[[float], None]] = None,
@@ -205,7 +206,6 @@ class OrderManager:
         self.paper_aum = float(paper_aum)
         self.limit_band_bps = float(limit_band_bps)
         self.flatten_band_bps = float(flatten_band_bps)
-        self.max_aum_mismatch = float(max_aum_mismatch)
         self.book_id = int(book_id)
         self._clock = clock or _utcnow
 
@@ -219,9 +219,28 @@ class OrderManager:
             paper_aum=float(settings.paper_aum),
             limit_band_bps=float(settings.exec_limit_band_bps),
             flatten_band_bps=float(settings.exec_flatten_band_bps),
-            max_aum_mismatch=float(settings.exec_max_aum_mismatch),
             clock=clock,
         )
+
+    # ------------------------------------------------------------------
+    # 资金切片
+    # ------------------------------------------------------------------
+
+    def _baseline_assets(self) -> Optional[float]:
+        raw = self.store.get_state("baseline_total_assets")
+        return None if raw is None else float(raw)
+
+    def slice_equity(self, total_assets: float) -> Optional[float]:
+        """
+        划给本系统的资金现在值多少 = paper_aum + 账户自建立基准以来的盈亏。
+        账户专供本系统（见 config.execution_mode），所以账户的全部盈亏都归这块切片。
+        还没有基准（账户从未出现过正资产）→ None。
+
+        为什么不直接用账户总资产：纸账户有 $1,000,000、计划只用 $10,000 时，按账户算会把
+        单票 10% 下成 $100,000；而 $10k 切片亏 5% 只是账户的 0.05%，日亏熔断永远不触发。
+        """
+        base = self._baseline_assets()
+        return None if base is None else self.paper_aum + (float(total_assets) - base)
 
     # ------------------------------------------------------------------
     # 对账 / 恢复
@@ -364,10 +383,6 @@ class OrderManager:
         if accept:
             status = "accepted"
 
-        prev = self.store.trusted_before(market_date)
-        day_ret = (acct.total_assets / prev.total_assets - 1.0
-                   if prev is not None and prev.total_assets > 0 else None)
-
         positions = {tk: {"qty": p.qty, "price": p.nominal_price, "market_val": p.market_val}
                      for tk, p in pos.items()}
         self.store.add_snapshot(
@@ -380,6 +395,13 @@ class OrderManager:
             # 记成 0 的话之后所有净值都是 x/0）。一旦建立就不再改 —— 接受差异也不重置。
             self.store.set_state("baseline_total_assets", repr(float(acct.total_assets)))
 
+        # 日收益按**切片**算（上一可信快照 → 现在），不是按整个账户
+        prev = self.store.trusted_before(market_date)
+        slice_now = self.slice_equity(acct.total_assets)
+        slice_prev = None if prev is None else self.slice_equity(prev.total_assets)
+        day_ret = (slice_now / slice_prev - 1.0
+                   if slice_now is not None and slice_prev is not None and slice_prev > 0 else None)
+
         if status in ("baseline", "clean", "accepted"):
             self._record_book(market_date, acct, pos)
         if status in ("discrepancy", "unresolved", "unstable"):
@@ -390,7 +412,8 @@ class OrderManager:
             market_date=str(market_date), status=status,
             account={"total_assets": acct.total_assets, "cash": acct.cash,
                      "power": acct.power, "market_val": acct.market_val,
-                     "currency": acct.currency},
+                     "currency": acct.currency,
+                     "paper_aum": self.paper_aum, "slice_equity": slice_now},
             positions=positions, discrepancies=discrepancies, unresolved=unresolved,
             awaiting_confirmation=awaiting,
             fills=fills, adopted=adopted, day_return=day_ret, history_ok=q.history_ok,
@@ -411,9 +434,9 @@ class OrderManager:
                      pos: Dict[str, BrokerPosition]) -> None:
         """把券商真相写进 PositionStore 的 LIVE_BOOK_ID 账本（与模拟账本同表、可并排比较）。"""
         from app.db.position_store import DailyPnL
-        ta = float(acct.total_assets)
-        base = float(self.store.get_state("baseline_total_assets") or ta)
-        equity = ta / base if base > 0 else 0.0       # 账户资产为 0：净值记 0，而不是 x/0
+        seq = self.slice_equity(acct.total_assets)     # None：账户还没出现过正资产
+        ta = seq if seq is not None and seq > 0 else 0.0
+        equity = ta / self.paper_aum                    # 切片净值；切片归零记 0，而不是 x/0
         prev_eq, _ = self.pstore.state_before(self.book_id, market_date)
         net_ret = equity / prev_eq - 1.0 if prev_eq > 0 else 0.0
         weights = {tk: p.market_val / ta for tk, p in pos.items() if ta > 0}
@@ -427,7 +450,7 @@ class OrderManager:
             a["notional"] += f.qty * f.price
             if f.ref_price > 0:                       # 补登单没有决策日参考价，不计入执行缺口
                 a["shortfall"] += f.qty * (f.price - f.ref_price)
-        prev_usd = prev_eq * base
+        prev_usd = prev_eq * self.paper_aum
         shortfall = sum(a["shortfall"] for a in agg.values())
         cost_bps = shortfall / prev_usd * 1e4 if prev_usd > 0 else 0.0
         fills = [{
@@ -537,11 +560,16 @@ class OrderManager:
             return rep
 
         acct = rec.account_obj
-        ratio = acct.total_assets / self.paper_aum
-        if abs(ratio - 1.0) > self.max_aum_mismatch:
-            logger.error("[exec] 账户总资产 %.2f 与 paper_aum %.2f 偏离 %.0f%% → 不交易",
-                         acct.total_assets, self.paper_aum, (ratio - 1) * 100)
-            rep.blocked = "aum_mismatch"
+        base = self._baseline_assets()
+        if base is None or base < self.paper_aum:
+            logger.error("[exec] 账户建立基准时的资产 %s < paper_aum %.2f → 不交易"
+                         "（不能分配比账户实有更多的钱；把 PAPER_AUM 调到不超过账户资产）",
+                         base, self.paper_aum)
+            rep.blocked = "account_smaller_than_paper_aum"
+            return rep
+        if self.slice_equity(acct.total_assets) <= 0:
+            logger.error("[exec] 资金切片已亏完（切片权益 ≤ 0）→ 不交易")
+            rep.blocked = "slice_depleted"
             return rep
 
         # 撤掉与本次调仓冲突的在途单：更早决策日的调仓单、**任何**残留的全平单
@@ -587,9 +615,12 @@ class OrderManager:
             acct = rec.account_obj
 
         pos = rec.position_objs
+        equity = self.slice_equity(acct.total_assets)
+        # 切片不加杠杆：能花的钱 = 切片权益 − 已持仓市值，且不超过券商给的买入力
+        power = min(acct.power, equity - sum(abs(p.market_val) for p in pos.values()))
         build = build_rebalance_orders(
             target_weights, {tk: p.qty for tk, p in pos.items()}, ref_prices,
-            acct.total_assets, decision_date, book_id=self.book_id,
+            equity, decision_date, book_id=self.book_id,
             band_bps=self.limit_band_bps, allow_short=self.limits.allow_short,
             no_trade_band=no_trade_band, name_cap=self.limits.max_name_weight,
             gross_cap=self.limits.max_gross)
@@ -600,7 +631,7 @@ class OrderManager:
         rep.n_duplicate = len(build.orders) - len(fresh)
 
         dec = check(fresh, GateContext(
-            equity=acct.total_assets, buying_power=acct.power,
+            equity=equity, buying_power=power,
             current_qty={tk: p.qty for tk, p in pos.items()},
             broker_prices={tk: p.nominal_price for tk, p in pos.items()},
             adv_usd=adv_usd, day_return=rec.day_return, kill_switch=False,
@@ -699,7 +730,8 @@ class OrderManager:
                                      band_bps=self.flatten_band_bps)
         acct = self.gw.account()
         dec = check(build.orders, GateContext(
-            equity=acct.total_assets, buying_power=acct.power,
+            equity=self.slice_equity(acct.total_assets) or acct.total_assets,
+            buying_power=acct.power,
             current_qty={tk: p.qty for tk, p in positions.items()},
             broker_prices={tk: p.nominal_price for tk, p in positions.items()},
             adv_usd={}, kill_switch=True), self.limits)

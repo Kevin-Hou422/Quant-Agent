@@ -43,7 +43,7 @@ def _settings(tmp_path, **kw):
         database_url=f"sqlite:///{(tmp_path / 'a.db').as_posix()}",
         scheduler_db_url=f"sqlite:///{(tmp_path / 's.db').as_posix()}",
         pit_store_dir=str(tmp_path / "pit"), paper_aum=1_000_000.0,
-        exec_max_aum_mismatch=0.5, moomoo_host="127.0.0.1", moomoo_port=11111,
+        moomoo_host="127.0.0.1", moomoo_port=11111,
         paper_dataset="us_broad_large", price_source="moomoo",
     )
     base.update(kw)
@@ -240,18 +240,26 @@ def test_storage_not_writable_reports_nothing_for_good_dirs(tmp_path):
 
 
 @pytest.mark.parametrize("cash,ok", [
-    (1_500_000.0, True),       # 偏离恰好 50% —— 上限是闭区间
-    (500_000.0, True),
-    (1_500_001.0, False),
+    (1_000_000.0, True),       # 恰好等于划拨额
+    (50_000_000.0, True),      # 账户远大于划拨额：多出来的闲置（资金切片）
+    (999_999.0, False),        # 划不出这么多钱
     (100_000.0, False),
 ])
-def test_account_must_match_paper_aum(tmp_path, cash, ok):
+def test_the_account_must_be_able_to_fund_paper_aum(tmp_path, cash, ok):
     _, _, _, _, run = _env(tmp_path, cash=cash)
     c = _by_name(run())["account_funds"]
     assert c.ok is ok and c.layer == LAYER_CONNECT
     # 不通过时才给出改法；通过时不该出现误导性的建议
-    assert (f"把 PAPER_AUM 设为 {cash:.0f}" in c.detail) is (not ok)
+    assert (f"调到不超过 {cash:.0f}" in c.detail) is (not ok)
 
+
+def test_funding_is_judged_against_the_baseline_not_todays_assets(tmp_path):
+    """建立基准时账户 $1M ≥ 划拨额；之后亏到 $990k 不改变"当初划得出这笔钱"这件事。"""
+    ctx, _, _, _, run = _env(tmp_path)
+    assert _by_name(run())["account_funds"].ok                  # 建立基准
+    ctx.account_override = {"total_assets": 990_000.0}
+    c = _by_name(run())["account_funds"]
+    assert c.ok and "基准资产 $1,000,000.00" in c.detail
 
 def test_empty_account_is_refused(tmp_path):
     _, _, _, _, run = _env(tmp_path, cash=0.0)
