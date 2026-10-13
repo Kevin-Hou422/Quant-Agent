@@ -56,7 +56,7 @@ def _stub_loader(monkeypatch, panel: dict, score: float = 1.0):
     """打桩 `load_registry_dataset` 与 `check_dataset_health`。"""
     import app.core.data_engine.dataset_registry as reg
 
-    def _load(name, start=None, end=None, health_check=False):
+    def _load(name, start=None, end=None, health_check=False, with_fundamentals=None):
         close = panel["close"]
         s = pd.Timestamp(start) if start else close.index[0]
         e = pd.Timestamp(end) if end else close.index[-1]
@@ -183,7 +183,7 @@ class TestIncrementWindow:
         import app.core.data_engine.dataset_registry as reg
         real_close = full["close"]
 
-        def _load(name, start=None, end=None, health_check=False):
+        def _load(name, start=None, end=None, health_check=False, with_fundamentals=None):
             seen["start"] = start
             s, e = pd.Timestamp(start), pd.Timestamp(end)
             return _FakeDS({k: v.loc[(v.index >= s) & (v.index <= e)]
@@ -208,7 +208,7 @@ class TestIncrementWindow:
         """
         import app.core.data_engine.dataset_registry as reg
         monkeypatch.setattr(reg, "load_registry_dataset",
-                            lambda name, start=None, end=None, health_check=False:
+                            lambda name, start=None, end=None, health_check=False, with_fundamentals=None:
                             _FakeDS(panel))
         monkeypatch.setattr(reg, "check_dataset_health",
                             lambda ds, min_score=0.0, warn_only=True:
@@ -278,7 +278,7 @@ class TestIncrementWindow:
         seen = {}
         panel = _panel(5)
 
-        def _load(name, start=None, end=None, health_check=False):
+        def _load(name, start=None, end=None, health_check=False, with_fundamentals=None):
             seen["health_check"] = health_check
             return _FakeDS(panel)
 

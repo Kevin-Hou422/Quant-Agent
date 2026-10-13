@@ -101,7 +101,7 @@ def _is_scale_stable(node) -> bool:
         return False
 
     if isinstance(node, CrossSectionalNode):
-        if node.op in ("rank", "zscore", "scale", "normalize"):
+        if node.op in ("rank", "zscore", "scale", "normalize", "fund_rank"):
             return True
         # winsorize / ind_neutralize / sector_neutral 保留输入量纲
         return _is_scale_stable(node.child)

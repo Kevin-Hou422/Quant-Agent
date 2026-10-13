@@ -55,7 +55,8 @@ _TS_LIST = sorted(
 )
 
 # CS ops that are safe to use as wrappers
-_CS_LIST = sorted(_CS_OPS - {"ind_neutralize"})
+# fund_rank 在量价子树上与 rank 等价（覆盖率恒满）→ 不进随机替换池，只由基本面家族的种子引入
+_CS_LIST = sorted(_CS_OPS - {"ind_neutralize", "fund_rank"})
 
 # TS windows to sample from
 _TS_WINDOWS = [3, 5, 10, 20, 40, 60]

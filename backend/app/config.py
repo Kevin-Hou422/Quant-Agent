@@ -216,6 +216,19 @@ class Settings(BaseSettings):
     # 每日摄取通过健康门的数据按 (field, date, as_of) 追加进此目录，历史只追加不修改
     pit_store_dir: str = "pit_store"
 
+    # ── 基本面数据（Phase 10）─────────────────────────────────────────────
+    # 默认关闭。开启后美股数据集多出 7 个字段（earnings_yield / book_to_price / roe /
+    # gross_margin / asset_growth / sue / days_since_earnings），来源 SEC EDGAR，
+    # 按**实际披露日**对齐（披露日之后第一个交易日起可见）。价格仍只来自 price_source。
+    enable_fundamentals: bool = False
+    #: SEC 要求每个请求声明身份，形如 "Your Name you@example.com"。没有默认值，
+    #: 系统不会替你编一个：开启基本面却没配它 → 只能用本地已有的事实，一条都没有就报错。
+    edgar_user_agent: str = ""
+    #: 事实存储目录；空 = `<pit_store_dir>/fundamentals`
+    fundamentals_dir: str = ""
+    #: 同一只票多久内不重复向 EDGAR 取（财报按季披露，日内重复拉没有意义）
+    fundamentals_max_age_h: float = 20.0
+
     # ── 自主度（Phase 9.4）────────────────────────────────────────────────
     # manual = 默认模式：VALIDATED→PAPER 由人工 approve/reject 把关（用户只批准或拒绝）
     # auto   = 全自动：VALIDATED→PAPER 由规则/红队自动决定（Phase 13.3 才真正启用）

@@ -50,6 +50,10 @@ FACTOR_FAMILIES = {
     "price_volume_corr":  "Price-Volume Correlation — exploits co-movement of price and flow",
     "carry":              "Carry / Yield — favors high-return, low-cost assets",
     "composite":          "Composite — combines multiple factor families",
+    # Phase 10：基本面家族（只在数据集带基本面字段时出现）
+    "value":              "Value — buys cheap stocks (high earnings / book relative to price)",
+    "profitability":      "Profitability — favors high-ROE, high-margin, conservatively growing firms",
+    "earnings":           "Earnings Surprise — post-earnings-announcement drift (PEAD)",
 }
 
 # ---------------------------------------------------------------------------
@@ -427,7 +431,8 @@ def _collect_windows(node) -> List[int]:
 
 def _has_cs_at_root(node) -> bool:
     from .typed_nodes import CrossSectionalNode
-    if isinstance(node, CrossSectionalNode) and node.op in ("rank", "zscore", "scale", "normalize"):
+    if isinstance(node, CrossSectionalNode) and node.op in ("rank", "zscore", "scale", "normalize",
+                                                           "fund_rank"):
         return True
     # Check if root is arithmetic and direct child is CS
     from .typed_nodes import ArithmeticNode
@@ -467,6 +472,19 @@ def _tree_depth(node) -> int:
 
 def _classify_family(node, fields: Set[str], all_ops: List[str]) -> str:
     ops = set(all_ops)
+
+    # Phase 10：用到基本面字段 → 家族由**字段**决定（算子只是在做排名 / 平滑）。
+    # 同时用到量价字段 → composite。
+    from .fields import EVENT_FIELDS, FUNDAMENTAL_FIELDS, PRICE_FIELDS, VALUATION_FIELDS
+    fund = set(fields) & FUNDAMENTAL_FIELDS
+    if fund:
+        if set(fields) & PRICE_FIELDS:
+            return "composite"
+        if fund <= VALUATION_FIELDS:
+            return "value"
+        if fund & (EVENT_FIELDS | {"sue"}):
+            return "earnings" if not (fund & VALUATION_FIELDS) else "composite"
+        return "profitability" if not (fund & VALUATION_FIELDS) else "composite"
 
     # Count how many distinct families are present (for composite detection)
     family_signals: List[str] = []

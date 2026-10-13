@@ -342,6 +342,7 @@ def load_registry_dataset(
     health_check: bool = True,
     health_fail_closed: Optional[bool] = None,
     min_health:   Optional[float] = None,
+    with_fundamentals: Optional[bool] = None,
 ) -> Dataset:
     """
     Load a named dataset from the production registry.
@@ -354,10 +355,13 @@ def load_registry_dataset(
     with_sector : Attach a 'sector' field (integer GICS L1 codes) to ds.data.
                   Used by dsl_executor as the 'groups' field for group_rank /
                   group_zscore / ind_neutralize operators.
+    with_fundamentals : 挂基本面字段（Phase 10，仅美股）。None = 按 `settings.enable_fundamentals`。
+                  开启后取不到任何事实会**抛错**（见 fundamentals.service）。
 
     Returns
     -------
-    Dataset with 7 standard OHLCV fields + optional 'sector' field.
+    Dataset with 7 standard OHLCV fields + optional 'sector' field
+    (+ 基本面字段，若开启).
     """
     if name not in _SPECS:
         if name in _SHELVED_NAMES:
@@ -382,7 +386,8 @@ def load_registry_dataset(
         # 缓存键含数据源；读不到时按 yahoo 记键，可能让 moomoo 数据落在 yahoo 键下
         logger.warning("[registry] 读取 price_source 失败，缓存键按 yahoo 记: %s", exc)
         _src = "yahoo"
-    cache_key = f"{name}|{start_dt}|{end_dt}|{_src}"
+    fund_on = _fundamentals_wanted(spec, with_fundamentals)
+    cache_key = f"{name}|{start_dt}|{end_dt}|{_src}|{'fund' if fund_on else 'px'}"
     if use_cache and cache_key in _CACHE:
         return _CACHE[cache_key]
 
@@ -414,6 +419,11 @@ def load_registry_dataset(
                 name, cov["total"], cov["sector_distribution"],
             )
 
+    if fund_on:
+        from .fundamentals.service import attach_fundamentals
+        # data["close"] 与本次抓取同一 vintage → 可直接用来识别拆股（见 prices.py）
+        attach_fundamentals(data, spec.universe, adj_close=data["close"])
+
     ds = Dataset(
         name      = name,
         frequency = "daily",
@@ -436,6 +446,20 @@ def load_registry_dataset(
         _CACHE[cache_key] = ds
 
     return ds
+
+
+def _fundamentals_wanted(spec: DatasetSpec, explicit: Optional[bool]) -> bool:
+    """基本面只对美股有意义（来源是 SEC）；显式参数优先于配置。"""
+    if spec.region != "US":
+        return False
+    if explicit is not None:
+        return bool(explicit)
+    try:
+        from app.config import settings
+        return bool(getattr(settings, "enable_fundamentals", False))
+    except Exception as exc:
+        logger.warning("[registry] 读取 enable_fundamentals 失败，本次按关闭处理（不挂基本面字段）: %s", exc)
+        return False
 
 
 def clear_registry_cache() -> None:

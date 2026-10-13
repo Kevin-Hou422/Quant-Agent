@@ -248,6 +248,7 @@ _CS_OPS = frozenset({
     "rank", "zscore", "scale", "ind_neutralize",
     "sector_neutral",   # Task 3.4: GICS-sector neutralization using dataset['groups']
     "winsorize", "normalize",
+    "fund_rank",        # Phase 10.4: 带覆盖率门槛的截面排名（基本面字段用）
 })
 
 

@@ -42,6 +42,7 @@ EXPECTED_BOOL_DEFAULTS = {
     "enable_scheduler":            False,   # 不自动起定时任务
     "enable_paper_trading":        False,   # 不自动开始模拟交易
     "enable_discovery":            False,   # 不自动起夜间发现任务
+    "enable_fundamentals":         False,   # 不自动向 SEC 发请求（且需要用户自己的身份声明）
     "debug":                       False,   # 不在调试模式下发布
     "enable_backup":               True,    # 备份默认开着
 

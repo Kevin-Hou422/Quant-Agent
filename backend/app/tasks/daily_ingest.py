@@ -165,7 +165,10 @@ class DailyIngest:
             from app.core.data_engine.dataset_registry import (
                 load_registry_dataset, check_dataset_health,
             )
-            ds = load_registry_dataset(dataset_name, start=start, end=end, health_check=False)
+            # 基本面字段是 (事实, 价格) 的派生量，**不进价格 PIT**（Phase 10）：
+            # 这里只取价格，喂给交易循环前由 _with_fundamentals 现挂。
+            ds = load_registry_dataset(dataset_name, start=start, end=end, health_check=False,
+                                       with_fundamentals=False)
         except Exception as exc:
             logger.error("[daily_ingest] 数据加载失败 '%s': %s — 拒绝当日摄取", dataset_name, exc)
             return IngestResult(False, dataset_name, as_of, reject_reason=f"load_failed: {exc}")
@@ -247,6 +250,32 @@ def _execution_on() -> bool:
     return str(getattr(settings, "execution_mode", "off")) != "off"
 
 
+def _with_fundamentals(dataset_name: str, panel: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+    """
+    开启基本面时，给喂进交易循环的面板挂上基本面字段（Phase 10）。
+
+    PIT 面板是历次增量拼出来的（多个 vintage 的复权价），不能用来识别拆股 —— 所以不传
+    adj_close，让 service 自己取一份单一 vintage 的。挂载失败 → 返回原面板并报错：
+    引用基本面字段的因子会因"字段不存在"而失败（不调仓），不会拿缺的数据继续算。
+    """
+    from app.config import settings
+    if not getattr(settings, "enable_fundamentals", False):
+        return panel
+    try:
+        from app.core.data_engine.dataset_registry import _fundamentals_wanted, registry_spec
+        spec = registry_spec(dataset_name)
+        if not _fundamentals_wanted(spec, None):
+            return panel
+        from app.core.data_engine.fundamentals.service import attach_fundamentals
+        out = dict(panel)
+        attach_fundamentals(out, spec.universe)
+        return out
+    except Exception as exc:
+        logger.error("[daily_pipeline] 基本面挂载失败 → 本轮面板**不含**基本面字段，"
+                     "引用它们的因子将报错: %s", exc)
+        return panel
+
+
 def _run_portfolio_safely(loop, dataset, forward_from) -> Dict[str, Any]:
     """组合账本失败不拖垮 per-factor 监控；但执行层仍要对账/续做全平（失败时不加新风险）。"""
     try:
@@ -290,6 +319,7 @@ def run_daily_pipeline(dataset_name: str, start: str = "", end: str = "",
                 from app.core.data_engine.pit_store import PITStore
                 panel = PITStore(settings.pit_store_dir).load_pit(name=dataset_name) or {}
                 if panel.get("close") is not None and not panel["close"].empty:
+                    panel = _with_fundamentals(dataset_name, panel)
                     out["portfolio"] = _run_portfolio_safely(DailyTradingLoop(), panel, None)
                 else:
                     out["portfolio"] = {"execution": DailyTradingLoop()._maintain_live("no_data")}
@@ -304,9 +334,10 @@ def run_daily_pipeline(dataset_name: str, start: str = "", end: str = "",
         return out
 
     loop = DailyTradingLoop()
-    report = loop.run(ing.dataset, forward_from=ing.forward_from)   # per-factor：IC 监控 + 衰减
+    panel = _with_fundamentals(dataset_name, ing.dataset)
+    report = loop.run(panel, forward_from=ing.forward_from)   # per-factor：IC 监控 + 衰减
     # Phase PM.4：组合账本（真实 AUM 的美元账本，多因子净持仓 + 容量）
-    pf = _run_portfolio_safely(loop, ing.dataset, ing.forward_from)
+    pf = _run_portfolio_safely(loop, panel, ing.forward_from)
     return {
         "ingest_accepted": True, "as_of": ing.as_of, "health_score": ing.health_score,
         "mode": ing.mode, "forward_from": ing.forward_from, "n_new_bars": ing.n_new_bars,

@@ -52,8 +52,12 @@ engine with a daily scheduler, and a React/TypeScript workspace UI.
   between every segment, `prev_w·price_chg` accounting, T+1 delay, square-root market impact, ADV
   liquidity caps, walk-forward folds, Deflated Sharpe, and CPCV-based overfitting probability.
 - **Autonomous discovery** — `MarketObserver` derives hypothesis directions from price-volume
-  observations (regime, cross-sectional dispersion, momentum/reversal breadth); `DiscoveryEngine`
+  observations (regime, cross-sectional dispersion, momentum/reversal breadth) and, when the dataset
+  carries fundamentals, from the valuation spread and the earnings calendar; `DiscoveryEngine`
   drives GP from those directions with **no user text and no LLM**, storing winners as CANDIDATE.
+- **Point-in-time fundamentals** — SEC EDGAR facts aligned to their **actual filing date** (visible
+  from the next trading day), giving seven daily fields: earnings yield, book-to-price, ROE, gross
+  margin, asset growth, standardized earnings surprise, and days since the last earnings release.
 - **Genetic Programming** — `PopulationEvolver` evolves typed ASTs with structural mutations, a
   diversity-filtered `AlphaPool`, and a fitness measured by **purged K-fold cross-validation inside
   the in-sample block** (not by peeking at the holdout).
@@ -170,20 +174,22 @@ Quant Agent/
 │   ├── MUTATION_LEDGER.md           # mutation-testing criteria + pointers to machine-readable state
 │   ├── backend_retired_report/      # frozen archives (Phase 0–5, 6–8 plans, audits)
 │   ├── tools/mutation/              # mutation runner (reproducible kill-rate measurement)
-│   ├── tests/                       # 152 test files: unit/ integration/ meta/ golden/ performance/
+│   ├── tests/                       # 185 test files: unit/ integration/ meta/ golden/ performance/
+│   │                                #   fixtures/ = trimmed real SEC EDGAR + price responses
 │   └── app/
 │       ├── main.py · config.py · dependencies.py
 │       ├── api/                     # router.py (research + lifecycle + strategy + diagnostics),
 │       │                            #   chat_router.py
 │       ├── core/
-│       │   ├── alpha_engine/        # parser, typed AST, validator, executor, fast_ops,
+│       │   ├── alpha_engine/        # parser, typed AST, validator, executor, fast_ops, fields,
 │       │   │                        #   generator, signal_processor, financial_interpreter
 │       │   ├── backtest_engine/     # realistic_backtester, backtest_engine, transaction_cost,
 │       │   │                        #   performance_analyzer, portfolio_constructor, risk_report,
 │       │   │                        #   overfit_stats (PBO/CPCV), alpha_combiner, capacity
 │       │   ├── data_engine/         # dataset_registry, pit_store, market_calendar, schema,
 │       │   │                        #   health_report, regime_detector, sector_mapper,
-│       │   │                        #   data_partitioner (3-way + PurgedKFold), providers/
+│       │   │                        #   data_partitioner (3-way + PurgedKFold), providers/,
+│       │   │                        #   fundamentals/ (edgar, pit, panels, prices, store, service)
 │       │   ├── gp_engine/           # population_evolver, alpha_pool, mutations, fitness,
 │       │   │                        #   evaluation_utils (purged-CV fitness), _rng
 │       │   ├── discovery/           # market_observer, discovery_engine
@@ -223,13 +229,28 @@ typed AST, statically validated, then executed vectorized.
 - **Logical / conditional:** `logical_and logical_or logical_not if_else where trade_when`
 - **Time-series:** `ts_mean ts_std ts_var ts_sum ts_delta ts_delay ts_max ts_min ts_rank ts_argmax
   ts_argmin ts_zscore ts_skew ts_kurt ts_entropy ts_decay_linear ts_corr ts_cov`
-- **Cross-sectional:** `rank zscore scale normalize winsorize demean ind_neutralize`
+- **Cross-sectional:** `rank zscore scale normalize winsorize demean ind_neutralize fund_rank`
 - **Group / sector:** `group_rank group_zscore group_mean group_neutralize`
 - **Inputs:** `data` — `open high low close volume vwap returns`, plus derived `sector` (GICS L1)
+- **Fundamental inputs** (US datasets, `ENABLE_FUNDAMENTALS=true`) — fields carry a class, because
+  the same operator means different things on each:
 
-Example: `rank(ts_delta(log(close), 5))` — 5-day log-price momentum, cross-sectionally ranked.
+  | Class | Fields | Behaviour |
+  |---|---|---|
+  | valuation | `earnings_yield` `book_to_price` | numerator updates quarterly, denominator (market cap) daily |
+  | quarterly | `roe` `gross_margin` `asset_growth` `sue` | a **step function**: constant between filings |
+  | event | `days_since_earnings` | counter, reset the trading day after an earnings release |
+
+Examples: `rank(ts_delta(log(close), 5))` — 5-day log-price momentum, cross-sectionally ranked.
+`fund_rank(earnings_yield)` — cheapness; `fund_rank(trade_when(days_since_earnings < 60, sue))` —
+post-earnings-announcement drift.
 
 The validator enforces max AST depth, max time-series window, and rejects look-ahead constructs.
+It also rejects short-window dispersion operators on step fields (`ts_std(roe, 20)` is zero almost
+everywhere — as a denominator it yields `inf`, not a volatility). `fund_rank` is `rank` with a
+coverage floor: a day on which fewer than half the names have a value produces no signal, instead of
+ranking three stocks as if they were a cross-section. A dataset without fundamentals has no such
+fields, so an expression that references one **raises** rather than evaluating to NaN.
 Signals pass through `SignalProcessor` (truncation → decay → neutralization → **T+1 delay**) before
 portfolio construction.
 
@@ -248,9 +269,12 @@ portfolio construction.
   `AlphaPool`, a scale-stability structural penalty, and a bindable shared RNG for determinism.
   Fitness uses **purged K-fold CV inside the in-sample block** (`s_fitness_mode=purged_cv`), so the
   score no longer depends on what regime the last segment happened to be.
-- **discovery** — `MarketObserver` scores six factor families from regime / dispersion / breadth /
-  autocorrelation / volatility; `DiscoveryEngine` runs GP on the top families and saves winners as
-  CANDIDATE. Registered as a nightly job under `ENABLE_DISCOVERY=true`. Deterministic, no LLM.
+- **discovery** — `MarketObserver` scores six price-volume factor families from regime / dispersion /
+  breadth / autocorrelation / volatility, plus `value` / `profitability` / `earnings` when the
+  dataset has those fields at ≥ 50% coverage (valuation spread vs. its own history; defensive
+  regimes; share of names that reported in the last 20 sessions). `DiscoveryEngine` runs GP on the
+  top families and saves winners as CANDIDATE. Seeds that reference fields the dataset lacks are
+  dropped before GP. Registered as a nightly job under `ENABLE_DISCOVERY=true`. Deterministic, no LLM.
 - **ml_engine** — `ProxyModel` (XGBoost overfitting proxy), `AlphaEvaluator`, `AlphaOptimizer`
   (Optuna over an IS-only objective).
 - **agent** — `QuantAgent` picks the LangChain tool path when an LLM is configured, else the
@@ -272,6 +296,20 @@ portfolio construction.
 - **Point-in-time store** — `PITStore` appends `(field, date, as_of)` vintages, never rewriting
   history, so any replay can reconstruct the view as of a past date. `DailyIngest.ingest_incremental`
   backfills once and then appends only new bars.
+- **Fundamentals** (`data_engine/fundamentals/`, off by default) — facts come from SEC EDGAR
+  `companyfacts`, not from a vendor's "latest financials" table, because the one thing that must not
+  be wrong is *when a number became knowable*. Every fact carries its `filed` date and a restatement
+  is a later-`filed` row for the same period, so "the latest version disclosed by day D" is
+  reconstructed without assumptions. A fact filed on day F is visible from the **first trading day
+  after F**; values forward-fill and expire after 200 days without a new filing. TTM figures are
+  assembled only from directly reported numbers (prior fiscal year + current YTD − prior-year YTD).
+  Market cap is **unadjusted** close × shares, with the share count carried across splits (the two
+  price sources disagree on what "unadjusted" means — yfinance's `Close` is already split-adjusted —
+  and each is handled explicitly). Facts are stored append-only under `<PIT_STORE_DIR>/fundamentals`;
+  the daily panels are recomputed from (facts, prices) and are *not* written to the price PIT store.
+  Known gaps are reported, not papered over: multi-class issuers without a usable share count
+  (`BRK-B`, `V`) have no valuation fields, and a company whose recent filings are missing upstream
+  is named in the load report as stale.
 - **Market calendar** — `market_calendar.py` (DST-aware session close, half-days, cross-checks data
   against the calendar and warns on disagreement). The scheduler skips non-trading days.
 - **Datasets** (`dataset_registry.py`):
@@ -539,9 +577,14 @@ than convention.
 - **No forward evidence yet.** The replay/forward split exists (`alpha_ic_history.is_forward`) and
   the →ACTIVE gate consumes forward samples only, but the count is currently zero. The gate is
   therefore not enforced by default (`TR_ENFORCE_ACTIVE_GATE=false`).
-- **Risk attribution covers 5 price-volume styles + sectors.** `size` and `value` need fundamentals
-  (Phase 10), so every attribution payload carries `styles_missing: ["size","value"]` — a "66% factor
-  risk" figure must not be read as "the major styles are covered".
+- **Risk attribution covers 5 price-volume styles + sectors.** Fundamentals now exist (Phase 10) but
+  are **not yet wired into the risk model**, so every attribution payload still carries
+  `styles_missing: ["size","value"]` — a "66% factor risk" figure must not be read as "the major
+  styles are covered".
+- **Fundamental factors are untested as strategies.** The fields are point-in-time correct and
+  cross-checked against the broker's own P/E and P/B on the live universe, but no fundamental factor
+  has been through the validation gate, and `sue` only becomes visible when the 10-Q is filed — days
+  to weeks after the earnings press release for many companies.
 
 ---
 
@@ -584,6 +627,9 @@ the file itself is the authority and documents *why* each default is what it is.
 | `DEFAULT_DATASET` / `DEFAULT_START` / `DEFAULT_END` | `us_tech_large` / `2020-01-01` / `2024-01-01` | research window |
 | `PRICE_SOURCE` | `yahoo` | `yahoo` \| `moomoo` (single authoritative source for research+execution) |
 | `MOOMOO_HOST` / `MOOMOO_PORT` | `127.0.0.1` / `11111` | OpenD gateway |
+| `ENABLE_FUNDAMENTALS` | `false` | attach the seven fundamental fields to US datasets (SEC EDGAR, filing-date aligned) |
+| `EDGAR_USER_AGENT` | *(empty)* | `"Your Name you@example.com"` — the SEC requires every request to declare an identity. No default: the system will not invent one; without it only already-stored facts are used |
+| `FUNDAMENTALS_DIR` / `FUNDAMENTALS_MAX_AGE_H` | `<PIT_STORE_DIR>/fundamentals` / `20` | fact store; how long before a ticker is re-fetched |
 | `EXECUTION_MODE` | `off` | `moomoo_paper` = place real orders on the moomoo **paper** account (real money is refused in code) |
 | `MOOMOO_SECURITY_FIRM` / `MOOMOO_TRD_ACC_ID` | `FUTUINC` / `0` | broker entity; `0` = first US paper account |
 | `EXEC_LIMIT_BAND_BPS` / `EXEC_FLATTEN_BAND_BPS` | `50` / `500` | limit band for rebalancing and for flattening |
@@ -614,7 +660,8 @@ the file itself is the authority and documents *why* each default is what it is.
 ## 15. Testing & Engineering Discipline
 
 ```bash
-cd backend  && pytest -q          # 4640 passed  (178 test files; 1 live-OpenD test skips when OpenD is down)
+cd backend  && pytest -q          # 4900 passed, 1 skipped (185 test files, ~37 min). The skip is the live-SEC
+                                  # contract test (needs EDGAR_USER_AGENT); the live-OpenD test also skips when OpenD is down
 cd frontend && npm run test       # 101 passed (9 files)
 cd frontend && npm run build      # tsc type check
 ```
@@ -652,6 +699,7 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
 | Data-contract audit (fail-closed synthetic data, provenance badges) + full test audit | ✅ Phases A/B |
 | Statistical foundations: three-way split, frozen metered holdout, purged-CV fitness, CPCV/PBO | ✅ Phase S |
 | Forward incremental ingest, PIT append, DST-aware calendar, replay/forward split | ✅ Phase 11 (code; not yet exercised live) |
+| Point-in-time fundamentals (SEC EDGAR), sparse DSL field classes, `fund_rank`, fundamental discovery directions | ✅ Phase 10 (run against live EDGAR + moomoo on the 95-name universe; no fundamental factor validated yet) |
 | Risk attribution + structured covariance | ✅ Phase R.2 (part) |
 | moomoo paper execution: reconciliation/crash recovery, pre-trade gate, two-step kill switch, sim-vs-paper fidelity, live T3 providers, execution panel | ✅ Phase 12 + FE-12 (code; **not yet run against a live OpenD gateway**) |
 
@@ -662,8 +710,9 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
   order has been placed on a real paper account yet. Two behaviours can only be confirmed there:
   whether the paper account serves history-order queries, and whether orders placed after the close
   appear in the next session's order list.
-- **Phase 10 — alternative data.** Fundamentals/earnings with point-in-time visibility and sparse
-  quarterly fields in the DSL. Blocks the `size`/`value` risk styles and any valuation factor.
+- **Phase 10 remainder.** `size`/`value` styles in the risk model; fundamentals in the LLM agent's
+  prompt (it still only advertises price-volume fields); a frontend view for fundamental fields
+  (FE-10); earnings-release timing finer than the filing date; share counts for multi-class issuers.
 - **Phase 13/14 — red-team agent, fully autonomous mode, validation-period operations.**
 - **R.2 remainder** — residual-based style neutralisation (changes signals, so it needs its own
   validation) and alpha-vs-risk-premium separation; `beta_neutral` closure is deferred until shorting

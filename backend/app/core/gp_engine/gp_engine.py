@@ -145,6 +145,39 @@ _SEED_DSLS: list[str] = [
 ]
 
 
+# ── 基本面家族（Phase 10.4）──────────────────────────────────────────────────
+# **不并入 `_SEED_DSLS`**：那张平表是给任意数据集随机取种子用的，而这些表达式只在
+# 开启了基本面的数据集上才算得出来。只有显式点名这三个家族时才会取到。
+# 全部用 fund_rank（带覆盖率门槛）—— 基本面截面是参差的，见 fast_ops.cs_fund_rank。
+_FUNDAMENTAL_SEEDS_BY_FAMILY: dict[str, list[str]] = {
+    # 价值：便宜的股票长期跑赢（Fama & French 1992；Basu 1977 的 E/P）
+    "value": [
+        "fund_rank(earnings_yield)",
+        "fund_rank(book_to_price)",
+        "fund_rank(earnings_yield) + fund_rank(book_to_price)",
+        "fund_rank(ts_mean(earnings_yield, 60))",
+        "fund_rank(earnings_yield) + fund_rank(roe)",
+    ],
+    # 盈利能力 / 保守投资（Novy-Marx 2013 毛利；Fama & French 2015 的 RMW、CMA）
+    "profitability": [
+        "fund_rank(roe)",
+        "fund_rank(gross_margin)",
+        "fund_rank(-asset_growth)",
+        "fund_rank(roe) + fund_rank(gross_margin)",
+        "fund_rank(roe) - fund_rank(asset_growth)",
+    ],
+    # 盈余公告后漂移（Bernard & Thomas 1989）：超预期的方向在公告后数周内延续
+    "earnings": [
+        "fund_rank(sue)",
+        "fund_rank(trade_when(days_since_earnings < 60, sue))",
+        "fund_rank(sue) + fund_rank(ts_delta(sue, 63))",
+        "fund_rank(sue) + rank(ts_delta(log(close), 20))",
+    ],
+}
+
+FUNDAMENTAL_FAMILIES = tuple(_FUNDAMENTAL_SEEDS_BY_FAMILY)
+
+
 def get_seeds_for_family(family: str) -> list[str]:
     """
     Return seed DSLs that are appropriate for ``family``.
@@ -155,6 +188,8 @@ def get_seeds_for_family(family: str) -> list[str]:
     # Direct match
     if family in _SEED_DSLS_BY_FAMILY:
         return list(_SEED_DSLS_BY_FAMILY[family])
+    if family in _FUNDAMENTAL_SEEDS_BY_FAMILY:
+        return list(_FUNDAMENTAL_SEEDS_BY_FAMILY[family])
 
     # Alias mapping
     _ALIAS = {

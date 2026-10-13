@@ -1,13 +1,14 @@
 """
 Static AST Validators for the Alpha DSL Engine.
 
-Three composable validators run before any computation:
+Four composable validators run before any computation:
 
   WindowValidator   — window size in [1, 252]
   LookAheadValidator — no future-data access (window ≥ 1 for delay/delta)
   DepthValidator    — nesting depth ≤ 10
+  SparseFieldValidator — no short-window dispersion ops on step (quarterly/event) fields
 
-AlphaValidator is the composite that runs all three and collects every
+AlphaValidator is the composite that runs all of them and collects every
 error before raising a single ValidationError with a full report.
 """
 
@@ -16,6 +17,7 @@ from __future__ import annotations
 import warnings
 from typing import List
 
+from .fields import STEP_FIELDS
 from .typed_nodes import Node, TimeSeriesNode, DataNode
 
 
@@ -156,12 +158,61 @@ class DepthValidator(_BaseValidator):
 
 
 # ---------------------------------------------------------------------------
+# SparseFieldValidator（Phase 10.1）
+# ---------------------------------------------------------------------------
+
+class SparseFieldValidator(_BaseValidator):
+    """
+    拒绝在**阶梯字段**上做短窗口的离散度类时序运算。
+
+    季频字段（roe / gross_margin / asset_growth / sue）在两次财报之间是常数，
+    `days_since_earnings` 是机械递增的计数器。窗口短于 MIN_WINDOW（≈ 两个季度）时，
+    窗口里通常一次更新都没有：ts_std / ts_var 处处为 0（做分母 → inf），
+    ts_zscore 是 0/0，ts_corr / ts_cov 没有定义，ts_rank 全是并列。
+
+    只看**叶子全是阶梯字段**的子树：`ts_std(roe * returns, 20)` 每天都在变，不拦。
+    估值字段（earnings_yield / book_to_price）分母是市值，每天都变，也不拦。
+    水平类运算（ts_mean / ts_delta / ts_delay …）在阶梯上有明确含义，不拦。
+    """
+
+    MIN_WINDOW = 126
+    _DISPERSION_OPS = frozenset({"ts_std", "ts_var", "ts_zscore", "ts_skew", "ts_kurt",
+                                 "ts_entropy", "ts_rank", "ts_corr", "ts_cov"})
+
+    def _check(self, node: Node) -> None:
+        if not isinstance(node, TimeSeriesNode) or node.op not in self._DISPERSION_OPS:
+            return
+        if node.window >= self.MIN_WINDOW:
+            return
+        offending: set = set()
+        for operand in node.children():          # 双输入算子：任一侧是纯阶梯就不成立
+            leaves = _leaf_fields(operand)
+            if leaves and leaves <= STEP_FIELDS:
+                offending |= leaves
+        if offending:
+            self._errors.append(
+                f"'{node.op}': window={node.window} on {sorted(offending)} — these fields only "
+                f"change at filings (about every 63 trading days), so a window under "
+                f"{self.MIN_WINDOW} is constant almost everywhere. Use window ≥ "
+                f"{self.MIN_WINDOW}, or a level operator (ts_mean / ts_delta).")
+
+
+def _leaf_fields(node: Node) -> set:
+    if isinstance(node, DataNode):
+        return {node.field}
+    out: set = set()
+    for child in node.children():
+        out |= _leaf_fields(child)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Composite AlphaValidator
 # ---------------------------------------------------------------------------
 
 class AlphaValidator:
     """
-    Runs all three validators, collects every error, and raises a single
+    Runs all validators, collects every error, and raises a single
     ValidationError with a complete report if any errors are found.
     """
 
@@ -170,6 +221,7 @@ class AlphaValidator:
             DepthValidator(),
             WindowValidator(),
             LookAheadValidator(),
+            SparseFieldValidator(),
         ]
 
     def validate(self, node: Node) -> None:

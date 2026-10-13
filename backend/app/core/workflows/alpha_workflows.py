@@ -39,7 +39,9 @@ from ..gp_engine.population_evolver import PopulationEvolver, GPEvolutionResult
 from ..gp_engine.mutations import (
     hoist_mutation, param_mutation, point_mutation,
 )
-from ..gp_engine.gp_engine import _SEED_DSLS, generate_random_alpha
+from ..gp_engine.gp_engine import (
+    _FUNDAMENTAL_SEEDS_BY_FAMILY as _FUND_SEEDS, _SEED_DSLS, generate_random_alpha,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +270,8 @@ _HYPOTHESIS_TEMPLATES: Dict[str, List[str]] = {
         "zscore(ts_mean(returns, 20))",
     ],
 }
+# Phase 10：基本面家族的模板 = gp_engine 里对应家族的种子（单一来源）
+_HYPOTHESIS_TEMPLATES.update({fam: list(seeds) for fam, seeds in _FUND_SEEDS.items()})
 
 
 # S4 修复（2026-07-24）：family 名之外补充中英文同义词。
@@ -290,7 +294,41 @@ _FAMILY_KEYWORDS: Dict[str, List[str]] = {
         "volatility", "risk", "variance", "vol-", "low vol", "lowvol",
         "波动", "低波", "风险", "方差",
     ],
+    # Phase 10：基本面家族。模板引用基本面字段，数据集没有这些字段时会被
+    # _generate_diverse_seeds 的字段过滤整批丢掉（并告警），不会带病进 GP。
+    "value": [
+        "value", "valuation", "cheap", "earnings yield", "book-to-price", "book to price",
+        "价值", "估值", "低估", "市盈", "市净",
+    ],
+    "profitability": [
+        "profitab", "quality", "roe", "margin", "asset growth",
+        "盈利能力", "质量", "毛利", "净资产收益",
+    ],
+    "earnings": [
+        "earnings", "pead", "sue", "surprise", "announcement",
+        "财报", "超预期", "业绩", "盈余",
+    ],
 }
+
+
+def _computable_fields(dataset: Dict[str, Any]) -> set:
+    """数据集里能直接引用的字段：已有的 + 执行器会自动派生的（returns / vwap）。"""
+    have = set(dataset.keys())
+    if "close" in have:
+        have.add("returns")
+    if {"high", "low", "close"} <= have:
+        have.add("vwap")
+    return have
+
+
+def _leaf_fields(node: Any) -> set:
+    from ..alpha_engine.typed_nodes import DataNode
+    if isinstance(node, DataNode):
+        return {node.field}
+    out: set = set()
+    for child in node.children():
+        out |= _leaf_fields(child)
+    return out
 
 
 def _hypothesis_templates(hypothesis: str) -> List[str]:
@@ -312,6 +350,7 @@ def _generate_diverse_seeds(
     hypothesis: str,
     n_target:   int = 12,
     seed:       Optional[int] = None,
+    available_fields: Optional[set] = None,
 ) -> List[str]:
     """
     Generate ≥n_target diverse DSL seeds for Workflow A.
@@ -324,8 +363,13 @@ def _generate_diverse_seeds(
 
     R-N1：``seed`` 非空时绑定确定性随机源，使种子生成可复现（消除对全局
     random 状态的依赖 → 修复测试顺序敏感的偶发失败）。
+
+    ``available_fields``（Phase 10）：数据集实际有的字段。给了就丢掉引用其它字段的种子 ——
+    基本面模板在没开基本面的数据集上算不出来，LLM 也可能编出不存在的字段；
+    这些在这里拦下，而不是等到 GP 里每一代都求值失败。
     """
     n_rejected = 0          # 审计 #9：被解析/验证拒掉的候选数，供汇总告警
+    n_missing  = 0          # 引用了数据集没有的字段
     if seed is not None:
         from ..gp_engine import _rng as _shared_rng
         _shared_rng.bind_seed(seed)
@@ -335,8 +379,12 @@ def _generate_diverse_seeds(
     seen:        set       = set()
 
     def _try_add(dsl: str) -> bool:
+        nonlocal n_missing
         node = _parse_valid(dsl)
         if node is None:
+            return False
+        if available_fields is not None and not (_leaf_fields(node) <= available_fields):
+            n_missing += 1
             return False
         key = repr(node)
         if key in seen:
@@ -358,8 +406,15 @@ def _generate_diverse_seeds(
         logger.warning("[GenWorkflow] LLM DSL generation failed: %s", exc)
 
     # ── Layer 2: Keyword templates ────────────────────────────────────
-    for d in _hypothesis_templates(hypothesis):
+    templates = _hypothesis_templates(hypothesis)
+    missing_before = n_missing
+    for d in templates:
         _try_add(d)
+    # 假设点名了基本面家族、但数据集没有这些字段 → 命中的模板全部被丢；退回默认模板，
+    # 不让种子池只剩随机填充。
+    if templates and n_missing - missing_before == len(templates):
+        for d in _HYPOTHESIS_TEMPLATES["default"]:
+            _try_add(d)
 
     # ── Layer 3: AST mutations of existing seeds ──────────────────────
     mutation_ops = [point_mutation, hoist_mutation, param_mutation]
@@ -398,6 +453,9 @@ def _generate_diverse_seeds(
             n_rejected += 1
             logger.debug("[GenWorkflow] 随机候选被拒: %s", exc)
 
+    if n_missing:
+        logger.warning("[GenWorkflow] %d 个种子引用了数据集没有的字段，已丢弃（假设 '%.40s' 需要"
+                       "基本面字段？数据集需开启 ENABLE_FUNDAMENTALS）", n_missing, hypothesis)
     if n_rejected:
         # 审计 #9：候选被拒此前完全不可见 —— 种子池比预期小时无从判断是
         # "生成器产出少"还是"大量候选被悄悄丢掉"。
@@ -706,7 +764,8 @@ class GenerationWorkflow:
 
         # Step 2: Generate ≥10 diverse seed DSLs
         # R-N1：传入 seed 使种子生成确定性（可复现 + 消除测试顺序敏感）
-        seed_dsls = _generate_diverse_seeds(hypothesis, n_target=self._n_seeds, seed=self._seed)
+        seed_dsls = _generate_diverse_seeds(hypothesis, n_target=self._n_seeds, seed=self._seed,
+                                            available_fields=_computable_fields(dataset))
         if not seed_dsls:
             seed_dsls = [repr(generate_random_alpha())]
 

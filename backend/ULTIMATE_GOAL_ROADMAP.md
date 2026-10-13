@@ -2,7 +2,8 @@
 
 > 状态：**Phase S/8/9/TR/PM/A/B 已完成（S 于 2026-09-22 关闭）；Phase 12 + FE-12 代码完成（2026-10-06，
 > 真 OpenD 端到端验收待做；2026-10-08 外部审计 16 条已修复 15 条、F15 部分修复）；
-> Phase 10/13/14 + R.4 未实现，R.2 部分完成** · 地基 Phase 6–8 见
+> Phase 10 代码完成并在真实 EDGAR + moomoo 上跑通（2026-10-12，尚无基本面因子过验证门）；
+> Phase 13/14 + R.4 未实现，R.2 部分完成** · 地基 Phase 6–8 见
 > `backend_retired_report/PAPER_TRADING_ROADMAP.md`（已归档）· 遵循 RESEARCH_OPERATING_MODEL.md
 > 生成日期：2026-08-18
 
@@ -367,6 +368,57 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容，
 - **10.4 新 DSL 算子** — `fund_rank`、盈利超预期等；观察引擎（9.1）+ GP 消费之。
 - （付费源 FMP/Polygon 待免费验证后再上。）
 - **验收**：一个基本面因子可解析+回测且**发布日测试无前视**；发现引擎能形成基本面假设。
+
+### 实施记录（2026-10-12）—— 代码完成，真实数据跑通
+
+**数据源改成了 SEC EDGAR，没有用上面写的 yfinance `.quarterly_financials`。** 原因是唯一不能错的
+那件事：yfinance 只给财报**期末日**，不给披露日，用它就得猜一个滞后；EDGAR `companyfacts` 的每条事实
+带 `filed`（实际披露日），同一期间被重述时多出一条 `filed` 更晚的记录，"某天已披露的最新版本"可以
+逐条还原。集成测试里有一条专门演示：把可见日换成期末日，同样的前视检查会红。
+
+| 子项 | 落地 | 位置 |
+|---|---|---|
+| 10.2 基本面 | 7 个字段：`earnings_yield` `book_to_price` `roe` `gross_margin` `asset_growth` `sue` `days_since_earnings`；事实只追加落盘在 `<PIT_STORE_DIR>/fundamentals`，面板由 (事实, 价格) 现算，**不写进价格 PIT** | `data_engine/fundamentals/` |
+| 10.1 稀疏字段 | 字段带类别（估值 / 季频阶梯 / 事件计数器）；披露日之后**第一个交易日**起可见，ffill，200 天无新披露置空；`SparseFieldValidator` 拒绝阶梯字段上的短窗口离散度运算 | `alpha_engine/fields.py`、`validator.py` |
+| 10.3 财报事件 | SUE（季节性随机游走，净利润口径，Q4 = 全年 − 前三季）；`days_since_earnings` 取 8-K item 2.02 的申报日 | `fundamentals/pit.py`、`panels.py` |
+| 10.4 算子与发现 | `fund_rank`（带 50% 覆盖率门槛的截面排名）；GP 新增 value / profitability / earnings 三族种子；观察引擎在字段覆盖率 ≥ 50% 时给出这三个方向；数据集没有的字段，种子在进 GP 前就被丢掉 | `fast_ops.py`、`gp_engine.py`、`market_observer.py`、`alpha_workflows.py` |
+| 接线 | `ENABLE_FUNDAMENTALS`（默认关）+ `EDGAR_USER_AGENT`（无默认值，SEC 要求声明身份）；研究路径 `load_registry_dataset` 与每日前向管线都挂字段；挂不上时字段**缺席**（引用它的因子报错），不是一列 NaN | `config.py`、`dataset_registry.py`、`daily_ingest.py` |
+
+**验收逐条**：基本面因子可解析 + 回测 ✅；发布日无前视 ✅（三种验法：具体日期、删掉未来事实后过去逐位不变、
+重述只影响其披露日之后；并有反例证明检查有判别力）；发现引擎形成基本面假设 ✅（财报季数据上 earnings
+排第一，GP 产出引用基本面字段的候选）。
+
+**真实运行（us_broad_large 95 只，真 EDGAR + 真 moomoo 不复权价）**：
+
+- 末日覆盖率：E/P 96.8%、B/P 89.5%、ROE 91.6%、毛利率 57.9%、资产增长 98.9%、SUE 98.9%、财报日 100%。
+- **独立核对**：与 moomoo 行情快照自带的市盈率(TTM) / 市净率逐只比 —— B/P 可比的 81 只**全部**在 ±15%
+  内（比值中位数 1.000）；E/P 可比的 88 只里 84 只在 ±15% 内（中位数 1.011），没有一只差到 2 倍。
+  偏离的 4 只：FCX 1.67、MDLZ 0.74、ABT 1.17、D 1.17（未追查，推测是归母口径 / 非经常项差异）。
+- 识别出 12 只票的 13 次拆股（含 GE 的 8 并 1），拆股前后市值连续。
+- 首次同步 95 只约 9 分钟（下载 + 逐披露日计算）。之后每天只取各家的文件清单（很小），有新的年报 / 季报
+  才重下那一家的 companyfacts（5–8 MB）；逐披露日的指标按披露日增量缓存。每次加载仍要向 moomoo 取一遍
+  不复权价（约 1 分钟，未做缓存）。
+
+**第一次真实运行查出、单测（当时只有 AAPL / NVDA 两家夹具）看不到的问题，均已修并配了真实数据的回归用例**：
+
+1. 毛利率覆盖率只有 29.5% —— 多数公司不报 `GrossProfit`，只报营业成本 → 用 收入 − 营业成本 兜底（→ 57.9%）。
+2. BKNG 的净利润只在 `NetIncomeLossAvailableToCommonStockholdersBasic` 下 → 加为第三顺位科目。
+3. 净资产为负的公司（MCD、SBUX、PM、BKNG …）B/P 为负数混进截面 → 置空。
+4. XOM 2026-07 重组换了 CIK，历史在旧主体名下 → 登记继任关系并合并（只登记核实过的这一条）。
+5. Citi 2026 年的季报 SEC 接口没收进来 → 过期保护已把它置空，现在加载报告里点名。
+6. 落盘的是解析后的事实，解析口径变了缓存不会失效 → 加解析版本号。
+7. yfinance 的 `Close`（`auto_adjust=False`）其实**已按拆股调整**，moomoo 的不复权才是真不复权 → 两个源分开处理。
+8. EDGAR 的 `acceptanceDateTime` 口径因申报人而异（AAPL 按 UTC 读会与申报日矛盾，BKNG 又是准的）→ 事件日只用申报日。
+
+**没做 / 已知局限**：
+
+- **没有任何基本面因子过验证门**，更没有进策略。字段是对的 ≠ 因子有效。
+- `BRK-B`、`V` 没有估值字段：多类别股按类别报股本，`companyfacts` 不收带维度的事实。
+- `sue` 要等 10-Q 披露才可见（很多公司比财报新闻稿晚几天到几周）；盘前发布的财报，`days_since_earnings` 晚记一天。
+- 风险模型的 size / value 风格仍未接基本面（R.2 的 `styles_missing` 照旧）。
+- LLM agent 的提示词仍只列量价字段；前端 FE-10（基本面字段浏览）未做。
+- 继任主体只登记了 XOM；别的公司重组换 CIK 时会表现为"只有最近几个季度的数据"。
+- 变异点未做逐点复核（见 `MUTATION_LEDGER.md`）。
 
 ---
 

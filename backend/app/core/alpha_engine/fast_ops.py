@@ -641,6 +641,26 @@ def cs_rank(x: np.ndarray) -> np.ndarray:
     return ranks
 
 
+#: fund_rank 的覆盖率门槛：当天有值的标的不到这个比例 → 整行 NaN
+FUND_RANK_MIN_COVERAGE = 0.5
+
+
+def cs_fund_rank(x: np.ndarray, min_coverage: float = FUND_RANK_MIN_COVERAGE) -> np.ndarray:
+    """
+    带覆盖率门槛的截面排名（Phase 10.4）—— 给基本面字段用的 `rank`。
+
+    基本面字段的截面是**参差**的：面板起点附近只有少数公司已有可见的财报，
+    有的标的（ETF、外国发行人）永远没有。`rank` 在只有 3 只票有值的那天照样给出
+    0 / 0.5 / 1，看起来和 100 只票的排名一样可信。这里要求当天有值的标的占比
+    ≥ `min_coverage`，否则整行 NaN（当天不出信号），其余与 `cs_rank` 完全相同。
+    """
+    x = _ensure_2d(np.asarray(x, dtype=float))
+    ranks = cs_rank(x)
+    coverage = (~np.isnan(x)).mean(axis=1)
+    ranks[coverage < min_coverage] = np.nan
+    return ranks
+
+
 def cs_zscore(x: np.ndarray) -> np.ndarray:
     """Cross-sectional z-score per row (NaN-aware)."""
     x = _ensure_2d(np.asarray(x, dtype=float))
@@ -872,6 +892,7 @@ FAST_CS_OPS = {
     "sector_neutral":   cs_sector_neutral,     # Task 3.4
     "winsorize":        cs_winsorize,
     "normalize":        cs_normalize,
+    "fund_rank":        cs_fund_rank,          # Phase 10.4
 }
 
 FAST_GROUP_OPS = {

@@ -28,7 +28,7 @@ def _patch_loader(monkeypatch, data, health_score):
     import app.core.data_engine.dataset_registry as reg
     ds_obj = types.SimpleNamespace(data=data)
     monkeypatch.setattr(reg, "load_registry_dataset",
-                        lambda name, start=None, end=None, health_check=False: ds_obj)
+                        lambda name, start=None, end=None, health_check=False, with_fundamentals=None: ds_obj)
     report = types.SimpleNamespace(overall_score=health_score)
     monkeypatch.setattr(reg, "check_dataset_health",
                         lambda ds, min_score=0.7, warn_only=True: report)

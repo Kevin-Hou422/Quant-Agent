@@ -40,6 +40,11 @@ WidePanel = Dict[str, pd.DataFrame]
 _FAMILIES = ["momentum", "trend_following", "reversion",
              "volatility", "liquidity", "price_volume_corr"]
 
+#: 基本面字段末日覆盖率低于此值 → 不提对应的假设方向（与 fund_rank 的门槛一致）
+MIN_FUND_COVERAGE = 0.5
+#: "刚公布财报"的窗口（交易日）
+EARNINGS_WINDOW = 20
+
 
 @dataclass
 class HypothesisDirection:
@@ -125,6 +130,10 @@ class MarketObserver:
             "liquidity":        0.20 + 0.40 * dispersion_norm,
             "price_volume_corr":0.20 + 0.40 * dispersion_norm,
         }
+        # Phase 10：数据集带基本面字段时，多出价值 / 盈利能力 / 财报三个方向
+        fund = self._fundamental_directions(dataset, regime)
+        raw.update({f: s for f, (s, _) in fund.items()})
+
         top = max(raw.values()) or 1.0
         hyps = [
             HypothesisDirection(
@@ -133,7 +142,8 @@ class MarketObserver:
                                           vol_norm, dispersion_norm),
             )
             for f in _FAMILIES
-        ]
+        ] + [HypothesisDirection(family=f, score=s / top, rationale=why)
+             for f, (s, why) in fund.items()]
         hyps.sort(key=lambda h: h.score, reverse=True)
 
         obs = MarketObservation(
@@ -147,6 +157,47 @@ class MarketObserver:
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
+
+    def _fundamental_directions(self, dataset: WidePanel, regime: str) -> Dict[str, tuple]:
+        """
+        基本面假设方向 {家族: (原始分, 理由)}。只在字段存在且末日覆盖率 ≥ MIN_FUND_COVERAGE 时给出
+        —— 没有数据支撑的方向不提（GP 拿到也只会全部求值失败）。
+
+        value          估值价差（E/P 的截面四分位距）相对自身历史的位置：价差越宽，价值溢价的
+                       后续空间越大（Cohen, Polk & Vuolteenaho 2003）。
+        profitability  下行 / 高波动环境里资金偏向高质量公司。
+        earnings       最近 EARNINGS_WINDOW 个交易日内公布过财报的标的占比：公告后漂移在
+                       公告后的几周最强（Bernard & Thomas 1989），财报季之外这个方向没东西可挖。
+        """
+        out: Dict[str, tuple] = {}
+
+        def covered(name: str) -> bool:
+            df = dataset.get(name)
+            return (df is not None and len(df) > 0
+                    and float(df.iloc[-1].notna().mean()) >= MIN_FUND_COVERAGE)
+
+        if covered("earnings_yield"):
+            ey = dataset["earnings_yield"]
+            ok = ey.notna().mean(axis=1) >= MIN_FUND_COVERAGE
+            spread = (ey.quantile(0.75, axis=1) - ey.quantile(0.25, axis=1))[ok].dropna()
+            pct = 0.5
+            if len(spread) > self.lookback:
+                pct = float((spread < float(spread.tail(self.lookback).mean())).mean())
+            out["value"] = (0.20 + 0.50 * pct,
+                            f"估值价差（E/P 四分位距）处于自身历史 {pct:.0%} 分位（价差越宽，价值溢价空间越大）")
+
+        if covered("roe") or covered("gross_margin"):
+            defensive = 1.0 if regime in ("bear", "high_vol") else 0.0
+            out["profitability"] = (0.25 + 0.40 * defensive,
+                                    f"regime={regime}（下行 / 高波动环境利好高盈利能力、低扩张的公司）")
+
+        if covered("sue") and covered("days_since_earnings"):
+            dse = dataset["days_since_earnings"].iloc[-1]
+            frac = float((dse <= EARNINGS_WINDOW).sum() / max(int(dse.notna().sum()), 1))
+            out["earnings"] = (0.15 + 0.70 * frac,
+                               f"{frac:.0%} 的标的在过去 {EARNINGS_WINDOW} 个交易日内公布了财报"
+                               "（公告后漂移在公告后的几周最强）")
+        return out
 
     @staticmethod
     def _returns(dataset: WidePanel) -> pd.DataFrame:

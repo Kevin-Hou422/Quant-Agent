@@ -142,7 +142,7 @@ def test_daily_ingest_appends_to_pit(tmp_path, monkeypatch):
     rng = np.random.default_rng(0)
     base = 100 + np.cumsum(rng.normal(0, 1, (len(dates), len(tickers))), axis=0)
 
-    def _fake_load(name, start, end, health_check=False):
+    def _fake_load(name, start, end, health_check=False, with_fundamentals=None):
         class _DS:
             data = {
                 "open":  _wide(dates, tickers, base),
