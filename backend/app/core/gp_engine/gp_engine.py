@@ -166,6 +166,13 @@ _FUNDAMENTAL_SEEDS_BY_FAMILY: dict[str, list[str]] = {
         "fund_rank(roe) + fund_rank(gross_margin)",
         "fund_rank(roe) - fund_rank(asset_growth)",
     ],
+    # 规模（Banz 1981）：小市值溢价。大盘股宇宙里这个方向很弱，观察引擎不主动提，
+    # 只在假设点名时使用。
+    "size": [
+        "fund_rank(-log(market_cap))",
+        "fund_rank(-log(market_cap)) + fund_rank(book_to_price)",
+        "fund_rank(-ts_mean(log(market_cap), 20))",
+    ],
     # 盈余公告后漂移（Bernard & Thomas 1989）：超预期的方向在公告后数周内延续
     "earnings": [
         "fund_rank(sue)",

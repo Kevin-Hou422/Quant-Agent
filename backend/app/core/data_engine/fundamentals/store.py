@@ -27,10 +27,10 @@ _FACT_KEY = ["concept", "start", "end", "filed", "accn"]
 _EVENT_KEY = ["accn"]
 
 
-def _atomic_parquet(df: pd.DataFrame, path: Path) -> None:
+def _atomic_parquet(df: pd.DataFrame, path: Path, index: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    df.to_parquet(tmp, index=False)
+    df.to_parquet(tmp, index=index)
     tmp.replace(path)
 
 
@@ -95,6 +95,50 @@ class FundamentalsStore:
         tmp = d / "metrics.json.tmp"
         tmp.write_text(json.dumps(stamp), encoding="utf-8")
         tmp.replace(d / "metrics.json")
+
+    # -- 不复权收盘价的缓存 ------------------------------------------------------
+    # 不复权价是历史事实，过去的值不会再变（这正是它与复权价的区别），所以可以只追加：
+    # 已取过的区间不再向数据源要。`coverage` 记的是**请求过并拿到数据的区间**，不是有值的
+    # 区间 —— 上市晚的票区间开头本来就没有价格，按"有没有值"判断会每次都重取。
+
+    def _price_dir(self, source: str) -> Path:
+        return self.root / "_prices" / str(source)
+
+    def load_raw_prices(self, source: str) -> Optional[Tuple[pd.DataFrame, Dict[str, pd.Series], dict]]:
+        """(不复权收盘价宽表, {ticker: 拆股序列}, {ticker: [起, 止]})；没有缓存 → None。"""
+        d = self._price_dir(source)
+        fp, jp = d / "raw_close.parquet", d / "meta.json"
+        if not fp.exists() or not jp.exists():
+            return None
+        meta = json.loads(jp.read_text(encoding="utf-8"))
+        raw = pd.read_parquet(fp)
+        raw.index = pd.DatetimeIndex(raw.index)
+        splits = {tk: pd.Series(list(v.values()), index=pd.DatetimeIndex(list(v)), dtype=float)
+                  for tk, v in meta.get("splits", {}).items()}
+        return raw, splits, dict(meta.get("coverage", {}))
+
+    def save_raw_prices(self, source: str, raw: pd.DataFrame, splits: Dict[str, pd.Series],
+                        coverage: dict) -> None:
+        """与已有缓存合并后落盘：已有的值保留，只补新日期 / 新标的；拆股按日期并集。"""
+        d = self._price_dir(source)
+        old = self.load_raw_prices(source)
+        merged_splits = {tk: s.copy() for tk, s in (old[1] if old else {}).items()}
+        merged_cov = dict(old[2]) if old else {}
+        if old is not None:
+            raw = old[0].combine_first(raw)
+        for tk, s in (splits or {}).items():
+            if s is None or len(s) == 0:
+                continue
+            prev = merged_splits.get(tk)
+            merged_splits[tk] = s if prev is None else pd.concat([prev, s[~s.index.isin(prev.index)]])
+        merged_cov.update(coverage)
+        _atomic_parquet(raw.sort_index(), d / "raw_close.parquet", index=True)
+        meta = {"coverage": merged_cov,
+                "splits": {tk: {str(pd.Timestamp(k).date()): float(v) for k, v in s.sort_index().items()}
+                           for tk, s in merged_splits.items()}}
+        tmp = d / "meta.json.tmp"
+        tmp.write_text(json.dumps(meta), encoding="utf-8")
+        tmp.replace(d / "meta.json")
 
     def load_many(self, tickers) -> Tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame]]:
         facts: Dict[str, pd.DataFrame] = {}

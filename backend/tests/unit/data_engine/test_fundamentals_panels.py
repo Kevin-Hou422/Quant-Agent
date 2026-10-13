@@ -356,3 +356,42 @@ def test_precomputed_metrics_give_the_same_panels(facts, events):
     b, _ = build_panels(idx, ["AAPL", "NVDA"], facts, events, metrics=pre)
     for name in a:
         pd.testing.assert_frame_equal(a[name], b[name])
+
+
+# ---------------------------------------------------------------------------
+# market_cap 字段（size 因子 / 风险模型的 size 风格要用）
+# ---------------------------------------------------------------------------
+
+def test_market_cap_is_unadjusted_price_times_split_adjusted_shares(facts, events, mm):
+    raw, _, splits = mm
+    p, _ = build_panels(raw.index, ["AAPL", "NVDA"], facts, events, raw, splits)
+    mc = p["market_cap"]["NVDA"]
+    assert mc["2024-05-31"] == pytest.approx(1096.33 * 2.46e9, rel=1e-9)          # 拆股前
+    assert mc["2024-06-10"] == pytest.approx(121.79 * 2.46e9 * 10, rel=1e-9)      # 拆股日：价格 /10，股本 ×10
+    assert mc["2024-06-10"] / mc["2024-06-07"] == pytest.approx(121.79 * 10 / 1208.88, rel=1e-9)
+    # 与另外两个估值字段是同一个市值
+    assert p["earnings_yield"]["NVDA"]["2024-05-31"] * mc["2024-05-31"] == pytest.approx(42.598e9, rel=1e-9)
+
+
+def test_market_cap_exists_even_when_earnings_history_is_too_short(mm):
+    """市值只要股本和价格；TTM 净利润凑不齐（E/P 为空）不影响它。"""
+    raw, _, splits = mm
+    n = fx.facts("NVDA")
+    no_income = n[n["concept"] != "net_income"]
+    p, _ = build_panels(raw.index, ["NVDA"], {"NVDA": no_income}, {}, raw, splits)
+    assert p["earnings_yield"]["NVDA"].isna().all()
+    assert p["market_cap"]["NVDA"].notna().all()
+
+
+def test_market_cap_is_blanked_together_with_the_ratios_on_rejected_days(facts, events):
+    idx = pd.bdate_range("2024-03-01", "2024-03-29")
+    raw = pd.DataFrame({"AAPL": 180.0, "NVDA": 0.004}, index=idx)
+    p, rep = build_panels(idx, ["AAPL", "NVDA"], facts, events, raw, {})
+    assert rep.sanity_rejected == {"NVDA": len(idx)}
+    assert p["market_cap"]["NVDA"].isna().all()
+    assert p["market_cap"]["AAPL"].iloc[-1] == pytest.approx(180.0 * 15.44188e9, rel=1e-6)
+
+
+def test_market_cap_is_absent_without_unadjusted_prices(facts, events):
+    p, rep = build_panels(pd.bdate_range("2024-03-01", "2024-03-08"), ["AAPL"], facts, events)
+    assert "market_cap" not in p and "market_cap" not in rep.coverage

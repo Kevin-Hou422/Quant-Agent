@@ -29,8 +29,8 @@ from app.agent._constants import (
     _DEFAULT_N_TRIALS,
     _DEFAULT_OOS_RATIO,
     _FALLBACK_DSL_MAP,
-    _VALID_FIELDS,
-    _VALID_OPS,
+    _FALLBACK_FUNDAMENTAL_DSL_MAP,
+    prompt_field_lines,
 )
 from app.agent._data_utils import (
     _make_synthetic_dataset, _partition, _partition_three_way,
@@ -157,8 +157,31 @@ class QuantTools:
             return self._llm_generate_dsl(hypothesis)
         return self._fallback_generate_dsl(hypothesis)
 
+    def _dataset_fields(self) -> set:
+        """数据集里能直接引用的字段（含执行器会自动派生的 returns / vwap）。"""
+        from app.core.workflows.alpha_workflows import _computable_fields
+        return _computable_fields(self._full_dataset)
+
+    def _unknown_fields(self, dsl: str) -> list:
+        """表达式引用了、但数据集没有的字段；解析不了的表达式返回 ['<unparsable>']。"""
+        from app.core.alpha_engine.parser import Parser
+        from app.core.workflows.alpha_workflows import _leaf_fields
+        try:
+            leaves = _leaf_fields(Parser().parse(dsl))
+        except Exception as exc:
+            logger.debug("DSL 解析失败: %s", exc)
+            return ["<unparsable>"]
+        return sorted(leaves - self._dataset_fields())
+
     def _fallback_generate_dsl(self, hypothesis: str) -> str:
         h_lower = hypothesis.lower()
+        have = self._dataset_fields()
+        for kw, (dsl, needs) in _FALLBACK_FUNDAMENTAL_DSL_MAP.items():
+            if kw in h_lower and set(needs) <= have:
+                return json.dumps({
+                    "dsl":         dsl,
+                    "explanation": f"[Fallback] Mapped '{kw}' to a fundamental seed DSL.",
+                })
         for kw, dsl in _FALLBACK_DSL_MAP.items():
             if kw in h_lower:
                 return json.dumps({
@@ -171,15 +194,17 @@ class QuantTools:
         })
 
     def _llm_generate_dsl(self, hypothesis: str) -> str:
+        fields_line, ops_line, extra_rules, extra_shots = prompt_field_lines(self._dataset_fields())
         system = (
             "You are a DSL compiler for quantitative alpha strategies.\n"
             "Translate the user's market hypothesis into ONE Alpha DSL expression.\n\n"
             f"**CRITICAL: If the hypothesis explicitly mentions a data field "
             f"(e.g., 'vwap', 'volume', 'high', 'low'), you MUST include that exact "
             f"field in your DSL formula. Never substitute a different field.**\n\n"
-            f"Available data fields: {_VALID_FIELDS}\n"
-            f"Available operators: {_VALID_OPS}\n\n"
-            "Output ONLY valid JSON (no markdown):\n"
+            f"Available data fields: {fields_line}\n"
+            f"Available operators: {ops_line}\n\n"
+            + (f"{extra_rules}\n\n" if extra_rules else "")
+            + "Output ONLY valid JSON (no markdown):\n"
             '{"dsl": "<expression>", "explanation": "<one sentence>"}'
         )
         few_shot = (
@@ -190,6 +215,7 @@ class QuantTools:
             '→ {"dsl": "rank(ts_delta(log(volume), 5))", "explanation": "Volume surge rank."}\n'
             "- hypothesis='price reversal' "
             '→ {"dsl": "rank(-ts_delta(close, 1))", "explanation": "1-day price reversal."}'
+            + (f"\n{extra_shots}" if extra_shots else "")
         )
         prompt = f"{system}\n\n{few_shot}\n\nHypothesis: {hypothesis}"
         try:
@@ -197,7 +223,13 @@ class QuantTools:
             text     = response.content if hasattr(response, "content") else str(response)
             parsed   = _safe_json_loads(text)
             if parsed.get("dsl"):
-                return json.dumps(parsed)
+                # LLM 给出的表达式引用了数据集没有的字段（编出来的，或在没开基本面的数据集上
+                # 用了基本面字段）→ 不放行：它进了 GP 只会每一代都求值失败。
+                unknown = self._unknown_fields(str(parsed["dsl"]))
+                if not unknown:
+                    return json.dumps(parsed)
+                logger.warning("LLM 给出的 DSL 引用了数据集没有的字段 %s，降级: %s",
+                               unknown, parsed["dsl"])
         except Exception as exc:
             logger.warning("LLM DSL 生成失败，降级: %s", exc)
         return self._fallback_generate_dsl(hypothesis)

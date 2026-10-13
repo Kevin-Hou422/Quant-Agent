@@ -506,3 +506,146 @@ def test_price_source_setting_picks_the_matching_unadjusted_fetcher(tmp_path, mo
                                        _settings(tmp_path, price_source=source), adj_close="ADJ")
     assert out == ("r", "s")
     assert hit == [(expected, kwargs)]
+
+
+# ---------------------------------------------------------------------------
+# 不复权价缓存：取过的区间不再向数据源要
+# ---------------------------------------------------------------------------
+
+from app.core.data_engine.fundamentals.service import cached_raw_and_splits   # noqa: E402
+
+
+class _Source:
+    """记录每次被要了哪些票、哪个区间的数据源替身；数据取自真实的 moomoo 夹具。"""
+
+    def __init__(self, missing=()):
+        self.calls = []
+        self.missing = set(missing)
+
+    def __call__(self, tickers, start, end, adj_close):
+        self.calls.append((tuple(tickers), start, end))
+        df = fx.moomoo_prices()
+        raw = df["raw"].loc[start:end, [t for t in tickers if t not in self.missing]]
+        qfq = df["qfq"].loc[start:end]
+        return raw, {t: prices.detect_splits(raw[t], qfq[t]) for t in raw.columns}
+
+
+def _idx(start, end):
+    return fx.moomoo_prices().loc[start:end].index
+
+
+def test_raw_prices_are_fetched_once_then_served_from_disk(tmp_path):
+    st, src = FundamentalsStore(tmp_path), _Source()
+    idx = _idx("2024-05-20", "2024-06-20")
+    raw1, sp1 = cached_raw_and_splits(st, ["NVDA", "AAPL"], idx, _settings(tmp_path), fetch=src)
+    raw2, sp2 = cached_raw_and_splits(st, ["NVDA", "AAPL"], idx, _settings(tmp_path), fetch=src)
+    assert src.calls == [(("NVDA", "AAPL"), "2024-05-20", "2024-06-20")]      # 第二次没有请求
+    pd.testing.assert_frame_equal(raw1, raw2)
+    assert raw2["NVDA"]["2024-06-07"] == 1208.88
+    assert list(sp2) == ["NVDA"] and sp2["NVDA"].to_dict() == {pd.Timestamp("2024-06-10"): 10.0}
+    assert raw2.index.equals(idx) and list(raw2.columns) == ["NVDA", "AAPL"]
+
+
+def test_a_narrower_window_inside_the_cached_range_needs_no_request(tmp_path):
+    st, src = FundamentalsStore(tmp_path), _Source()
+    cached_raw_and_splits(st, ["NVDA"], _idx("2024-05-20", "2024-06-20"), _settings(tmp_path), fetch=src)
+    inner = _idx("2024-05-28", "2024-06-12")
+    raw, _ = cached_raw_and_splits(st, ["NVDA"], inner, _settings(tmp_path), fetch=src)
+    assert len(src.calls) == 1 and raw.index.equals(inner)
+
+
+def test_only_the_missing_tail_is_fetched_with_one_day_of_overlap(tmp_path):
+    """
+    先取到 06-07（拆股前一天），再要到 06-20：只取 06-07 起的尾巴。重叠的那一天不能省 ——
+    06-10 的拆股是靠 06-07 → 06-10 的比值跳变认出来的。
+    """
+    st, src = FundamentalsStore(tmp_path), _Source()
+    cached_raw_and_splits(st, ["NVDA"], _idx("2024-05-20", "2024-06-07"), _settings(tmp_path), fetch=src)
+    raw, splits = cached_raw_and_splits(st, ["NVDA"], _idx("2024-05-20", "2024-06-20"), _settings(tmp_path), fetch=src)
+    assert src.calls[1] == (("NVDA",), "2024-06-07", "2024-06-20")
+    assert splits["NVDA"].to_dict() == {pd.Timestamp("2024-06-10"): 10.0}
+    assert raw["NVDA"].notna().all() and raw["NVDA"]["2024-05-20"] == 947.80
+
+
+def test_an_earlier_start_or_a_new_ticker_triggers_a_full_fetch_for_those_names_only(tmp_path):
+    st, src = FundamentalsStore(tmp_path), _Source()
+    cached_raw_and_splits(st, ["NVDA"], _idx("2024-06-03", "2024-06-20"), _settings(tmp_path), fetch=src)
+    cached_raw_and_splits(st, ["NVDA", "AAPL"], _idx("2024-06-03", "2024-06-20"), _settings(tmp_path), fetch=src)
+    assert src.calls[1] == (("AAPL",), "2024-06-03", "2024-06-20")           # NVDA 已有，不再要
+    cached_raw_and_splits(st, ["NVDA", "AAPL"], _idx("2024-05-20", "2024-06-20"), _settings(tmp_path), fetch=src)
+    assert src.calls[2] == (("NVDA", "AAPL"), "2024-05-20", "2024-06-20")    # 起点更早 → 整段重取
+    _, splits = cached_raw_and_splits(st, ["NVDA"], _idx("2024-05-20", "2024-06-20"), _settings(tmp_path), fetch=src)
+    assert len(src.calls) == 3
+    assert splits["NVDA"].to_dict() == {pd.Timestamp("2024-06-10"): 10.0}    # 重取不会把拆股记成两次
+
+
+def test_ticker_the_source_did_not_return_is_retried_next_time(tmp_path):
+    st = FundamentalsStore(tmp_path)
+    idx = _idx("2024-05-20", "2024-06-20")
+    flaky = _Source(missing={"AAPL"})
+    raw, _ = cached_raw_and_splits(st, ["NVDA", "AAPL"], idx, _settings(tmp_path), fetch=flaky)
+    assert list(raw.columns) == ["NVDA"]
+    ok = _Source()
+    raw, _ = cached_raw_and_splits(st, ["NVDA", "AAPL"], idx, _settings(tmp_path), fetch=ok)
+    assert ok.calls == [(("AAPL",), "2024-05-20", "2024-06-20")]
+    assert list(raw.columns) == ["NVDA", "AAPL"] and raw["AAPL"].notna().all()
+
+
+def test_last_bar_not_yet_published_is_fetched_again_later(tmp_path):
+    """末日那根还没出来（盘中 / 数据源延迟）：不能把那天记成取过了。"""
+    st = FundamentalsStore(tmp_path)
+    idx = _idx("2024-05-20", "2024-06-20")
+
+    def early(tickers, start, end, adj_close):                              # 少返回最后一天
+        df = fx.moomoo_prices()
+        return df["raw"].loc[start:"2024-06-18", list(tickers)], {}
+
+    raw, _ = cached_raw_and_splits(st, ["AAPL"], idx, _settings(tmp_path), fetch=early)
+    assert np.isnan(raw["AAPL"]["2024-06-20"])
+    src = _Source()
+    raw, _ = cached_raw_and_splits(st, ["AAPL"], idx, _settings(tmp_path), fetch=src)
+    assert src.calls == [(("AAPL",), "2024-06-18", "2024-06-20")]
+    assert raw["AAPL"]["2024-06-20"] == 209.68
+
+
+def test_caches_are_kept_apart_by_price_source(tmp_path):
+    st, src = FundamentalsStore(tmp_path), _Source()
+    idx = _idx("2024-05-20", "2024-06-20")
+    cached_raw_and_splits(st, ["NVDA"], idx, _settings(tmp_path, price_source="moomoo"), fetch=src)
+    cached_raw_and_splits(st, ["NVDA"], idx, _settings(tmp_path, price_source="yahoo"), fetch=src)
+    assert len(src.calls) == 2
+    assert (tmp_path / "_prices" / "moomoo" / "raw_close.parquet").exists()
+    assert (tmp_path / "_prices" / "yahoo" / "raw_close.parquet").exists()
+
+
+def test_source_returning_nothing_at_all_is_an_error(tmp_path):
+    with pytest.raises(ValueError, match="没有返回"):
+        cached_raw_and_splits(FundamentalsStore(tmp_path), ["NVDA"], _idx("2024-05-20", "2024-06-20"),
+                              _settings(tmp_path), fetch=_Source(missing={"NVDA"}))
+
+
+def test_cached_values_are_not_overwritten_by_a_later_fetch(tmp_path):
+    """不复权价是历史事实：已落盘的值以先到的为准，后来的抓取只补缺。"""
+    st = FundamentalsStore(tmp_path)
+    idx = _idx("2024-05-20", "2024-06-20")
+    cached_raw_and_splits(st, ["NVDA"], idx, _settings(tmp_path), fetch=_Source())
+    tampered = fx.moomoo_prices()["raw"][["NVDA"]] * 0 + 1.0
+    st.save_raw_prices("moomoo", tampered, {}, {})
+    raw, _ = cached_raw_and_splits(st, ["NVDA"], idx, _settings(tmp_path), fetch=_Source())
+    assert raw["NVDA"]["2024-06-07"] == 1208.88
+
+
+def test_attach_uses_the_price_cache_on_the_default_path(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_fetch(tickers, start, end, settings, adj_close=None):
+        calls.append((tuple(tickers), start, end))
+        df = fx.moomoo_prices()
+        return df["raw"][list(tickers)], {"NVDA": prices.detect_splits(df["raw"]["NVDA"], df["qfq"]["NVDA"])}
+
+    monkeypatch.setattr(service, "fetch_raw_and_splits", fake_fetch)
+    for _ in range(2):
+        data, _, _ = _price_panel()
+        attach_fundamentals(data, ["NVDA", "AAPL"], settings=_settings(tmp_path), client=fx.client())
+        assert data["market_cap"]["NVDA"]["2024-06-10"] == pytest.approx(121.79 * 2.46e9 * 10, rel=1e-9)
+    assert calls == [(("NVDA", "AAPL"), "2024-05-20", "2024-06-20")]

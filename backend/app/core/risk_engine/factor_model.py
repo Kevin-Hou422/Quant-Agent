@@ -15,11 +15,11 @@ factor_model.py — Barra-lite 风险因子模型与风险归因（Phase R.2）
 
 范围与诚实边界（**先读这一段**）
 --------------------------------
-- 本模型只用**价量**可得的风格：动量、反转、波动、流动性、市场 beta，
-  外加行业哑变量。**size 与 value 需要基本面**（股数、账面价值），
-  在 Phase 10 之前拿不到 —— 不是忘了，是没有数据。
-  因此"风险归因覆盖了主要风格"这句话在本仓当前数据下**不成立**，
-  归因结果应读作"在这 5 个价量风格 + 行业上的分解"。
+- 价量可得的风格：动量、反转、波动、流动性、市场 beta，外加行业哑变量。
+  **size 与 value 需要基本面**（市值、账面价值）：数据集带 `market_cap` / `book_to_price`
+  且覆盖率够（Phase 10，`ENABLE_FUNDAMENTALS`）时自动加入，否则缺席。
+  缺席的风格连同原因一起写在归因结果的 `styles_missing` 里 —— "因子风险占比 62%"
+  在缺了 size / value 的时候应读作"在这 5 个价量风格 + 行业上的分解"，不是"覆盖了主要风格"。
 - 本模块**不改变任何交易行为**：它只读权重与价格，产出诊断。路线图里
   R.2 的另一半（用回归残差替代现有 rank/行业 demean 做风格中性化）会改信号，
   属于另一次变更，不在本轮。
@@ -49,6 +49,15 @@ WidePanel = Dict[str, pd.DataFrame]
 #: 价量可得的风格因子。顺序固定 —— 归因结果按名字索引，换序不影响，
 #: 但保持稳定便于跨轮对比。
 STYLE_FACTORS = ("momentum", "reversal", "volatility", "liquidity", "beta")
+
+#: 需要基本面字段的风格 → 用哪个字段。size = log(市值)，value = 账面市值比。
+FUNDAMENTAL_STYLES = ("size", "value")
+_FUNDAMENTAL_STYLE_FIELD = {"size": "market_cap", "value": "book_to_price"}
+#: 一个基本面风格要进模型：估计窗口里至少 MIN_STYLE_DAYS 比例的交易日，
+#: 当天有值的股票占比 ≥ MIN_STYLE_COVERAGE。没值的股票暴露记 0（"不偏不倚"），
+#: 所以覆盖率低的时候这一列大半是 0，估出来的因子收益没有意义。
+MIN_STYLE_COVERAGE = 0.5
+MIN_STYLE_DAYS = 0.9
 
 #: 截面 z-score 之后的极值截断（单位：标准差）。Barra 的惯例是 ±3，
 #: 目的是不让一两只异常股主导整条因子收益。
@@ -156,6 +165,37 @@ def build_exposures(
     return {k: out[k] for k in STYLE_FACTORS}
 
 
+def build_fundamental_exposures(dataset: WidePanel, dates) -> "tuple[Dict[str, pd.DataFrame], Dict[str, str]]":
+    """
+    基本面风格的暴露：返回 ({风格: (T×N) 暴露面板}, {缺席的风格: 原因})。
+
+      size  : log(市值) —— 暴露高 = 市值大
+      value : 账面市值比 B/P —— 暴露高 = 便宜（净资产为负的公司 B/P 为空 → 暴露 0）
+
+    `dates` 是估计因子协方差要用的那段交易日；覆盖率按这段算（见 MIN_STYLE_*）。
+    """
+    out: Dict[str, pd.DataFrame] = {}
+    missing: Dict[str, str] = {}
+    for style in FUNDAMENTAL_STYLES:
+        name = _FUNDAMENTAL_STYLE_FIELD[style]
+        df = dataset.get(name)
+        if df is None or df.empty:
+            missing[style] = f"数据集没有 {name} 字段（未开启基本面）"
+            continue
+        raw = df.astype(float)
+        if style == "size":
+            raw = np.log(raw.where(raw > 0))
+        window = raw.reindex(index=dates)
+        covered = window.notna().mean(axis=1) >= MIN_STYLE_COVERAGE
+        share = float(covered.mean()) if len(covered) else 0.0
+        if share < MIN_STYLE_DAYS:
+            missing[style] = (f"{name} 覆盖率不足：估计窗口里只有 {share:.0%} 的交易日"
+                              f"有 ≥{MIN_STYLE_COVERAGE:.0%} 的股票有值")
+            continue
+        out[style] = _zscore_panel(raw)
+    return out, missing
+
+
 def sector_exposures(dataset: WidePanel) -> Optional[pd.DataFrame]:
     """
     行业哑变量的**最后一期**取值（行业不随日变动，取最后一行即可）。
@@ -191,6 +231,10 @@ class RiskAttribution:
     n_assets:      int = 0
     n_factors:     int = 0
     sector_included: bool = False
+    #: 模型里实际有的风格 / 缺席的风格及原因（由 RiskModel 带过来）
+    styles_covered: List[str] = field(default_factory=lambda: list(STYLE_FACTORS))
+    styles_missing: Dict[str, str] = field(
+        default_factory=lambda: {k: "未提供" for k in FUNDAMENTAL_STYLES})
 
     @property
     def total_vol_ann(self) -> float:
@@ -213,10 +257,11 @@ class RiskAttribution:
             "n_assets": self.n_assets,
             "n_factors": self.n_factors,
             "sector_included": self.sector_included,
-            # size/value 需要基本面数据（Phase 10）。**必须跟着结果一起返回** ——
-            # 否则"因子风险占比 62%" 会被读成"覆盖了主要风格"。
-            "styles_covered": list(STYLE_FACTORS),
-            "styles_missing": ["size", "value"],
+            # 缺席的风格**必须跟着结果一起返回** —— 否则"因子风险占比 62%"
+            # 会被读成"覆盖了主要风格"。
+            "styles_covered": list(self.styles_covered),
+            "styles_missing": list(self.styles_missing),
+            "styles_missing_reason": dict(self.styles_missing),
         }
 
 
@@ -228,6 +273,9 @@ class RiskModel:
     specific_var: pd.Series             # (N,) 特异方差（日频）
     n_obs:        int                   # 参与估计的交易日数
     sector_included: bool = False
+    styles:         tuple = STYLE_FACTORS
+    styles_missing: Dict[str, str] = field(
+        default_factory=lambda: {k: "未提供" for k in FUNDAMENTAL_STYLES})
 
     def covariance(self) -> pd.DataFrame:
         """结构化协方差 `Σ = B Σ_f Bᵀ + D`。"""
@@ -266,6 +314,8 @@ class RiskModel:
             n_assets=int(len(w)),
             n_factors=int(B.shape[1]),
             sector_included=self.sector_included,
+            styles_covered=list(self.styles),
+            styles_missing=dict(self.styles_missing),
         )
 
 
@@ -304,14 +354,17 @@ def fit_risk_model(
                        "行业集中带来的共同风险会被算进『特异』里（低估因子风险）")
 
     dates = list(prices.index[-lookback:]) if lookback > 0 else list(prices.index)
-    names: List[str] = list(STYLE_FACTORS) + (list(sec.columns) if sec is not None else [])
+    fund_exps, styles_missing = build_fundamental_exposures(dataset, dates)
+    exps.update(fund_exps)
+    styles = tuple(STYLE_FACTORS) + tuple(k for k in FUNDAMENTAL_STYLES if k in fund_exps)
+    names: List[str] = list(styles) + (list(sec.columns) if sec is not None else [])
 
     # 设计矩阵整块预取，逐日只做切片 —— 原来每天一次 pd.concat(5 个 Series)，
     # 400 天就是 400 次重建索引，实测是这个函数的主要开销（§P）。
     tickers = list(prices.columns)
     style_arr = np.stack(
         [exps[k].reindex(index=prices.index, columns=tickers).to_numpy(dtype=float)
-         for k in STYLE_FACTORS], axis=2)                       # (T, N, K_style)
+         for k in styles], axis=2)                              # (T, N, K_style)
     sec_arr = (sec.reindex(tickers).to_numpy(dtype=float)
                if sec is not None else np.empty((len(tickers), 0)))
     ret_arr = ret.reindex(columns=tickers).to_numpy(dtype=float)
@@ -351,13 +404,15 @@ def fit_risk_model(
     factor_cov = fret.cov()
     specific_var = resid.var(ddof=1).reindex(prices.columns).fillna(0.0)
 
-    last_exp = pd.concat([exps[k].iloc[-1].rename(k) for k in STYLE_FACTORS], axis=1)
+    last_exp = pd.concat([exps[k].reindex(index=prices.index, columns=tickers).iloc[-1].rename(k)
+                          for k in styles], axis=1)
     if sec is not None:
         last_exp = pd.concat([last_exp, sec.reindex(last_exp.index)], axis=1)
     last_exp = last_exp.reindex(columns=names).fillna(0.0)
 
-    logger.info("[risk_engine] 风险模型：%d 天截面回归 | %d 因子（行业=%s）| %d 只股票",
-                len(f_rows), len(names), sec is not None, last_exp.shape[0])
+    logger.info("[risk_engine] 风险模型：%d 天截面回归 | %d 因子（行业=%s）| %d 只股票 | 缺席风格=%s",
+                len(f_rows), len(names), sec is not None, last_exp.shape[0], list(styles_missing))
     return RiskModel(exposures=last_exp, factor_cov=factor_cov,
                      specific_var=specific_var, n_obs=len(f_rows),
-                     sector_included=sec is not None)
+                     sector_included=sec is not None,
+                     styles=styles, styles_missing=styles_missing)

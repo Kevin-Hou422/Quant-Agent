@@ -53,6 +53,8 @@ _TS_LIST = sorted(
     _TS_OPS
     - {"ts_corr", "ts_cov", "ts_entropy"}
 )
+# 双输入 TS 算子：点变异时只能在它们之间互换（见 point_mutation）
+_TWO_INPUT_TS_LIST = sorted({"ts_corr", "ts_cov"})
 
 # CS ops that are safe to use as wrappers
 # fund_rank 在量价子树上与 rank 等价（覆盖率恒满）→ 不进随机替换池，只由基本面家族的种子引入
@@ -474,7 +476,14 @@ def point_mutation(root: Node) -> Node:
     if kind == "ts":
         ts_op = getattr(node_to_mutate, "op", None)
         if ts_op in _TS_OPS:
-            ops = [op for op in _TS_LIST if op != ts_op]
+            # 带第二输入的节点（ts_corr / ts_cov）只能换成另一个双输入算子。此前会被换成
+            # ts_min 之类的单输入算子而第二输入还留在节点上：求值时第二输入被悄悄忽略，
+            # 而 repr 出来的 `ts_min(close,volume,10)` 解析不了 —— 这种 DSL 进了种子表 / 落了库
+            # 就再也读不回来。
+            if getattr(node_to_mutate, "second_child", None) is not None:
+                ops = [op for op in _TWO_INPUT_TS_LIST if op != ts_op]
+            else:
+                ops = [op for op in _TS_LIST if op != ts_op]
             if ops:
                 node_to_mutate.op = _rng.choice(ops)
     elif kind == "cs":

@@ -54,6 +54,7 @@ FACTOR_FAMILIES = {
     "value":              "Value — buys cheap stocks (high earnings / book relative to price)",
     "profitability":      "Profitability — favors high-ROE, high-margin, conservatively growing firms",
     "earnings":           "Earnings Surprise — post-earnings-announcement drift (PEAD)",
+    "size":               "Size — tilts toward smaller (or larger) market capitalisation",
 }
 
 # ---------------------------------------------------------------------------
@@ -480,6 +481,8 @@ def _classify_family(node, fields: Set[str], all_ops: List[str]) -> str:
     if fund:
         if set(fields) & PRICE_FIELDS:
             return "composite"
+        if fund == {"market_cap"}:
+            return "size"
         if fund <= VALUATION_FIELDS:
             return "value"
         if fund & (EVENT_FIELDS | {"sue"}):

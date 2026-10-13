@@ -217,7 +217,7 @@ class Settings(BaseSettings):
     pit_store_dir: str = "pit_store"
 
     # ── 基本面数据（Phase 10）─────────────────────────────────────────────
-    # 默认关闭。开启后美股数据集多出 7 个字段（earnings_yield / book_to_price / roe /
+    # 默认关闭。开启后美股数据集多出 8 个字段（market_cap / earnings_yield / book_to_price / roe /
     # gross_margin / asset_growth / sue / days_since_earnings），来源 SEC EDGAR，
     # 按**实际披露日**对齐（披露日之后第一个交易日起可见）。价格仍只来自 price_source。
     enable_fundamentals: bool = False

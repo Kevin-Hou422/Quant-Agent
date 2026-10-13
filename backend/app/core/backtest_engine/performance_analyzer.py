@@ -72,6 +72,15 @@ def has_meaningful_variation(returns, *, floor_rel: float = VOL_FLOOR_REL) -> bo
 # PerformanceAnalyzer
 # ---------------------------------------------------------------------------
 
+def _forward_returns(prices: pd.DataFrame, horizon: int, like: pd.DataFrame) -> pd.DataFrame:
+    """
+    `horizon` 日前瞻收益，**按日期与标的**对齐到 `like`（信号）的行列上。
+
+    信号面板与价格面板长度不同是常态（预热窗口把信号开头裁掉了），所以不能按行号配对。
+    """
+    return prices.pct_change(horizon).shift(-horizon).reindex(index=like.index, columns=like.columns)
+
+
 class PerformanceAnalyzer:
     """
     对 BacktestResult 进行全量绩效分析。
@@ -305,8 +314,12 @@ class PerformanceAnalyzer:
         """
         精确版 Rank IC：逐日 spearmanr(signal_t, fwd_price_ret_{t+1})。
         需要外部传入价格矩阵。推荐在有价格数据时始终使用此方法。
+
+        前瞻收益**按日期**对到信号上。信号有预热窗口时回测结果比价格面板短（开头被裁掉），
+        此前两边按行号配对：信号第 t 行配的是价格第 t 行的收益，即信号**形成窗口之内**的
+        某一天 —— 5 日反转在纯随机游走上报出 −0.42 的 IC（真实值 0），12 月动量 +0.055。
         """
-        fwd_ret = prices.pct_change().shift(-1)
+        fwd_ret = _forward_returns(prices, 1, signal)
         n       = len(signal)
         ic_vals = np.full(n, np.nan)
 
@@ -354,7 +367,7 @@ class PerformanceAnalyzer:
         results: dict = {}
 
         for h in horizons:
-            fwd_ret = prices.pct_change(h).shift(-h)   # h 日累计收益
+            fwd_ret = _forward_returns(prices, h, signal)   # h 日累计收益，按日期对到信号上
             fwd_arr = fwd_ret.to_numpy(dtype=float)
             ic_vals: list = []
 
@@ -417,7 +430,7 @@ class PerformanceAnalyzer:
         sig = self.r.signal.to_numpy(dtype=float)
 
         if prices is not None:
-            fwd = prices.pct_change().shift(-1).to_numpy(dtype=float)
+            fwd = _forward_returns(prices, 1, self.r.signal).to_numpy(dtype=float)
         else:
             pos = self.r.positions.to_numpy(dtype=float)
             fwd = np.diff(pos, axis=0, prepend=pos[:1])

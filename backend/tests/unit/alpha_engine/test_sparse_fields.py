@@ -218,3 +218,34 @@ def test_family_follows_the_fields_used(dsl, family):
 
 def test_new_families_have_descriptions():
     assert {"value", "profitability", "earnings"} <= set(FACTOR_FAMILIES)
+
+
+# ---------------------------------------------------------------------------
+# market_cap / size
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("dsl,family", [
+    ("fund_rank(-log(market_cap))", "size"),
+    ("fund_rank(-ts_mean(log(market_cap), 20))", "size"),
+    ("fund_rank(-log(market_cap)) + fund_rank(book_to_price)", "value"),
+    ("fund_rank(-log(market_cap)) + fund_rank(roe)", "composite"),
+    ("fund_rank(-log(market_cap)) + rank(ts_delta(log(close), 20))", "composite"),
+])
+def test_size_family_classification(dsl, family):
+    assert FinancialInterpreter().interpret(dsl).factor_family == family
+
+
+def test_market_cap_is_a_daily_moving_field_so_short_windows_are_fine():
+    assert F.field_class("market_cap") == "valuation"
+    assert _errors("ts_std(log(market_cap), 20)") == []
+    assert "size" in FACTOR_FAMILIES
+
+
+def test_size_seeds_and_keywords_are_registered():
+    from app.core.gp_engine.gp_engine import FUNDAMENTAL_FAMILIES, get_seeds_for_family
+    from app.core.workflows.alpha_workflows import _hypothesis_templates
+    assert "size" in FUNDAMENTAL_FAMILIES
+    seeds = get_seeds_for_family("size")
+    assert seeds and all("market_cap" in s for s in seeds)
+    for hyp in ("small cap premium", "小盘股", "市值因子"):
+        assert _hypothesis_templates(hyp) == seeds, hyp

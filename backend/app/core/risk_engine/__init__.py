@@ -6,17 +6,21 @@ gross/net/单票上限管的是"别把鸡蛋放一个篮子"，但一篮子彼�
 一篮子同时押在"低波动"上的股票，敞口可以完全一样、真实风险差一个量级。
 """
 from .factor_model import (
+    FUNDAMENTAL_STYLES,
     STYLE_FACTORS,
     RiskAttribution,
     RiskModel,
     build_exposures,
+    build_fundamental_exposures,
     fit_risk_model,
 )
 
 __all__ = [
+    "FUNDAMENTAL_STYLES",
     "STYLE_FACTORS",
     "RiskAttribution",
     "RiskModel",
     "build_exposures",
+    "build_fundamental_exposures",
     "fit_risk_model",
 ]

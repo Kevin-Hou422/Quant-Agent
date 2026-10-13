@@ -150,6 +150,122 @@ def fetch_raw_and_splits(tickers: List[str], start: str, end: str, settings,
     return prices.yahoo_raw_and_splits(tickers, start, end)
 
 
+def store_status(store: FundamentalsStore, universe: List[str],
+                 today: Optional[pd.Timestamp] = None) -> dict:
+    """
+    本地已有的基本面数据的状态 —— **只读磁盘，不发任何请求**（给界面用）。
+
+    每只票：最近披露日（= 这批数字从哪天之后可见）、对应的财报期末日、是否过期、
+    按最近一份财报哪些字段算得出来。字段覆盖率 = 算得出来且未过期的票 / 全部票。
+    没有逐披露日指标缓存的票（还没被加载过一次）只报披露日，字段列为未知。
+    """
+    from .panels import ALL_FIELDS, MAX_STALE_DAYS
+    today = pd.Timestamp.today().normalize() if today is None else pd.Timestamp(today).normalize()
+    rows, have_count = [], {f: 0 for f in ALL_FIELDS}
+    for tk in universe:
+        got = store.load(tk)
+        if got is None or got[0].empty:
+            rows.append({"ticker": tk, "has_facts": False, "last_filed": None, "last_period_end": None,
+                         "stale": False, "fields": None, "synced_at": None})
+            continue
+        facts, events = got
+        last_filed = pd.Timestamp(facts["filed"].max())
+        stale = (today - last_filed).days > MAX_STALE_DAYS
+        fields = None
+        cached = store.load_metrics(tk)
+        if cached is not None and not cached[0].empty:
+            m = cached[0].sort_values("filed").iloc[-1]
+            ok = lambda k: pd.notna(m[k])                                    # noqa: E731
+            pos = lambda k: pd.notna(m[k]) and float(m[k]) > 0               # noqa: E731
+            fields = {
+                "market_cap": ok("shares"),
+                "earnings_yield": ok("shares") and ok("ni_ttm"),
+                "book_to_price": ok("shares") and pos("equity"),
+                "roe": ok("ni_ttm") and pos("equity"),
+                "gross_margin": ok("gp_ttm") and pos("rev_ttm"),
+                "asset_growth": ok("assets") and pos("assets_prev"),
+                "sue": ok("sue"),
+                "days_since_earnings": not events.empty,
+            }
+            fields = {k: bool(v) for k, v in fields.items()}
+            if not stale:
+                for k, v in fields.items():
+                    have_count[k] += int(v)
+        at = store.synced_at(tk)
+        rows.append({
+            "ticker": tk, "has_facts": True,
+            "last_filed": str(last_filed.date()),
+            # 封面页股本的日期是"截至某日"，晚于财报期末 → 不算在内
+            "last_period_end": str(pd.Timestamp(
+                facts.loc[(facts["filed"] == facts["filed"].max()) & (facts["concept"] != "shares_cover"),
+                          "end"].max()).date()),
+            "stale": bool(stale), "fields": fields,
+            "synced_at": None if at is None else pd.Timestamp(at, unit="s", tz="UTC").isoformat(timespec="seconds"),
+        })
+    n = max(len(universe), 1)
+    return {
+        "n_tickers": len(universe),
+        "n_with_facts": sum(1 for r in rows if r["has_facts"]),
+        "n_stale": sum(1 for r in rows if r["stale"]),
+        "coverage": {f: round(c / n, 4) for f, c in have_count.items()},
+        "tickers": rows,
+        "max_stale_days": MAX_STALE_DAYS,
+    }
+
+
+def cached_raw_and_splits(store: FundamentalsStore, tickers: List[str], index: pd.DatetimeIndex,
+                          settings, adj_close: Optional[pd.DataFrame] = None,
+                          fetch: Optional[Callable] = None):
+    """
+    不复权收盘价 + 拆股记录，优先读本地缓存，只向数据源要没取过的部分。
+
+    每只票按缓存里记的已取区间 [起, 止] 分三种：
+      区间已覆盖 [index 首日, index 末日]      → 不发请求；
+      只差尾巴（末日更晚）                     → 从"止"那天起取增量（重叠一天：拆股靠相邻两天的
+                                                 不复权/复权比值识别，少了前一天就看不出来）；
+      没取过、或首日更早                       → 整段取。
+    数据源没返回的票（代码不对 / 没权限）不记区间，下次还会再试。
+    `index` 的首末日来自价格面板，都是真实有 bar 的交易日（周末加载不会因此多取一次）。
+    """
+    fetch = fetch or (lambda tk, s, e, adj: fetch_raw_and_splits(tk, s, e, settings, adj))
+    source = str(getattr(settings, "price_source", "yahoo") or "yahoo")
+    start, end = pd.Timestamp(index[0]).normalize(), pd.Timestamp(index[-1]).normalize()
+    got = store.load_raw_prices(source)
+    coverage = got[2] if got else {}
+    full, tail = [], {}
+    for tk in tickers:
+        c = coverage.get(tk)
+        if c is None or start < pd.Timestamp(c[0]):
+            full.append(tk)
+        elif end > pd.Timestamp(c[1]):
+            tail.setdefault(pd.Timestamp(c[1]), []).append(tk)
+    jobs = ([(full, start)] if full else []) + [(tks, since) for since, tks in sorted(tail.items())]
+    for tks, since in jobs:
+        raw, splits = fetch(tks, since.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), adj_close)
+        raw = raw.copy()
+        raw.index = pd.DatetimeIndex(raw.index).normalize()
+        have = [tk for tk in tks if tk in raw.columns and raw[tk].notna().any()]
+        if not have:
+            continue
+        # 区间的末端记**实际拿到的最后一根**，不是请求的末日：末日那根还没出来时（盘中 / 数据源延迟），
+        # 下次加载会再取一次尾巴，而不是把那天永远记成取过了。
+        new_cov = {tk: [min(since, pd.Timestamp(coverage[tk][0])).strftime("%Y-%m-%d")
+                        if tk in coverage else since.strftime("%Y-%m-%d"),
+                        pd.Timestamp(raw[tk].last_valid_index()).strftime("%Y-%m-%d")] for tk in have}
+        store.save_raw_prices(source, raw[have], {tk: s for tk, s in (splits or {}).items() if tk in have},
+                              new_cov)
+    if jobs:
+        got = store.load_raw_prices(source)
+        logger.info("[fundamentals] 不复权价：整段取 %d 只，取增量 %d 只，其余 %d 只读缓存",
+                    len(full), sum(len(v) for v in tail.values()),
+                    len(tickers) - len(full) - sum(len(v) for v in tail.values()))
+    cols = [tk for tk in tickers if got is not None and tk in got[0].columns]
+    if not cols:
+        raise ValueError("数据源没有返回任何不复权价")
+    raw_all, splits_all, _ = got
+    return raw_all.reindex(index=index, columns=cols), {tk: s for tk, s in splits_all.items() if tk in cols}
+
+
 def attach_fundamentals(
     data: Dict[str, pd.DataFrame],
     universe: List[str],
@@ -193,10 +309,11 @@ def attach_fundamentals(
                "请配置 EDGAR_USER_AGENT（形如 \"Your Name you@example.com\"，SEC 要求声明身份）。"))
 
     raw = splits = None
-    start, end = index[0].strftime("%Y-%m-%d"), index[-1].strftime("%Y-%m-%d")
     try:
-        fetch = price_fetch or (lambda: fetch_raw_and_splits(universe, start, end, settings, adj_close))
-        raw, splits = fetch()
+        if price_fetch is not None:
+            raw, splits = price_fetch()
+        else:
+            raw, splits = cached_raw_and_splits(store, list(universe), index, settings, adj_close)
     except Exception as exc:
         logger.error("[fundamentals] 取不复权收盘价失败 → 估值字段（earnings_yield / book_to_price）"
                      "本次**不提供**；其余基本面字段照常: %s", exc)

@@ -422,6 +422,39 @@ export interface DatasetHealth {
   notes:         string[]
 }
 
+// ── Fundamentals (FE-10) — GET /api/datasets/{name}/fundamentals ─────────────
+export type FundamentalFieldClass = 'valuation' | 'quarterly' | 'event'
+
+export interface FundamentalFieldInfo {
+  name:     string
+  class:    FundamentalFieldClass
+  note:     string
+  coverage: number | null          // null = 不适用（非美股数据集）
+}
+
+export interface FundamentalTickerStatus {
+  ticker:          string
+  has_facts:       boolean
+  last_filed:      string | null   // 最近披露日：这批数字从它之后的第一个交易日起可见
+  last_period_end: string | null
+  stale:           boolean
+  fields:          Record<string, boolean> | null   // null = 还没算过，不知道
+  synced_at:       string | null
+}
+
+export interface DatasetFundamentals {
+  dataset:             string
+  supported:           boolean
+  enabled:             boolean
+  identity_configured: boolean
+  visibility_rule:     string
+  fields:              FundamentalFieldInfo[]
+  n_tickers:           number
+  n_with_facts:        number
+  n_stale:             number
+  tickers:             FundamentalTickerStatus[]
+}
+
 export interface BacktestRunResponse {
   dsl: string
   report: {

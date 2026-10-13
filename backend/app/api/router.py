@@ -865,6 +865,46 @@ def list_datasets():
 
 
 # ---------------------------------------------------------------------------
+# GET /api/datasets/{name}/fundamentals  — 基本面字段与披露时点（FE-10）
+# ---------------------------------------------------------------------------
+
+@router.get("/datasets/{name}/fundamentals", tags=["Data"])
+def dataset_fundamentals(name: str):
+    """
+    该数据集的基本面字段清单、各字段覆盖率，以及每只票的**最近披露日**（这批数字从哪天之后
+    可见）。只读本地已存的事实，不向 SEC / 行情源发任何请求，也不加载价格。
+
+    `enabled=false` 时字段不会挂到数据集上（引用它们的表达式会报错）；本地若有以前同步的
+    事实，状态仍然如实返回。
+    """
+    from app.config import settings
+    from app.core.alpha_engine.fields import FIELD_NOTES, field_class
+    from app.core.data_engine.dataset_registry import _SPECS
+    from app.core.data_engine.fundamentals.service import fundamentals_dir, store_status
+    from app.core.data_engine.fundamentals.store import FundamentalsStore
+
+    if name not in _SPECS:
+        raise HTTPException(status_code=404, detail=f"Unknown dataset '{name}'")
+    spec = _SPECS[name]
+    supported = spec.region == "US"
+    status = (store_status(FundamentalsStore(fundamentals_dir(settings)), spec.universe)
+              if supported else
+              {"n_tickers": len(spec.universe), "n_with_facts": 0, "n_stale": 0,
+               "coverage": {}, "tickers": [], "max_stale_days": None})
+    return {
+        "dataset": name,
+        "supported": supported,                      # 基本面来自 SEC，只有美股有
+        "enabled": bool(getattr(settings, "enable_fundamentals", False)) and supported,
+        "identity_configured": "@" in str(getattr(settings, "edgar_user_agent", "") or ""),
+        "visibility_rule": "披露日之后的第一个交易日起可见；超过 "
+                           f"{status['max_stale_days'] or 200} 天没有新披露则置空",
+        "fields": [{"name": f, "class": field_class(f), "note": note,
+                    "coverage": status["coverage"].get(f)} for f, note in FIELD_NOTES.items()],
+        **{k: status[k] for k in ("n_tickers", "n_with_facts", "n_stale", "tickers")},
+    }
+
+
+# ---------------------------------------------------------------------------
 # GET /api/datasets/{name}/health  — data-quality check for a dataset
 # ---------------------------------------------------------------------------
 

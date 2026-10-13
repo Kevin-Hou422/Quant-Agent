@@ -56,8 +56,9 @@ engine with a daily scheduler, and a React/TypeScript workspace UI.
   carries fundamentals, from the valuation spread and the earnings calendar; `DiscoveryEngine`
   drives GP from those directions with **no user text and no LLM**, storing winners as CANDIDATE.
 - **Point-in-time fundamentals** — SEC EDGAR facts aligned to their **actual filing date** (visible
-  from the next trading day), giving seven daily fields: earnings yield, book-to-price, ROE, gross
-  margin, asset growth, standardized earnings surprise, and days since the last earnings release.
+  from the next trading day), giving eight daily fields: market cap, earnings yield, book-to-price,
+  ROE, gross margin, asset growth, standardized earnings surprise, and days since the last earnings
+  release.
 - **Genetic Programming** — `PopulationEvolver` evolves typed ASTs with structural mutations, a
   diversity-filtered `AlphaPool`, and a fitness measured by **purged K-fold cross-validation inside
   the in-sample block** (not by peeking at the holdout).
@@ -174,7 +175,7 @@ Quant Agent/
 │   ├── MUTATION_LEDGER.md           # mutation-testing criteria + pointers to machine-readable state
 │   ├── backend_retired_report/      # frozen archives (Phase 0–5, 6–8 plans, audits)
 │   ├── tools/mutation/              # mutation runner (reproducible kill-rate measurement)
-│   ├── tests/                       # 185 test files: unit/ integration/ meta/ golden/ performance/
+│   ├── tests/                       # 190 test files: unit/ integration/ meta/ golden/ performance/
 │   │                                #   fixtures/ = trimmed real SEC EDGAR + price responses
 │   └── app/
 │       ├── main.py · config.py · dependencies.py
@@ -237,7 +238,7 @@ typed AST, statically validated, then executed vectorized.
 
   | Class | Fields | Behaviour |
   |---|---|---|
-  | valuation | `earnings_yield` `book_to_price` | numerator updates quarterly, denominator (market cap) daily |
+  | valuation | `market_cap` `earnings_yield` `book_to_price` | market cap moves daily; the numerators update quarterly |
   | quarterly | `roe` `gross_margin` `asset_growth` `sue` | a **step function**: constant between filings |
   | event | `days_since_earnings` | counter, reset the trading day after an earnings release |
 
@@ -307,6 +308,8 @@ portfolio construction.
   price sources disagree on what "unadjusted" means — yfinance's `Close` is already split-adjusted —
   and each is handled explicitly). Facts are stored append-only under `<PIT_STORE_DIR>/fundamentals`;
   the daily panels are recomputed from (facts, prices) and are *not* written to the price PIT store.
+  Unadjusted closes are historical facts, so they are cached append-only and only the missing tail
+  is requested from the price source.
   Known gaps are reported, not papered over: multi-class issuers without a usable share count
   (`BRK-B`, `V`) have no valuation fields, and a company whose recent filings are missing upstream
   is named in the load report as stale.
@@ -511,7 +514,7 @@ Base URL `http://localhost:8000/api` (interactive docs at `/docs`).
 `/strategies/{id}` · `POST /strategies/{id}/approve[?activate]` · `/strategies/{id}/reject`
 
 **Paper, data & diagnostics** — `GET /paper/{id}/pnl` · `/portfolio/diagnostics` ·
-`/trading/status` · `/scheduler/status` · `/datasets` · `/datasets/{name}/health` · `/regime` ·
+`/trading/status` · `/scheduler/status` · `/datasets` · `/datasets/{name}/health` · `/datasets/{name}/fundamentals` · `/regime` ·
 `/report/query`
 
 **Execution (moomoo paper)** — `GET /execution/status` · `POST /execution/reconcile` ·
@@ -528,7 +531,9 @@ React 19 + TypeScript + Vite + Zustand + ECharts, styled as an OS-style workspac
 - **Chat** — streaming agent chat with step-by-step `ThoughtBlock` reveal and a data-source badge
   (green for real data, amber **"⚠ synthetic (metrics invalid)"**).
 - **Compiler** — DSL editor, run config, console output.
-- **Dataset** — catalog + health.
+- **Dataset** — catalog + health, and a **Fundamentals** panel: field classes, coverage, each
+  ticker's last filing date (the day after which its numbers became visible), stale flags and the
+  fields a ticker cannot provide. It reads local filings only — opening it sends no external request.
 - **AlphaDashboard** — paper equity curve, IC history, walk-forward charts, plus **ApprovalQueue**
   (pending candidates with approve/reject and the decision lineage).
 - **PortfolioView** — strategy console: composition and per-factor quota bars, gate verdict
@@ -577,14 +582,20 @@ than convention.
 - **No forward evidence yet.** The replay/forward split exists (`alpha_ic_history.is_forward`) and
   the →ACTIVE gate consumes forward samples only, but the count is currently zero. The gate is
   therefore not enforced by default (`TR_ENFORCE_ACTIVE_GATE=false`).
-- **Risk attribution covers 5 price-volume styles + sectors.** Fundamentals now exist (Phase 10) but
-  are **not yet wired into the risk model**, so every attribution payload still carries
-  `styles_missing: ["size","value"]` — a "66% factor risk" figure must not be read as "the major
-  styles are covered".
+- **Risk attribution covers 5 price-volume styles + sectors, plus `size` and `value` only when the
+  dataset carries fundamentals.** Without them (the default), every attribution payload carries
+  `styles_missing: ["size","value"]` with the reason — a "66% factor risk" figure must then not be
+  read as "the major styles are covered".
 - **Fundamental factors are untested as strategies.** The fields are point-in-time correct and
   cross-checked against the broker's own P/E and P/B on the live universe, but no fundamental factor
-  has been through the validation gate, and `sue` only becomes visible when the 10-Q is filed — days
-  to weeks after the earnings press release for many companies.
+  has been through the validation gate. A preview on the selection segments only (95 large caps,
+  2021-01 to 2024-09, frozen test segment untouched) showed **no usable signal** in any classic
+  value / profitability / earnings / size factor. `sue` only becomes visible when the 10-Q is filed —
+  days to weeks after the earnings press release for many companies.
+- **IC figures stored before 2026-10-13 are wrong.** The backtest report paired signal rows with
+  return rows by position; with a warm-up window the signal was matched to a day *inside its own
+  formation window* (a 5-day reversal reported IC −0.42 on a pure random walk). P&L and Sharpe were
+  never affected. The computation is fixed; `ic_ir` on already-saved factor records was not recomputed.
 
 ---
 
@@ -627,7 +638,7 @@ the file itself is the authority and documents *why* each default is what it is.
 | `DEFAULT_DATASET` / `DEFAULT_START` / `DEFAULT_END` | `us_tech_large` / `2020-01-01` / `2024-01-01` | research window |
 | `PRICE_SOURCE` | `yahoo` | `yahoo` \| `moomoo` (single authoritative source for research+execution) |
 | `MOOMOO_HOST` / `MOOMOO_PORT` | `127.0.0.1` / `11111` | OpenD gateway |
-| `ENABLE_FUNDAMENTALS` | `false` | attach the seven fundamental fields to US datasets (SEC EDGAR, filing-date aligned) |
+| `ENABLE_FUNDAMENTALS` | `false` | attach the eight fundamental fields to US datasets (SEC EDGAR, filing-date aligned) |
 | `EDGAR_USER_AGENT` | *(empty)* | `"Your Name you@example.com"` — the SEC requires every request to declare an identity. No default: the system will not invent one; without it only already-stored facts are used |
 | `FUNDAMENTALS_DIR` / `FUNDAMENTALS_MAX_AGE_H` | `<PIT_STORE_DIR>/fundamentals` / `20` | fact store; how long before a ticker is re-fetched |
 | `EXECUTION_MODE` | `off` | `moomoo_paper` = place real orders on the moomoo **paper** account (real money is refused in code) |
@@ -660,9 +671,9 @@ the file itself is the authority and documents *why* each default is what it is.
 ## 15. Testing & Engineering Discipline
 
 ```bash
-cd backend  && pytest -q          # 4900 passed, 1 skipped (185 test files, ~37 min). The skip is the live-SEC
+cd backend  && pytest -q          # 4998 passed, 1 skipped (190 test files, ~40 min). The skip is the live-SEC
                                   # contract test (needs EDGAR_USER_AGENT); the live-OpenD test also skips when OpenD is down
-cd frontend && npm run test       # 101 passed (9 files)
+cd frontend && npm run test       # 114 passed (10 files)
 cd frontend && npm run build      # tsc type check
 ```
 
@@ -710,15 +721,16 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
   order has been placed on a real paper account yet. Two behaviours can only be confirmed there:
   whether the paper account serves history-order queries, and whether orders placed after the close
   appear in the next session's order list.
-- **Phase 10 remainder.** `size`/`value` styles in the risk model; fundamentals in the LLM agent's
-  prompt (it still only advertises price-volume fields); a frontend view for fundamental fields
-  (FE-10); earnings-release timing finer than the filing date; share counts for multi-class issuers.
+- **Phase 10 remainder.** Putting any fundamental factor through the validation gate (a decision,
+  not code: it spends the one-shot holdout budget); showing a factor's sparse fields and visibility
+  window in the factor detail view; earnings-release timing finer than the filing date; share counts
+  for multi-class issuers.
 - **Phase 13/14 — red-team agent, fully autonomous mode, validation-period operations.**
 - **R.2 remainder** — residual-based style neutralisation (changes signals, so it needs its own
   validation) and alpha-vs-risk-premium separation; `beta_neutral` closure is deferred until shorting
   is enabled.
 - **R.4** — Ledoit-Wolf shrinkage, HRP, turnover in the optimisation objective.
-- **Frontend** — FE-8/10/11/13/R panels (cost calibration, alt-data, forward status, red-team,
+- **Frontend** — FE-8/11/13/R panels (cost calibration, forward status, red-team,
   research-credibility charts). Backend data for the research-credibility panel is already available
   at `/api/portfolio/diagnostics`.
 - **Operational milestone M5** — 60 trading days of forward paper evidence and a first validation

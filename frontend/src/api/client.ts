@@ -1,7 +1,7 @@
 import axios from 'axios'
 import type {
   SimulationConfig, SimResult, AlphaRecord, BacktestRunResponse,
-  WorkflowResponse, DatasetInfo, WalkForwardResult, DatasetHealth,
+  WorkflowResponse, DatasetInfo, WalkForwardResult, DatasetHealth, DatasetFundamentals,
   RegimeInfo, AlphaDashboardRow, ICHistoryData, SchedulerStatus, PaperPnLData,
   PendingAlpha, AlphaDecision, StrategyConfigItem, TradingStatus, PortfolioDiagnostic,
   ExecutionStatus, FidelityReport,
@@ -31,6 +31,10 @@ export const apiFetchDatasetHealth = (name: string, start: string, end: string) 
     params: { start, end },
     timeout: 60_000,   // health check loads real data — may be slow on first call
   })
+
+// 只读本地已存的事实，不触发任何外部请求 → 用默认超时即可
+export const apiFetchDatasetFundamentals = (name: string) =>
+  http.get<DatasetFundamentals>(`/datasets/${encodeURIComponent(name)}/fundamentals`)
 
 // ── Lifecycle Dashboard (Phase 5 / FE-5.x) ────────────────────────────────
 export const apiFetchDashboard = () =>

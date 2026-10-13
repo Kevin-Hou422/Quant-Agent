@@ -308,6 +308,10 @@ _FAMILY_KEYWORDS: Dict[str, List[str]] = {
         "earnings", "pead", "sue", "surprise", "announcement",
         "财报", "超预期", "业绩", "盈余",
     ],
+    "size": [
+        "size", "small cap", "small-cap", "market cap", "smb",
+        "市值", "小盘", "规模",
+    ],
 }
 
 

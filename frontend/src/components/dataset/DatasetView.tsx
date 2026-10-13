@@ -3,6 +3,7 @@ import { Database, Globe2, Building2, ChevronRight, Check, ArrowLeft, RefreshCw,
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { apiFetchDatasets, apiFetchDatasetHealth } from '../../api/client'
 import type { DatasetInfo, DatasetHealth } from '../../types'
+import FundamentalsPanel from './FundamentalsPanel'
 
 // ── Region / provider badges ─────────────────────────────────────────────────
 
@@ -283,6 +284,9 @@ function DatasetDetail({
           </p>
         )}
       </div>
+
+      {/* Fundamentals (FE-10): fields, coverage and filing dates */}
+      <FundamentalsPanel datasetName={ds.name} />
 
       {/* Universe list */}
       <div className="flex-1 overflow-y-auto px-6 py-4">

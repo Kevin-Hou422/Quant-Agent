@@ -10,6 +10,7 @@ panels.py — 基本面事实 → 日频稀疏字段面板（Phase 10.1 / 10.2 /
 
 字段
 ----
+    market_cap          不复权收盘价 × 股本（美元）
     earnings_yield      净利润(TTM) / 市值                    —— E/P
     book_to_price       股东权益 / 市值（权益 ≤ 0 → NaN）       —— B/P
     roe                 净利润(TTM) / 股东权益（权益 ≤ 0 → NaN）
@@ -39,12 +40,12 @@ from . import pit
 
 logger = logging.getLogger(__name__)
 
-FUNDAMENTAL_FIELDS = ("earnings_yield", "book_to_price", "roe", "gross_margin",
+FUNDAMENTAL_FIELDS = ("market_cap", "earnings_yield", "book_to_price", "roe", "gross_margin",
                       "asset_growth", "sue")
 EVENT_FIELDS = ("days_since_earnings",)
 ALL_FIELDS = FUNDAMENTAL_FIELDS + EVENT_FIELDS
 #: 需要市值（= 不复权价 × 股本）的字段
-VALUATION_FIELDS = ("earnings_yield", "book_to_price")
+VALUATION_FIELDS = ("market_cap", "earnings_yield", "book_to_price")
 
 #: 最近一次披露超过这么多天 → 字段置 NaN（季报间隔约 91 天，容许错过一期）
 MAX_STALE_DAYS = 200
@@ -207,8 +208,8 @@ def build_panels(
     """
     返回 ({字段: DataFrame(index × tickers)}, FundamentalsReport)。
 
-    raw_close : **不复权**收盘价（见 prices.py）。None → 估值两项（earnings_yield /
-                book_to_price）**不出现在返回里** —— 没有当时的成交价就算不出市值，
+    raw_close : **不复权**收盘价（见 prices.py）。None → 市值及估值两项（market_cap /
+                earnings_yield / book_to_price）**不出现在返回里** —— 没有当时的成交价就算不出市值，
                 字段缺席（引用它的表达式会报错）好过一列用复权价凑出来的数。
     splits    : ticker → Series(拆股日 → 股本乘数)。
     metrics   : ticker → 已算好的 `metric_events` 结果（service 层按披露日增量缓存）；缺的现算。
@@ -261,8 +262,9 @@ def build_panels(
         if bad.any():
             rep.sanity_rejected[tk] = int(bad.sum())
             logger.warning("[fundamentals] %s 有 %d 天的估值超出合理范围（疑似股本口径问题，"
-                           "如多类别股）→ 这些天的 E/P、B/P 置 NaN", tk, int(bad.sum()))
+                           "如多类别股）→ 这些天的市值、E/P、B/P 置 NaN", tk, int(bad.sum()))
             ey, bp = np.where(bad, np.nan, ey), np.where(bad, np.nan, bp)
+        panels["market_cap"][tk] = np.where((mcap > 0) & ~bad, mcap, np.nan)
         panels["earnings_yield"][tk] = ey
         panels["book_to_price"][tk] = bp
     for f, df in panels.items():
