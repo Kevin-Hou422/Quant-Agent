@@ -86,7 +86,8 @@ def test_ttm_is_none_when_a_leg_is_missing(drop):
         "prev_ytd": _fact("net_income", "2022-01-01", "2022-03-31", "2022-05-01", 90),
         "cur_ytd":  _fact("net_income", "2023-01-01", "2023-03-31", "2023-05-01", 120),
     }
-    assert pit.ttm(_frame(rows.values()), "net_income") == pytest.approx((430.0, pd.Timestamp("2023-03-31")))
+    val, end = pit.ttm(_frame(rows.values()), "net_income")
+    assert val == pytest.approx(430.0) and end == pd.Timestamp("2023-03-31")
     del rows[drop]
     assert pit.ttm(_frame(rows.values()), "net_income") is None
 
