@@ -10,6 +10,7 @@ execution_store.py —— 执行账本的 schema 与查询契约（Phase 12）
 """
 from __future__ import annotations
 
+from sqlalchemy import make_url  # 按 URL 比较：2.1 起 str(url) 会把 Windows 路径里的 : \ 转义
 import json
 import threading
 from datetime import date
@@ -170,14 +171,14 @@ class TestEngineConfiguration:
     def test_env_url_wins_over_settings(self, tmp_path, monkeypatch):
         target = f"sqlite:///{tmp_path / 'env.db'}"
         monkeypatch.setenv("DATABASE_URL", target)
-        assert str(ExecutionStore()._engine.url) == target
+        assert ExecutionStore()._engine.url == make_url(target)
 
     def test_settings_url_used_when_env_empty(self, tmp_path, monkeypatch):
         from app.config import settings
         monkeypatch.setenv("DATABASE_URL", "")
         target = f"sqlite:///{tmp_path / 'cfg.db'}"
         monkeypatch.setattr(settings, "database_url", target)
-        assert str(ExecutionStore()._engine.url) == target
+        assert ExecutionStore()._engine.url == make_url(target)
 
 
 # ===========================================================================

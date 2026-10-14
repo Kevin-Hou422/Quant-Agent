@@ -13,6 +13,7 @@ db/chat_store.py —— schema 与引擎配置的定钉测试（变异测试驱�
 """
 from __future__ import annotations
 
+from sqlalchemy import make_url  # 按 URL 比较：2.1 起 str(url) 会把 Windows 路径里的 : \ 转义
 import pytest
 from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
@@ -135,14 +136,14 @@ class TestEngineConfiguration:
         """`if not db_url:` —— 删掉 `not` 会让环境变量与 settings 两个来源互换。"""
         target = f"sqlite:///{tmp_path/'env.db'}"
         monkeypatch.setenv("DATABASE_URL", target)
-        assert str(ChatStore()._engine.url) == target
+        assert ChatStore()._engine.url == make_url(target)
 
     def test_settings_url_is_used_when_env_is_empty(self, tmp_path, monkeypatch):
         import app.config
         monkeypatch.setenv("DATABASE_URL", "")
         target = f"sqlite:///{tmp_path/'cfg.db'}"
         monkeypatch.setattr(app.config.settings, "database_url", target, raising=False)
-        assert str(ChatStore()._engine.url) == target
+        assert ChatStore()._engine.url == make_url(target)
 
 
 # ===========================================================================

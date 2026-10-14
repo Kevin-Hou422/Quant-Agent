@@ -16,6 +16,7 @@ position_store.py —— 账本 schema 与查询契约的定钉测试（变异�
 """
 from __future__ import annotations
 
+from sqlalchemy import make_url  # 按 URL 比较：2.1 起 str(url) 会把 Windows 路径里的 : \ 转义
 import logging
 import os
 from datetime import date as _date
@@ -171,7 +172,7 @@ class TestEngineConfiguration:
         target = f"sqlite:///{tmp_path/'env.db'}"
         monkeypatch.setenv("DATABASE_URL", target)
         st = PositionStore()
-        assert str(st._engine.url) == target, (
+        assert st._engine.url == make_url(target), (
             f"DATABASE_URL 未被采用，实际连到 {st._engine.url}")
 
     def test_settings_url_is_used_when_env_is_empty(self, tmp_path, monkeypatch):
@@ -181,7 +182,7 @@ class TestEngineConfiguration:
         target = f"sqlite:///{tmp_path/'cfg.db'}"
         monkeypatch.setattr(app.config.settings, "database_url", target, raising=False)
         st = PositionStore()
-        assert str(st._engine.url) == target
+        assert st._engine.url == make_url(target)
 
 
 # ===========================================================================

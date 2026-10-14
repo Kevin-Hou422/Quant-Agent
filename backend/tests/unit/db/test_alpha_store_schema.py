@@ -15,6 +15,7 @@ alpha_store.py —— schema、迁移与前向标记的定钉测试（变异测�
 """
 from __future__ import annotations
 
+from sqlalchemy import make_url  # 按 URL 比较：2.1 起 str(url) 会把 Windows 路径里的 : \ 转义
 from datetime import date as _date
 
 import pytest
@@ -82,7 +83,7 @@ class TestSchema:
         """`if not db_url:` —— 删掉 `not` 会让环境变量与 settings 两个来源互换。"""
         target = f"sqlite:///{tmp_path/'env.db'}"
         monkeypatch.setenv("DATABASE_URL", target)
-        assert str(AlphaStore()._engine.url) == target
+        assert AlphaStore()._engine.url == make_url(target)
 
 
 # ===========================================================================

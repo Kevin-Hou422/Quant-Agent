@@ -38,7 +38,11 @@ def populated(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def client(populated):
+def client(populated, monkeypatch):
+    # 接口用真实日期判断"过期"：不钉住的话，夹具里 2026-08 的披露到 2027-02 就会过期，
+    # 覆盖率断言随日历自己变红
+    from app.core.data_engine.fundamentals import service
+    monkeypatch.setattr(service, "_today", lambda: pd.Timestamp("2026-10-12"))
     from fastapi.testclient import TestClient
     from app.main import app
     with TestClient(app, raise_server_exceptions=False) as c:
@@ -95,12 +99,12 @@ def test_status_makes_no_network_request_and_does_not_touch_the_store(populated,
     import requests
     monkeypatch.setattr(requests.Session, "get", lambda *a, **k: pytest.fail("不该发请求"))
     before = sorted(p.name for p in populated.root.rglob("*") if p.is_file())
-    store_status(populated, ["AAPL", "NVDA", "MSFT"])
+    store_status(populated, ["AAPL", "NVDA", "MSFT"], today=pd.Timestamp("2026-10-12"))
     assert sorted(p.name for p in populated.root.rglob("*") if p.is_file()) == before
 
 
 def test_empty_store_reports_nothing_available(tmp_path):
-    s = store_status(FundamentalsStore(tmp_path / "empty"), ["AAPL", "NVDA"])
+    s = store_status(FundamentalsStore(tmp_path / "empty"), ["AAPL", "NVDA"], today=pd.Timestamp("2026-10-12"))
     assert s["n_with_facts"] == 0 and set(s["coverage"].values()) == {0.0}
     assert [r["has_facts"] for r in s["tickers"]] == [False, False]
 
@@ -157,3 +161,13 @@ def test_unknown_dataset_is_404(client):
 def test_ui_notes_cover_every_fundamental_field():
     assert set(FIELD_NOTES) == set(FUNDAMENTAL_FIELDS)
     assert {field_class(f) for f in FIELD_NOTES} == {"valuation", "quarterly", "event"}
+
+
+def test_endpoint_judges_staleness_by_the_calendar(client, monkeypatch):
+    """同一份本地数据，日子往后推过 200 天，覆盖率要掉下来、过期数要涨上去 —— 钉住"今天"的那个钩子真的被用了。"""
+    from app.core.data_engine.fundamentals import service
+    assert _get(client, "fund_status_us")["n_stale"] == 0
+    monkeypatch.setattr(service, "_today", lambda: pd.Timestamp("2027-06-01"))
+    later = _get(client, "fund_status_us")
+    assert later["n_stale"] == 3
+    assert {f["name"]: f["coverage"] for f in later["fields"]}["earnings_yield"] == 0.0

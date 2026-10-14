@@ -13,6 +13,7 @@ test_fail_closed_and_sqlite_hardening.py — Phase 6 基础设施加固与正确
 """
 from __future__ import annotations
 
+from sqlalchemy import make_url  # 按 URL 比较：2.1 起 str(url) 会把 Windows 路径里的 : \ 转义
 import numpy as np
 import pandas as pd
 import pytest
@@ -39,7 +40,7 @@ class TestSqliteHardening:
         from app.db.alpha_store import AlphaStore
         from app.config import settings
         os.environ.pop("DATABASE_URL", None)
-        assert str(AlphaStore()._engine.url) == settings.database_url
+        assert AlphaStore()._engine.url == make_url(settings.database_url)
 
     def test_chat_store_also_hardened(self, tmp_path):
         from app.db.chat_store import ChatStore

@@ -150,6 +150,11 @@ def fetch_raw_and_splits(tickers: List[str], start: str, end: str, settings,
     return prices.yahoo_raw_and_splits(tickers, start, end)
 
 
+def _today() -> pd.Timestamp:
+    """"今天"的唯一出处 —— 测试据此把日历钉住，否则"是否过期"会随真实日期漂移。"""
+    return pd.Timestamp.today()
+
+
 def store_status(store: FundamentalsStore, universe: List[str],
                  today: Optional[pd.Timestamp] = None) -> dict:
     """
@@ -160,7 +165,7 @@ def store_status(store: FundamentalsStore, universe: List[str],
     没有逐披露日指标缓存的票（还没被加载过一次）只报披露日，字段列为未知。
     """
     from .panels import ALL_FIELDS, MAX_STALE_DAYS
-    today = pd.Timestamp.today() if today is None else pd.Timestamp(today)
+    today = _today() if today is None else pd.Timestamp(today)
     if today.tzinfo is not None:                 # 调用方给的是带时区的时刻（预检的 now）→ 取 UTC 日期
         today = today.tz_convert(None)
     today = today.normalize()
