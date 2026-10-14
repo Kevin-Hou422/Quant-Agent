@@ -49,6 +49,8 @@ VALUATION_FIELDS = ("market_cap", "earnings_yield", "book_to_price")
 
 #: 最近一次披露超过这么多天 → 字段置 NaN（季报间隔约 91 天，容许错过一期）
 MAX_STALE_DAYS = 200
+#: 最早披露日比面板起点晚这么多天以上 → 记为"历史短"（新上市 / 换了申报主体）
+SHORT_HISTORY_DAYS = 365
 #: 每个披露日回看多久的事实（按期末日）。SUE 最吃历史：8 个同比差 + 1 年基期 ≈ 3.3 年
 METRIC_LOOKBACK = pd.Timedelta(days=int(365 * 4.5))
 METRIC_COLUMNS = ["filed", "ni_ttm", "rev_ttm", "gp_ttm", "equity", "assets", "assets_prev",
@@ -65,12 +67,16 @@ class FundamentalsReport:
     no_facts:        List[str] = field(default_factory=list)
     #: 有事实、但最近一次披露距面板末日超过 MAX_STALE_DAYS（上游缺数据 / 已停止申报）→ 末日为 NaN
     stale:           Dict[str, str] = field(default_factory=dict)      # ticker → 最近披露日
+    #: 事实的最早披露日比面板起点晚一年以上：要么是新上市，要么是重组换了申报主体而历史留在
+    #: 旧主体名下（XOM 2026-07 就是这样，见 edgar.PREDECESSOR_CIKS）。面板前段这只票为空。
+    short_history:   Dict[str, str] = field(default_factory=dict)      # ticker → 最早披露日
     splits:          Dict[str, Dict[str, float]] = field(default_factory=dict)
     sanity_rejected: Dict[str, int] = field(default_factory=dict)      # ticker → 被置 NaN 的天数
 
     def to_dict(self) -> dict:
         return {"coverage": {k: round(v, 4) for k, v in self.coverage.items()},
-                "no_facts": list(self.no_facts), "stale": dict(self.stale), "splits": self.splits,
+                "no_facts": list(self.no_facts), "stale": dict(self.stale),
+                "short_history": dict(self.short_history), "splits": self.splits,
                 "sanity_rejected": dict(self.sanity_rejected)}
 
 
@@ -234,6 +240,9 @@ def build_panels(
         last_filed = pd.Timestamp(fx["filed"].max())
         if len(index) and (index[-1] - last_filed).days > MAX_STALE_DAYS:
             rep.stale[tk] = str(last_filed.date())
+        first_filed = pd.Timestamp(fx["filed"].min())
+        if len(index) and (first_filed - index[0]).days > SHORT_HISTORY_DAYS:
+            rep.short_history[tk] = str(first_filed.date())
         eq = m["equity"].to_numpy(dtype=float)
         ni = m["ni_ttm"].to_numpy(dtype=float)
         with np.errstate(divide="ignore", invalid="ignore"):

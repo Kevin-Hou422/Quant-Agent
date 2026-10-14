@@ -256,6 +256,45 @@ def test_stale_tickers_are_logged_by_the_service(tmp_path, caplog):
     assert fx.logged(caplog, "已过期") and fx.logged(caplog, "2025-01-31")
 
 
+def test_ticker_whose_facts_start_long_after_the_panel_does_is_named(caplog):
+    """
+    XOM 在登记旧主体之前就是这个样子：事实只从 2026 年开始，面板前五年整列为空，
+    而覆盖率（只看末日）一切正常。BKNG 的夹具只收了 2024 年以后的文件，正好拿来当这种票。
+    """
+    a, b = fx.facts("AAPL"), fx.facts("BKNG")
+    idx = pd.bdate_range("2021-01-04", "2026-09-30")
+    p, rep = build_panels(idx, ["AAPL", "BKNG"], {"AAPL": a, "BKNG": b}, {})
+    assert rep.short_history == {"BKNG": "2024-02-22"}
+    assert rep.to_dict()["short_history"] == {"BKNG": "2024-02-22"}
+    assert p["asset_growth"]["BKNG"][:"2024-02-22"].isna().all()
+    assert rep.coverage["asset_growth"] == 1.0                    # 末日覆盖率看不出这件事
+
+
+def test_short_history_boundary_is_one_year_after_the_panel_start():
+    from app.core.data_engine.fundamentals.panels import SHORT_HISTORY_DAYS
+    b = fx.facts("BKNG")
+    first = pd.Timestamp("2024-02-22")
+    for extra, flagged in ((0, False), (1, True)):
+        start = first - pd.Timedelta(days=SHORT_HISTORY_DAYS + extra)
+        idx = pd.date_range(start, start + pd.Timedelta(days=5), freq="D")
+        _, rep = build_panels(idx, ["BKNG"], {"BKNG": b}, {})
+        assert bool(rep.short_history) is flagged
+
+
+def test_short_history_is_logged_by_the_service(tmp_path, caplog):
+    from types import SimpleNamespace
+    from app.core.data_engine.fundamentals.service import attach_fundamentals
+    FundamentalsStore(tmp_path).save("BKNG", fx.facts("BKNG"), fx.events("BKNG"))
+    idx = pd.bdate_range("2021-01-04", "2026-08-31")
+    settings = SimpleNamespace(pit_store_dir=str(tmp_path), fundamentals_dir=str(tmp_path),
+                               edgar_user_agent="", fundamentals_max_age_h=20.0, price_source="yahoo")
+    data = {"close": pd.DataFrame({"BKNG": 200.0}, index=idx)}
+    with caplog.at_level(logging.WARNING):
+        rep = attach_fundamentals(data, ["BKNG"], settings=settings, price_fetch=lambda: (data["close"], {}))
+    assert rep.short_history == {"BKNG": "2024-02-22"}
+    assert fx.logged(caplog, "PREDECESSOR_CIKS") and fx.logged(caplog, "2024-02-22")
+
+
 # ---------------------------------------------------------------------------
 # 7. 解析口径变了 → 重新解析
 # ---------------------------------------------------------------------------

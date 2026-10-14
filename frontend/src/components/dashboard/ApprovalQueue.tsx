@@ -84,6 +84,25 @@ export default function ApprovalQueue({ onChange }: { onChange?: () => void }) {
                 <div className="text-[10px] text-slate-500 truncate">
                   #{it.alpha_id} · {it.hypothesis || '—'} · Sharpe {it.sharpe.toFixed(2)} · IC-IR {it.ic_ir.toFixed(2)}
                 </div>
+                {(it.sparse_fields?.length ?? 0) > 0 && (
+                  <div
+                    className="mt-1 flex flex-wrap items-center gap-1 text-[10px]"
+                    data-testid={`pending-sparse-${it.alpha_id}`}
+                    title={it.visibility_rule ?? undefined}
+                  >
+                    <span className="text-slate-600">基本面字段</span>
+                    {it.sparse_fields!.map((f) => (
+                      <span
+                        key={f.name}
+                        title={f.note}
+                        className="font-mono border rounded px-1 bg-violet-900/40 text-violet-300 border-violet-800"
+                      >
+                        {f.name}
+                      </span>
+                    ))}
+                    {it.visibility_rule && <span className="text-slate-600">· {it.visibility_rule}</span>}
+                  </div>
+                )}
               </div>
               <button
                 disabled={busy === it.alpha_id}

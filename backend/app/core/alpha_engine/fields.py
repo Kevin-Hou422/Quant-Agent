@@ -42,6 +42,26 @@ FIELD_NOTES = {
 }
 
 
+def fundamental_fields_used(dsl: str) -> list:
+    """
+    表达式引用到的基本面字段：`[{"name", "class", "note"}, ...]`（按 FIELD_NOTES 的顺序）。
+    用真正的解析器取叶子，不是在字符串里找子串。解析不了的表达式抛 `ValueError`。
+    """
+    from .parser import Parser
+    from .typed_nodes import DataNode
+    try:
+        stack = [Parser().parse(dsl)]
+    except Exception as exc:
+        raise ValueError(f"表达式解析失败：{exc}") from exc
+    used = set()
+    while stack:
+        node = stack.pop()
+        if isinstance(node, DataNode) and node.field in FUNDAMENTAL_FIELDS:
+            used.add(node.field)
+        stack.extend(node.children())
+    return [{"name": f, "class": field_class(f), "note": FIELD_NOTES[f]} for f in FIELD_NOTES if f in used]
+
+
 def field_class(name: str) -> str:
     """'price' | 'valuation' | 'quarterly' | 'event' | 'other'（sector / groups 等辅助字段）。"""
     if name in PRICE_FIELDS:

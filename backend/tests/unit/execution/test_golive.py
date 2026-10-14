@@ -32,7 +32,7 @@ NOW = datetime(2025, 3, 4, 22, 0, tzinfo=timezone.utc)       # 周二，收盘�
 JOBS = ["daily_backup", "daily_monitor", "daily_trading", "daily_trading_retry",
         "monthly_cost_calibration"]
 TRADE_CHECKS = ["execution_mode", "scheduler", "scheduler_jobs", "storage", "storage_writable",
-                "calendar", "dataset", "price_source", "strategy"]
+                "calendar", "dataset", "price_source", "strategy", "fundamentals"]
 CONNECT_CHECKS = ["opend", "broker_account", "account_funds", "kill_switch", "reconcile"]
 
 
@@ -98,7 +98,7 @@ def test_everything_in_place_is_ready_and_places_no_order(tmp_path):
     assert ctx.calls_of("place_order") == []
     assert ctx.closed
     d = rep.to_dict()
-    assert d["ready"] is True and d["connected"] is True and len(d["checks"]) == 15
+    assert d["ready"] is True and d["connected"] is True and len(d["checks"]) == 16
 
 
 def test_connected_but_not_tradable_is_reported_as_such(tmp_path):

@@ -433,3 +433,64 @@ def test_pipeline_skips_non_us_datasets(registry):
     panel = {"close": registry.close.copy()}
     assert _with_fundamentals("fund_test_crypto", panel) is panel
     assert registry.calls == []
+
+
+# ---------------------------------------------------------------------------
+# 前向路径：从 run_daily_pipeline 这个入口看（调度任务调的就是它）
+# ---------------------------------------------------------------------------
+
+class _CapturingLoop:
+    """替身交易循环：只记下喂进来的面板长什么样。"""
+    seen: list = []
+
+    def run(self, dataset, forward_from=None):
+        _CapturingLoop.seen.append(("factors", set(dataset), forward_from))
+        return SimpleNamespace(n_alphas=0, n_alerts=0, n_errors=0)
+
+    def run_portfolio(self, dataset, forward_from=None):
+        _CapturingLoop.seen.append(("portfolio", set(dataset), forward_from))
+        return {"n_factors": 0}
+
+    def _maintain_live(self, reason):
+        return {"reason": reason}
+
+
+@pytest.fixture
+def pipeline(registry, monkeypatch):
+    from app.tasks import daily_ingest as di
+    from app.tasks import daily_trading_loop as dtl
+    _CapturingLoop.seen = []
+    monkeypatch.setattr(dtl, "DailyTradingLoop", _CapturingLoop)
+    panel = {"close": registry.close.copy(), "volume": registry.close * 0 + 1e7}
+    monkeypatch.setattr(di.DailyIngest, "ingest_incremental",
+                        lambda self, name, backfill_start=None, now=None: di.IngestResult(
+                            True, name, "2024-06-28T21:30:00+00:00", health_score=1.0, dataset=panel,
+                            mode="incremental", forward_from="2024-06-28", n_new_bars=1))
+    return SimpleNamespace(di=di, panel=panel, registry=registry)
+
+
+def test_daily_pipeline_feeds_fundamental_fields_to_both_loops(pipeline):
+    out = pipeline.di.run_daily_pipeline("fund_test_us")
+    assert out["ingest_accepted"] is True
+    kinds = [k for k, _, _ in _CapturingLoop.seen]
+    assert kinds == ["factors", "portfolio"]
+    for _, fields, forward_from in _CapturingLoop.seen:
+        assert set(ALL_FIELDS) <= fields and forward_from == "2024-06-28"
+    assert set(pipeline.panel) == {"close", "volume"}                 # 摄取结果本身没被改写
+
+
+def test_daily_pipeline_with_the_switch_off_feeds_prices_only(pipeline, monkeypatch):
+    monkeypatch.setattr(pipeline.registry.settings, "enable_fundamentals", False)
+    pipeline.di.run_daily_pipeline("fund_test_us")
+    assert [fields for _, fields, _ in _CapturingLoop.seen] == [{"close", "volume"}] * 2
+    assert pipeline.registry.calls == []
+
+
+def test_daily_pipeline_survives_a_fundamentals_outage(pipeline, monkeypatch, caplog):
+    """基本面挂不上不能拖垮每日管线：两个循环照常跑，只是面板里没有这些字段。"""
+    monkeypatch.setattr(pipeline.registry.settings, "fundamentals_dir", str(pipeline.registry.tmp / "empty"))
+    with caplog.at_level(logging.ERROR):
+        out = pipeline.di.run_daily_pipeline("fund_test_us")
+    assert out["ingest_accepted"] is True
+    assert [fields for _, fields, _ in _CapturingLoop.seen] == [{"close", "volume"}] * 2
+    assert fx.logged(caplog, "基本面挂载失败")

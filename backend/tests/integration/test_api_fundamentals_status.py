@@ -61,8 +61,9 @@ def test_status_reports_the_last_filing_date_per_ticker(populated):
     assert by["AAPL"]["last_filed"] == "2026-07-31" and by["AAPL"]["last_period_end"] == "2026-06-27"
     assert by["BKNG"]["last_filed"] == "2026-08-04"
     assert by["NVDA"]["last_filed"] == "2026-08-26"
-    assert by["MSFT"] == {"ticker": "MSFT", "has_facts": False, "last_filed": None, "last_period_end": None,
-                          "stale": False, "fields": None, "synced_at": None}
+    assert by["MSFT"] == {"ticker": "MSFT", "has_facts": False, "first_filed": None, "last_filed": None,
+                          "last_period_end": None, "stale": False, "fields": None, "synced_at": None}
+    assert by["AAPL"]["first_filed"] == "2019-01-30" and by["BKNG"]["first_filed"] == "2024-02-22"
     assert s["n_tickers"] == 4 and s["n_with_facts"] == 3 and s["n_stale"] == 0
     assert by["AAPL"]["synced_at"].startswith("2026-05-28")           # 1_780_000_000 秒
 

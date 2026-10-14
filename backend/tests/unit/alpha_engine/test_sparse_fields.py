@@ -249,3 +249,30 @@ def test_size_seeds_and_keywords_are_registered():
     assert seeds and all("market_cap" in s for s in seeds)
     for hyp in ("small cap premium", "小盘股", "市值因子"):
         assert _hypothesis_templates(hyp) == seeds, hyp
+
+
+# ---------------------------------------------------------------------------
+# 表达式用到了哪些基本面字段（界面 / 预检共用的一个入口）
+# ---------------------------------------------------------------------------
+
+def test_fundamental_fields_used_come_from_the_parsed_tree_in_display_order():
+    used = F.fundamental_fields_used("fund_rank(sue) + fund_rank(roe) + rank(ts_delta(log(market_cap), 20))")
+    assert [f["name"] for f in used] == ["market_cap", "roe", "sue"]          # FIELD_NOTES 的顺序，去重
+    assert used[0] == {"name": "market_cap", "class": "valuation", "note": F.FIELD_NOTES["market_cap"]}
+    assert F.fundamental_fields_used("fund_rank(roe) + fund_rank(roe)") == [
+        {"name": "roe", "class": "quarterly", "note": F.FIELD_NOTES["roe"]}]
+
+
+def test_price_only_expression_uses_no_fundamental_fields():
+    assert F.fundamental_fields_used("rank(ts_delta(log(close), 252)) * rank(volume)") == []
+
+
+def test_field_names_inside_other_identifiers_are_not_matched():
+    """走解析树而不是找子串：`sector` 之类的分组名、数字常量都不会被当成字段。"""
+    assert F.fundamental_fields_used("ind_neutralize(rank(close), 'sector')") == []
+    assert F.fundamental_fields_used("rank(close) * 252") == []
+
+
+def test_unparsable_expression_is_an_error_not_an_empty_answer():
+    with pytest.raises(ValueError, match="解析失败"):
+        F.fundamental_fields_used("rank(ts_min(close,volume,10))")

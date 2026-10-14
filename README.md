@@ -175,7 +175,7 @@ Quant Agent/
 │   ├── MUTATION_LEDGER.md           # mutation-testing criteria + pointers to machine-readable state
 │   ├── backend_retired_report/      # frozen archives (Phase 0–5, 6–8 plans, audits)
 │   ├── tools/mutation/              # mutation runner (reproducible kill-rate measurement)
-│   ├── tests/                       # 190 test files: unit/ integration/ meta/ golden/ performance/
+│   ├── tests/                       # 191 test files: unit/ integration/ meta/ golden/ performance/
 │   │                                #   fixtures/ = trimmed real SEC EDGAR + price responses
 │   └── app/
 │       ├── main.py · config.py · dependencies.py
@@ -458,7 +458,9 @@ powershell -ExecutionPolicy Bypass -File scripts\start_forward.ps1 [-RegisterLog
   vs `PAPER_AUM`, kill switch, reconcile — the first reconcile establishes the trusted baseline) and
   `ready` (additionally: execution mode, scheduler switches *and* the jobs the scheduler actually
   registers, live-data location and writability, trading calendar, a US dataset, an **approved and
-  activated strategy**, and a live fetch proving the data source already has the last closed
+  activated strategy**, the fundamentals that strategy depends on — if any of its factors reference
+  a fundamental field, the switch must be on, an SEC identity configured and local filings fresh for
+  at least half the universe — and a live fetch proving the data source already has the last closed
   session's bar). It never places an order. `run-now` refuses to run unless every blocking check
   passes, runs the scheduler's own `daily_trading_job`, and exits non-zero unless execution actually
   completed (blocked, submit errors, portfolio errors and rejected ingests are all failures).
@@ -535,7 +537,8 @@ React 19 + TypeScript + Vite + Zustand + ECharts, styled as an OS-style workspac
   ticker's last filing date (the day after which its numbers became visible), stale flags and the
   fields a ticker cannot provide. It reads local filings only — opening it sends no external request.
 - **AlphaDashboard** — paper equity curve, IC history, walk-forward charts, plus **ApprovalQueue**
-  (pending candidates with approve/reject and the decision lineage).
+  (pending candidates with approve/reject and the decision lineage; a candidate that uses
+  fundamental fields lists them with the rule for when those numbers became knowable).
 - **PortfolioView** — strategy console: composition and per-factor quota bars, gate verdict
   (Sharpe / DSR / t / PBO), risk report (name-clipped / sector-scaled / gross-scaled / vol-scaled),
   turnover and no-trade band, A/B/C grade badge, and propose/approve/reject actions.
@@ -671,9 +674,9 @@ the file itself is the authority and documents *why* each default is what it is.
 ## 15. Testing & Engineering Discipline
 
 ```bash
-cd backend  && pytest -q          # 4998 passed, 1 skipped (190 test files, ~40 min). The skip is the live-SEC
+cd backend  && pytest -q          # 5026 passed, 1 skipped (191 test files, ~45 min). The skip is the live-SEC
                                   # contract test (needs EDGAR_USER_AGENT); the live-OpenD test also skips when OpenD is down
-cd frontend && npm run test       # 114 passed (10 files)
+cd frontend && npm run test       # 119 passed (11 files)
 cd frontend && npm run build      # tsc type check
 ```
 
@@ -721,10 +724,10 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
   order has been placed on a real paper account yet. Two behaviours can only be confirmed there:
   whether the paper account serves history-order queries, and whether orders placed after the close
   appear in the next session's order list.
-- **Phase 10 remainder.** Putting any fundamental factor through the validation gate (a decision,
-  not code: it spends the one-shot holdout budget); showing a factor's sparse fields and visibility
-  window in the factor detail view; earnings-release timing finer than the filing date; share counts
-  for multi-class issuers.
+- **Phase 10 remainder.** What is left needs a decision, not code — it is listed in the roadmap's
+  open-decisions register: whether to spend the one-shot holdout budget on a fundamental factor,
+  where multi-class share counts should come from, and whether earnings surprises should become
+  visible at the press release rather than the 10-Q.
 - **Phase 13/14 — red-team agent, fully autonomous mode, validation-period operations.**
 - **R.2 remainder** — residual-based style neutralisation (changes signals, so it needs its own
   validation) and alpha-vs-risk-premium separation; `beta_neutral` closure is deferred until shorting

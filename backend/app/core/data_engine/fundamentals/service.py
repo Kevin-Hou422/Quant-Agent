@@ -160,13 +160,16 @@ def store_status(store: FundamentalsStore, universe: List[str],
     没有逐披露日指标缓存的票（还没被加载过一次）只报披露日，字段列为未知。
     """
     from .panels import ALL_FIELDS, MAX_STALE_DAYS
-    today = pd.Timestamp.today().normalize() if today is None else pd.Timestamp(today).normalize()
+    today = pd.Timestamp.today() if today is None else pd.Timestamp(today)
+    if today.tzinfo is not None:                 # 调用方给的是带时区的时刻（预检的 now）→ 取 UTC 日期
+        today = today.tz_convert(None)
+    today = today.normalize()
     rows, have_count = [], {f: 0 for f in ALL_FIELDS}
     for tk in universe:
         got = store.load(tk)
         if got is None or got[0].empty:
-            rows.append({"ticker": tk, "has_facts": False, "last_filed": None, "last_period_end": None,
-                         "stale": False, "fields": None, "synced_at": None})
+            rows.append({"ticker": tk, "has_facts": False, "first_filed": None, "last_filed": None,
+                         "last_period_end": None, "stale": False, "fields": None, "synced_at": None})
             continue
         facts, events = got
         last_filed = pd.Timestamp(facts["filed"].max())
@@ -199,6 +202,7 @@ def store_status(store: FundamentalsStore, universe: List[str],
             "last_period_end": str(pd.Timestamp(
                 facts.loc[(facts["filed"] == facts["filed"].max()) & (facts["concept"] != "shares_cover"),
                           "end"].max()).date()),
+            "first_filed": str(pd.Timestamp(facts["filed"].min()).date()),
             "stale": bool(stale), "fields": fields,
             "synced_at": None if at is None else pd.Timestamp(at, unit="s", tz="UTC").isoformat(timespec="seconds"),
         })
@@ -325,6 +329,10 @@ def attach_fundamentals(
     logger.info("[fundamentals] 已挂字段 %s | 末日覆盖率 %s | 无事实 %d 只 | 拆股 %d 只",
                 sorted(panels), {k: round(v, 2) for k, v in rep.coverage.items()},
                 len(rep.no_facts), len(rep.splits))
+    if rep.short_history:
+        logger.warning("[fundamentals] %d 只票的事实从面板起点一年多以后才开始（新上市，或重组换了申报主体 —— "
+                       "后者需要在 edgar.PREDECESSOR_CIKS 登记旧主体）: %s",
+                       len(rep.short_history), rep.short_history)
     if rep.stale:
         logger.warning("[fundamentals] %d 只票的最近披露已过期（> 200 天没有新财报进来，末日字段为 NaN）—— "
                        "上游缺数据或已停止申报: %s", len(rep.stale), rep.stale)

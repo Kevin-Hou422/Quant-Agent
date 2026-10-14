@@ -1352,6 +1352,10 @@ class PendingItem(BaseModel):
     hypothesis: str
     sharpe:     float
     ic_ir:      float
+    #: 表达式用到的基本面字段（name / class / note）；只用价格的因子为空
+    sparse_fields:   List[dict] = []
+    #: 用到基本面字段时附上可见规则 —— 批准的人应当知道这些数字从哪天起才算"已知"
+    visibility_rule: Optional[str] = None
 
 
 class DecisionItem(BaseModel):
@@ -1366,11 +1370,25 @@ class DecisionItem(BaseModel):
 @router.get("/alphas/pending", response_model=List[PendingItem], tags=["Lifecycle"])
 def alphas_pending(store: AlphaStore = Depends(get_store)) -> List[PendingItem]:
     """待审批队列：VALIDATED 且等待人工 approve/reject 的候选（FE-9 用）。"""
+    from app.core.alpha_engine.fields import fundamental_fields_used
+    from app.core.data_engine.fundamentals.panels import MAX_STALE_DAYS
+
+    rule = f"披露日之后的第一个交易日起可见；超过 {MAX_STALE_DAYS} 天没有新披露则置空"
     rows = store.query(status="validated", limit=500)
-    return [PendingItem(
-        alpha_id=r.id, dsl=r.dsl, hypothesis=r.hypothesis or "",
-        sharpe=r.sharpe or 0.0, ic_ir=r.ic_ir or 0.0,
-    ) for r in rows]
+    out: List[PendingItem] = []
+    for r in rows:
+        try:
+            sparse = fundamental_fields_used(r.dsl)
+        except ValueError as exc:
+            # 库里有一条解析不了的表达式不该让整个审批队列打不开；但要留痕
+            logger.warning("[pending] 因子 #%s 的表达式解析失败，字段信息留空: %s", r.id, exc)
+            sparse = []
+        out.append(PendingItem(
+            alpha_id=r.id, dsl=r.dsl, hypothesis=r.hypothesis or "",
+            sharpe=r.sharpe or 0.0, ic_ir=r.ic_ir or 0.0,
+            sparse_fields=sparse, visibility_rule=rule if sparse else None,
+        ))
+    return out
 
 
 @router.post("/alphas/{alpha_id}/approve", response_model=ApprovalResponse, tags=["Lifecycle"])

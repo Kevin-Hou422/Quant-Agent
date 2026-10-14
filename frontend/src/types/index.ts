@@ -272,6 +272,10 @@ export interface PendingAlpha {
   hypothesis: string
   sharpe:     number
   ic_ir:      number
+  /** FE-10：表达式用到的基本面字段；只用价格的因子为空数组 */
+  sparse_fields?:   { name: string; class: FundamentalFieldClass; note: string }[]
+  /** 用到基本面字段时的可见规则（披露日之后第一个交易日起可见 …） */
+  visibility_rule?: string | null
 }
 
 /** Phase 9.4: GET /api/alphas/{id}/decisions — approval lineage */
@@ -435,6 +439,7 @@ export interface FundamentalFieldInfo {
 export interface FundamentalTickerStatus {
   ticker:          string
   has_facts:       boolean
+  first_filed:     string | null   // 本地事实的最早披露日（历史从哪天开始）
   last_filed:      string | null   // 最近披露日：这批数字从它之后的第一个交易日起可见
   last_period_end: string | null
   stale:           boolean

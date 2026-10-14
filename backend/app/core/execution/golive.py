@@ -187,6 +187,63 @@ def _active_strategy_problem(settings) -> tuple:
     return True, f"active 策略 #{active.id}（{len(factors)} 个成分，method={active.method}）"
 
 
+#: 现役策略用到基本面字段时，宇宙里至少这么大比例的票要有**没过期**的本地事实
+MIN_FUNDAMENTALS_READY = 0.5
+
+
+def _strategy_fundamental_fields(settings) -> List[str]:
+    """现役策略各成分的表达式引用到的基本面字段（没有 active 策略 → 空）。"""
+    import json
+    from app.core.alpha_engine.fields import fundamental_fields_used
+    from app.db.alpha_store import AlphaStore
+    from app.db.strategy_store import StrategyStore
+    active = StrategyStore(db_url=settings.database_url).latest_active()
+    if active is None:
+        return []
+    store, used = AlphaStore(db_url=settings.database_url), set()
+    for f in [str(x) for x in json.loads(active.factors or "[]")]:
+        rec = store.get_by_id(int(f)) if f.isdigit() else None
+        if rec is not None and rec.dsl:
+            used |= {x["name"] for x in fundamental_fields_used(rec.dsl)}
+    return sorted(used)
+
+
+def _fundamentals_problem(settings, needed: Optional[List[str]] = None, today=None) -> tuple:
+    """
+    (ok, detail, blocking)。只读配置与本地事实，**不向 SEC 发请求**。
+
+    现役策略用到基本面字段时这一项是阻断的：开关没开 → 每日管线里这些因子会因"字段不存在"
+    报错、当天不调仓；没配身份 → 事实不再更新，200 天后整列置空；本地事实覆盖不够 → 截面排名
+    没有意义（`fund_rank` 会整行不出信号）。策略用不到基本面时只做提示，不阻断。
+    """
+    from app.core.data_engine.dataset_registry import registry_spec
+    from app.core.data_engine.fundamentals.service import fundamentals_dir, store_status
+    from app.core.data_engine.fundamentals.store import FundamentalsStore
+    needed = _strategy_fundamental_fields(settings) if needed is None else list(needed)
+    enabled = bool(getattr(settings, "enable_fundamentals", False))
+    identity = "@" in str(getattr(settings, "edgar_user_agent", "") or "")
+    if not needed:
+        if not enabled:
+            return True, "未开启（现役策略只用价格字段）", False
+        return identity, ("已开启；现役策略用不到基本面字段" if identity else
+                          "已开启但没配 EDGAR_USER_AGENT —— 只能用本地已有的事实，不会更新"), False
+    if not enabled:
+        return False, (f"现役策略用到基本面字段 {needed}，但 ENABLE_FUNDAMENTALS 关着 —— 每日管线里"
+                       "这些因子会因字段不存在而报错，当天不调仓"), True
+    if not identity:
+        return False, (f"现役策略用到基本面字段 {needed}，但没配 EDGAR_USER_AGENT —— 事实不会更新，"
+                       "过期后这些字段整列为空"), True
+    universe = registry_spec(settings.paper_dataset).universe
+    st = store_status(FundamentalsStore(fundamentals_dir(settings)), universe, today=today)
+    fresh = st["n_with_facts"] - st["n_stale"]
+    share = fresh / max(len(universe), 1)
+    detail = (f"现役策略用到 {needed}；本地有未过期事实的标的 {fresh}/{len(universe)}"
+              + (f"，{st['n_stale']} 只已过期" if st["n_stale"] else ""))
+    if share < MIN_FUNDAMENTALS_READY:
+        return False, detail + f" —— 不足 {MIN_FUNDAMENTALS_READY:.0%}，先加载一次数据集把事实同步下来", True
+    return True, detail, True
+
+
 def run_preflight(
     settings=None,
     *,
@@ -199,6 +256,7 @@ def run_preflight(
     data_probe: Optional[Callable] = None,
     jobs: Optional[Callable[[], List[str]]] = None,
     strategy_check: Optional[Callable] = None,
+    fundamentals_check: Optional[Callable] = None,
 ) -> PreflightReport:
     """
     逐项检查，两层（见 LAYER_*）。连券商的检查会**真的对账一次**（与 `/execution/reconcile`
@@ -268,6 +326,15 @@ def run_preflight(
         logger.warning("[golive] 读取策略配置失败: %s", exc)
         ok, detail = False, f"读取策略配置失败：{exc}"
     rep.add("strategy", ok, detail)
+    try:
+        if fundamentals_check is not None:
+            ok, detail, blocking = fundamentals_check(settings)
+        else:
+            ok, detail, blocking = _fundamentals_problem(settings, today=now)
+    except Exception as exc:
+        logger.warning("[golive] 基本面检查失败: %s", exc)
+        ok, detail, blocking = False, f"基本面检查失败：{exc}", True
+    rep.add("fundamentals", ok, detail, blocking=blocking)
 
     # ---- 券商层：OpenD / 账户 / 资金 / 熔断 / 对账 ----
     host, port = str(settings.moomoo_host), int(settings.moomoo_port)
