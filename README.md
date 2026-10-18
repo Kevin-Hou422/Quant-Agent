@@ -688,10 +688,10 @@ the file itself is the authority and documents *why* each default is what it is.
 ## 15. Testing & Engineering Discipline
 
 ```bash
-cd backend  && pytest -q          # 5026 passed, 1 skipped (191 test files, ~45 min). The skip is the live-SEC
+cd backend  && pytest -q          # 5171 tests (2 skipped, ~48 min; last full run 2026-10-19). One skip is the live-SEC
                                   # contract test (needs EDGAR_USER_AGENT); the live-OpenD test also skips when OpenD is down
-cd frontend && npm run test       # 119 passed (11 files)
-cd frontend && npm run build      # tsc type check
+cd frontend && npm run test       # 121 passed (11 files)
+cd frontend && npx tsc -b         # type check (what CI runs; `--noEmit` on the root tsconfig checks nothing)
 ```
 
 Passing tests are treated as a weak signal on their own. Three mechanisms back them up:
@@ -730,6 +730,7 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
 | Point-in-time fundamentals (SEC EDGAR), sparse DSL field classes, `fund_rank`, fundamental discovery directions | ✅ Phase 10 (run against live EDGAR + moomoo on the 95-name universe; no fundamental factor validated yet) |
 | Risk attribution + structured covariance | ✅ Phase R.2 (part) |
 | moomoo paper execution: reconciliation/crash recovery, pre-trade gate, two-step kill switch, sim-vs-paper fidelity, live T3 providers, execution panel | ✅ Phase 12 + FE-12 (code; **not yet run against a live OpenD gateway**) |
+| External review 2026-10-18 (F01–F14): health-gate hard checks, re-fetch on re-adjustment, frozen Test boundaries + overlap-metered holdout, selection-only research paths, trial counting at the search layer, executable strategy spec, archived-signal forward evidence per strategy version, atomic order claims + account lock, independent quotes, weight drift, content-hashed cost cache, factor-return min-variance, SUE/8-K alignment, single-transaction approvals | ✅ (see the roadmap's fix log; the strategy approved before 2026-10-18 must be re-proposed — D13) |
 
 **Not built yet** — the honest list:
 
@@ -742,6 +743,10 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
   open-decisions register: whether to spend the one-shot holdout budget on a fundamental factor,
   where multi-class share counts should come from, and whether earnings surprises should become
   visible at the press release rather than the 10-Q.
+- **Open after the 2026-10-18 review** (roadmap D12–D15): the frozen Test start for the live
+  database, re-approval of the active strategy, one clock for signal / fill / IC (the daily loop
+  currently trades a T−1 signal), and an alert channel (alerts are log-only). Not built: an intraday
+  breaker watchdog, a backup-restore drill, and storing unadjusted prices + corporate actions in PIT.
 - **Phase 13/14 — red-team agent, fully autonomous mode, validation-period operations.**
 - **R.2 remainder** — residual-based style neutralisation (changes signals, so it needs its own
   validation) and alpha-vs-risk-premium separation; `beta_neutral` closure is deferred until shorting
