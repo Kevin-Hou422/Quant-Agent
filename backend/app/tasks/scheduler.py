@@ -112,7 +112,7 @@ def nightly_discovery_job() -> None:
         logger.error("[nightly_discovery_job] 数据加载失败，跳过本轮: %s", exc)
         return
 
-    report = DiscoveryEngine().run(ds.data, save=True)
+    report = DiscoveryEngine().run(ds.data, save=True, dataset_key=settings.discovery_dataset)
     logger.info(
         "[nightly_discovery_job] regime=%s | 家族=%s | 新增 %d 个 CANDIDATE",
         report.regime, report.families, report.n_candidates,

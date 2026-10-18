@@ -1,0 +1,134 @@
+"""
+executable_spec.py — 一份**可执行策略规格**（外部审查 2026-10-18 F07）
+
+为什么需要
+----------
+此前审批、验证、内部模拟、券商执行各自装配策略：配置冻结了成分和合成权重，但 AUM、无交易带、
+风控上限、信号参数都在运行时从 `settings` 现读；每日策略门还按默认 `ic_weighted` 重新拟合，
+评估的不是被批准的那组冻结权重。审查的 R8：批准的是 equal_weight / AUM 1234 / band .123，
+每日门是 ic_weighted，账本用 AUM 1,000,000 / band .00134。改一个全局设置也不会触发重新审批。
+
+现在
+----
+提案时把**影响交易的全部参数**收进一份规格，算哈希，随配置存下（`verdict["executable_spec"]` /
+`verdict["spec_hash"]`，免表结构迁移）。每日循环：
+
+  · **照规格执行**：成分、冻结合成权重、合成方法、无交易带从规格里取；
+  · **核对规格**：AUM、风控上限、信号参数、券商与做空口径、数据集与价格源、各成分的表达式
+    与运行时比对 —— 任何一项变了 → 本轮不调仓（只对账 / 熔断维护），要求重新提案、审批。
+  · 规格缺失（2026-10-18 之前批准的配置）→ 同样不调仓：没有规格就无法证明交易的是被批准的那份。
+
+哈希只覆盖规格内容；`created_at`、门的证据等不进哈希（证据可以补充，交易参数不可以悄悄改）。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from dataclasses import asdict
+from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+SPEC_VERSION = 1
+
+#: 每日循环 / 提案 / 策略门共用的信号处理参数（此前三处各写一份字面量）
+SIGNAL_CONFIG = {"delay": 1, "decay_window": 0, "truncation_min_q": 0.05, "truncation_max_q": 0.95}
+
+
+def signal_config():
+    from app.core.alpha_engine.signal_processor import SimulationConfig
+    return SimulationConfig(**SIGNAL_CONFIG)
+
+
+def risk_limits_from_settings(settings=None):
+    """生产风控上限的**唯一**装配处（每日循环、提案、策略门都用它）。"""
+    from app.core.portfolio_manager.risk_gate import RiskLimits
+    if settings is None:
+        from app.config import settings
+    return RiskLimits(
+        max_gross=float(getattr(settings, "risk_max_gross", 1.0)),
+        max_net=float(getattr(settings, "risk_max_net", 1.0)),
+        max_name_weight=float(getattr(settings, "risk_max_name_weight", 0.10)),
+        max_sector_weight=float(getattr(settings, "risk_max_sector_weight", 0.30)),
+        target_vol_ann=(float(getattr(settings, "risk_target_vol_ann", 0.0)) or None),
+        max_drawdown=float(getattr(settings, "risk_max_drawdown", 0.20)),
+        long_only=(not getattr(settings, "trading_allow_short", False)),
+    )
+
+
+def _r(x: float) -> float:
+    return round(float(x), 10)
+
+
+def build_spec(factor_dsl: Dict[str, Optional[str]], combo_weights: Dict[str, float], method: str,
+               aum: float, no_trade_band: float, limits=None, settings=None) -> dict:
+    """规格字典。`limits` / 券商 / 数据口径缺省读 settings（与每日循环同一来源）。"""
+    if settings is None:
+        from app.config import settings
+    limits = limits if limits is not None else risk_limits_from_settings(settings)
+    return {
+        "version": SPEC_VERSION,
+        "factors": {str(k): (None if v is None else str(v)) for k, v in sorted(factor_dsl.items())},
+        "combo_weights": {str(k): _r(v) for k, v in sorted((combo_weights or {}).items())},
+        "method": str(method),
+        "aum": _r(aum),
+        "no_trade_band": _r(no_trade_band),
+        "risk_limits": {k: (None if v is None else (_r(v) if isinstance(v, float) else v))
+                        for k, v in asdict(limits).items()},
+        "signal": dict(SIGNAL_CONFIG),
+        "trading": {"broker": str(getattr(settings, "trading_broker", "moomoo_us")),
+                    "allow_short": bool(getattr(settings, "trading_allow_short", False))},
+        "data": {"dataset": str(getattr(settings, "paper_dataset", "")),
+                 "price_source": str(getattr(settings, "price_source", ""))},
+    }
+
+
+def spec_hash(spec: dict) -> str:
+    blob = json.dumps(spec, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def spec_diff(approved: dict, current: dict) -> List[str]:
+    """两份规格的差异（人能读的一行一条）。空 = 一致。"""
+    out: List[str] = []
+    for key in sorted(set(approved) | set(current)):
+        a, b = approved.get(key), current.get(key)
+        if a == b:
+            continue
+        if isinstance(a, dict) and isinstance(b, dict):
+            for sub in sorted(set(a) | set(b)):
+                if a.get(sub) != b.get(sub):
+                    out.append(f"{key}.{sub}: 批准时 {a.get(sub)!r} → 现在 {b.get(sub)!r}")
+        else:
+            out.append(f"{key}: 批准时 {a!r} → 现在 {b!r}")
+    return out
+
+
+def approved_spec(config_record) -> Optional[dict]:
+    """从策略配置记录里取出批准时的规格（没有 → None）。哈希对不上同样当作没有。"""
+    try:
+        verdict = json.loads(getattr(config_record, "verdict", None) or "{}")
+    except (TypeError, ValueError) as exc:
+        logger.error("[spec] 策略 #%s 的 verdict 解析失败: %s", getattr(config_record, "id", "?"), exc)
+        return None
+    spec = verdict.get("executable_spec")
+    if not isinstance(spec, dict):
+        return None
+    if spec_hash(spec) != verdict.get("spec_hash"):
+        logger.error("[spec] 策略 #%s 的规格与存下的哈希不一致（被改过？）→ 按没有规格处理",
+                     getattr(config_record, "id", "?"))
+        return None
+    return spec
+
+
+def verify_against_runtime(spec: dict, factor_dsl: Dict[str, Optional[str]], aum: float,
+                           settings=None) -> List[str]:
+    """
+    规格里"运行时也能算出来"的部分与现在比对：AUM、风控、信号、券商、数据、各成分表达式。
+    合成权重 / 方法 / 无交易带是**照规格执行**的，不在这里比。
+    """
+    current = build_spec(factor_dsl, spec.get("combo_weights") or {}, spec.get("method", ""),
+                         aum, float(spec.get("no_trade_band", 0.0)), settings=settings)
+    return spec_diff(spec, current)

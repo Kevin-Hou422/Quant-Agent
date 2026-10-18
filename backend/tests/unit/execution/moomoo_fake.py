@@ -82,6 +82,11 @@ class FakeTradeContext:
         self.hide_new_orders = False
         self.hidden: set = set()
         self.closed = False
+        #: 【悲观契约，外部审查 2026-10-18 F09】独立行情报价：默认**没有** —— 没有报价的票新开仓会被
+        #: 下单门拦下。`mark()` / `set_position()` 给出的价格同时进报价表（市场价对所有票可见）。
+        self.quotes: Dict[str, float] = {}
+        self.quote_time: Optional[str] = None      # None = 用 self.now
+        self.quote_fail: Optional[str] = None      # 置为错误信息时，取报价整批失败
 
     # -- 工具 ------------------------------------------------------------------
 
@@ -199,12 +204,23 @@ class FakeTradeContext:
 
     def set_position(self, ticker: str, qty: float, price: float) -> None:
         self.pos[_to_moomoo_code(ticker)] = {"qty": float(qty), "nominal_price": float(price)}
+        self.quotes[ticker] = float(price)
 
     def mark(self, prices: Dict[str, float]) -> None:
         for tk, px in prices.items():
             c = _to_moomoo_code(tk)
+            self.quotes[tk] = float(px)
             if c in self.pos:
                 self.pos[c]["nominal_price"] = float(px)
+
+    def snapshot(self, tickers) -> pd.DataFrame:
+        """行情快照（OpenQuoteContext.get_market_snapshot 的子集列）。只报有报价的票。"""
+        if self.quote_fail:
+            raise RuntimeError(self.quote_fail)
+        rows = [{"code": _to_moomoo_code(t), "update_time": self.quote_time or self.now,
+                 "last_price": self.quotes[t], "bid_price": self.quotes[t], "ask_price": self.quotes[t]}
+                for t in tickers if t in self.quotes]
+        return pd.DataFrame(rows, columns=["code", "update_time", "last_price", "bid_price", "ask_price"])
 
     def _fill(self, o: dict, px: float, qty: float) -> None:
         if qty <= 0:
@@ -245,4 +261,5 @@ class FakeTradeContext:
 
 def make_gateway(ctx: FakeTradeContext, **kw):
     from app.core.execution.broker_gateway import MoomooGateway
+    kw.setdefault("quote_fn", ctx.snapshot)
     return MoomooGateway(sdk=moomoo, context_factory=lambda: ctx, **kw)

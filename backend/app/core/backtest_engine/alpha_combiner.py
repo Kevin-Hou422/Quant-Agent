@@ -126,7 +126,10 @@ class AlphaCombiner:
             return self._ic_weights(signals, returns)
 
         if method == "min_variance":
-            return self._min_variance_weights(signals)
+            if returns is None:
+                logger.warning("min_variance 需要收益序列（按因子组合收益估协方差）；退回**等权**")
+                return self.optimize_weights(signals, method="equal_weight")
+            return self._min_variance_weights(signals, returns)
 
         raise ValueError(
             f"Unknown method '{method}'. Choose: ic_weighted, equal_weight, min_variance"
@@ -220,36 +223,48 @@ class AlphaCombiner:
 
         return {dsl: v / total for dsl, v in raw.items()}
 
+    #: 协方差向对角收缩的比例（样本协方差噪声大；固定值，不做数据驱动调参 —— 那又是一个被拟合的参数）
+    MIN_VAR_SHRINK = 0.2
+
     def _min_variance_weights(
         self,
         signals: Dict[str, pd.DataFrame],
+        returns: pd.DataFrame,
     ) -> Dict[str, float]:
         """
-        Minimum-variance weights: minimise the variance of the composite signal.
+        最小方差权重：**因子组合收益**的协方差 → 闭式最小方差解（只做多因子权重，向对角收缩）。
 
-        Uses closed-form minimum-variance portfolio on the signal correlation matrix.
-        Falls back to equal-weight if fewer than 2 signals or matrix is singular.
+        外部审查 2026-10-18 F12（R9）：此前用每个信号**每日截面均值**的时间序列估协方差。
+        对 zscore / demean 过的因子，截面均值恒为 0 —— 两个相同或相反的因子与第三个毫无区别，
+        a、−a、a 拿到各 1/3。现在每个因子先变成一个美元中性的因子组合（截面去均值、按 Σ|w| 归一），
+        收益 = Σ_i w_i,t · r_i,t，用这些收益序列的协方差。数据不够 → 显式等权（并告警）。
         """
         dsls = list(signals.keys())
         n    = len(dsls)
         if n < 2:
             return {dsls[0]: 1.0}
 
-        # Stack cross-sectional means of each signal as proxies for their time series
         vecs: list[np.ndarray] = []
         for sig in signals.values():
             arr = sig.to_numpy(dtype=float)
-            vec = np.nanmean(arr, axis=1)   # (T,) cross-sectional mean
-            vecs.append(vec)
+            ret = returns.reindex(index=sig.index, columns=sig.columns).to_numpy(dtype=float)
+            w = arr - np.nanmean(arr, axis=1, keepdims=True)
+            gross = np.nansum(np.abs(w), axis=1, keepdims=True)
+            w = np.where(gross > 1e-12, w / np.where(gross > 1e-12, gross, 1.0), np.nan)
+            both = np.isfinite(w) & np.isfinite(ret)
+            pr = np.where(both, w * ret, 0.0).sum(axis=1)
+            pr[~both.any(axis=1)] = np.nan
+            vecs.append(pr)
 
-        mat  = np.stack(vecs, axis=1)  # (T, n)
-        # Drop rows with any NaN
+        mat  = np.stack(vecs, axis=1)  # (T, n)：各因子组合的日收益
         mask = ~np.isnan(mat).any(axis=1)
-        if mask.sum() < n + 1:
-            # Insufficient data → equal weight
+        if mask.sum() < max(2 * n, 20):
+            logger.warning("[AlphaCombiner] min_variance 可用的因子组合收益只有 %d 天，权重退回**等权**",
+                           int(mask.sum()))
             return {dsl: 1.0 / n for dsl in dsls}
 
-        cov  = np.cov(mat[mask].T)                          # (n, n)
+        sample = np.cov(mat[mask].T)                        # (n, n)
+        cov = (1.0 - self.MIN_VAR_SHRINK) * sample + self.MIN_VAR_SHRINK * np.diag(np.diag(sample))
         try:
             ones      = np.ones(n)
             inv_cov   = np.linalg.inv(cov + 1e-6 * np.eye(n))

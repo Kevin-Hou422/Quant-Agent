@@ -12,6 +12,12 @@ DSR（去膨胀夏普）的诚实性取决于 `n_trials`——"为选出这个�
 
 单行表 `trial_ledger(id=1, total, updated_at)`。append-only 语义（只增，reset 仅供测试）。
 
+**谁来记**（外部审查 2026-10-18 F05）：搜索的**底层**记 —— GP 进化（`PopulationEvolver.run`）
+按实际评估过的个体数记，Optuna（`AlphaOptimizer.optimize`）按实际跑完的 trial 数记。
+此前只有自主发现编排按配置**估算**一次，直接 GP、工作流、Optuna、聊天工具都不记。
+每次运行带一个 `run_id`，记在 `trial_runs` 表里：同一个 run 记两次只算一次（重试不会重复计数）；
+累加用一条 `UPDATE total = total + n`，两个进程同时记也不会丢。
+
 HoldoutLedger（S.2）—— 冻结 Test 段的使用次数
 ---------------------------------------------
 "一次性使用"如果只是文档里的一句话，它**必然**被违反：同一个 test 段跑第 20 次时，
@@ -20,8 +26,18 @@ HoldoutLedger（S.2）—— 冻结 Test 段的使用次数
 超过预算阈值时返回 `over_budget=True`，调用方把它落进 RunManifest / 响应体。
 
 append-only 表 `holdout_usages(dataset_key, test_key, purpose, used_at)`——
-只增不改，`test_key` 是 Test 段的起止日期（`ThreeWaySplit.test_key`），
-换了日期就是另一个段、另起一本账。
+只增不改，`test_key` 是 Test 段的起止日期（`ThreeWaySplit.test_key`）。
+
+**按区间重叠计次**（外部审查 2026-10-18 F04）：此前"换了日期就是另一个段、另起一本账"，
+于是数据每多一天、Test 窗口滑动一天，就换来一份全新的预算 —— 审查的 R1 里两个窗口重叠 521 天，
+两次都显示"第 1 次使用"。现在一次使用的次数 = 同一数据集里与它**有任何重叠**的历史使用数 + 1。
+看过的数据不会因为窗口滑动而恢复清白；要一个干净的样本外，只能等新收集的、从没被看过的数据。
+
+FrozenBoundary —— 冻结边界持久化（F04）
+---------------------------------------
+Test 起点此前由每次的数据末日倒推 2 年得出，数据每天增长它就每天滑动。
+现在每个**真实数据集**第一次切分时把 Test 起点（绝对日期）写进 `frozen_boundaries`，
+以后不管数据截到哪天，都用这个日期切。选择段从此固定；新数据全部落在 Test 一侧。
 """
 
 from __future__ import annotations
@@ -32,7 +48,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Column, DateTime, Integer, String, create_engine, func, select
+from typing import List, Tuple
+
+import pandas as pd
+from sqlalchemy import Column, DateTime, Integer, String, create_engine, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -47,6 +67,15 @@ class TrialCount(_Base):
     id:         int      = Column(Integer, primary_key=True)      # 固定 =1
     total:      int      = Column(Integer, default=0, nullable=False)
     updated_at: datetime = Column(DateTime, default=datetime.utcnow)
+
+
+class TrialRun(_Base):
+    """一次搜索运行记过的试验数（`run_id` 唯一 → 同一次运行重复记账只算一次）。"""
+    __tablename__ = "trial_runs"
+    run_id:     str      = Column(String(64), primary_key=True)
+    n:          int      = Column(Integer, nullable=False)
+    source:     str      = Column(String(32), nullable=False, default="")
+    created_at: datetime = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class TrialLedger:
@@ -66,23 +95,42 @@ class TrialLedger:
         _Base.metadata.create_all(self._engine)
         self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
 
-    def add(self, n: int) -> int:
-        """累加 n 个 trial，返回新的累计总数。n<=0 时不变。"""
+    def add(self, n: int, run_id: Optional[str] = None, source: str = "") -> int:
+        """
+        累加 n 个 trial，返回新的累计总数。n<=0 时不变。
+
+        `run_id` 给定时幂等：这个 run 已经记过 → 不再累加，直接返回当前总数。
+        累加是一条原子 UPDATE（两个进程同时记不会互相覆盖）。
+        """
         n = max(0, int(n))
         with self._Session() as s:
-            row = s.get(TrialCount, 1)
-            if row is None:
-                row = TrialCount(id=1, total=0)
-                s.add(row)
-            row.total = int(row.total) + n
-            row.updated_at = datetime.utcnow()
+            if run_id:
+                s.add(TrialRun(run_id=str(run_id)[:64], n=n, source=(source or "")[:32]))
+                try:
+                    s.flush()
+                except IntegrityError:
+                    s.rollback()
+                    logger.info("[S.3] run %s 已经记过账，不重复累加", run_id)
+                    return self.total()
+            if s.get(TrialCount, 1) is None:
+                s.add(TrialCount(id=1, total=0))
+                s.flush()
+            s.execute(update(TrialCount).where(TrialCount.id == 1)
+                      .values(total=TrialCount.total + n, updated_at=datetime.utcnow()))
             s.commit()
-            return int(row.total)
+            return int(s.scalar(select(TrialCount.total).where(TrialCount.id == 1)) or 0)
 
     def total(self) -> int:
         with self._Session() as s:
             row = s.scalars(select(TrialCount).where(TrialCount.id == 1)).first()
             return int(row.total) if row else 0
+
+    def runs(self, source: Optional[str] = None) -> List[TrialRun]:
+        with self._Session() as s:
+            q = select(TrialRun).order_by(TrialRun.created_at)
+            if source:
+                q = q.where(TrialRun.source == source)
+            return list(s.scalars(q).all())
 
     def reset(self) -> None:
         """仅供测试：清零。"""
@@ -90,7 +138,28 @@ class TrialLedger:
             row = s.get(TrialCount, 1)
             if row is not None:
                 row.total = 0
-                s.commit()
+            for r in s.scalars(select(TrialRun)).all():
+                s.delete(r)
+            s.commit()
+
+
+def record_trials(n: int, source: str, run_id: Optional[str] = None) -> bool:
+    """
+    搜索底层用的记账入口：记 n 个试验，返回是否记上。
+
+    记不上**不打断搜索**（搜索结果本身没错），但必须让调用方知道 —— 调用方把
+    `trials_recorded=False` 带进结果，验证门据此把"全局试验数"标成不完整。
+    """
+    import uuid
+    if int(n) <= 0:
+        return True
+    try:
+        TrialLedger().add(int(n), run_id=run_id or f"{source}:{uuid.uuid4().hex}", source=source)
+        return True
+    except Exception as exc:
+        logger.error("[S.3] 试验数记账失败（%s 的 %d 次尝试没进全局计数，DSR 会少校正）: %s",
+                     source, n, exc)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -157,12 +226,11 @@ class HoldoutLedger:
         self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
 
     def count(self, dataset_key: str, test_key: str) -> int:
+        """该数据集里与 `test_key` 这段区间**有重叠**的使用次数（区间解析不了时按键精确匹配）。"""
         with self._Session() as s:
-            return int(s.scalar(
-                select(func.count()).select_from(HoldoutUse)
-                .where(HoldoutUse.dataset_key == dataset_key)
-                .where(HoldoutUse.test_key == test_key)
-            ) or 0)
+            keys = list(s.scalars(select(HoldoutUse.test_key)
+                                  .where(HoldoutUse.dataset_key == dataset_key)).all())
+        return _count_overlapping(keys, test_key)
 
     def record_use(
         self, dataset_key: str, test_key: str, purpose: str = "",
@@ -172,11 +240,7 @@ class HoldoutLedger:
             s.add(HoldoutUse(dataset_key=dataset_key, test_key=test_key,
                              purpose=purpose or ""))
             s.commit()
-            uses = int(s.scalar(
-                select(func.count()).select_from(HoldoutUse)
-                .where(HoldoutUse.dataset_key == dataset_key)
-                .where(HoldoutUse.test_key == test_key)
-            ) or 1)
+        uses = max(1, self.count(dataset_key, test_key))
         usage = HoldoutUsage(
             dataset_key=dataset_key, test_key=test_key,
             uses=uses, budget=self.budget, over_budget=uses > self.budget,
@@ -196,3 +260,78 @@ class HoldoutLedger:
             for row in s.scalars(select(HoldoutUse)).all():
                 s.delete(row)
             s.commit()
+
+
+def _parse_window(test_key: str) -> Optional[Tuple[pd.Timestamp, pd.Timestamp]]:
+    try:
+        a, b = str(test_key).split("..")
+        return pd.Timestamp(a), pd.Timestamp(b)
+    except (ValueError, TypeError) as exc:      # "empty" 或旧格式：只能按键精确匹配
+        logger.debug("[S.2] test_key %r 不是日期区间: %s", test_key, exc)
+        return None
+
+
+def _count_overlapping(keys: List[str], test_key: str) -> int:
+    me = _parse_window(test_key)
+    if me is None:
+        return sum(1 for k in keys if k == test_key)
+    n = 0
+    for k in keys:
+        w = _parse_window(k)
+        if w is None:
+            continue
+        if w[0] <= me[1] and me[0] <= w[1]:
+            n += 1
+    return n
+
+
+# ---------------------------------------------------------------------------
+# FrozenBoundary — 冻结 Test 起点的持久化（外部审查 2026-10-18 F04）
+# ---------------------------------------------------------------------------
+
+class FrozenBoundary(_Base):
+    __tablename__ = "frozen_boundaries"
+    dataset_key: str      = Column(String(128), primary_key=True)
+    test_start:  str      = Column(String(10), nullable=False)       # YYYY-MM-DD，含当天
+    frozen_by:   str      = Column(String(16), nullable=False, default="")
+    created_at:  datetime = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class BoundaryStore:
+    """冻结边界：每个数据集一行，**只写一次**。改它是一个需要人拍板的研究决定，不在代码里提供。"""
+
+    def __init__(self, db_url: Optional[str] = None) -> None:
+        if db_url is None:
+            db_url = os.getenv("DATABASE_URL", "")
+            if not db_url:
+                from app.config import settings
+                db_url = settings.database_url
+        connect_args = {"check_same_thread": False} if db_url.startswith("sqlite") else {}
+        self._engine = create_engine(db_url, connect_args=connect_args, echo=False)
+        from ._sqlite_utils import harden_sqlite_engine
+        harden_sqlite_engine(self._engine)
+        _Base.metadata.create_all(self._engine)
+        self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
+
+    def get(self, dataset_key: str) -> Optional[pd.Timestamp]:
+        with self._Session() as s:
+            row = s.get(FrozenBoundary, dataset_key)
+            return pd.Timestamp(row.test_start) if row is not None else None
+
+    def pin(self, dataset_key: str, test_start: pd.Timestamp, frozen_by: str = "") -> pd.Timestamp:
+        """第一次调用写入并返回 `test_start`；已有边界 → 不改，返回已有的那个（两个进程抢着写也一样）。"""
+        with self._Session() as s:
+            s.add(FrozenBoundary(dataset_key=dataset_key,
+                                 test_start=str(pd.Timestamp(test_start).date()),
+                                 frozen_by=frozen_by[:16]))
+            try:
+                s.commit()
+                logger.warning("[S.2] 数据集 %s 的冻结 Test 起点固定为 %s（%s）—— 以后不随数据末日滑动",
+                               dataset_key, pd.Timestamp(test_start).date(), frozen_by)
+            except IntegrityError:
+                s.rollback()
+                logger.info("[S.2] 数据集 %s 已有冻结边界，沿用已有的", dataset_key)
+        got = self.get(dataset_key)
+        if got is None:
+            raise RuntimeError(f"冻结边界写入后读不回来：{dataset_key}")
+        return got

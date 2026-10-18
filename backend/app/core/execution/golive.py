@@ -184,7 +184,20 @@ def _active_strategy_problem(settings) -> tuple:
             bad.append(f)
     if not factors or bad:
         return False, f"active 策略 #{active.id} 的成分 {factors} 中 {bad} 不在可交易状态"
-    return True, f"active 策略 #{active.id}（{len(factors)} 个成分，method={active.method}）"
+    # 外部审查 2026-10-18 F07：每日循环只按批准时的可执行规格交易；规格缺失或运行时参数变了 → 不调仓
+    from app.core.portfolio_manager.executable_spec import approved_spec, verify_against_runtime
+    spec = approved_spec(active)
+    if spec is None:
+        return False, (f"active 策略 #{active.id} 没有可执行规格（2026-10-18 之前批准的配置）—— "
+                       "每日循环不会按它调仓。请重新提案并审批")
+    dsl = {f: (store.get_by_id(int(f)).dsl if f.isdigit() and store.get_by_id(int(f)) else None)
+           for f in factors}
+    diff = verify_against_runtime(spec, dsl, float(settings.paper_aum), settings=settings)
+    if diff:
+        return False, (f"active 策略 #{active.id} 批准后交易参数变了：{'; '.join(diff)} —— "
+                       "每日循环不会按它调仓。改回去，或重新提案并审批")
+    return True, (f"active 策略 #{active.id}（{len(factors)} 个成分，method={spec['method']}，"
+                  f"规格 {json.loads(active.verdict or '{}').get('spec_hash', '')[:12]}）")
 
 
 #: 现役策略用到基本面字段时，宇宙里至少这么大比例的票要有**没过期**的本地事实

@@ -197,6 +197,26 @@ def _largest_feasible_scale(n0: float, s: float, limit: float,
     return hi if hi >= lo - tol else None
 
 
+def drift_weights(prev_w: np.ndarray, price_chg: np.ndarray) -> np.ndarray:
+    """
+    昨收的持仓权重经今日价格变动后的**调仓前权重**（外部审查 2026-10-18 F10）。
+
+    持仓按权重存，但一天过去价格动了、权益也变了：w_i' = w_i·(1+r_i) / (1 + Σ w_j·r_j)。
+    此前两套引擎都直接拿昨日权重与今日目标做差 —— 审查的 R6：50/50 两只票，A 涨 10%，
+    调仓前其实是 52.38 / 47.62，系统仍当 50 / 50，回到 50 / 50 的调仓成本记成 0。
+    两套引擎逐位一致证明的是"实现一致"，不是"账算对了"。
+
+    没有价格变动的名字（NaN，停牌 / 拿不到行情）按不变处理；权益归零附近不再归一化。
+    """
+    w = np.asarray(prev_w, dtype=float)
+    r = np.nan_to_num(np.asarray(price_chg, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    grown = w * (1.0 + r)
+    denom = 1.0 + float(np.sum(w * r))
+    if not np.isfinite(denom) or denom <= 1e-9:
+        return grown
+    return grown / denom
+
+
 def simulate_partial_fills(
     prev_w:      np.ndarray,       # (N,) 昨仓权重
     target_w:    np.ndarray,       # (N,) 目标持仓权重

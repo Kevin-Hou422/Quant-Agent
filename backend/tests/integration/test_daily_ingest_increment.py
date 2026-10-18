@@ -66,7 +66,7 @@ def _stub_loader(monkeypatch, panel: dict, score: float = 1.0):
     monkeypatch.setattr(reg, "load_registry_dataset", _load)
     monkeypatch.setattr(reg, "check_dataset_health",
                         lambda ds, min_score=0.0, warn_only=True:
-                        type("R", (), {"overall_score": score})())
+                        type("R", (), {"overall_score": score, "hard_failures": []})())
 
 
 def _freeze_today(monkeypatch, day: str):
@@ -192,7 +192,7 @@ class TestIncrementWindow:
         monkeypatch.setattr(reg, "load_registry_dataset", _load)
         monkeypatch.setattr(reg, "check_dataset_health",
                             lambda ds, min_score=0.0, warn_only=True:
-                            type("R", (), {"overall_score": 1.0})())
+                            type("R", (), {"overall_score": 1.0, "hard_failures": []})())
         _freeze_today(monkeypatch, str(real_close.index[-1].date()))
         ingest.ingest_incremental("px")
         expected = real_close.index[4].strftime("%Y-%m-%d")
@@ -212,7 +212,7 @@ class TestIncrementWindow:
                             _FakeDS(panel))
         monkeypatch.setattr(reg, "check_dataset_health",
                             lambda ds, min_score=0.0, warn_only=True:
-                            type("R", (), {"overall_score": 1.0})())
+                            type("R", (), {"overall_score": 1.0, "hard_failures": []})())
 
     def test_overlapping_bar_from_a_sloppy_provider_is_not_new(self, ingest,
                                                                monkeypatch):
@@ -285,7 +285,7 @@ class TestIncrementWindow:
         monkeypatch.setattr(reg, "load_registry_dataset", _load)
         monkeypatch.setattr(reg, "check_dataset_health",
                             lambda ds, min_score=0.0, warn_only=True:
-                            type("R", (), {"overall_score": 1.0})())
+                            type("R", (), {"overall_score": 1.0, "hard_failures": []})())
         ingest.ingest("px", "2024-01-02", "2024-01-10")
         assert seen["health_check"] is False, (
             "注册表加载时打开了自带的健康门 —— 拒绝原因会从'分数不足'变成'加载失败'")
@@ -454,7 +454,7 @@ class TestHealthGate:
 
         def _check(ds, min_score=0.0, warn_only=True):
             seen["warn_only"] = warn_only
-            return type("R", (), {"overall_score": 0.2})()
+            return type("R", (), {"overall_score": 0.2, "hard_failures": []})()
 
         monkeypatch.setattr(reg, "check_dataset_health", _check)
         res = ingest.ingest("px", "2024-01-02", "2024-01-10")
@@ -526,7 +526,7 @@ class TestDailyPipelineContract:
         monkeypatch.setattr(dtl.DailyTradingLoop, "__init__",
                             lambda self, *a, **k: None)
         monkeypatch.setattr(dtl.DailyTradingLoop, "run",
-                            lambda self, ds, forward_from=None: _Report())
+                            lambda self, ds, forward_from=None, now=None: _Report())
         monkeypatch.setattr(dtl.DailyTradingLoop, "run_portfolio",
                             lambda self, ds, **k: {"n_factors": 1, "days_processed": 1})
 

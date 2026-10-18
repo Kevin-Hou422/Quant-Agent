@@ -84,15 +84,18 @@ class DiscoveryEngine:
         self.seed = seed
 
     def run(self, dataset: WidePanel, store=None, save: bool = True,
-            auto_validate: bool = True) -> DiscoveryReport:
+            auto_validate: bool = True, dataset_key: Optional[str] = None) -> DiscoveryReport:
         """
         auto_validate : True（默认）时，对每个新候选自动跑验证门；通过者升 VALIDATED
                         并进入待批准队列——实现"除人工批准外全程无人值守"。
+        dataset_key   : 真实数据集名（冻结边界按它固定）。
         """
         from app.core.discovery.market_observer import MarketObserver
         from app.core.workflows.alpha_workflows import GenerationWorkflow
 
-        obs = MarketObserver().observe(dataset)
+        # 外部审查 2026-10-18 F03：观察引擎此前看**全量**数据再决定搜哪个家族 —— 之后 GP 再怎么
+        # 隐藏 Test，搜索方向已经被 Test 尾部的行情带过了。观察只看选择段。
+        obs = MarketObserver().observe(self._selection(dataset, dataset_key))
         families = obs.top_families(self.n_families)
         logger.info("[discovery] regime=%s → 探索家族=%s", obs.regime, families)
 
@@ -109,17 +112,12 @@ class DiscoveryEngine:
                     pop_size=self.pop_size, n_generations=self.n_generations,
                     n_optuna_trials=self.n_optuna_trials, oos_ratio=self.oos_ratio,
                     seed=self.seed,
-                ).run(hypothesis=fam, dataset=dataset)   # 家族名=观察引擎产出，非用户文本
+                ).run(hypothesis=fam, dataset=dataset,    # 家族名=观察引擎产出，非用户文本
+                      dataset_key=dataset_key)
             except Exception as exc:                     # 单家族失败不拖垮整轮
                 logger.warning("[discovery] 家族 '%s' GP 失败，跳过: %s", fam, exc)
                 continue
-
-            # S.3：把本轮 GP 试过的策略数累加进全局 trial 计数器（喂给验证门的 DSR 去膨胀）
-            try:
-                from app.db.trial_ledger import TrialLedger
-                TrialLedger().add(self.pop_size * self.n_generations + self.n_optuna_trials)
-            except Exception as exc:  # 计数失败不阻断发现
-                logger.debug("[discovery] trial 计数失败: %s", exc)
+            # S.3 的试验计数由 GP / Optuna 底层按实际评估数记（F05），这里不再按配置估算一次。
 
             dsl = (wf.best_dsl or "").strip()
             if not dsl or dsl in seen:                   # 本轮去重
@@ -134,7 +132,7 @@ class DiscoveryEngine:
             cand = DiscoveredCandidate(alpha_id=aid, family=fam, dsl=dsl, metrics=m)
             # 自动验证门：通过者升 VALIDATED → 进入待批准队列（无人值守到审批点为止）
             if auto_validate and save and aid is not None:
-                cand.validated, cand.gate = self._run_gate(store, aid, dsl, dataset)
+                cand.validated, cand.gate = self._run_gate(store, aid, dsl, dataset, dataset_key)
             candidates.append(cand)
 
         n_val = sum(1 for c in candidates if c.validated)
@@ -145,7 +143,19 @@ class DiscoveryEngine:
             candidates=candidates, observation=obs.to_dict(),
         )
 
-    def _run_gate(self, store, aid, dsl, dataset) -> "tuple[bool, Optional[dict]]":
+    @staticmethod
+    def _selection(dataset: WidePanel, dataset_key: Optional[str]) -> WidePanel:
+        from app.core.data_engine.data_partitioner import FrozenBoundaryError, split_from_settings
+        try:
+            return split_from_settings(dataset, dataset_key=dataset_key).selection
+        except FrozenBoundaryError:
+            raise
+        except ValueError as exc:
+            logger.warning("[discovery] 数据不足以三段切割，观察引擎看全量（本次没有冻结 Test 段）: %s", exc)
+            return dataset
+
+    def _run_gate(self, store, aid, dsl, dataset,
+                  dataset_key: Optional[str] = None) -> "tuple[bool, Optional[dict]]":
         """
         因子入池门：**默认低门槛泄漏过滤**（PM.7 修正错配——严门在策略层 StrategyGate，不加单因子）。
         通过则 CANDIDATE→VALIDATED（= 进池）。配置 `factor_gate_mode="strict"` 可切回旧的因子级严门。
@@ -162,7 +172,7 @@ class DiscoveryEngine:
         try:
             if mode == "strict":
                 from app.core.lifecycle.validation_gate import ValidationGate
-                res = ValidationGate().evaluate(dsl, dataset)
+                res = ValidationGate().evaluate(dsl, dataset, dataset_key=dataset_key or "")
                 passed, detail = res.passed, res.to_dict()
             else:
                 from app.core.lifecycle.leak_filter import leak_filter

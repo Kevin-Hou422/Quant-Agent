@@ -166,6 +166,8 @@ class Settings(BaseSettings):
     #: 参考价（数据集收盘）与券商现价的最大偏离。超了说明数据陈旧或复权口径
     #: 错位 —— 按错的价格算股数是 fat-finger 的典型来源，拒单。
     exec_max_price_deviation: float = 0.15
+    # 外部审查 2026-10-18 F09：独立报价超过这么多个自然日没更新 → 当作没有报价（新开仓不放行）
+    exec_max_quote_age_days: int = 4
     # 资金口径（§J 单一来源）：`paper_aum` = 账户里**划给本系统**的资金。PM 按它算容量，
     # 执行层按"资金切片"算股数 / 风控 / 日亏熔断 / 净值 —— 切片权益 = paper_aum + 账户自建立
     # 基准以来的盈亏。账户里多出来的钱闲置不动；账户建立基准时的资产 < paper_aum → 拒绝交易。
@@ -193,8 +195,10 @@ class Settings(BaseSettings):
     #: 冻结 Test 段的使用次数预算。1 = 字面意义的一次性；超了不阻断，但
     #: `over_budget=True` 会跟着数字一起返回（见 HoldoutLedger）。
     s_holdout_budget:      int   = 1
-    #: GP 适应度口径：``holdout`` = 单段 Validate；``purged_cv`` = IS 内部
-    #: purged K 折交叉验证（S.1 的目标口径，方差更低、不依赖"最后一段是什么行情"）。
+    #: GP 适应度口径：``holdout`` = 单段 Validate；``purged_cv`` = 把**已算好的** IS 收益按 purged K 折
+    #: 切块取夏普均值（方差更低、不依赖"最后一段是什么行情"）。注意（外部审查 2026-10-18 F14）：
+    #: 它不按折重新拟合，是 IS 内的**分块稳健性度量**，不是嵌套样本外验证；固定 embargo 也不是对任意
+    #: 窗口 / 持有期都够的保证。真正的样本外只有冻结 Test 段与前向数据。
     s_fitness_mode:        str   = "purged_cv"   # holdout | purged_cv
     s_cv_folds:            int   = 5
     #: 策略门是否用 CPCV（组合式 purged CV）算 PBO。False = 用 CSCV（无 purge）。

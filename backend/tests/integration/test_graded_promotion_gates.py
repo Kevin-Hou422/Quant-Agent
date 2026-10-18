@@ -108,6 +108,9 @@ def test_paper_grade_is_wired_into_run_portfolio(tmp_path):
           "returns": close.pct_change().fillna(0.0)}
     out = DailyTradingLoop(store=store, broker=broker).run_portfolio(ds, aum=10_000.0)
     assert (out["strategy_verdict"] or {}).get("paper_grade") in ("A", "B", "C")
+    # 外部审查 2026-10-18 F03：每日门看的是整个 PIT 窗口，结论必须带着这个口径
+    assert out["strategy_verdict"]["evidence_scope"] == "full_pit_window_incl_holdout_and_forward"
+    assert out["strategy_verdict"]["holdout_clean"] is False
 
 
 def test_activate_records_tr4_gate_in_lineage(test_client, fresh_db):

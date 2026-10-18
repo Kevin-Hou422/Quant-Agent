@@ -15,12 +15,26 @@ import pytest
 
 from app.core.execution.broker_gateway import OrderRequest
 from app.core.execution.order_builder import build_rebalance_orders
-from app.core.execution.pretrade_gate import GateContext, OpenOrder, PreTradeLimits, check
+from app.core.execution.pretrade_gate import GateContext, OpenOrder, PreTradeLimits
+from app.core.execution.pretrade_gate import check as _check
 from app.db.execution_store import ST_PENDING, ST_SUBMITTED
 from tests.unit.execution.test_order_manager import (
     D1, D2, PX1, _cycle, _d1_orders, _env, _placed,
 )
 
+
+
+def check(orders, ctx, limits):
+    """
+    本文件测的是报价以外的下单门规则。外部审查 2026-10-18 F09（R5）之后，没有独立报价的新开仓
+    一律被拦 —— 这里给每张单补一个与参考价一致的报价（用例自己设了 quotes 的不动）。
+    报价本身的规则见 test_claim_lock_quotes_1018.py。
+    """
+    import dataclasses
+    from app.core.execution.broker_gateway import Quote
+    if ctx.quotes is None:
+        ctx = dataclasses.replace(ctx, quotes={o.ticker: Quote(float(o.ref_price), None) for o in orders})
+    return _check(orders, ctx, limits)
 
 def _no_wait(e):
     e.om._sleep = lambda s: None

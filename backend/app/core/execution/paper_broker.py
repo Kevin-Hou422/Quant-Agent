@@ -145,7 +145,10 @@ class PaperBroker:
         # 于是它的减仓/平仓会以"未成交"的身份出现在账本里（用户决策 #2）。
         cap_trade_w = np.where(stale, 0.0, cap_trade_w)
 
-        fr = simulate_partial_fills(prev_w, tgt, cap_trade_w, max_net=self.max_net)
+        # F10：从**漂移后的调仓前权重**出发撮合，而不是昨收的权重（价格动过、权益变过）
+        from app.core.backtest_engine.transaction_cost import drift_weights
+        pre_w = drift_weights(prev_w, price_chg)
+        fr = simulate_partial_fills(pre_w, tgt, cap_trade_w, max_net=self.max_net)
         filled, delta = fr.filled_w, fr.filled_d
 
         # 4) 调仓成本 —— 基于**实际成交量**，不是想要的量

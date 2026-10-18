@@ -122,7 +122,7 @@ def test_validate_endpoint_promotes_on_pass(test_client, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         "app.core.lifecycle.validation_gate.ValidationGate.evaluate",
-        lambda self, dsl, data, n_trials=1: ValidationResult(
+        lambda self, dsl, data, n_trials=None, dataset_key="", report_test=False: ValidationResult(
             passed=True, dsl=dsl, n_folds=5, min_oos_sharpe=0.5, deflated_sharpe=0.95),
     )
     app.dependency_overrides[get_store] = lambda: store
@@ -151,7 +151,7 @@ def test_validate_endpoint_stays_candidate_on_fail(test_client, tmp_path, monkey
         "app.core.data_engine.dataset_registry.load_registry_dataset", lambda *a, **k: _DS())
     monkeypatch.setattr(
         "app.core.lifecycle.validation_gate.ValidationGate.evaluate",
-        lambda self, dsl, data, n_trials=1: ValidationResult(
+        lambda self, dsl, data, n_trials=None, dataset_key="", report_test=False: ValidationResult(
             passed=False, dsl=dsl, reasons=["DSR 0.4 ≤ 阈值 0.9"]),
     )
     app.dependency_overrides[get_store] = lambda: store

@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import pandas as pd
@@ -64,6 +65,8 @@ class PreTradeLimits:
     max_net:               Optional[float] = None
     #: 单行业上限（占 max_gross 的比例，与组合层 RiskLimits 同口径）。None = 不检查。
     max_sector_weight:     Optional[float] = None
+    #: 独立报价最多这么多个自然日没更新（外部审查 2026-10-18 F09）
+    max_quote_age_days:    int = 4
 
     def __post_init__(self):
         for k in ("max_name_weight", "max_gross", "max_participation_pct",
@@ -93,6 +96,7 @@ class PreTradeLimits:
             allow_short=bool(settings.trading_allow_short),
             max_net=float(settings.risk_max_net),
             max_sector_weight=float(settings.risk_max_sector_weight),
+            max_quote_age_days=int(getattr(settings, "exec_max_quote_age_days", 4)),
         )
 
 
@@ -116,6 +120,10 @@ class GateContext:
     kill_switch:   bool = False
     open_orders:   Sequence[OpenOrder] = ()  # 在途挂单 —— 计入最坏情况包络（审计 F05）
     sectors:       Mapping[str, object] = field(default_factory=dict)   # 标的 → 行业
+    #: 独立报价 {标的: Quote}（外部审查 2026-10-18 F09）。不给 / {} / 缺某只 → 这只票没有独立报价 →
+    #: 持仓里也没有券商价的（新开仓）不放行。没有"不传就跳过检查"的路径（R5 就是那条路径）。
+    quotes:        Optional[Mapping[str, object]] = None
+    now:           Optional[datetime] = None
 
 
 @dataclass
@@ -258,6 +266,20 @@ def check(orders: List[PlannedOrder], ctx: GateContext, limits: PreTradeLimits) 
         bp = px_book.get(o.ticker)
         if bp is not None and abs(ref - bp) / bp > limits.max_price_deviation:
             dec.rejected.append((o, "price_mismatch")); continue
+        if o.purpose != PURPOSE_FLATTEN:
+            # F09：参考价必须与独立报价对得上；持仓里没有价的新开仓，没有独立报价就不放行
+            q = (ctx.quotes or {}).get(o.ticker)
+            qp = _finite(getattr(q, "price", None)) if q is not None else None
+            if qp is None or qp <= 0:
+                if bp is None:
+                    dec.rejected.append((o, "no_independent_quote")); continue
+            else:
+                asof = getattr(q, "asof", None)
+                if (ctx.now is not None and asof is not None
+                        and (ctx.now.date() - asof.date()).days > limits.max_quote_age_days):
+                    dec.rejected.append((o, "stale_quote")); continue
+                if abs(ref - qp) / qp > limits.max_price_deviation:
+                    dec.rejected.append((o, "quote_mismatch")); continue
 
         before_worst = env.worst(o.ticker)
         before_net = env.net_bounds()

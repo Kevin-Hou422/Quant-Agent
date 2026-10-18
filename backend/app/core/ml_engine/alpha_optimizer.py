@@ -297,6 +297,10 @@ class AlphaOptimizer:
             study.best_value, best_params,
         )
 
+        # 外部审查 2026-10-18 F05：按**实际跑完**的 trial 数记进全局试验台账（超时会少于 n_trials）
+        from app.db.trial_ledger import record_trials
+        self.trials_recorded = record_trials(len(study.trials), source="optuna")
+
         # 构造最优 SimulationConfig
         best_config = self._params_to_config(best_params)
 

@@ -53,6 +53,9 @@ class ValidationResult:
     deflated_sharpe: float = 0.0
     t_stat:          float = 0.0        # 夏普 t 统计量（Harvey-Liu-Zhu 门槛用）
     n_trials:        int = 1            # DSR 去膨胀用的累计 trial 数（S.3：全局）
+    #: n_trials 从哪来：explicit（调用方给的）/ global（全局台账）/ unavailable（台账读不到 → 不通过）
+    #: / default（关闭了全局计数，按 1 算）。
+    n_trials_source: str = "explicit"
     #: 三段切割的口径与 Test 段使用记账（S.2）。None = 本次**没有**三段
     #: （数据太短或被显式关闭）→ 判定依据里含有本该冻结的数据。
     partition:       Optional[dict] = None
@@ -69,6 +72,7 @@ class ValidationResult:
             "deflated_sharpe": round(self.deflated_sharpe, 4),
             "t_stat": round(self.t_stat, 4),
             "n_trials": self.n_trials,
+            "n_trials_source": self.n_trials_source,
             "partition": self.partition,
             "held_out_test": self.held_out_test,
         }
@@ -133,59 +137,70 @@ class ValidationGate:
         任一环节抛错 → 判为**不通过**（fail-closed，不静默放行——见 DEV_LESSONS.md §B）。
         """
         # S.3：DSR 的 n_trials 用全局累计，除非调用方显式指定
+        source = "explicit"
         if n_trials is None:
             if self.use_global_trials:
                 try:
                     from app.db.trial_ledger import TrialLedger
-                    n_trials = max(1, TrialLedger().total())
+                    n_trials, source = max(1, TrialLedger().total()), "global"
                 except Exception as exc:
                     # n_trials 是 Deflated Sharpe 的多重检验校正项。退回 1 等于宣称
                     # "只试过一个策略" → DSR 被高估 → **门变松**。读不到台账时门应更
-                    # 保守而非更宽松，至少必须留痕。
+                    # 保守而非更宽松（外部审查 2026-10-18 F05：证据标成不完整，门不通过 ——
+                    # 与 StrategyGate 的 N-2 同一口径）。
                     logger.error("[validation_gate] 试验台账不可读，n_trials 退回 1 —— "
-                                 "本次 DSR **未做多重检验校正，偏乐观**: %s", exc)
-                    n_trials = 1
+                                 "本次 DSR **未做多重检验校正，偏乐观** → 判不通过: %s", exc)
+                    n_trials, source = 1, "unavailable"
             else:
-                n_trials = 1
+                n_trials, source = 1, "default"
 
         reasons: List[str] = []
-        res = ValidationResult(passed=False, dsl=dsl, n_trials=n_trials)
+        if source == "unavailable":
+            reasons.append("全局试验台账不可读：DSR 的多重检验校正缺失，证据不完整")
+        res = ValidationResult(passed=False, dsl=dsl, n_trials=n_trials, n_trials_source=source)
 
         # ---- 0. 三段切割：门只看 selection 段（S.2）----
-        gate_panel, split = self._selection_panel(dataset)
+        from app.core.data_engine.data_partitioner import FrozenBoundaryError
+        try:
+            gate_panel, split = self._selection_panel(dataset, dataset_key)
+        except FrozenBoundaryError as exc:          # 有冻结边界却切不出选择段 → 不能退回全量
+            gate_panel, split = None, None
+            reasons.append(f"冻结边界: {exc}")
+            logger.warning("[validation_gate] %s → 判不通过", exc)
         if split is not None:
             res.partition = split.to_dict()
 
-        # ---- 1. WalkForward 全折 OOS 为正 ----
-        try:
-            wf = self._walk_forward(dsl, gate_panel)
-            res.n_folds = wf.n_folds
-            res.min_oos_sharpe = float(wf.min_oos_sharpe)
-            res.mean_oos_sharpe = float(wf.mean_oos_sharpe)
-            res.pct_folds_positive = float(wf.pct_positive)
-            if wf.n_folds < self.n_splits:
-                reasons.append(f"WalkForward 折数不足（{wf.n_folds} < {self.n_splits}）")
-            if wf.min_oos_sharpe <= 0.0:
-                reasons.append(
-                    f"存在 OOS Sharpe ≤ 0 的折（最差={wf.min_oos_sharpe:.3f}，"
-                    f"正收益折比={wf.pct_positive*100:.0f}%）"
-                )
-        except Exception as exc:  # fail-closed
-            logger.warning("[validation_gate] WalkForward 失败 → 判不通过: %s", exc)
-            reasons.append(f"WalkForward 执行失败: {exc}")
+        if gate_panel is not None:
+            # ---- 1. WalkForward 全折 OOS 为正 ----
+            try:
+                wf = self._walk_forward(dsl, gate_panel)
+                res.n_folds = wf.n_folds
+                res.min_oos_sharpe = float(wf.min_oos_sharpe)
+                res.mean_oos_sharpe = float(wf.mean_oos_sharpe)
+                res.pct_folds_positive = float(wf.pct_positive)
+                if wf.n_folds < self.n_splits:
+                    reasons.append(f"WalkForward 折数不足（{wf.n_folds} < {self.n_splits}）")
+                if wf.min_oos_sharpe <= 0.0:
+                    reasons.append(
+                        f"存在 OOS Sharpe ≤ 0 的折（最差={wf.min_oos_sharpe:.3f}，"
+                        f"正收益折比={wf.pct_positive*100:.0f}%）"
+                    )
+            except Exception as exc:  # fail-closed
+                logger.warning("[validation_gate] WalkForward 失败 → 判不通过: %s", exc)
+                reasons.append(f"WalkForward 执行失败: {exc}")
 
-        # ---- 2. Deflated Sharpe > 阈值（用全局 trial 数去膨胀）+ 夏普 t ≥ 门槛 ----
-        try:
-            dsr, tstat = self._deflated_sharpe_and_tstat(dsl, gate_panel, n_trials)
-            res.deflated_sharpe = float(dsr)
-            res.t_stat = float(tstat)
-            if dsr <= self.dsr_threshold:
-                reasons.append(f"DSR {dsr:.3f} ≤ 阈值 {self.dsr_threshold}（n_trials={n_trials}）")
-            if tstat < self.min_tstat:
-                reasons.append(f"夏普 t={tstat:.2f} < 门槛 {self.min_tstat}（Harvey-Liu-Zhu）")
-        except Exception as exc:  # fail-closed
-            logger.warning("[validation_gate] DSR/t 计算失败 → 判不通过: %s", exc)
-            reasons.append(f"DSR/t 计算失败: {exc}")
+            # ---- 2. Deflated Sharpe > 阈值（用全局 trial 数去膨胀）+ 夏普 t ≥ 门槛 ----
+            try:
+                dsr, tstat = self._deflated_sharpe_and_tstat(dsl, gate_panel, n_trials)
+                res.deflated_sharpe = float(dsr)
+                res.t_stat = float(tstat)
+                if dsr <= self.dsr_threshold:
+                    reasons.append(f"DSR {dsr:.3f} ≤ 阈值 {self.dsr_threshold}（n_trials={n_trials}）")
+                if tstat < self.min_tstat:
+                    reasons.append(f"夏普 t={tstat:.2f} < 门槛 {self.min_tstat}（Harvey-Liu-Zhu）")
+            except Exception as exc:  # fail-closed
+                logger.warning("[validation_gate] DSR/t 计算失败 → 判不通过: %s", exc)
+                reasons.append(f"DSR/t 计算失败: {exc}")
 
         res.reasons = reasons
         res.passed = len(reasons) == 0
@@ -206,7 +221,7 @@ class ValidationGate:
     # 内部：复用现有引擎
     # ------------------------------------------------------------------
 
-    def _selection_panel(self, dataset: WidePanel):
+    def _selection_panel(self, dataset: WidePanel, dataset_key: str = ""):
         """
         返回 (门可以看的面板, ThreeWaySplit 或 None)。
 
@@ -217,10 +232,12 @@ class ValidationGate:
             logger.warning("[validation_gate] 三段切割被显式关闭 → 门将看到**全部**"
                            "数据（含本该冻结的 Test 段），结论按『样本内』解读。")
             return dataset, None
+        from app.core.data_engine.data_partitioner import FrozenBoundaryError, split_from_settings
         try:
-            from app.core.data_engine.data_partitioner import split_from_settings
-            split = split_from_settings(dataset, embargo_days=self.embargo_days)
+            split = split_from_settings(dataset, dataset_key=dataset_key, embargo_days=self.embargo_days)
             return split.selection, split
+        except FrozenBoundaryError:
+            raise
         except Exception as exc:
             logger.warning(
                 "[validation_gate] 三段切割失败（%s）→ 退回全量面板。"

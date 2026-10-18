@@ -16,8 +16,14 @@ panels.py — 基本面事实 → 日频稀疏字段面板（Phase 10.1 / 10.2 /
     roe                 净利润(TTM) / 股东权益（权益 ≤ 0 → NaN）
     gross_margin        毛利(TTM) / 收入(TTM)；没直接报毛利的用 收入 − 营业成本
     asset_growth        总资产 / 一年前总资产 − 1
-    sue                 标准化盈利超预期（见 pit.sue）
+    sue                 **申报后可得的**标准化盈利变化（见 pit.sue）：10-Q / 10-K 披露之后才有数。
+                        新一季的财报公告（8-K 2.02）已出、对应申报还没到的那几天置 NaN ——
+                        否则 `days_since_earnings` 已按新公告归零，配上的却是上一季的 SUE
+                        （外部审查 2026-10-18 F13）。它不是"公告当天的业绩超预期"。
     days_since_earnings 距最近一次财报公告（8-K 2.02）的交易日数
+
+逐事实过期（F13）：除了"最近一次披露超过 MAX_STALE_DAYS"，每个字段还按**它自己那条事实的期末日**
+过期（MAX_PERIOD_AGE_DAYS）—— 只更新了股本的披露不能让一年前的利润数字继续算"新鲜"。
 
 市值与拆股
 ----------
@@ -49,14 +55,20 @@ VALUATION_FIELDS = ("market_cap", "earnings_yield", "book_to_price")
 
 #: 最近一次披露超过这么多天 → 字段置 NaN（季报间隔约 91 天，容许错过一期）
 MAX_STALE_DAYS = 200
+#: 某个字段所用事实的**期末日**距今超过这么多天 → 该字段置 NaN（季末 → 申报最多约 60 天）
+MAX_PERIOD_AGE_DAYS = MAX_STALE_DAYS + 60
 #: 最早披露日比面板起点晚这么多天以上 → 记为"历史短"（新上市 / 换了申报主体）
 SHORT_HISTORY_DAYS = 365
 #: 每个披露日回看多久的事实（按期末日）。SUE 最吃历史：8 个同比差 + 1 年基期 ≈ 3.3 年
 METRIC_LOOKBACK = pd.Timedelta(days=int(365 * 4.5))
 METRIC_COLUMNS = ["filed", "ni_ttm", "rev_ttm", "gp_ttm", "equity", "assets", "assets_prev",
-                  "shares", "shares_basis", "sue"]
+                  "shares", "shares_basis", "sue",
+                  # F13：各事实的期末日（逐事实过期）、SUE 对应的季末、股本来源
+                  "ni_end", "rev_end", "gp_end", "eq_end", "at_end", "sue_qend", "shares_source"]
+#: 股本来源（置信度从高到低）：封面页实数 / 资产负债表 / 稀释加权平均（不是期末股本，只是兜底）
+SHARES_SOURCES = {2: "cover", 1: "balance_sheet", 0: "diluted_weighted_average"}
 #: metric_events 的算法版本。改了计算口径就 +1 —— service 层的缓存据此失效。
-METRICS_VERSION = 2
+METRICS_VERSION = 3
 #: 估值合理性护栏：超出即视为股本口径错误（多类别股等），置 NaN 并记入报告
 MAX_ABS_EARNINGS_YIELD, MAX_BOOK_TO_PRICE = 2.0, 20.0
 
@@ -72,12 +84,17 @@ class FundamentalsReport:
     short_history:   Dict[str, str] = field(default_factory=dict)      # ticker → 最早披露日
     splits:          Dict[str, Dict[str, float]] = field(default_factory=dict)
     sanity_rejected: Dict[str, int] = field(default_factory=dict)      # ticker → 被置 NaN 的天数
+    #: 末日市值用的股本来源（F13）：不是 cover 的都比期末实数弱，跨公司比较时要知道
+    shares_source:   Dict[str, str] = field(default_factory=dict)      # ticker → cover / balance_sheet / …
+    #: 新公告已出、申报未到而被置空的 SUE 天数（F13）
+    sue_pending:     Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {"coverage": {k: round(v, 4) for k, v in self.coverage.items()},
                 "no_facts": list(self.no_facts), "stale": dict(self.stale),
                 "short_history": dict(self.short_history), "splits": self.splits,
-                "sanity_rejected": dict(self.sanity_rejected)}
+                "sanity_rejected": dict(self.sanity_rejected),
+                "shares_source": dict(self.shares_source), "sue_pending": dict(self.sue_pending)}
 
 
 def _split_factor(splits: Optional[pd.Series], basis: np.ndarray,
@@ -114,7 +131,7 @@ def metric_events(facts: pd.DataFrame, since: Optional[pd.Timestamp] = None) -> 
             if cost is not None and cost[1] == rev[1]:
                 gp = (rev[0] - cost[0], rev[1])
         eq, at = pit.latest_instant(vis, "equity"), pit.latest_instant(vis, "assets")
-        shares, basis = _shares(vis)
+        shares, basis, source = _shares(vis)
         s = pit.sue(vis)
         rows.append({
             "filed": f,
@@ -127,10 +144,15 @@ def metric_events(facts: pd.DataFrame, since: Optional[pd.Timestamp] = None) -> 
                 pit.instant_near(vis, "assets", at["end"] - pit.YEAR)),
             "shares": shares, "shares_basis": basis,
             "sue": np.nan if s is None else s[0],
+            "ni_end": None if ni is None else ni[1], "rev_end": None if rev is None else rev[1],
+            "gp_end": None if gp is None else gp[1],
+            "eq_end": None if eq is None else eq["end"], "at_end": None if at is None else at["end"],
+            "sue_qend": None if s is None else s[1], "shares_source": source,
         })
     out = pd.DataFrame(rows, columns=METRIC_COLUMNS)
-    for c in ("filed", "shares_basis"):
+    for c in ("filed", "shares_basis", "ni_end", "rev_end", "gp_end", "eq_end", "at_end", "sue_qend"):
         out[c] = pd.to_datetime(out[c])
+    out["shares_source"] = pd.to_numeric(out["shares_source"], errors="coerce")
     return out
 
 
@@ -140,7 +162,8 @@ def _or_nan(v: Optional[float]) -> float:
 
 def _shares(vis: pd.DataFrame):
     """
-    (股本, 口径日)。候选里取**期末日最新**的；并列时 封面页 > 资产负债表 > 稀释加权平均。
+    (股本, 口径日, 来源)。候选里取**期末日最新**的；并列时 封面页 > 资产负债表 > 稀释加权平均。
+    来源见 SHARES_SOURCES —— 稀释加权平均不是期末股本（期内回购 / 增发会让它偏离），只是兜底。
     口径日：封面页股本是"截至某日"的实数 → 用它自己的日期；另外两种在后续文件里会被按
     披露时的拆股口径重述 → 用披露日。
     """
@@ -157,9 +180,9 @@ def _shares(vis: pd.DataFrame):
         d = dil.sort_values(["end", "filed"]).iloc[-1]
         cands.append((d["end"], 0, float(d["val"]), d["filed"]))
     if not cands:
-        return np.nan, pd.NaT
-    _, _, val, basis = max(cands, key=lambda c: (c[0], c[1]))
-    return (val, basis) if val > 0 else (np.nan, pd.NaT)
+        return np.nan, pd.NaT, np.nan
+    _, src, val, basis = max(cands, key=lambda c: (c[0], c[1]))
+    return (val, basis, src) if val > 0 else (np.nan, pd.NaT, np.nan)
 
 
 def _step_frame(events: pd.DataFrame, index: pd.DatetimeIndex) -> pd.DataFrame:
@@ -174,6 +197,30 @@ def _step_frame(events: pd.DataFrame, index: pd.DatetimeIndex) -> pd.DataFrame:
     stale = (index.to_series().values - out["filed"].values) > np.timedelta64(MAX_STALE_DAYS, "D")
     out.loc[stale | out["filed"].isna().values, :] = np.nan
     return out.drop(columns=["filed"])
+
+
+def _age_mask(index: pd.DatetimeIndex, ends: pd.Series) -> np.ndarray:
+    """该字段所用事实的期末日距今超过 MAX_PERIOD_AGE_DAYS（或期末日未知）→ True。"""
+    e = pd.to_datetime(ends).values
+    age = index.values - e
+    return pd.isna(e) | (age > np.timedelta64(MAX_PERIOD_AGE_DAYS, "D"))
+
+
+def sue_pending_mask(index: pd.DatetimeIndex, sue_since: pd.Series,
+                     events: Optional[pd.DataFrame]) -> np.ndarray:
+    """
+    True = 当天有一条**比当前 SUE 更新**的财报公告（8-K 2.02）已经可见，而那一季的申报还没到。
+    sue_since：当前 SUE 那一季第一次可见的披露日（逐日阶梯）。两边都按"披露日之后第一个交易日"生效。
+    """
+    out = np.zeros(len(index), dtype=bool)
+    if events is None or events.empty or len(index) == 0:
+        return out
+    days = np.sort(pd.to_datetime(events["filing_date"]).dropna().values)
+    # 当天可见的最近一条公告：公告日严格早于当天
+    pos = np.searchsorted(days, index.values, side="left") - 1
+    latest = np.where(pos >= 0, days[np.clip(pos, 0, None)], np.datetime64("NaT"))
+    since = pd.to_datetime(sue_since).values
+    return ~pd.isna(latest) & ~pd.isna(since) & (latest > since)
 
 
 def earnings_days(events: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
@@ -236,6 +283,9 @@ def build_panels(
             rep.no_facts.append(tk)
             continue
         mev = metrics[tk] if metrics and tk in metrics else metric_events(fx, since=since)
+        # SUE 那一季第一次可见的披露日（之后的披露没换季 → 沿用）—— 用来判断有没有更新的公告
+        mev = mev.assign(sue_since=mev.groupby("sue_qend")["filed"].transform("min")
+                         if len(mev) else pd.Series(dtype="datetime64[ns]"))
         m = _step_frame(mev, index)
         last_filed = pd.Timestamp(fx["filed"].max())
         if len(index) and (index[-1] - last_filed).days > MAX_STALE_DAYS:
@@ -243,16 +293,25 @@ def build_panels(
         first_filed = pd.Timestamp(fx["filed"].min())
         if len(index) and (first_filed - index[0]).days > SHORT_HISTORY_DAYS:
             rep.short_history[tk] = str(first_filed.date())
-        eq = m["equity"].to_numpy(dtype=float)
-        ni = m["ni_ttm"].to_numpy(dtype=float)
+        # F13 逐事实过期：每个数按它自己那条事实的期末日判断新不新鲜
+        eq = np.where(_age_mask(index, m["eq_end"]), np.nan, m["equity"].to_numpy(dtype=float))
+        ni = np.where(_age_mask(index, m["ni_end"]), np.nan, m["ni_ttm"].to_numpy(dtype=float))
+        rev = np.where(_age_mask(index, m["rev_end"]), np.nan, m["rev_ttm"].to_numpy(dtype=float))
+        gp = np.where(_age_mask(index, m["gp_end"]), np.nan, m["gp_ttm"].to_numpy(dtype=float))
+        at = np.where(_age_mask(index, m["at_end"]), np.nan, m["assets"].to_numpy(dtype=float))
         with np.errstate(divide="ignore", invalid="ignore"):
             panels["roe"][tk] = np.where(eq > 0, ni / eq, np.nan)
-            rev = m["rev_ttm"].to_numpy(dtype=float)
-            panels["gross_margin"][tk] = np.where(rev > 0, m["gp_ttm"].to_numpy(dtype=float) / rev, np.nan)
+            panels["gross_margin"][tk] = np.where(rev > 0, gp / rev, np.nan)
             prev = m["assets_prev"].to_numpy(dtype=float)
-            panels["asset_growth"][tk] = np.where(prev > 0, m["assets"].to_numpy(dtype=float) / prev - 1.0,
-                                                  np.nan)
-        panels["sue"][tk] = m["sue"].to_numpy(dtype=float)
+            panels["asset_growth"][tk] = np.where(prev > 0, at / prev - 1.0, np.nan)
+        sue = np.where(_age_mask(index, m["sue_qend"]), np.nan, m["sue"].to_numpy(dtype=float))
+        pending = sue_pending_mask(index, m["sue_since"], ev)
+        if (pending & np.isfinite(sue)).any():
+            rep.sue_pending[tk] = int((pending & np.isfinite(sue)).sum())
+        panels["sue"][tk] = np.where(pending, np.nan, sue)
+        src = m["shares_source"].iloc[-1] if len(m) else np.nan
+        if pd.notna(src):
+            rep.shares_source[tk] = SHARES_SOURCES.get(int(src), "unknown")
 
         if raw_close is None or tk not in raw_close:
             continue

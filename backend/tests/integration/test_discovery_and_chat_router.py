@@ -8,9 +8,10 @@ discovery/discovery_engine.py + api/chat_router.py —— 定钉测试（变异�
 `DiscoveryEngine` 是 Phase 9「自主发现」的编排器：观察市场 → GP → 验证门 →
 写成 CANDIDATE/VALIDATED。它的三处存活项都在**门与计数**上：
 
-  - `TrialLedger().add(pop_size * n_generations + n_optuna_trials)` 的 `*` 与 `+`
-    —— 这个数直接喂给验证门的 DSR 去做多重检验膨胀修正。算少了，
-       DSR 就偏松，过拟合的候选更容易通过；算多了则反过来。
+  - （已移除）`TrialLedger().add(pop_size * n_generations + n_optuna_trials)`
+    —— 外部审查 2026-10-18 F05：按配置估算的数不等于实际试过的数（工作流会放大种群），
+       而且只有发现这一个入口在记。现在由 GP / Optuna 底层按实际评估数记，
+       见 tests/integration/test_research_isolation_1018.py。
   - `if auto_validate and save and aid is not None:` 的 `and`
     —— 放宽成 `or` 会在没存库（aid 为 None）时也去跑门并写状态
   - `return False, {...}` 里的两个 `False`
@@ -37,20 +38,10 @@ import pytest
 
 class TestTrialCounting:
 
-    def test_trial_count_is_pop_times_generations_plus_optuna(self):
-        """
-        `pop_size * n_generations + n_optuna_trials` —— 这个数是**多重检验的
-        试验次数**，喂给验证门的 DSR 做膨胀修正。
-        `*`→`/` 会让计数塌成个位数，DSR 几乎不打折，过拟合候选轻松过门；
-        `+`→`-` 会让它变负，修正方向反过来。
-
-        这里不打桩公式、而是核对源码里的表达式形状 —— 因为真正跑一轮 GP
-        太慢，而这个乘加式本身就是契约。
-        """
+    def test_discovery_no_longer_estimates_trials_itself(self):
+        """底层已按实际评估数记账；编排层再按配置估算一次就是重复计数。"""
         from app.core.discovery import discovery_engine as de
-        src = inspect.getsource(de.DiscoveryEngine.run)
-        assert "self.pop_size * self.n_generations + self.n_optuna_trials" in src, (
-            "trial 计数表达式变了 —— 它是验证门 DSR 多重检验修正的唯一输入")
+        assert "TrialLedger" not in inspect.getsource(de.DiscoveryEngine.run)
 
     def test_default_gp_parameters_are_pinned(self):
         """
@@ -65,12 +56,6 @@ class TestTrialCounting:
         assert p["n_optuna_trials"].default == 5
         assert p["oos_ratio"].default == 0.30
         assert p["seed"].default == 42, "随机种子默认值变了 —— 复现性会断"
-
-    def test_trial_count_for_the_defaults(self):
-        """把默认参数下的实际数字钉住：12×4+5 = 53。"""
-        from app.core.discovery.discovery_engine import DiscoveryEngine
-        e = DiscoveryEngine()
-        assert e.pop_size * e.n_generations + e.n_optuna_trials == 53
 
 
 # ===========================================================================

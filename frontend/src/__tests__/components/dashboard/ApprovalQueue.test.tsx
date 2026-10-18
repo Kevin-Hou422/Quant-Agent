@@ -79,6 +79,27 @@ describe('ApprovalQueue — fundamental field annotations', () => {
     expect(api.apiFetchPending).toHaveBeenCalledTimes(3)              // 首次 + 每次决定后刷新
   })
 
+  it('cancelling the reason prompt does not reject (外部审查 2026-10-18 F14)', async () => {
+    api.apiFetchPending.mockResolvedValue({ data: [FUND, PRICE] })
+    vi.spyOn(window, 'prompt').mockReturnValue(null)
+    render(<ApprovalQueue />)
+    await screen.findByTestId('pending-sparse-11')
+    fireEvent.click(screen.getAllByText('拒绝')[0])
+    await new Promise(r => setTimeout(r, 20))
+    expect(api.apiRejectAlpha).not.toHaveBeenCalled()
+    expect(api.apiFetchPending).toHaveBeenCalledTimes(1)
+  })
+
+  it('an empty reason is still a reject (only cancel means no)', async () => {
+    api.apiFetchPending.mockResolvedValue({ data: [FUND] })
+    api.apiRejectAlpha.mockResolvedValue({ data: {} })
+    vi.spyOn(window, 'prompt').mockReturnValue('')
+    render(<ApprovalQueue />)
+    await screen.findByTestId('pending-sparse-11')
+    fireEvent.click(screen.getByText('拒绝'))
+    await waitFor(() => expect(api.apiRejectAlpha).toHaveBeenCalledWith(11, ''))
+  })
+
   it('shows the fields even when the rule is missing', async () => {
     api.apiFetchPending.mockResolvedValue({ data: [{ ...FUND, visibility_rule: null }] })
     render(<ApprovalQueue />)

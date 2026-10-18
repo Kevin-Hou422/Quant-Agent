@@ -117,9 +117,8 @@ class TestForwardFlag:
 
     def test_forward_flag_is_monotonic(self, store):
         """
-        `if is_forward: existing.is_forward = True` —— 前向标记**只升不降**。
-        把赋值改成 False 后，任何一次回放重跑都会把已积累的前向证据抹掉，
-        因子永远攒不够 60 天前向观测。
+        前向标记**只升不降**；外部审查 2026-10-18 F06（R12）之后，**数值也不再被覆盖** ——
+        此前"数值本身应被覆盖为最新"，于是回放能把前向 0.03 改成 0.02 而标记仍是前向。
         """
         aid = _save(store)
         store.record_ic(aid, "2024-01-04", 0.03, is_forward=True)
@@ -127,7 +126,7 @@ class TestForwardFlag:
         rows = store.get_ic_history(aid)
         assert len(rows) == 1, "同一天重跑应覆盖而非追加"
         assert rows[0].is_forward is True, "重跑回放把已确认的前向证据降级了"
-        assert rows[0].realized_ic == pytest.approx(0.02), "数值本身应被覆盖为最新"
+        assert rows[0].realized_ic == pytest.approx(0.03), "已存的前向证据被回放改写了"
 
     def test_replay_row_can_be_upgraded_to_forward(self, store):
         """

@@ -24,6 +24,7 @@ pit_store.py — Point-in-Time（时点）数据存储（Phase 8.1，2026-08-19�
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -156,6 +157,39 @@ class PITStore:
             logger.warning("[pit_store] 读取最新 bar 日期失败 %s: %s", parts[-1], exc)
             return None
 
+    def earliest_timestamp(self, name: str = "pit") -> Optional[pd.Timestamp]:
+        """库中该数据集**最早一根 bar 的日期**（整段重取时用作起点）。只读第一个 year 分区。"""
+        parts = sorted((self.store_dir / name).glob("year=*/data.parquet"))
+        if not parts:
+            return None
+        try:
+            df = pd.read_parquet(parts[0], columns=["timestamp"])
+            return None if df.empty else pd.to_datetime(df["timestamp"]).min().normalize()
+        except Exception as exc:
+            logger.warning("[pit_store] 读取最早 bar 日期失败 %s: %s", parts[0], exc)
+            return None
+
+    # ------------------------------------------------------------------
+    # 元数据：这份 PIT 的价格是从哪个源、按什么口径来的
+    # ------------------------------------------------------------------
+
+    def read_meta(self, name: str = "pit") -> dict:
+        p = self.store_dir / name / "meta.json"
+        if not p.exists():
+            return {}
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("[pit_store] meta.json 读不出来 %s: %s —— 当作没有元数据", p, exc)
+            return {}
+
+    def write_meta(self, meta: dict, name: str = "pit") -> None:
+        d = self.store_dir / name
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / "meta.json.tmp"
+        tmp.write_text(json.dumps(meta, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, d / "meta.json")
+
     def available_as_of(self, name: str = "pit") -> List[pd.Timestamp]:
         """返回该数据集中出现过的所有 as_of vintage（升序去重）。"""
         long_df = self._load_long(name)
@@ -204,6 +238,13 @@ class PITStore:
         long_df = long_df.copy()
         long_df["_year"] = long_df["timestamp"].dt.year
 
+        # 读-合并-写 必须跨进程互斥：两个进程同时追加同一年度分区，后写的会把先写的那批覆盖掉
+        # （原子替换只保证文件不残缺，不保证不丢另一个进程的写入）
+        from app.db.process_lock import lock_path_for, process_lock
+        with process_lock(lock_path_for("pit", name, self.store_dir), timeout_s=120):
+            self._append_long_locked(long_df, dataset_dir)
+
+    def _append_long_locked(self, long_df: pd.DataFrame, dataset_dir: Path) -> None:
         for year, group in long_df.groupby("_year"):
             part_dir = dataset_dir / f"year={year}"
             part_dir.mkdir(parents=True, exist_ok=True)

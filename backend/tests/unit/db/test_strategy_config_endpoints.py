@@ -14,9 +14,24 @@ import pandas as pd
 def _save_cfg(status="proposed", factors=("1", "2")):
     from app.dependencies import get_strategy_store
     from app.db.strategy_store import StrategyConfig
+    from tests.conftest import approved_verdict
     s = get_strategy_store()
-    return s, s.save(StrategyConfig(factors=list(factors), combo_weights={f: 0.5 for f in factors},
-                                    aum=10_000, passed=True, status=status, name="ep-test"))
+    cw = {f: 0.5 for f in factors}
+    return s, s.save(StrategyConfig(factors=list(factors), combo_weights=cw,
+                                    aum=10_000, passed=True, status=status, name="ep-test",
+                                    verdict=approved_verdict({f: "rank(close)" for f in factors}, cw, 10_000)))
+
+
+def _strategy_ics(sid, days, start, ic_mean=0.08, seed=0, spec_hash=None):
+    """往**这份策略**名下写 days 个前向 IC（外部审查 2026-10-18 F06：→ACTIVE 门只读它自己的记录）。"""
+    import json
+    from datetime import datetime
+    from app.dependencies import get_strategy_store
+    from app.db.evidence_store import EvidenceStore
+    h = spec_hash or json.loads(get_strategy_store().get(sid).verdict)["spec_hash"]
+    ev, rng = EvidenceStore(), np.random.default_rng(seed)
+    for d in pd.bdate_range(start, periods=days):
+        ev.record_strategy_ic(sid, h, d, float(ic_mean + rng.normal(0, 0.02)), d, datetime(2020, 1, 1))
 
 
 def test_strategy_endpoints_lifecycle(test_client, fresh_db):
@@ -56,8 +71,11 @@ def test_run_portfolio_trades_active_config(tmp_path):
         ids.append(str(aid))
     # active 配置只含前 1 个因子
     sstore = StrategyStore(db_url=db)
+    from tests.conftest import approved_verdict
     sid = sstore.save(StrategyConfig(factors=[ids[0]], combo_weights={ids[0]: 1.0},
-                                     aum=10_000, passed=True, status="proposed"))
+                                     aum=10_000, passed=True, status="proposed",
+                                     verdict=approved_verdict({ids[0]: "rank(ts_delta(close,5))"},
+                                                              {ids[0]: 1.0}, 10_000)))
     sstore.update_status(sid, "approved"); sstore.update_status(sid, "active")
 
     broker = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp_path/'p.db'}"), initial_capital=10_000.0)
@@ -109,8 +127,12 @@ def _patch_dataset(monkeypatch):
                         lambda *a, **k: _FakeDS(_panel()))
 
 
-def test_propose_without_paper_factors_returns_400(test_client, monkeypatch):
-    """无 PAPER/ACTIVE 因子时必须 400，而不是产出一份空策略配置。"""
+def test_propose_without_paper_factors_returns_400(test_client, monkeypatch, fresh_db):
+    """
+    无 PAPER/ACTIVE 因子时必须 400，而不是产出一份空策略配置。
+    fresh_db：会话共享库里别的用例可能已为 paper_dataset 固定了冻结边界（外部审查 F04），
+    这份 180 天的合成面板会因切不出研究窗口而 422 —— 用例之间不能共享这份状态。
+    """
     _patch_dataset(monkeypatch)
     from app.dependencies import get_store
     store = get_store()
@@ -122,7 +144,7 @@ def test_propose_without_paper_factors_returns_400(test_client, monkeypatch):
     assert "因子" in r.json()["detail"]
 
 
-def test_propose_creates_proposed_config_with_evidence(test_client, monkeypatch):
+def test_propose_creates_proposed_config_with_evidence(test_client, monkeypatch, fresh_db):
     """
     有 PAPER 因子时：产出 proposed 配置，且必须带**证据字段** ——
     verdict / risk_report / turnover_ann。审批者靠这些判断该不该批。
@@ -195,16 +217,23 @@ def test_forward_evidence_before_the_strategy_existed_is_not_borrowed(test_clien
     assert r.status_code == 409 and s.get(sid).status == "proposed"
 
 
-def test_forward_evidence_after_creation_counts(test_client, fresh_db, monkeypatch):
-    from datetime import datetime
+def test_this_strategys_own_forward_record_counts(test_client, fresh_db, monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, "tr_enforce_active_gate", True)
     s, sid = _save_cfg()
-    created = s.get(sid).created_at
-    _forward_ics(80, created.strftime("%Y-%m-%d"), seed=1)
+    _strategy_ics(sid, 80, "2024-01-02", seed=1)
     r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True})
     assert r.status_code == 200 and r.json()["status"] == "active", r.json()
-    assert datetime.utcnow() >= created
+
+
+def test_book0_ics_after_creation_are_not_borrowed_either(test_client, fresh_db, monkeypatch):
+    """此前按"创建日期之后"筛 book 0 —— 那些数来自当时在交易的别的配置。"""
+    from app.config import settings
+    monkeypatch.setattr(settings, "tr_enforce_active_gate", True)
+    s, sid = _save_cfg()
+    _forward_ics(80, s.get(sid).created_at.strftime("%Y-%m-%d"), seed=1)
+    r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True})
+    assert r.status_code == 409 and s.get(sid).status == "proposed"
 
 
 def test_activating_a_new_strategy_retires_the_old_one(test_client, fresh_db):
@@ -220,19 +249,22 @@ def test_activating_a_new_strategy_retires_the_old_one(test_client, fresh_db):
     assert retire and f"#{new}" in retire[0].reason and retire[0].actor == "kevin"
 
 
-def test_an_ic_on_the_creation_date_itself_counts(test_client, fresh_db, monkeypatch):
-    """边界：恰好 N 天前向 IC、第一天就是创建当天 —— 创建当天那一天必须计入（≥，不是 >）。"""
+def test_a_record_under_another_spec_does_not_count(test_client, fresh_db, monkeypatch):
+    """同一个 id、不同规格哈希的证据不算（规格变了就是另一个策略）。"""
     from app.config import settings
-    from app.db.alpha_store import AlphaStore
-    from app.tasks.daily_trading_loop import PORTFOLIO_BOOK_ID
+    monkeypatch.setattr(settings, "tr_enforce_active_gate", True)
+    s, sid = _save_cfg()
+    _strategy_ics(sid, 80, "2024-01-02", spec_hash="0" * 64)
+    r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True})
+    assert r.status_code == 409 and s.get(sid).status == "proposed"
+
+
+def test_exactly_the_minimum_number_of_days_passes(test_client, fresh_db, monkeypatch):
+    """边界：恰好 N 天（≥，不是 >）。"""
+    from app.config import settings
     monkeypatch.setattr(settings, "tr_enforce_active_gate", True)
     monkeypatch.setattr(settings, "tr_min_forward_days", 60)
     s, sid = _save_cfg()
-    created = pd.Timestamp(s.get(sid).created_at).normalize()
-    store = AlphaStore(db_url=settings.database_url)
-    rng = np.random.default_rng(3)
-    for d in pd.date_range(created, periods=60, freq="D"):
-        store.record_ic(PORTFOLIO_BOOK_ID, d.date(), float(0.08 + rng.normal(0, 0.02)),
-                        is_forward=True)
+    _strategy_ics(sid, 60, "2024-01-02", seed=3)
     r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True})
     assert r.status_code == 200 and r.json()["status"] == "active", r.json()

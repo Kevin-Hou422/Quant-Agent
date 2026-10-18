@@ -82,6 +82,10 @@ export const apiFetchStrategy = (sid: number) =>
 export const apiApproveStrategy = (sid: number, activate = false, reason = '') =>
   http.post<StrategyConfigItem>(`/strategies/${sid}/approve`, { activate, reason })
 
+// 外部审查 2026-10-18 F14：已批准（approved）的配置单独激活（→ACTIVE 门与批准时同一口径）
+export const apiActivateStrategy = (sid: number, reason = '') =>
+  http.post<StrategyConfigItem>(`/strategies/${sid}/activate`, { reason })
+
 export const apiRejectStrategy = (sid: number, reason = '') =>
   http.post<StrategyConfigItem>(`/strategies/${sid}/reject`, { reason })
 

@@ -10,6 +10,7 @@ test_pit_bitemporal_queries.py — Phase 8.1 Point-in-Time 数据存储验收
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
@@ -160,7 +161,9 @@ def test_daily_ingest_appends_to_pit(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         "app.core.data_engine.dataset_registry.check_dataset_health",
-        lambda ds, min_score, warn_only: None,  # None → 视为满分
+        # 健康检查通过。（此前这里返回 None，注释写着"None → 视为满分" —— 那正是外部审查
+        # 2026-10-18 F01 修掉的失效开门：检查器出错时门是开着的。）
+        lambda ds, min_score, warn_only: SimpleNamespace(overall_score=1.0, hard_failures=[]),
     )
 
     res = DailyIngest(min_health=0.7).ingest("ds", "2026-01-01", "2026-03-01")

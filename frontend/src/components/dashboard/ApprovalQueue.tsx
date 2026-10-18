@@ -32,7 +32,10 @@ export default function ApprovalQueue({ onChange }: { onChange?: () => void }) {
     async (id: number, action: 'approve' | 'reject') => {
       let reason = ''
       if (action === 'reject') {
-        reason = window.prompt('拒绝原因（可选）：') ?? ''
+        // 点"取消"返回 null：不是"原因为空的拒绝"，是不拒绝了（外部审查 2026-10-18 F14）
+        const r = window.prompt('拒绝原因（可选）：')
+        if (r === null) return
+        reason = r
       }
       setBusy(id)
       try {

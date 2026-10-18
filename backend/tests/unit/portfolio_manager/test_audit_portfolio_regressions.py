@@ -305,7 +305,8 @@ def test_backfill_pit_failure_rejects_the_ingest(monkeypatch, tmp_path):
     data = _make_dataset(n_days=30, n_tickers=5)
     monkeypatch.setattr(dr, "load_registry_dataset",
                         lambda *a, **k: SimpleNamespace(data=data))
-    monkeypatch.setattr(dr, "check_dataset_health", lambda *a, **k: None)
+    monkeypatch.setattr(dr, "check_dataset_health",
+                        lambda *a, **k: SimpleNamespace(overall_score=1.0, hard_failures=[]))   # 健康检查通过
 
     def boom(*a, **k):
         raise OSError("disk full")
@@ -331,14 +332,21 @@ def test_per_factor_ic_carries_the_forward_flag(tmp_path):
         check_decay=lambda *a: None)
     store = SimpleNamespace(query=lambda **k: [SimpleNamespace(id=7, status="paper",
                                                                dsl="rank(close)")])
-    loop = DailyTradingLoop(store=store, monitor=monitor,
-                            broker=PaperBroker(store=PositionStore(f"sqlite:///{tmp_path / 'p.db'}")))
+    # 外部审查 2026-10-18 F06：前向由**信号存档**决定，不再由 forward_from 决定 ——
+    # 前一天跑过（存了信号）、今天再跑，只有今天这一天是前向。
+    from datetime import timedelta
+    from app.core.data_engine.market_calendar import session_close_utc
+    from app.db.evidence_store import EvidenceStore
+    ev = EvidenceStore(f"sqlite:///{tmp_path / 'e.db'}")
+    mk = lambda: DailyTradingLoop(store=store, monitor=monitor, evidence_store=ev,  # noqa: E731
+                                  broker=PaperBroker(store=PositionStore(f"sqlite:///{tmp_path / 'p.db'}")))
     ds = _make_dataset(n_days=30, n_tickers=8)
-    cut = ds["close"].index[25]
-    loop.run(ds, forward_from=str(cut.date()))
-    assert seen
-    assert all(f is (d >= cut) for d, f in seen), "forward_from 之后的日子没标前向 / 之前的被标了"
-    assert any(f for _, f in seen) and not all(f for _, f in seen)
+    d1, d2 = ds["close"].index[-2], ds["close"].index[-1]
+    mk().run({k: v.loc[:d1] for k, v in ds.items()}, now=session_close_utc(d1) + timedelta(hours=2))
+    assert seen and not any(f for _, f in seen)               # 第一次跑：全是回放
+    seen.clear()
+    mk().run(ds, forward_from=str(ds["close"].index[5].date()), now=session_close_utc(d2) + timedelta(hours=2))
+    assert seen == [(d2, True)]
 
 
 # ---------------------------------------------------------------------------

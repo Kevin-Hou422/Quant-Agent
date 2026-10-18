@@ -30,10 +30,14 @@ def build_strategy_config(
     risk_limits=None,
     marginal_min_improve: float = 0.05,
     name: str = "",
+    factor_dsl: Optional[Dict[str, str]] = None,
 ) -> StrategyConfig:
     """
     因子集合 → 一份策略配置。流程：边际准入(PM.S2) → 合成账本(PM.1) → 策略门(PM.S1) →
     风控(PM.5) → 换手/无交易带(PM.6)。返回 `StrategyConfig`（status=proposed）。
+
+    factor_dsl : 各成分的表达式。进可执行规格（F07）：每日循环据此核对"交易的成分还是批准时那几条"。
+                 不给 → 规格里成分表达式为空，每日循环会因对不上而拒绝按它交易。
     """
     from app.core.portfolio_manager import (
         PortfolioManager, StrategyGate, marginal_factor_selection,
@@ -100,8 +104,10 @@ def build_strategy_config(
         degraded.append(f"paper_grading_failed: {exc}")
 
     # PM.5 风控（快照，不改配置权重——配置记录的是合成后的目标）
+    # F07：上限与每日循环同一来源（此前缺省用 RiskLimits() 的 dataclass 默认，与实际交易的上限不同）
+    from app.core.portfolio_manager.executable_spec import build_spec, risk_limits_from_settings, spec_hash
     risk_report = {}
-    limits = risk_limits or RiskLimits()
+    limits = risk_limits or risk_limits_from_settings()
     try:
         sectors = dataset["sector"].iloc[-1] if "sector" in dataset else None
         _, rep = PortfolioRiskGate(limits).apply(weights, sectors=sectors)
@@ -111,11 +117,14 @@ def build_strategy_config(
         risk_report = {"risk_error": str(exc), "evaluated": False}
         degraded.append(f"risk_snapshot_failed: {exc}")
 
-    # PM.6 换手 / 无交易带
+    # PM.6 换手 / 无交易带（与每日循环同一规则：配置优先，否则由数据推导；之后**冻结进规格**）
     band = 0.0
     try:
-        from app.core.trading_context.context import TradingContext
-        band = float(TradingContext(aum=aum).analyze(dataset).rebalance_band)
+        from app.config import settings as _settings
+        band = float(getattr(_settings, "pm_no_trade_band", 0.0))
+        if band <= 0.0:
+            from app.core.trading_context.context import TradingContext
+            band = float(TradingContext(aum=aum).analyze(dataset).rebalance_band)
     except Exception as exc:
         logger.warning("[strategy_builder] PM.6 无交易带推导失败（退回 0，换手会被高估）: %s", exc)
         band = 0.0
@@ -125,9 +134,14 @@ def build_strategy_config(
     if degraded:
         verdict["degraded"] = degraded
         logger.warning("[strategy_builder] 该配置在 %d 处降级产出：%s", len(degraded), degraded)
+    combo = {k: float(v) for k, v in (book.combo_weights or {}).items()}
+    # F07：影响交易的全部参数收进一份规格 + 哈希；每日循环照它执行、并核对运行时没变
+    spec = build_spec({k: (factor_dsl or {}).get(k) for k in signals}, combo, method, aum, band, limits)
+    verdict["executable_spec"] = spec
+    verdict["spec_hash"] = spec_hash(spec)
     return StrategyConfig(
         factors=list(signals.keys()),
-        combo_weights={k: float(v) for k, v in (book.combo_weights or {}).items()},
+        combo_weights=combo,
         aum=float(aum), method=method, passed=bool(passed),
         verdict=verdict, risk_report=risk_report,
         turnover_ann=float(turnover), no_trade_band=float(band),
@@ -143,17 +157,20 @@ def propose_from_paper_factors(alpha_store, dataset: WidePanel, aum: float,
     因子 DSL → 信号（与 run_portfolio 同口径 delay=1）→ build_strategy_config。
     """
     from app.core.alpha_engine.dsl_executor import Executor
-    from app.core.alpha_engine.signal_processor import SignalProcessor, SimulationConfig
+    from app.core.alpha_engine.signal_processor import SignalProcessor
+    from app.core.portfolio_manager.executable_spec import signal_config
     from app.db.alpha_lifecycle import AlphaStatus, coerce_status
 
-    cfg = SimulationConfig(delay=1, decay_window=0, truncation_min_q=0.05, truncation_max_q=0.95)
+    cfg = signal_config()
     signals: Signals = {}
+    dsl_of: Dict[str, str] = {}
     skipped: list = []
     for rec in alpha_store.query(limit=500):
         try:
             if coerce_status(rec.status) in (AlphaStatus.PAPER, AlphaStatus.ACTIVE, AlphaStatus.DECAYING):
                 raw = Executor(validate=False).run_expr(rec.dsl, dataset)
                 signals[str(rec.id)] = SignalProcessor(cfg).process(raw)
+                dsl_of[str(rec.id)] = rec.dsl
         except Exception as exc:
             # 静默 continue 会让因子"从组合里消失"而无人知晓（审计 #9）。
             logger.warning("[strategy_builder] 因子 id=%s 信号生成失败，已排除: %s",
@@ -165,4 +182,4 @@ def propose_from_paper_factors(alpha_store, dataset: WidePanel, aum: float,
     if not signals:
         return None
     return build_strategy_config(signals, dataset, aum=aum, method=method,
-                                 cost_params=cost_params, name=name)
+                                 cost_params=cost_params, name=name, factor_dsl=dsl_of)

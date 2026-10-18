@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import contextmanager
 import math
 import re
 import threading
@@ -165,6 +166,10 @@ class ExecutionReport:
     build:           Optional[dict] = None
     cancelled_stale: List[str] = field(default_factory=list)
     flatten:         Optional[dict] = None
+    quote_error:     str = ""                  # F09：独立报价取不到时的原因（新开仓因此被拦）
+    #: 资金利用（外部审查 2026-10-18 F14）：买入力不预支未成交卖单的现金 —— 保守，但会让"先卖后买"
+    #: 跨两个交易日。这里记下实际用了多少，事后能看出钱有没有闲着
+    capital:         Optional[dict] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -209,6 +214,35 @@ class OrderManager:
         self.book_id = int(book_id)
         self._clock = clock or _utcnow
 
+    #: 等另一个进程放开这个账户最多这么久（撤单确认轮询要几十秒）；等不到 → 本轮不动这个账户
+    ACCOUNT_LOCK_TIMEOUT_S = 180.0
+
+    @contextmanager
+    def _account_lock(self):
+        """
+        账户级互斥（外部审查 2026-10-18 F08）：进程内 RLock + 操作系统文件锁。
+        调度器、`python -m app.tasks.forward run-now`、API 手动触发、恢复任务是不同进程，
+        进程内的锁挡不住它们同时对一个账户撤单 / 下单。锁文件放在执行库同目录的 `.locks/` 下。
+        拿不到 → BrokerError（各调用方对券商不可用本来就是 fail-safe：不下新单）。
+        """
+        from app.db.process_lock import ProcessLockTimeout, process_lock
+        with _LOCK:  # 进程内线程互斥（RLock，可重入）
+            try:
+                with process_lock(self._account_lock_path(), timeout_s=self.ACCOUNT_LOCK_TIMEOUT_S):
+                    yield
+            except ProcessLockTimeout as exc:
+                raise BrokerError(f"另一个进程正在操作这个账户（{exc}）—— 本轮不动它") from exc
+
+    def _account_lock_path(self):
+        import tempfile
+        from pathlib import Path
+        from app.db.process_lock import lock_path_for
+        url = self.store._engine.url                                   # noqa: SLF001
+        base = (Path(url.database).resolve().parent
+                if url.get_backend_name() == "sqlite" and url.database not in (None, "", ":memory:")
+                else Path(tempfile.gettempdir()) / "quant_agent")
+        return lock_path_for("account", f"book{self.book_id}", base)
+
     @classmethod
     def from_settings(cls, gateway: BrokerGateway, store: Optional[ExecutionStore] = None,
                       position_store=None, clock=None) -> "OrderManager":
@@ -247,7 +281,7 @@ class OrderManager:
     # ------------------------------------------------------------------
 
     def reconcile(self) -> ReconcileReport:
-        with _LOCK:
+        with self._account_lock():
             return self._reconcile(accept=False)
 
     def accept_discrepancies(self, actor: str, reason: str) -> ReconcileReport:
@@ -257,7 +291,7 @@ class OrderManager:
         """
         if not actor or not reason:
             raise ValueError("接受对账差异必须写明操作人与原因")
-        with _LOCK:
+        with self._account_lock():
             rep = self._reconcile(accept=True)
             self.store.add_event("reconcile_accepted", actor, reason,
                                  {"discrepancies": rep.discrepancies, "unresolved": rep.unresolved})
@@ -477,7 +511,7 @@ class OrderManager:
         sectors       : 标的 → 行业（下单层行业上限用；缺失则只按单票约束）。
         no_trade_band : 相对**券商实际持仓**的无交易带（权重单位），见 build_rebalance_orders。
         """
-        with _LOCK:
+        with self._account_lock():
             return self._run_cycle(target_weights, ref_prices, adv_usd, decision_date,
                                    dict(sectors or {}), float(no_trade_band))
 
@@ -514,7 +548,7 @@ class OrderManager:
         账本照样要更新），以及熔断开启时**续做全平** —— 全平不能依赖当天有没有策略信号。
         """
         from app.core.data_engine.market_calendar import CalendarUnavailable
-        with _LOCK:
+        with self._account_lock():
             rep = ExecutionReport(blocked=f"maintenance_only: {reason}")
             rep.gateway = self.gw.describe()
             try:
@@ -630,12 +664,14 @@ class OrderManager:
         rep.n_planned = len(build.orders)
         rep.n_duplicate = len(build.orders) - len(fresh)
 
+        quotes = self._independent_quotes([o.ticker for o in fresh], rep)
         dec = check(fresh, GateContext(
             equity=equity, buying_power=power,
             current_qty={tk: p.qty for tk, p in pos.items()},
             broker_prices={tk: p.nominal_price for tk, p in pos.items()},
             adv_usd=adv_usd, day_return=rec.day_return, kill_switch=False,
-            open_orders=self._open_order_envelope(), sectors=sectors or {}), self.limits)
+            open_orders=self._open_order_envelope(), sectors=sectors or {},
+            quotes=quotes, now=self._clock()), self.limits)
         rep.gate = dec.to_dict()
         for o, reason in dec.rejected:
             self.store.record_gate_rejection(o, self.book_id, decision_date, reason)
@@ -644,12 +680,30 @@ class OrderManager:
             logger.warning("[exec] 下单前风控拦下 %d 张：%s", len(dec.rejected),
                            [(o.ticker, r) for o, r in dec.rejected])
 
+        invested = float(sum(abs(p.market_val) for p in pos.values()))
+        buys = float(sum(o.qty * o.limit_price for o in dec.approved if o.side == "BUY"))
+        sells = float(sum(o.qty * o.limit_price for o in dec.approved if o.side == "SELL"))
+        rep.capital = {"slice_equity": round(float(equity), 2), "buying_power": round(float(power), 2),
+                       "invested": round(invested, 2), "planned_buy": round(buys, 2),
+                       "planned_sell": round(sells, 2),
+                       "utilization_after_buys": (round((invested + buys) / equity, 4) if equity > 0 else None)}
         for o in dec.approved:
             rep.orders.append(self._submit(o, decision_date, rep))
         logger.info("[exec] %s | 计划 %d | 重复 %d | 风控拒 %d | 已下 %d | 下单异常 %d",
                     decision_date, rep.n_planned, rep.n_duplicate, rep.n_gate_rejected,
                     rep.n_submitted, rep.n_submit_errors)
         return rep
+
+    def _independent_quotes(self, tickers: List[str], rep: ExecutionReport) -> dict:
+        """待交易标的的独立报价（F09）。取不到 → 空表：减仓照常，新开仓在下单门被拦下。"""
+        if not tickers:
+            return {}
+        try:
+            return self.gw.quotes(tickers)
+        except BrokerError as exc:
+            logger.error("[exec] 取独立报价失败 → 本轮只放行减仓 / 已有持仓的单: %s", exc)
+            rep.quote_error = str(exc)
+            return {}
 
     def _submit(self, o, decision_date, rep: ExecutionReport) -> dict:
         info = {"client_id": o.client_id, "ticker": o.ticker, "side": o.side, "qty": o.qty,
@@ -688,27 +742,29 @@ class OrderManager:
         """
         if not actor or not reason:
             raise ValueError("全平必须写明操作人与原因")
-        with _LOCK:
-            if persist_state:
-                st = self.store.set_kill_switch(True, actor, reason)
-                self.store.add_event("kill_switch_engaged", actor, reason)
-            else:
-                st = self.store.kill_switch()
-                if not st.get("engaged"):
-                    raise RuntimeError("persist_state=False 但熔断状态并未开启 —— 拒绝在未落库时全平")
-            out = {"state": st}
-            try:
+        # 状态在**拿账户锁之前**落库（F08）：另一个进程正在跑调仓时，开熔断不能排队等它 ——
+        # 它下一步读到熔断就只会全平；这里拿不到锁就把撤单 / 全平留给下一个周期。
+        if persist_state:
+            st = self.store.set_kill_switch(True, actor, reason)
+            self.store.add_event("kill_switch_engaged", actor, reason)
+        else:
+            st = self.store.kill_switch()
+            if not st.get("engaged"):
+                raise RuntimeError("persist_state=False 但熔断状态并未开启 —— 拒绝在未落库时全平")
+        out = {"state": st}
+        try:
+            with self._account_lock():
                 out["cancelled"] = self._cancel_all_open()
                 out["flatten"] = self._flatten_after_cancel(out["cancelled"])
-            except BrokerError as exc:
-                logger.error("[exec] 全平执行中券商调用失败（熔断保持开启，下周期续做）: %s", exc)
-                out["error"] = str(exc)
-            return out
+        except BrokerError as exc:
+            logger.error("[exec] 全平执行中券商调用失败 / 账户被占用（熔断保持开启，下周期续做）: %s", exc)
+            out["error"] = str(exc)
+        return out
 
     def reset_kill_switch(self, actor: str, reason: str) -> dict:
         if not actor or not reason:
             raise ValueError("解除全平熔断必须写明操作人与原因")
-        with _LOCK:
+        with self._account_lock():
             st = self.store.set_kill_switch(False, actor, reason)
             self.store.add_event("kill_switch_reset", actor, reason)
             return {"state": st}

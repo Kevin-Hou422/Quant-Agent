@@ -55,13 +55,16 @@ def _strategy(tmp_path, dsls, active=True):
     from app.db.strategy_store import StrategyConfig, StrategyStore
     url = f"sqlite:///{(tmp_path / 'a.db').as_posix()}"
     store, ids = AlphaStore(db_url=url), []
+    from tests.conftest import approved_verdict
     for dsl in dsls:
         aid = store.save(AlphaResult(dsl=dsl, status="candidate"))
         store.update_status(aid, "validated")
         store.update_status(aid, "paper")
         ids.append(str(aid))
     ss = StrategyStore(db_url=url)
-    sid = ss.save(StrategyConfig(factors=ids, combo_weights={i: 1.0 for i in ids}, aum=1e6))
+    sid = ss.save(StrategyConfig(factors=ids, combo_weights={i: 1.0 for i in ids}, aum=1e6,
+                                 verdict=approved_verdict(dict(zip(ids, dsls)), {i: 1.0 for i in ids},
+                                                          1e6, settings=_settings(tmp_path))))
     if active:
         ss.update_status(sid, "approved")
         ss.update_status(sid, "active")

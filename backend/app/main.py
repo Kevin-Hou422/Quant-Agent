@@ -92,11 +92,18 @@ def _assert_safe_bind() -> None:
     会话删除/GP 跑批端点，任何能访问到它的人都能调用。
     因此绑定到非回环地址等同于把这些能力开放给整个网络，必须显式解除保险。
     """
-    host = str(getattr(settings, "api_bind_host", "127.0.0.1") or "")
-    loopback = host in ("127.0.0.1", "localhost", "::1", "")
-    if not loopback and not getattr(settings, "allow_insecure_bind", False):
+    loopback_names = ("127.0.0.1", "localhost", "::1", "")
+    # 外部审查 2026-10-18 F14：此前只看 API_BIND_HOST 这个配置项 —— `uvicorn app.main:app --host 0.0.0.0`
+    # 与配置不一致时照样启动。现在把实际会用到的监听地址都检查一遍：配置、命令行 --host、UVICORN_HOST。
+    hosts = [("API_BIND_HOST", str(getattr(settings, "api_bind_host", "127.0.0.1") or ""))]
+    hosts += [("--host", h) for h in _argv_hosts()]
+    if os.getenv("UVICORN_HOST"):
+        hosts.append(("UVICORN_HOST", os.getenv("UVICORN_HOST", "")))
+    bad = [(src, h) for src, h in hosts if h not in loopback_names]
+    host = bad[0][1] if bad else ""
+    if bad and not getattr(settings, "allow_insecure_bind", False):
         raise RuntimeError(
-            f"拒绝启动：API_BIND_HOST={host!r} 不是回环地址，而本服务**零认证** —— "
+            f"拒绝启动：{bad[0][0]}={host!r} 不是回环地址，而本服务**零认证** —— "
             f"审批/拒绝/删除/跑 GP 等端点将对整个网络开放。"
             f"请先实现认证（见 roadmap 审计 #10）；若确知风险并要临时暴露，"
             f"显式设置 ALLOW_INSECURE_BIND=true。"
@@ -106,6 +113,18 @@ def _assert_safe_bind() -> None:
         logging.getLogger("main").warning(
             "[security] CORS 允许任意来源（'*'）且服务无认证 —— "
             "仅在本机自用时可接受，切勿在此配置下对外暴露。")
+
+
+def _argv_hosts() -> list:
+    """命令行里的 `--host X` / `--host=X`（uvicorn / gunicorn 的写法）。"""
+    import sys
+    out, argv = [], list(sys.argv)
+    for i, a in enumerate(argv):
+        if a == "--host" and i + 1 < len(argv):
+            out.append(argv[i + 1])
+        elif a.startswith("--host="):
+            out.append(a.split("=", 1)[1])
+    return out
 
 
 _assert_safe_bind()

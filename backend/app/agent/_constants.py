@@ -45,7 +45,7 @@ _FUNDAMENTAL_FIELD_NOTES: Dict[str, str] = {
     "roe":                 "trailing net income / book equity (quarterly step)",
     "gross_margin":        "trailing gross profit / revenue (quarterly step)",
     "asset_growth":        "total assets vs. one year earlier (quarterly step)",
-    "sue":                 "standardized earnings surprise (quarterly step)",
+    "sue":                 "standardized earnings change, visible only after the 10-Q/10-K filing (quarterly step; blank between a new earnings release and its filing)",
     "days_since_earnings": "trading days since the last earnings release (counter)",
 }
 

@@ -56,7 +56,10 @@ class YahooContract:
         idx = [d for d in self.days if s <= d < e and d <= self.published_through]
         c = self.close.loc[idx, tickers]
         a = self.amp.loc[idx, tickers]
-        frames = {"Open": c.shift(1).fillna(c), "High": c * (1 + a), "Low": c * (1 - a),
+        o = c.shift(1).fillna(c)
+        # 高低价要包住开盘与收盘（此前 High = 收盘 × (1+a)，下跌日会低于开盘价 —— 不合法的 bar，
+        # 2026-10-18 起被健康门的 OHLC 硬性检查拦下）
+        frames = {"Open": o, "High": np.maximum(o, c) * (1 + a), "Low": np.minimum(o, c) * (1 - a),
                   "Close": c, "Volume": pd.DataFrame(2e6, index=c.index, columns=tickers)}
         out = pd.concat(frames, axis=1)
         return out
@@ -107,7 +110,11 @@ def world(tmp_path, monkeypatch):
         store.update_status(aid, "paper")
         ids.append(str(aid))
     ss = StrategyStore()
-    sid = ss.save(StrategyConfig(factors=ids, combo_weights={i: 0.5 for i in ids}, aum=AUM))
+    from tests.conftest import approved_verdict
+    sid = ss.save(StrategyConfig(
+        factors=ids, combo_weights={i: 0.5 for i in ids}, aum=AUM,
+        verdict=approved_verdict(dict(zip(ids, ("rank(ts_delta(close, 5))", "rank(-ts_delta(close, 20))"))),
+                                 {i: 0.5 for i in ids}, AUM)))
     ss.update_status(sid, "approved")
     ss.update_status(sid, "active")
 
@@ -115,6 +122,9 @@ def world(tmp_path, monkeypatch):
         from app.tasks.daily_ingest import run_daily_pipeline
         clock["now"] = session_close_utc(day) + timedelta(minutes=minutes_after_close)
         ctx.now = f"{day:%Y-%m-%d} 16:{min(minutes_after_close, 59):02d}:00.000"
+        # 收盘后决策：券商的行情报价 = 当天收盘价（F09 的独立报价从这里来）
+        if day in yahoo.close.index:
+            ctx.mark({tk: float(yahoo.close.loc[day, tk]) for tk in yahoo.close.columns})
         return run_daily_pipeline(DATASET, START, now=clock["now"])
 
     def open_session(day):
@@ -264,7 +274,7 @@ def test_a_portfolio_crash_still_maintains_the_broker(monkeypatch):
     calls = []
 
     class Loop:
-        def run_portfolio(self, ds, forward_from=None):
+        def run_portfolio(self, ds, forward_from=None, now=None):
             raise RuntimeError("pm exploded")
 
         def _maintain_live(self, reason):
@@ -335,7 +345,8 @@ def test_bars_after_the_last_closed_session_are_dropped_even_if_the_source_retur
     data = _make_dataset(n_days=12, n_tickers=4)
     idx = data["close"].index
     monkeypatch.setattr(dr, "load_registry_dataset", lambda *a, **k: SimpleNamespace(data=data))
-    monkeypatch.setattr(dr, "check_dataset_health", lambda *a, **k: None)
+    monkeypatch.setattr(dr, "check_dataset_health",
+                        lambda *a, **k: SimpleNamespace(overall_score=1.0, hard_failures=[]))   # 健康检查通过
     cut = idx[-3]
     with caplog.at_level(logging.WARNING, logger="app.tasks.daily_ingest"):
         r = DailyIngest().ingest("d", str(idx[0].date()), str(cut.date()), append_pit=False,

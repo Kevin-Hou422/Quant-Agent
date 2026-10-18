@@ -698,7 +698,11 @@ class TestWorkflowRun:
         wf = W.GenerationWorkflow(pop_size=4, n_generations=1, n_optuna_trials=0,
                                   n_seed_dsls=4, seed=1)
 
-        long_res = wf.run("动量假设", _panel(10, n=300))
+        # 外部审查 2026-10-18 F03：默认**不看** Test；显式要求才看（并记账）
+        default_res = wf.run("动量假设", _panel(10, n=300))
+        assert default_res.metrics["held_out_test"] is False
+        assert default_res.metrics["test_withheld"] is True
+        long_res = wf.run("动量假设", _panel(10, n=300), report_test=True)
         assert long_res.metrics["held_out_test"] is True, (
             "数据足够三段切割时 held_out_test 报了 False")
 

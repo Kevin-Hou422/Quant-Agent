@@ -138,6 +138,10 @@ class GPEvolutionResult:
     pool_top5:       List[Dict]
     evolution_log:   List[Dict]       = field(default_factory=list)
     best_config:     Optional[Dict]   = field(default=None)
+    #: 本次进化实际评估过的结构数（Σ 每代成功评估的个体数），已记进全局试验台账（F05）。
+    #: Optuna 微调的 trial 由 AlphaOptimizer 自己记，不在这里。
+    n_structures_evaluated: int       = 0
+    trials_recorded: bool             = True
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +355,15 @@ class PopulationEvolver:
 
         pool_top5 = [e.to_dict() for e in self._pool.top_k(5)]
 
+        # 外部审查 2026-10-18 F05：试验数在**搜索底层**按实际评估数记 —— 直接 GP、工作流、
+        # 自主发现、聊天全都经过这里。此前只有自主发现按配置估算一次（工作流会把种群放大，估不准）。
+        from app.db.trial_ledger import record_trials
+        n_eval = int(sum(int(g.get("population_size", 0)) for g in evolution_log))
+        recorded = record_trials(n_eval, source="gp")
+        if isinstance(metrics, dict):
+            metrics.setdefault("n_structures_evaluated", n_eval)
+            metrics.setdefault("trials_recorded", recorded)
+
         return GPEvolutionResult(
             best_dsl        = best_dsl,
             metrics         = metrics,
@@ -358,6 +371,8 @@ class PopulationEvolver:
             pool_top5       = pool_top5,
             evolution_log   = evolution_log,
             best_config     = best_cfg,
+            n_structures_evaluated = n_eval,
+            trials_recorded = recorded,
         )
 
     # ------------------------------------------------------------------

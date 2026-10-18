@@ -26,6 +26,7 @@ REJECTED_BY_GATE 被下单前风控拦下，从未发出
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from datetime import date as _date, datetime, timezone
@@ -38,6 +39,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.core.execution.broker_gateway import DUST_QTY, TERMINAL_STATUSES, BrokerOrder
+
+logger = logging.getLogger(__name__)
 
 
 class _Base(DeclarativeBase):
@@ -206,35 +209,42 @@ class ExecutionStore:
                         reject_reason: str = "") -> bool:
         """
         新建或（仅当现有行可重试时）覆盖一行。返回 False = 已有不可重试的行（这张单发过了）。
+
+        **原子认领**（外部审查 2026-10-18 F08 / R11）：此前先查"这行可不可重试"、再改 ——
+        两个独立的数据库会话同时认领同一条被拒的意图，两边都读到"可重试"、都返回 True，
+        随后两个进程都可能去调券商。现在：可重试的旧行用一条**带条件的 UPDATE**
+        （WHERE status IN 可重试）认领，看受影响行数；没有旧行则 INSERT，client_id 唯一键兜底。
+        同一时刻只会有一个会话认领成功。
         """
+        from sqlalchemy import update
+        from sqlalchemy.exc import IntegrityError
+        now = _now()
+        values = dict(
+            created_at=now, book_id=int(book_id), decision_date=decision_date,
+            purpose=order.purpose, ticker=order.ticker, side=order.side, qty=int(order.qty),
+            ref_price=float(order.ref_price), limit_price=float(order.limit_price),
+            target_weight=float(order.target_weight), status=status, broker_order_id=None,
+            broker_status="", dealt_qty=0.0, dealt_avg_price=0.0, reject_reason=reject_reason,
+            last_err_msg="", submit_attempted_at=None, updated_at=now,
+        )
         with self._Session() as s:
-            row = s.scalars(select(ExecOrder).where(ExecOrder.client_id == order.client_id)).first()
-            if row is not None and row.status not in RETRYABLE:
+            claimed = s.execute(
+                update(ExecOrder)
+                .where(ExecOrder.client_id == order.client_id, ExecOrder.status.in_(RETRYABLE))
+                .values(**values)
+                .execution_options(synchronize_session=False)
+            ).rowcount
+            if claimed == 1:
+                s.commit()
+                return True
+            s.add(ExecOrder(client_id=order.client_id, **values))
+            try:
+                s.commit()
+                return True
+            except IntegrityError:
+                s.rollback()                     # 已有一行，且不可重试（或刚被别的会话认领走）
+                logger.info("[exec_store] %s 已被认领 / 已发出，不重复认领", order.client_id)
                 return False
-            if row is None:
-                row = ExecOrder(client_id=order.client_id)
-                s.add(row)
-            row.created_at = _now()
-            row.book_id = int(book_id)
-            row.decision_date = decision_date
-            row.purpose = order.purpose
-            row.ticker = order.ticker
-            row.side = order.side
-            row.qty = int(order.qty)
-            row.ref_price = float(order.ref_price)
-            row.limit_price = float(order.limit_price)
-            row.target_weight = float(order.target_weight)
-            row.status = status
-            row.broker_order_id = None
-            row.broker_status = ""
-            row.dealt_qty = 0.0
-            row.dealt_avg_price = 0.0
-            row.reject_reason = reject_reason
-            row.last_err_msg = ""
-            row.submit_attempted_at = None
-            row.updated_at = _now()
-            s.commit()
-            return True
 
     def mark_attempting(self, client_id: str) -> None:
         """下单调用发出前调用：之后无论进程在哪一步死掉，这张单都按"可能已到达券商"处理。"""

@@ -261,9 +261,12 @@ class AlphaStore:
         写入某因子某日的 realized IC。幂等：同 (alpha_id, date) 重复调用
         覆盖旧值而非追加（重跑当日任务不会重复记账）。
 
-        is_forward : 该日是否为**真前向**（摄取到新 bar 之后产生），而非历史回放。
-                     只有前向样本才可用于 TR.4 的 →ACTIVE 门。**一旦标为前向就不再降级**
-                     （重跑回放不会把已积累的前向证据抹掉）。
+        is_forward : 该日是否为**真前向**（结算用的是结果发生前就存档的信号，见 evidence_store），
+                     而非历史回放。只有前向样本才可用于 TR.4 的 →ACTIVE 门。
+
+        **前向证据一经写入不可改**（外部审查 2026-10-18 F06 / R12）：此前"标记只升不降"保护了标签，
+        没保护数值 —— 回放能把前向 0.1 改成 −0.9 而标记仍是前向。现在已是前向的行原样保留；
+        数值不同的写入不生效，记一条修订事件（`evidence_revisions`）。回放行照旧可被覆盖 / 升级为前向。
         """
         from datetime import date as _date
         if isinstance(date, str):
@@ -276,11 +279,22 @@ class AlphaStore:
                     AlphaICRecord.date == date,
                 )
             ).first()
+            if existing is not None and existing.is_forward:
+                changed = (abs(float(existing.realized_ic) - float(realized_ic)) > 1e-12 or
+                           abs(float(existing.realized_return) - float(realized_return)) > 1e-12)
+                old = (float(existing.realized_ic), float(existing.realized_return))
+                session.rollback()
+                if changed:
+                    from app.db.evidence_store import EvidenceStore
+                    EvidenceStore(self._engine.url.render_as_string(hide_password=False)).log_revision(
+                        "alpha_ic", f"alpha:{alpha_id}", date, f"ic={old[0]} ret={old[1]}",
+                        f"ic={float(realized_ic)} ret={float(realized_return)} forward={bool(is_forward)}",
+                        "前向证据已存，不可改写（回放或重算的结果另行留痕）")
+                return
             if existing is not None:
                 existing.realized_ic     = float(realized_ic)
                 existing.realized_return = float(realized_return)
                 existing.recorded_at     = datetime.utcnow()
-                # 前向标记只升不降：已确认的前向证据不会被后续回放重跑覆盖掉
                 if is_forward:
                     existing.is_forward = True
             else:

@@ -76,6 +76,17 @@ def fresh_db(tmp_path, monkeypatch):
 # Dataset factory
 # ---------------------------------------------------------------------------
 
+def approved_verdict(dsl_by_id: dict, combo_weights: dict, aum: float, method: str = "ic_weighted",
+                     band: float = 0.0, settings=None) -> dict:
+    """
+    批准时的可执行规格（外部审查 2026-10-18 F07）。每日循环只按带规格的 active 配置交易；
+    用例里激活配置时用它，并且要在 settings 改完之后调用（规格记的是批准那一刻的交易参数）。
+    """
+    from app.core.portfolio_manager.executable_spec import build_spec, spec_hash
+    spec = build_spec(dsl_by_id, combo_weights, method, aum, band, settings=settings)
+    return {"executable_spec": spec, "spec_hash": spec_hash(spec)}
+
+
 def _make_dataset(
     n_days:    int = 80,
     n_tickers: int = 10,

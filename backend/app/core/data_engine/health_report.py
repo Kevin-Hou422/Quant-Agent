@@ -8,6 +8,10 @@
 
 DataHealthChecker 组合运行并输出 HealthReport。
 overall_score ∈ [0,1]，越高越健康。
+
+**综合分之外还有硬性条件**（`hard_failures`，外部审查 2026-10-18 F01）：末日覆盖率、
+整个交易日缺失、末日零成交量、末日 OHLC 不合法。任何一条不满足，不论综合分多高都判不健康 ——
+"95% 的收盘价缺失"不能被另外三项满分平均回 0.5 以上。
 """
 
 from __future__ import annotations
@@ -40,6 +44,8 @@ class HealthReport:
     n_tickers: int = 0
     n_dates:   int = 0
     notes:     list = field(default_factory=list)
+    #: 硬性条件的违反项（人能读懂的一句话）。非空 → 不健康，与综合分无关
+    hard_failures: list = field(default_factory=list)
 
     def __repr__(self) -> str:
         return (
@@ -49,7 +55,7 @@ class HealthReport:
         )
 
     def is_healthy(self, min_score: float = 0.8) -> bool:
-        return self.overall_score >= min_score
+        return not self.hard_failures and self.overall_score >= min_score
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +208,9 @@ class ZeroVolumeDetector:
             return pd.DataFrame(columns=["ticker", "date", "volume"])
 
         mask = panel[volume_col].isna() | (panel[volume_col] == 0)
+        if "close" in panel.columns:
+            # 只看有报价的行：价格本身缺失已经记在 gaps / NaN 里，不重复计
+            mask &= panel["close"].notna()
         flagged = panel.loc[mask, [ticker_col, date_col, volume_col]].copy()
         flagged.columns = ["ticker", "date", "volume"]
         return flagged.reset_index(drop=True)
@@ -358,3 +367,74 @@ class DataHealthChecker:
                         "nan_pct":   round(nan_cnt / n * 100, 2),
                     })
         return pd.DataFrame(rows, columns=["ticker", "field", "nan_count", "nan_pct"])
+
+
+# ---------------------------------------------------------------------------
+# 硬性条件（独立于综合分）
+# ---------------------------------------------------------------------------
+
+#: 最后一个交易日，股票池里至少这么大比例要有收盘价
+MIN_LAST_DAY_COVERAGE = 0.9
+#: 最后一个交易日，有报价的票里成交量为零 / 缺失的比例上限
+MAX_LAST_DAY_ZERO_VOLUME = 0.1
+
+
+def hard_failures(
+    wide: dict,
+    universe: list,
+    expected_sessions: Optional[pd.DatetimeIndex] = None,
+    min_last_day_coverage: float = MIN_LAST_DAY_COVERAGE,
+    max_last_day_zero_volume: float = MAX_LAST_DAY_ZERO_VOLUME,
+) -> list:
+    """
+    宽表 {字段: (日期 × 标的)} 上的硬性条件。返回违反项列表（空 = 全部满足）。
+
+    expected_sessions：交易所日历给出的、本数据区间内应有的交易日。给了就检查
+    "整天没数据"的交易日（数据源漏了一天，按日期并集建索引时根本看不出来）。
+    """
+    out: list = []
+    close = wide.get("close")
+    if close is None or close.empty:
+        return ["没有收盘价数据"]
+    close = close.reindex(columns=list(universe))
+    have_row = close.notna().any(axis=1)
+    last = close.index[-1]
+
+    if expected_sessions is not None and len(expected_sessions):
+        present = set(pd.DatetimeIndex(close.index[have_row]).normalize())
+        missing = [d for d in pd.DatetimeIndex(expected_sessions).normalize() if d not in present]
+        if missing:
+            shown = ", ".join(str(d.date()) for d in missing[:5]) + (" …" if len(missing) > 5 else "")
+            out.append(f"{len(missing)} 个交易日整天没有任何报价（{shown}）")
+
+    cov = float(close.loc[last].notna().mean()) if len(universe) else 0.0
+    if cov < min_last_day_coverage:
+        out.append(f"最后一个交易日 {pd.Timestamp(last).date()} 只有 {cov:.0%} 的标的有收盘价"
+                   f"（下限 {min_last_day_coverage:.0%}）")
+
+    vol = wide.get("volume")
+    if vol is not None and not vol.empty:
+        v = vol.reindex(index=close.index, columns=list(universe)).loc[last]
+        quoted = close.loc[last].notna()
+        n_q = int(quoted.sum())
+        if n_q:
+            bad = int(((v.isna() | (v <= 0)) & quoted).sum())
+            if bad / n_q > max_last_day_zero_volume:
+                out.append(f"最后一个交易日有报价的 {n_q} 只里 {bad} 只成交量为零或缺失")
+    else:
+        out.append("没有成交量数据")
+
+    o, h, lo = (wide.get(k) for k in ("open", "high", "low"))
+    if all(x is not None and not x.empty for x in (o, h, lo)):
+        row = {k: df.reindex(index=close.index, columns=list(universe)).loc[last]
+               for k, df in (("open", o), ("high", h), ("low", lo))}
+        c = close.loc[last]
+        tol = 1e-9
+        bad = ((row["high"] < pd.concat([row["open"], c], axis=1).max(axis=1) * (1 - tol))
+               | (row["low"] > pd.concat([row["open"], c], axis=1).min(axis=1) * (1 + tol))
+               | (row["low"] <= 0) | (c <= 0))
+        bad &= c.notna()
+        if int(bad.sum()):
+            out.append(f"最后一个交易日 {int(bad.sum())} 只的 OHLC 不合法（高<开/收、低>开/收或非正价格）："
+                       f"{sorted(bad[bad].index)[:5]}")
+    return out

@@ -11,12 +11,26 @@ import pytest
 
 from app.core.execution.order_builder import PURPOSE_FLATTEN, PURPOSE_REBALANCE, PlannedOrder
 from app.core.execution.pretrade_gate import (
-    GateContext, PreTradeLimits, check, increases_risk,
+    GateContext, PreTradeLimits, increases_risk,
 )
+from app.core.execution.pretrade_gate import check as _check
 
 LIM = PreTradeLimits(max_name_weight=0.10, max_gross=1.0, max_participation_pct=0.10,
                      max_daily_loss=0.05, max_price_deviation=0.15)
 
+
+
+def check(orders, ctx, limits):
+    """
+    本文件测的是报价以外的下单门规则。外部审查 2026-10-18 F09（R5）之后，没有独立报价的新开仓
+    一律被拦 —— 这里给每张单补一个与参考价一致的报价（用例自己设了 quotes 的不动）。
+    报价本身的规则见 test_claim_lock_quotes_1018.py。
+    """
+    import dataclasses
+    from app.core.execution.broker_gateway import Quote
+    if ctx.quotes is None:
+        ctx = dataclasses.replace(ctx, quotes={o.ticker: Quote(float(o.ref_price), None) for o in orders})
+    return _check(orders, ctx, limits)
 
 def _o(tk, side, qty, px=100.0, cur=0.0, purpose=PURPOSE_REBALANCE, limit=None):
     if limit is None:

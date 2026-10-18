@@ -485,6 +485,8 @@ class ThreeWaySplit:
                    否则"换个起止日期再跑一遍"就等于换了一个新的样本外集。
     ``"ratio"``  — 数据太短，退回按比例切。**这不是等价替代**：比例切的 Test 段
                    会随入参漂移，可被反复挖掘。故 `degraded=True`，调用方必须能看见。
+    ``"pinned"`` — Test 起点是该数据集**持久化的绝对日期**（外部审查 2026-10-18 F04）。
+                   "最近 N 年"在数据每天增长时也会每天滑动；只有绝对日期才是真的冻结。
     """
     train:        Dict[str, pd.DataFrame]
     validate:     Dict[str, pd.DataFrame]
@@ -596,13 +598,21 @@ class ThreeWayPartitioner:
         self.min_selection_days = min_selection_days
         self.max_test_share = max_test_share
 
-    def partition(self, dataset: Dict[str, pd.DataFrame]) -> ThreeWaySplit:
+    def partition(self, dataset: Dict[str, pd.DataFrame],
+                  test_start: Optional[pd.Timestamp] = None) -> ThreeWaySplit:
+        """
+        test_start : 给定 → Test = 该日（含）之后的全部 bar，选择段在它之前（再隔一个 embargo）。
+                     数据整段落在它之前 → Test 为空；整段落在它之后 → 选择段不够，抛 ValueError。
+        """
         dates = _extract_dates(dataset)
         n = len(dates)
         if n == 0:
             raise ValueError("dataset 为空，无法三段切分")
 
-        n_test, frozen_by, degraded = self._test_size(dates)
+        if test_start is not None:
+            n_test, frozen_by, degraded = int((dates >= pd.Timestamp(test_start)).sum()), "pinned", False
+        else:
+            n_test, frozen_by, degraded = self._test_size(dates)
 
         # Test 起点（含）索引
         test_lo = n - n_test
@@ -634,7 +644,8 @@ class ThreeWayPartitioner:
             train=train, validate=validate, test=test, selection=selection,
             n_is=n_is, n_val=val_hi - val_lo, n_test=n_test,
             embargo_days=self.embargo_days,
-            test_start=dates[test_lo], test_end=dates[-1],
+            test_start=dates[test_lo] if n_test > 0 else None,
+            test_end=dates[-1] if n_test > 0 else None,
             frozen_by=frozen_by, degraded=degraded,
         )
         logger.info(
@@ -732,8 +743,21 @@ def partition_three_way(
     ).partition(dataset)
 
 
+class FrozenBoundaryError(RuntimeError):
+    """
+    数据集有冻结边界，但这次的数据按它切不出可用的选择段（或边界读写失败）。
+
+    故意**不是** ValueError：各入口对"数据太短切不动"的 ValueError 有"退回全量面板"的兜底，
+    那个兜底对没有冻结边界的数据是可以接受的降级，对有冻结边界的数据就是把 Test 段送给选择流程。
+    """
+
+
+#: 这些键不代表一个固定的数据集（合成数据每次都不同），不固定边界。
+_UNPINNED_KEYS = frozenset({"", "synthetic", "unknown"})
+
+
 def split_from_settings(
-    dataset: Dict[str, pd.DataFrame], **overrides,
+    dataset: Dict[str, pd.DataFrame], dataset_key: Optional[str] = None, **overrides,
 ) -> ThreeWaySplit:
     """
     按发布配置（`s_*`）做三段切分。参数缺省时**不写死**，读 `Settings`。
@@ -741,6 +765,10 @@ def split_from_settings(
     读不到配置时用本函数签名里的保守默认（2 年冻结 + 20 日 embargo），
     并记 error —— 与 DEV_LESSONS §U 同一条：兜底要朝**更严**的一侧倒，
     而"读不到就不切 Test"恰恰是最松的那一侧。
+
+    dataset_key : 真实数据集的名字。给定时 Test 起点按该数据集**持久化的绝对日期**切
+                  （第一次切分时写入，见 `trial_ledger.BoundaryStore`）。外部审查 2026-10-18 F04：
+                  此前起点 = 本次数据末日 − 2 年，去掉最后一天就换出一个与原窗口重叠 521 天的"新" Test 段。
     """
     kwargs = dict(test_years=2.0, test_ratio=0.15, val_ratio=0.25,
                   embargo_days=20, min_train_days=60, min_selection_days=378,
@@ -758,7 +786,33 @@ def split_from_settings(
         logger.error(
             "[S.2] 读不到三段切分配置，改用保守默认 %s：%s", kwargs, exc)
     kwargs.update(overrides)
-    return partition_three_way(dataset, **kwargs)
+    key = (dataset_key or "").strip()
+    if key in _UNPINNED_KEYS:
+        return partition_three_way(dataset, **kwargs)
+
+    part = ThreeWayPartitioner(**kwargs)
+    try:
+        from app.db.trial_ledger import BoundaryStore
+        bstore = BoundaryStore()
+        pinned = bstore.get(key)
+    except Exception as exc:
+        raise FrozenBoundaryError(f"读不到数据集 {key} 的冻结边界（{exc}）—— 不按滑动窗口切，拒绝本次切分") from exc
+    if pinned is None:
+        split = part.partition(dataset)                    # 第一次：按配置算出起点，然后固定下来
+        if split.test_start is None:
+            return split
+        try:
+            pinned = bstore.pin(key, split.test_start, frozen_by=split.frozen_by)
+        except Exception as exc:
+            raise FrozenBoundaryError(f"数据集 {key} 的冻结边界写不进去（{exc}）") from exc
+        if pinned == split.test_start:
+            return split
+    try:
+        return part.partition(dataset, test_start=pinned)
+    except ValueError as exc:
+        raise FrozenBoundaryError(
+            f"数据集 {key} 的 Test 段从 {pinned.date()} 起冻结；这次的数据在它之前不够切出选择段（{exc}）。"
+            f"冻结段不能拿来做研究 —— 请把起点往前延长。") from exc
 
 
 def account_holdout_use(

@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import {
   apiFetchStrategiesPending, apiFetchStrategies, apiProposeStrategy,
-  apiApproveStrategy, apiRejectStrategy,
+  apiApproveStrategy, apiRejectStrategy, apiActivateStrategy,
 } from '../../api/client'
 import type { StrategyConfigItem } from '../../types'
 import TradingRealityPanel from './TradingRealityPanel'
@@ -39,9 +39,12 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: str
   )
 }
 
-function StrategyCard({ cfg, onDecision }: {
+type Decision = 'approve' | 'approve_activate' | 'activate' | 'reject'
+
+function StrategyCard({ cfg, onDecision, busy }: {
   cfg: StrategyConfigItem
-  onDecision: (id: number, action: 'approve' | 'approve_activate' | 'reject') => void
+  onDecision: (id: number, action: Decision) => void
+  busy: boolean
 }) {
   const [open, setOpen] = useState(false)
   const v = cfg.verdict || {}
@@ -50,6 +53,8 @@ function StrategyCard({ cfg, onDecision }: {
   const weights = cfg.combo_weights || {}
   const totalW = Object.values(weights).reduce((a, b) => a + Math.abs(b), 0) || 1
   const isProposed = cfg.status === 'proposed'
+  const isApproved = cfg.status === 'approved'
+  const specHash = typeof v['spec_hash'] === 'string' ? (v['spec_hash'] as string) : ''
 
   return (
     <li className="border border-slate-800 rounded-lg bg-slate-900/40">
@@ -81,6 +86,11 @@ function StrategyCard({ cfg, onDecision }: {
             {String(v['paper_grade'])} 级
           </span>
         )}
+        {/* 外部审查 2026-10-18 F07：可执行规格的哈希 —— 每日循环只按这一份交易 */}
+        <span title={specHash || '没有可执行规格：每日循环不会按它调仓，需要重新提案'}
+          className={`text-[10px] font-mono ${specHash ? 'text-slate-500' : 'text-rose-400'}`}>
+          {specHash ? `规格 ${specHash.slice(0, 12)}` : '无规格'}
+        </span>
         <span className="ml-auto text-[10px] text-slate-500">{cfg.factors.length} 因子 · ${cfg.aum.toLocaleString()}</span>
       </div>
 
@@ -142,17 +152,25 @@ function StrategyCard({ cfg, onDecision }: {
       {/* actions for proposed */}
       {isProposed && (
         <div className="flex items-center gap-2 px-3 py-2 border-t border-slate-800">
-          <button onClick={() => onDecision(cfg.id, 'approve')}
-            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-sky-900/50 text-sky-400 hover:bg-sky-900/80 transition-colors">
+          <button onClick={() => onDecision(cfg.id, 'approve')} disabled={busy}
+            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-sky-900/50 text-sky-400 hover:bg-sky-900/80 transition-colors disabled:opacity-40">
             <Check size={12} /> 批准
           </button>
-          <button onClick={() => onDecision(cfg.id, 'approve_activate')}
-            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-emerald-800/60 text-emerald-300 hover:bg-emerald-700 transition-colors">
+          <button onClick={() => onDecision(cfg.id, 'approve_activate')} disabled={busy}
+            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-emerald-800/60 text-emerald-300 hover:bg-emerald-700 transition-colors disabled:opacity-40">
             <Gauge size={12} /> 批准并启用（active）
           </button>
-          <button onClick={() => onDecision(cfg.id, 'reject')}
-            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-rose-900/50 text-rose-400 hover:bg-rose-900/80 transition-colors">
+          <button onClick={() => onDecision(cfg.id, 'reject')} disabled={busy}
+            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-rose-900/50 text-rose-400 hover:bg-rose-900/80 transition-colors disabled:opacity-40">
             <X size={12} /> 拒绝
+          </button>
+        </div>
+      )}
+      {isApproved && (
+        <div className="flex items-center gap-2 px-3 py-2 border-t border-slate-800">
+          <button onClick={() => onDecision(cfg.id, 'activate')} disabled={busy}
+            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-emerald-800/60 text-emerald-300 hover:bg-emerald-700 transition-colors disabled:opacity-40">
+            <Gauge size={12} /> 启用（active）
           </button>
         </div>
       )}
@@ -221,22 +239,28 @@ export default function PortfolioView() {
     }
   }, [refresh])
 
-  const decide = useCallback(async (id: number, action: 'approve' | 'approve_activate' | 'reject') => {
-    setBusy(true); setError(null)
+  // 外部审查 2026-10-18 F14：逐项 busy 锁 —— 一张卡的请求在途时，它的按钮不能再点（连点两下 = 两次审批请求）
+  const [busyId, setBusyId] = useState<number | null>(null)
+  const decide = useCallback(async (id: number, action: Decision) => {
+    if (busyId !== null) return
+    let reason = ''
+    if (action === 'reject') {
+      const r = window.prompt('拒绝原因（可选）：')
+      if (r === null) return                     // 点"取消" = 不拒绝了，不是"原因为空的拒绝"
+      reason = r
+    }
+    setBusyId(id); setError(null)
     try {
-      if (action === 'reject') {
-        const reason = window.prompt('拒绝原因（可选）：') ?? ''
-        await apiRejectStrategy(id, reason)
-      } else {
-        await apiApproveStrategy(id, action === 'approve_activate', '')
-      }
+      if (action === 'reject') await apiRejectStrategy(id, reason)
+      else if (action === 'activate') await apiActivateStrategy(id, '')
+      else await apiApproveStrategy(id, action === 'approve_activate', '')
       await refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
-      setBusy(false)
+      setBusyId(null)
     }
-  }, [refresh])
+  }, [refresh, busyId])
 
   const active = useMemo(() => others.filter(c => c.status === 'active'), [others])
 
@@ -295,7 +319,7 @@ export default function PortfolioView() {
               </div>
             ) : (
               <ul className="space-y-2">
-                {pending.map(c => <StrategyCard key={c.id} cfg={c} onDecision={decide} />)}
+                {pending.map(c => <StrategyCard key={c.id} cfg={c} onDecision={decide} busy={busyId === c.id} />)}
               </ul>
             )}
           </section>
@@ -305,7 +329,7 @@ export default function PortfolioView() {
             <section>
               <div className="text-xs font-semibold text-slate-300 mb-2">已批准 / 在交易 / 历史</div>
               <ul className="space-y-2">
-                {others.map(c => <StrategyCard key={c.id} cfg={c} onDecision={decide} />)}
+                {others.map(c => <StrategyCard key={c.id} cfg={c} onDecision={decide} busy={busyId === c.id} />)}
               </ul>
             </section>
           )}

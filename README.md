@@ -468,6 +468,20 @@ powershell -ExecutionPolicy Bypass -File scripts\start_forward.ps1 [-RegisterLog
   loop still runs the simulated book (PAPER factors or the baseline library) but the broker side only
   reconciles. An active config whose components are unavailable halts new risk instead of trading
   other factors; its frozen combination weights are used as approved, not refitted daily.
+- **The active config must carry an executable spec** (external review 2026-10-18, F07). Proposals
+  store a hashed spec — component expressions, frozen weights, method, AUM, no-trade band, risk
+  limits, signal parameters, broker/short flags, dataset and price source. The daily loop trades
+  exactly that spec and stops rebalancing if any runtime parameter differs; configs approved before
+  2026-10-18 have no spec and must be re-proposed and re-approved (roadmap D13).
+- **New positions need an independent quote** (F09): every order is checked against a timestamped
+  moomoo snapshot; a name not yet held with no (or a stale / mismatched) quote is rejected.
+  Account operations from the scheduler, `run-now`, the API and recovery are serialised by an OS
+  file lock next to the execution database (F08).
+- **Forward evidence = signal archived before the outcome** (F06). A day's IC counts as forward only
+  if the signal it uses was archived before that session's close; backfilled, re-run or offline
+  results are replay. Strategy promotion reads that strategy's own record (id + spec hash), and the
+  t-stat is the smaller of the plain and the Newey-West one. Operating limits (daily-only breaker,
+  log-only alerts, the T−1 signal clock) are spelled out in `backend/OPERATIONS.md` §7.
 - **The daily job runs twice** (21:30 UTC and a 22:45 UTC retry for late data). Every run reconciles
   and continues a pending flatten even when there is no new bar or the ingest is rejected; reruns are
   idempotent (client-id dedupe at the broker, `last_pnl_date` resume in the simulated book).

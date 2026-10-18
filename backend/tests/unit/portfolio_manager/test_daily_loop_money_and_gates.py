@@ -232,7 +232,10 @@ def test_portfolio_vol_estimate_is_annualised_correctly(loop, monkeypatch):
     orig_apply = rg.PortfolioRiskGate.apply
 
     def _spy(self, weights, sectors=None, port_vol_ann=None):
-        seen["vol"] = port_vol_ann
+        # 只记传了波动估计的那次（做缩放的那次）。策略门里的风控、无交易带之后的硬约束投影
+        # 都故意不传（外部审查 F07 / R7：传两次缩放会叠乘）
+        if port_vol_ann is not None or "vol" not in seen:
+            seen["vol"] = port_vol_ann
         return orig_apply(self, weights, sectors=sectors, port_vol_ann=port_vol_ann)
 
     monkeypatch.setattr(rg.PortfolioRiskGate, "apply", _spy)

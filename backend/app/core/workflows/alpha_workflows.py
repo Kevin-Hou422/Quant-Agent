@@ -127,10 +127,28 @@ def _fmt(v: Any) -> str:
         return "N/A"
 
 
+def _research_split(
+    dataset:     Dict[str, Any],
+    oos_ratio:   float = 0.30,
+    test_ratio:  float = 0.15,
+    dataset_key: Optional[str] = None,
+):
+    """`_partition_three_way` 的完整版：返回 ThreeWaySplit（带冻结边界，见 F04）。"""
+    from ..data_engine.data_partitioner import split_from_settings
+
+    val_share = max(1e-6, float(oos_ratio) - float(test_ratio))
+    val_ratio = min(0.9, val_share / max(1e-6, 1.0 - float(test_ratio)))
+    return split_from_settings(
+        dataset, dataset_key=dataset_key,
+        test_ratio=test_ratio, val_ratio=val_ratio, min_train_days=20,
+    )
+
+
 def _partition_three_way(
     dataset:    Dict[str, Any],
     oos_ratio:  float = 0.30,
     test_ratio: float = 0.15,
+    dataset_key: Optional[str] = None,
 ) -> Tuple[Dict, Dict, Dict]:
     """
     三段式时间切割 IS / Validate / Test（Phase S.1+S.2）。
@@ -148,17 +166,28 @@ def _partition_three_way(
     与验证门/各 API 路径用的那份口径不同。同一个概念在仓库里有两份实现，
     迟早对同一份数据给出不同的"样本外"。这里只保留签名（调用方不变）。
     """
-    from ..data_engine.data_partitioner import split_from_settings
-
     # oos_ratio/test_ratio 是本函数的历史入参语义（占**总样本**的比例），
-    # 而 ThreeWayPartitioner 的 val_ratio 是占"剔除 Test 后剩余"的比例 —— 换算一次，
-    # 不要让两边的同名参数各表一意。
-    val_share = max(1e-6, float(oos_ratio) - float(test_ratio))
-    val_ratio = min(0.9, val_share / max(1e-6, 1.0 - float(test_ratio)))
-    split = split_from_settings(
-        dataset, test_ratio=test_ratio, val_ratio=val_ratio, min_train_days=20,
-    )
+    # 而 ThreeWayPartitioner 的 val_ratio 是占"剔除 Test 后剩余"的比例 —— 换算一次
+    # （见 `_research_split`），不要让两边的同名参数各表一意。
+    split = _research_split(dataset, oos_ratio, test_ratio, dataset_key)
     return split.train, split.validate, split.test
+
+
+def _report_held_out(split, dataset_key: Optional[str], purpose: str, best_dsl: str,
+                     m: Dict[str, Any], emit) -> None:
+    """
+    显式要求时才动用一次 Test 段（外部审查 2026-10-18 F03）：**先记账**，再算赢家的 Test 指标。
+    此前工作流每次都自动算 Test Sharpe 且不记账 —— 跑 20 次，屏幕上的 Test 数字和第 1 次长得一样。
+    """
+    from ..data_engine.data_partitioner import account_holdout_use
+    m["holdout_usage"] = account_holdout_use(split, dataset_key=dataset_key or "synthetic",
+                                             purpose=purpose)
+    tm = _quick_metrics(best_dsl, split.test, None)
+    m["test_sharpe"]   = tm.get("is_sharpe")     # test 作为单段传入 → is_sharpe 即 Test Sharpe
+    m["test_turnover"] = tm.get("turnover")
+    m["held_out_test"] = True
+    emit(f"[Held-out Test] Sharpe={_fmt(m['test_sharpe'])}（GP 未见；"
+         f"该段第 {m['holdout_usage'].get('uses')} 次被使用）")
 
 
 def _quick_metrics(
@@ -738,7 +767,14 @@ class GenerationWorkflow:
         hypothesis:  str,
         dataset:     Dict[str, Any],
         on_progress: Optional[Any] = None,
+        dataset_key: Optional[str] = None,
+        report_test: bool = False,
     ) -> WorkflowResult:
+        """
+        dataset_key : 真实数据集名（冻结边界按它固定，见 F04）。合成数据不传。
+        report_test : True = 动用一次冻结 Test 段汇报赢家（**会被记账**）。默认 False ——
+                      研究流程不看 Test（外部审查 2026-10-18 F03）。
+        """
         logger.info("[Workflow A] START  hypothesis='%.80s'", hypothesis)
 
         def _emit(text: str) -> None:
@@ -753,9 +789,10 @@ class GenerationWorkflow:
 
         # Step 1: 三段切割 IS / Validate / Test（Phase S.1+S.2）
         # GP 只在 Validate 上做适应度选择；Test 为 held-out，GP 全程不可见，仅最终汇报。
+        split = None
         try:
-            is_data, oos_data, test_data = _partition_three_way(
-                dataset, self._oos_ratio, self._test_ratio)
+            split = _research_split(dataset, self._oos_ratio, self._test_ratio, dataset_key)
+            is_data, oos_data, test_data = split.train, split.validate, split.test
         except ValueError as exc:
             # 数据太短无法三段 → 退回两段（无 held-out test）。
             # metrics 里的 held_out_test 会置 False，但**退化本身此前无任何告警** ——
@@ -821,16 +858,14 @@ class GenerationWorkflow:
             m.setdefault("insufficient_sample", True)
         oos_s = m.get("oos_sharpe")
 
-        # Phase S.2：在 held-out Test 上评估赢家（GP 全程未见）→ 唯一诚实的样本外数字。
+        # Phase S.2：held-out Test 只在**显式要求**时汇报，并记一次使用（F03）。
         # 仅汇报、绝不参与选择（选择已在上面的 Validate 段完成）。
-        if test_data:
-            tm = _quick_metrics(gp_result.best_dsl, test_data, None)
-            m["test_sharpe"]   = tm.get("is_sharpe")     # test_data 作为单段传入 → is_sharpe 即 Test Sharpe
-            m["test_turnover"] = tm.get("turnover")
-            m["held_out_test"] = True
-            _emit(f"[Held-out Test] Sharpe={_fmt(m['test_sharpe'])}（GP 未见，唯一诚实 OOS 数字）")
+        report = bool(report_test and test_data and split is not None)
+        if report:
+            _report_held_out(split, dataset_key, "workflow/generation", gp_result.best_dsl, m, _emit)
         else:
             m["held_out_test"] = False
+            m["test_withheld"] = bool(test_data)      # 有 Test 段，但这次没看（默认）
 
         _emit(
             f"[Optuna] Fine-tuning complete | "
@@ -852,9 +887,12 @@ class GenerationWorkflow:
 
         # Task 3.2: 组合 top-5 池因子并评估。权重在 IS 拟合（B2），评估集用 **held-out Test**
         # （Phase S.2；无 test 时退回 Validate），使组合指标也是诚实样本外。
+        #  F03：没有显式要求看 Test 时，组合也只在 Validate 上评估（这时它是选择段上的数字）。
         combined_metrics = _combine_pool_alphas(
-            gp_result.pool_top5, (test_data or oos_data), _emit, is_data=is_data,
+            gp_result.pool_top5, (test_data if report else oos_data), _emit, is_data=is_data,
         )
+        if isinstance(combined_metrics, dict):
+            combined_metrics["eval_segment"] = "test" if report else "validate"
 
         return WorkflowResult(
             workflow         = "generation",
@@ -937,7 +975,15 @@ class OptimizationWorkflow:
         dsl:         str,
         dataset:     Dict[str, Any],
         on_progress: Optional[Any] = None,
+        dataset_key: Optional[str] = None,
     ) -> WorkflowResult:
+        """
+        dataset_key : 真实数据集名（冻结边界按它固定，见 F04）。
+
+        外部审查 2026-10-18 F03：此前这里对**全量**数据两段切，GP 按最后 30% 择优 ——
+        那一段正是冻结 Test 所在的位置。现在与 Workflow A 一样先切三段，GP 只在选择段里切
+        IS / Validate；Test 段这个工作流不看。
+        """
         logger.info("[Workflow B] START  dsl='%.80s'", dsl)
 
         def _emit(text: str) -> None:
@@ -956,8 +1002,14 @@ class OptimizationWorkflow:
             raise ValueError(f"Invalid or unparseable DSL: {dsl}")
         canonical = repr(node)
 
-        # Step 2: IS/OOS partition + quick initial evaluation
-        is_data, oos_data = _partition(dataset, self._oos_ratio)
+        # Step 2: IS/OOS partition（只在选择段内）+ quick initial evaluation
+        try:
+            split = _research_split(dataset, self._oos_ratio, 0.15, dataset_key)
+            is_data, oos_data = split.train, split.validate
+        except ValueError as exc:
+            logger.warning("[Workflow B] 数据不足以三段切割，退回两段（本次没有冻结 Test 段）: %s", exc)
+            _emit("[Workflow B] ⚠ 数据不足以三段切割 → 无冻结 Test，OOS 是 GP 选择用的那一段")
+            is_data, oos_data = _partition(dataset, self._oos_ratio)
         init_metrics = _quick_metrics(canonical, is_data, oos_data)
         logger.info(
             "[Workflow B] Initial metrics: is_sharpe=%.4f oos_sharpe=%.4f "

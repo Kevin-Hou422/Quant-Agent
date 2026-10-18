@@ -81,8 +81,10 @@ def _activate_strategy(loop, settings, monkeypatch, tmp_path, dsls=("rank(ts_del
         loop.store.update_status(aid, "paper")
         ids.append(str(aid))
     ss = StrategyStore()
-    sid = ss.save(StrategyConfig(factors=ids, combo_weights={i: 1.0 / len(ids) for i in ids},
-                                 aum=AUM, method="ic_weighted"))
+    from tests.conftest import approved_verdict
+    cw = {i: 1.0 / len(ids) for i in ids}
+    sid = ss.save(StrategyConfig(factors=ids, combo_weights=cw, aum=AUM, method="ic_weighted",
+                                 verdict=approved_verdict(dict(zip(ids, dsls)), cw, AUM)))
     ss.update_status(sid, "approved")
     ss.update_status(sid, "active")
     return ids, sid
@@ -98,6 +100,9 @@ def test_paper_execution_trades_the_risk_gated_row_of_the_active_strategy(loop_e
     loop = build()
     _, sid = _activate_strategy(loop, settings, monkeypatch, tmp_path)
     ds = _dataset()
+    ctx.mark(ds["close"].iloc[-1].to_dict())          # 独立报价 = 决策日收盘（F09）
+    from datetime import datetime as _dt
+    ctx.quote_time = _dt.now().strftime("%Y-%m-%d %H:%M:%S.000")   # 这个循环用真实时钟：报价也是"刚刚"的
     out = loop.run_portfolio(ds, aum=AUM)
 
     assert out["active_config"] == sid and out["combo_weights"] == pytest.approx(

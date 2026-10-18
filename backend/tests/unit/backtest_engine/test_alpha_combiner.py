@@ -316,112 +316,131 @@ class TestIcWeights:
 
 
 # ===========================================================================
-# D. 最小方差
+# D. 最小方差（外部审查 2026-10-18 F12：按**因子组合收益**估协方差）
 # ===========================================================================
+
+def _mv_world(seed=21, n_days=None):
+    """截面上有变化的信号 + 收益。最小方差现在要收益序列：每个因子先变成一个美元中性组合。"""
+    rng = np.random.default_rng(seed)
+    idx = IDX if n_days is None else pd.bdate_range("2022-01-03", periods=n_days)
+    mk = lambda a: pd.DataFrame(a, index=idx, columns=COLS)          # noqa: E731
+    ret = mk(rng.normal(0, 0.02, (len(idx), len(COLS))))
+    return mk, ret, rng
+
+
+def _factor_returns(sig, ret):
+    """因子组合日收益的独立参考实现：截面去均值、按 Σ|w| 归一，收益 = Σ w·r。"""
+    a = sig.to_numpy(float)
+    r = ret.reindex(index=sig.index, columns=sig.columns).to_numpy(float)
+    w = a - np.nanmean(a, axis=1, keepdims=True)
+    g = np.nansum(np.abs(w), axis=1, keepdims=True)
+    w = np.where(g > 1e-12, w / np.where(g > 1e-12, g, 1.0), np.nan)
+    both = np.isfinite(w) & np.isfinite(r)
+    out = np.where(both, w * r, 0.0).sum(axis=1)
+    out[~both.any(axis=1)] = np.nan
+    return out
+
 
 class TestMinVarianceWeights:
 
+    def test_the_review_r9_opposite_and_duplicate_factors_are_told_apart(self):
+        """
+        审查的 R9：zscore 后截面均值恒为 0，此前 a、−a、a 拿到各 1/3 ——
+        "相同"与"相反"的信息全丢了。按因子组合收益估协方差：a 与 −a 一多一空正好对冲，
+        最小方差会重押这一对，而不是平均分。
+        """
+        mk, ret, rng = _mv_world()
+        a = mk(rng.normal(0, 1, (len(IDX), len(COLS))))
+        a = a.sub(a.mean(axis=1), axis=0)
+        w = AlphaCombiner().optimize_weights({"a": a, "opposite": -a, "same": a.copy()}, ret,
+                                             method="min_variance")
+        assert max(w.values()) - min(w.values()) > 0.1, f"三条仍被一视同仁：{w}"
+        assert w["opposite"] > 0.3, f"对冲腿没有拿到权重：{w}"
+
+    def test_without_returns_it_is_explicitly_equal_weight(self, caplog):
+        with caplog.at_level("WARNING"):
+            w = AlphaCombiner().optimize_weights(_two_signals(), method="min_variance")
+        assert w == {"a": 0.5, "b": 0.5}
+        assert any("min_variance 需要收益序列" in r.getMessage() for r in caplog.records)
+
     def test_a_single_alpha_takes_the_whole_weight(self):
         """`if n < 2: return {dsls[0]: 1.0}` —— `<` 翻成 `<=` 会让两条因子也走这里。"""
-        sig = _df(np.random.default_rng(1).normal(0, 1, (len(IDX), len(COLS))))
-        assert AlphaCombiner().optimize_weights({"only": sig},
-                                                method="min_variance") == {"only": 1.0}
+        mk, ret, rng = _mv_world(1)
+        assert AlphaCombiner().optimize_weights({"only": mk(rng.normal(0, 1, (len(IDX), len(COLS))))},
+                                                ret, method="min_variance") == {"only": 1.0}
 
     def test_two_alphas_do_not_take_the_single_alpha_shortcut(self):
-        w = AlphaCombiner().optimize_weights(_two_signals(), method="min_variance")
-        assert len(w) == 2, (
-            f"两条因子走进了单因子分支：{w} —— `n < 2` 被翻成了 `<=`")
+        w = AlphaCombiner().optimize_weights(_two_signals(), _random_returns(), method="min_variance")
+        assert len(w) == 2, f"两条因子走进了单因子分支：{w} —— `n < 2` 被翻成了 `<=`"
 
-    def test_the_low_variance_alpha_gets_more_weight(self):
+    def test_the_low_variance_factor_portfolio_gets_more_weight(self):
         """
-        最小方差组合的核心性质：波动小的那条拿更多权重。
+        最小方差的核心性质：**因子组合收益**波动小的那条拿更多权重。
         `inv_cov @ ones` 写成 `cov @ ones` 会让结论完全反过来。
+        构造：收益几乎完全由 loud 信号驱动（它的组合收益大起大落），quiet 与收益无关。
         """
-        rng = np.random.default_rng(4)
-        n = len(IDX)
-        quiet = _df(np.tile(rng.normal(0, 0.01, (n, 1)), (1, len(COLS))))
-        loud = _df(np.tile(rng.normal(0, 5.0, (n, 1)), (1, len(COLS))))
-        w = AlphaCombiner().optimize_weights({"quiet": quiet, "loud": loud},
-                                             method="min_variance")
-        assert w["quiet"] > w["loud"], (
-            f"低波动因子拿到的权重更少：{w} —— 最小方差解算反了")
+        mk, _, rng = _mv_world(4)
+        loud = mk(rng.normal(0, 1, (len(IDX), len(COLS))))
+        quiet = mk(rng.normal(0, 1, (len(IDX), len(COLS))))
+        k = rng.normal(0, 0.05, (len(IDX), 1))
+        ret = mk(k * loud.sub(loud.mean(axis=1), axis=0).to_numpy() + rng.normal(0, 1e-4, loud.shape))
+        assert np.std(_factor_returns(loud, ret)) > 2 * np.std(_factor_returns(quiet, ret))   # 前提
+        w = AlphaCombiner().optimize_weights({"quiet": quiet, "loud": loud}, ret, method="min_variance")
+        assert w["quiet"] > w["loud"], f"低波动因子拿到的权重更少：{w} —— 最小方差解算反了"
 
     def test_the_weights_are_long_only_and_sum_to_one(self):
         """`np.maximum(raw_w, 0.0)` —— 做空一条因子不在设计范围内。"""
-        rng = np.random.default_rng(17)
-        sigs = {f"a{i}": _df(np.tile(rng.normal(0, 1, (len(IDX), 1)),
-                                     (1, len(COLS)))) for i in range(4)}
-        w = AlphaCombiner().optimize_weights(sigs, method="min_variance")
+        mk, ret, rng = _mv_world(17)
+        base = mk(rng.normal(0, 1, (len(IDX), len(COLS))))
+        sigs = {f"a{i}": base + mk(rng.normal(0, 0.3 * (i + 1), (len(IDX), len(COLS)))) for i in range(4)}
+        sigs["neg"] = -base
+        w = AlphaCombiner().optimize_weights(sigs, ret, method="min_variance")
         assert all(v >= 0.0 for v in w.values()), f"出现了负权重：{w}"
         assert sum(w.values()) == pytest.approx(1.0)
 
-    def test_insufficient_rows_fall_back_to_equal_weight(self):
-        """
-        `if mask.sum() < n + 1: return equal weight`
-
-        `n + 1` 的 `+1` 被去掉会让样本数恰好等于因子数时也去求协方差 ——
-        此时协方差矩阵必然奇异，结果是随机的巨大权重。
-        构造：3 条因子、只有 3 行非 NaN。
-        """
-        short = pd.bdate_range("2022-01-03", periods=3)
-        sigs = {f"a{i}": pd.DataFrame(
-            np.random.default_rng(i).normal(0, 1, (3, 4)),
-            index=short, columns=list("WXYZ")) for i in range(3)}
-        w = AlphaCombiner().optimize_weights(sigs, method="min_variance")
-        assert all(v == pytest.approx(1 / 3) for v in w.values()), (
-            f"样本刚好等于因子数时没有退回等权：{w}")
+    @pytest.mark.parametrize("n_days,equal", [(19, True), (20, False)])
+    def test_the_minimum_sample_is_twenty_usable_days(self, n_days, equal):
+        """`mask.sum() < max(2n, 20)`：恰好 20 个可用日就够，19 个不够（两侧都钉住）。"""
+        mk, ret, rng = _mv_world(9, n_days=n_days)
+        sigs = {"a": mk(rng.normal(0, 1, (n_days, len(COLS)))),
+                "b": mk(rng.normal(0, 1, (n_days, len(COLS))))}
+        usable = int((~np.isnan(np.stack([_factor_returns(v, ret) for v in sigs.values()], 1)).any(1)).sum())
+        assert usable == n_days
+        w = AlphaCombiner().optimize_weights(sigs, ret, method="min_variance")
+        assert (w == {"a": 0.5, "b": 0.5}) is equal
 
     def test_identical_alphas_still_produce_usable_weights(self):
-        """
-        完全相同的两条因子 → 协方差奇异。
-        `cov + 1e-6 * np.eye(n)` 的岭正则被删会让 `inv` 抛
-        （或给出天文数字的权重）。
-        """
-        sig = _df(np.tile(np.random.default_rng(6).normal(0, 1, (len(IDX), 1)),
-                          (1, len(COLS))))
-        w = AlphaCombiner().optimize_weights({"a": sig, "b": sig.copy()},
-                                             method="min_variance")
+        """完全相同的两条因子 → 协方差奇异；岭正则被删会让 `inv` 抛或给出天文数字。"""
+        mk, ret, rng = _mv_world(6)
+        sig = mk(rng.normal(0, 1, (len(IDX), len(COLS))))
+        w = AlphaCombiner().optimize_weights({"a": sig, "b": sig.copy()}, ret, method="min_variance")
         assert sum(w.values()) == pytest.approx(1.0)
         assert all(np.isfinite(v) for v in w.values()), f"奇异协方差算出了 {w}"
 
     def test_an_all_negative_solution_falls_back_to_equal_weight(self, monkeypatch):
-        """
-        `if w_sum < 1e-12: w = ones / n`
-        —— 长仓约束把所有权重削成 0 时的兜底。
-        守卫被删会让 `w /= 0` 产生 NaN/inf 权重。
-        """
+        """`if w_sum < 1e-12: w = ones / n` —— 守卫被删会让 `w /= 0` 产生 NaN/inf 权重。"""
         import app.core.backtest_engine.alpha_combiner as AC
-        monkeypatch.setattr(AC.np.linalg, "inv",
-                            lambda m: -np.ones(m.shape))
-        w = AlphaCombiner().optimize_weights(_two_signals(), method="min_variance")
+        monkeypatch.setattr(AC.np.linalg, "inv", lambda m: -np.ones(m.shape))
+        w = AlphaCombiner().optimize_weights(_two_signals(), _random_returns(), method="min_variance")
         assert w == {"a": 0.5, "b": 0.5}, f"全负解没有退回等权：{w}"
 
     def test_a_singular_matrix_error_degrades_to_equal_weight(self, monkeypatch):
-        """
-        `except np.linalg.LinAlgError: w = np.ones(n) / n`
-        —— 源码注释写明"调用方以为拿到的是最小方差，必须说出来"。
-        这里钉住兜底值本身（等权），并确认没有把异常抛出去。
-        """
         import app.core.backtest_engine.alpha_combiner as AC
 
         def boom(_m):
             raise np.linalg.LinAlgError("singular")
 
         monkeypatch.setattr(AC.np.linalg, "inv", boom)
-        w = AlphaCombiner().optimize_weights(_two_signals(), method="min_variance")
+        w = AlphaCombiner().optimize_weights(_two_signals(), _random_returns(), method="min_variance")
         assert w == {"a": 0.5, "b": 0.5}
 
-    def test_rows_with_any_nan_are_dropped_before_the_covariance(self):
-        """
-        `mask = ~np.isnan(mat).any(axis=1)` —— `any` 换成 `all`
-        会让"只要不是全 NaN 就保留"，`np.cov` 随后产出 NaN 协方差。
-        """
-        rng = np.random.default_rng(8)
-        a = _df(np.tile(rng.normal(0, 1, (len(IDX), 1)), (1, len(COLS))))
-        b = _df(np.tile(rng.normal(0, 2, (len(IDX), 1)), (1, len(COLS))))
+    def test_days_with_any_missing_factor_return_are_dropped(self):
+        """`mask = ~np.isnan(mat).any(axis=1)` —— `any` 换成 `all` 会让 NaN 进协方差。"""
+        mk, ret, rng = _mv_world(8)
+        a = mk(rng.normal(0, 1, (len(IDX), len(COLS))))
+        b = mk(rng.normal(0, 2, (len(IDX), len(COLS))))
         b.iloc[5:10] = np.nan
-        w = AlphaCombiner().optimize_weights({"a": a, "b": b},
-                                             method="min_variance")
+        w = AlphaCombiner().optimize_weights({"a": a, "b": b}, ret, method="min_variance")
         assert all(np.isfinite(v) for v in w.values()), f"NaN 行污染了协方差：{w}"
 
 
@@ -865,7 +884,7 @@ class TestEpsilonGuards:
         sigs = _two_signals()
         sigs["c"] = _df(np.random.default_rng(31).normal(0, 1,
                                                          (len(IDX), len(COLS))))
-        w = AlphaCombiner().optimize_weights(sigs, method="min_variance")
+        w = AlphaCombiner().optimize_weights(sigs, _random_returns(), method="min_variance")
         assert np.abs(np.array([5e-13, 1e-12 - 5e-13, 0.0])).sum() == 1e-12, (
             "前提失效：桩给出的权重和不再精确等于 1e-12")
         assert w["c"] == pytest.approx(0.0), (
@@ -882,7 +901,7 @@ class TestEpsilonGuards:
         sigs = _two_signals()
         sigs["c"] = _df(np.random.default_rng(31).normal(0, 1,
                                                          (len(IDX), len(COLS))))
-        w = AlphaCombiner().optimize_weights(sigs, method="min_variance")
+        w = AlphaCombiner().optimize_weights(sigs, _random_returns(), method="min_variance")
         assert all(v == pytest.approx(1 / 3) for v in w.values()), (
             f"权重和低于 1e-12 却没有退回等权：{w}")
 
@@ -890,98 +909,47 @@ class TestEpsilonGuards:
 class TestMinVarianceAgainstReference:
 
     @staticmethod
-    def _ref(signals, ridge=1e-6):
-        """`_min_variance_weights` 的独立参考实现。"""
+    def _ref(signals, ret, ridge=1e-6, shrink=0.2):
+        """`_min_variance_weights` 的独立参考实现（因子组合收益 → 收缩协方差 → 闭式解）。"""
         dsls = list(signals)
         n = len(dsls)
         if n < 2:
             return {dsls[0]: 1.0}
-        vecs = [np.nanmean(s.to_numpy(dtype=float), axis=1)
-                for s in signals.values()]
-        mat = np.stack(vecs, axis=1)
+        mat = np.stack([_factor_returns(s, ret) for s in signals.values()], axis=1)
         mask = ~np.isnan(mat).any(axis=1)
-        if mask.sum() < n + 1:
+        if mask.sum() < max(2 * n, 20):
             return {d: 1.0 / n for d in dsls}
-        cov = np.cov(mat[mask].T)
+        sample = np.cov(mat[mask].T)
+        cov = (1 - shrink) * sample + shrink * np.diag(np.diag(sample))
         ones = np.ones(n)
         raw = np.linalg.inv(cov + ridge * np.eye(n)) @ ones
         w = np.maximum(raw, 0.0)
-        s = w.sum()
-        w = ones / n if s < 1e-12 else w / s
+        tot = w.sum()
+        w = ones / n if tot < 1e-12 else w / tot
         return {d: float(w[i]) for i, d in enumerate(dsls)}
 
-    def test_it_matches_an_independent_reference(self):
-        """
-        **首测存活项 L252**：`np.linalg.inv(cov + 1e-6 * np.eye(n))`
-        的 `+` 翻成 `-`。
+    @staticmethod
+    def _world():
+        mk, ret, rng = _mv_world(41)
+        base = mk(rng.normal(0, 1, (len(IDX), len(COLS))))
+        sigs = {f"a{i}": base + mk(rng.normal(0, 0.5 + i, (len(IDX), len(COLS)))) for i in range(4)}
+        return sigs, ret
 
-        岭正则项很小，在良态协方差上对结果只有 1e-6 量级的影响 ——
-        任何"只看排序""只看和为 1"的断言都察觉不到。
-        逐位比对独立参考实现是唯一可靠的手段。
-        """
-        rng = np.random.default_rng(41)
-        sigs = {f"a{i}": _df(np.tile(rng.normal(0, 0.5 + i, (len(IDX), 1)),
-                                     (1, len(COLS)))) for i in range(4)}
-        got = AlphaCombiner().optimize_weights(sigs, method="min_variance")
-        ref = self._ref(sigs)
+    def test_it_matches_an_independent_reference(self):
+        """逐位比对独立参考实现（岭正则、收缩、长仓截断、归一化一起钉住）。"""
+        sigs, ret = self._world()
+        got = AlphaCombiner().optimize_weights(sigs, ret, method="min_variance")
+        ref = self._ref(sigs, ret)
         for k in sigs:
             assert got[k] == pytest.approx(ref[k], rel=1e-9), (
                 f"{k} 的最小方差权重与参考实现不符：{got[k]} vs {ref[k]}")
 
-    def test_the_ridge_sign_actually_changes_the_answer_here(self):
-        """
-        上一条的区分力前提：把岭正则改成减号**确实**会改变权重。
-        协方差如果太良态，加减 1e-6 的差别可能落在 rel=1e-9 之内，
-        那条用例就白写了。这里正面确认两者可分。
-        """
-        rng = np.random.default_rng(41)
-        sigs = {f"a{i}": _df(np.tile(rng.normal(0, 0.5 + i, (len(IDX), 1)),
-                                     (1, len(COLS)))) for i in range(4)}
-        plus = self._ref(sigs, ridge=1e-6)
-        minus = self._ref(sigs, ridge=-1e-6)
-        assert any(abs(plus[k] - minus[k]) > 1e-9 for k in sigs), (
-            "岭正则加减号给出的权重差别小于 1e-9 —— "
-            "上一条用例已失去对 L252 的区分力，需要换更病态的构造")
-
-    def test_exactly_n_plus_one_rows_are_enough_for_the_covariance(self):
-        """
-        **首测存活项 L245**：`if mask.sum() < n + 1:` 翻成 `<=`。
-
-        只在有效行数**恰好等于 n+1** 时有差别。
-        构造：2 条因子、恰好 3 行非 NaN。
-        原始：3 < 3 为假 → 走协方差求解，给出非等权的解；
-        变异：3 <= 3 为真 → 直接等权。两者可分。
-        """
-        idx = pd.bdate_range("2022-01-03", periods=3)
-        cols = list("WXYZ")
-        a = pd.DataFrame(np.tile(np.array([[1.0], [2.0], [1.5]]), (1, 4)),
-                         index=idx, columns=cols)
-        b = pd.DataFrame(np.tile(np.array([[5.0], [1.0], [9.0]]), (1, 4)),
-                         index=idx, columns=cols)
-        sigs = {"a": a, "b": b}
-
-        mat = np.stack([np.nanmean(s.to_numpy(float), axis=1)
-                        for s in sigs.values()], axis=1)
-        assert (~np.isnan(mat).any(axis=1)).sum() == 3, "前提失效：有效行数不是 3"
-
-        w = AlphaCombiner().optimize_weights(sigs, method="min_variance")
-        assert w != {"a": 0.5, "b": 0.5}, (
-            f"有效行数恰好 n+1 时退回了等权：{w} —— "
-            f"`mask.sum() < n + 1` 被翻成了 `<=`")
-        ref = self._ref(sigs)
-        for k in sigs:
-            assert w[k] == pytest.approx(ref[k], rel=1e-9)
-
-    def test_n_rows_are_not_enough(self):
-        """边界另一侧：2 条因子、只有 2 行有效 → 必须退回等权。"""
-        idx = pd.bdate_range("2022-01-03", periods=2)
-        cols = list("WXYZ")
-        a = pd.DataFrame(np.tile(np.array([[1.0], [2.0]]), (1, 4)),
-                         index=idx, columns=cols)
-        b = pd.DataFrame(np.tile(np.array([[5.0], [1.0]]), (1, 4)),
-                         index=idx, columns=cols)
-        assert AlphaCombiner().optimize_weights(
-            {"a": a, "b": b}, method="min_variance") == {"a": 0.5, "b": 0.5}
+    def test_the_shrinkage_actually_changes_the_answer_here(self):
+        """上一条的区分力前提：收缩比例（以及岭正则的符号）确实会改变权重。"""
+        sigs, ret = self._world()
+        base = self._ref(sigs, ret)
+        assert any(abs(base[k] - self._ref(sigs, ret, shrink=0.0)[k]) > 1e-6 for k in sigs)
+        assert any(abs(base[k] - self._ref(sigs, ret, ridge=-1e-6)[k]) > 1e-12 for k in sigs)
 
 
 # ===========================================================================

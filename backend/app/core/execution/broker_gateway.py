@@ -28,7 +28,7 @@ import math
 import socket
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
@@ -153,8 +153,23 @@ class OrderQuery:
     history_error: str = ""
 
 
+@dataclass(frozen=True)
+class Quote:
+    """独立报价：价格 + 报价时刻（交易所本地时间，naive；拿不到时间 → None）。"""
+    price: float
+    asof:  Optional[datetime]
+
+
 class BrokerGateway(ABC):
     """执行层看到的券商。所有方法失败时抛 BrokerError。"""
+
+    def quotes(self, tickers: List[str]) -> Dict[str, "Quote"]:
+        """
+        独立的行情报价（外部审查 2026-10-18 F09）。不同于持仓里的 nominal_price ——
+        新开仓的票在持仓里没有价，此前下单门就拿自己的参考价给自己估值。
+        没有报价源的网关一律抛错：调用方据此不放行新开仓。
+        """
+        raise BrokerError(f"{type(self).__name__} 不提供独立报价")
 
     @abstractmethod
     def account(self) -> AccountSnapshot: ...
@@ -251,7 +266,9 @@ class MoomooGateway(BrokerGateway):
         context_factory: Optional[Callable[[], Any]] = None,
         sdk: Any = None,
         preflight: bool = True,
+        quote_fn: Optional[Callable[[List[str]], Any]] = None,
     ) -> None:
+        """quote_fn : tickers → 行情快照 DataFrame（moomoo `get_market_snapshot` 的列）。默认开一个行情连接取。"""
         if str(trd_env).upper() != TRD_ENV:
             raise LiveTradingRefused(
                 f"拒绝 trd_env={trd_env!r}：Phase 12 只允许纸交易（SIMULATE）。"
@@ -262,6 +279,7 @@ class MoomooGateway(BrokerGateway):
         self.host, self.port = host, int(port)
         self.security_firm = security_firm
         self.preflight = bool(preflight)
+        self._quote_fn = quote_fn
         self._ctx = (context_factory or self._default_context)()
         self._acc_id = self._resolve_account(int(acc_id))
 
@@ -431,6 +449,32 @@ class MoomooGateway(BrokerGateway):
         self._ok(*self._ctx.modify_order(
             modify_order_op=self._m.ModifyOrderOp.CANCEL, order_id=str(broker_order_id),
             qty=0, price=0, **self._env_kwargs()), what=f"cancel {broker_order_id}")
+
+    def quotes(self, tickers: List[str]) -> Dict[str, Quote]:
+        tickers = sorted({str(t) for t in tickers})
+        if not tickers:
+            return {}
+        fn = self._quote_fn
+        if fn is None:
+            from app.core.trading_context.providers import moomoo_snapshot_fn
+            fn = moomoo_snapshot_fn(self.host, self.port)
+        try:
+            df = fn(tickers)
+        except Exception as exc:
+            raise BrokerError(f"取独立报价失败：{exc}") from exc
+        out: Dict[str, Quote] = {}
+        for _, r in df.iterrows():
+            def num(k):
+                v = pd.to_numeric(r.get(k), errors="coerce")
+                return float(v) if pd.notna(v) and float(v) > 0 else None
+            px = num("last_price")
+            if px is None and num("bid_price") and num("ask_price"):
+                px = (num("bid_price") + num("ask_price")) / 2.0
+            if px is None:
+                continue
+            ts = pd.to_datetime(r.get("update_time"), errors="coerce")
+            out[_from_moomoo_code(str(r["code"]))] = Quote(px, None if pd.isna(ts) else ts.to_pydatetime())
+        return out
 
     def describe(self) -> dict:
         return {"broker": "moomoo", "trd_env": TRD_ENV, "acc_id": self._acc_id,

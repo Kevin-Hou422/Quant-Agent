@@ -833,7 +833,8 @@ class TestPositionsOutsideTheNewTargetAreNotDropped:
         assert "A" not in pos, f"A 没有被平掉：{pos}"
         fills = {f.ticker: f for f in broker.store.fills_on(52, "2024-04-02")}
         assert "A" in fills, "A 的平仓没有留下成交记录 —— 仓位凭空消失"
-        assert fills["A"].traded_weight == pytest.approx(-0.5, abs=1e-9)
+        # 外部审查 2026-10-18 F10（R6）：A 涨了 10%，调仓前它是 0.55/1.05 = 52.38%，不是 50%
+        assert fills["A"].traded_weight == pytest.approx(-0.55 / 1.05, abs=1e-9)
 
     def test_a_dropped_name_that_cannot_fill_stays_on_the_book(self, broker):
         """

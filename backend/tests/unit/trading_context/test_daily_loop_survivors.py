@@ -261,9 +261,12 @@ def test_active_strategy_config_filters_components(tmp_path, monkeypatch):
     keep = str(ids[0])
 
     sstore = StrategyStore(db_url=f"sqlite:///{tmp_path/'s.db'}")
+    from tests.conftest import approved_verdict
     sid = sstore.save(StrategyConfig(factors=[keep], combo_weights={keep: 1.0},
                                      aum=10_000.0, passed=True, status="proposed",
-                                     name="active-filter-test"))
+                                     name="active-filter-test",
+                                     verdict=approved_verdict({keep: "rank(ts_delta(log(close), 5))"},
+                                                              {keep: 1.0}, 10_000.0)))
     sstore.update_status(sid, "approved")
     sstore.update_status(sid, "active")
     # 直接替换 latest_active，避免依赖 StrategyStore 的默认 db 路径
@@ -376,7 +379,10 @@ def test_valid_vol_estimate_is_used_not_discarded(tmp_path, monkeypatch):
     orig = rg.PortfolioRiskGate.apply
 
     def _spy(self, weights, sectors=None, port_vol_ann=None):
-        seen["vol"] = port_vol_ann
+        # 只记传了波动估计的那次（做缩放的那次）。策略门里的风控、无交易带之后的硬约束投影
+        # 都故意不传（外部审查 F07 / R7：传两次缩放会叠乘）
+        if port_vol_ann is not None or "vol" not in seen:
+            seen["vol"] = port_vol_ann
         return orig(self, weights, sectors=sectors, port_vol_ann=port_vol_ann)
 
     monkeypatch.setattr(rg.PortfolioRiskGate, "apply", _spy)

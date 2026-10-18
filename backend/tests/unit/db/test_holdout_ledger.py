@@ -39,12 +39,36 @@ class TestCounting:
         uses = [led.record_use("ds", key).over_budget for _ in range(4)]
         assert uses == [False, False, False, True], f"预算=3 的越界点不对：{uses}"
 
-    def test_different_test_windows_are_counted_separately(self, ledger):
+    def test_overlapping_windows_share_one_count(self, ledger):
+        """
+        外部审查 2026-10-18 F04（R1）：此前"换了日期就是另一个段、另起一本账"，
+        去掉最后一天就得到一份全新的预算 —— 而两个窗口重叠了 521 天。
+        """
         ledger.record_use("ds", "2022-01-03..2024-01-02")
         u = ledger.record_use("ds", "2021-01-04..2023-01-03")
-        assert u.uses == 1, (
-            f"换了一个 Test 窗口却继承了上一段的计数（{u.uses}）—— "
-            f"每个窗口必须各记各的")
+        assert (u.uses, u.over_budget) == (2, True)
+        assert ledger.count("ds", "2023-01-03..2023-01-03") == 2     # 端点相接也算重叠
+
+    def test_disjoint_windows_are_counted_separately(self, ledger):
+        ledger.record_use("ds", "2022-01-03..2024-01-02")
+        u = ledger.record_use("ds", "2024-01-03..2025-01-02")
+        assert u.uses == 1, f"两个不相交的窗口被并到一起数了（{u.uses}）"
+
+    def test_the_review_r1_scenario(self, ledger):
+        from tests.conftest import _make_dataset
+        from app.core.data_engine.data_partitioner import ThreeWayPartitioner
+        ds = _make_dataset(n_days=1600, n_tickers=10)
+        a = ThreeWayPartitioner().partition(ds)
+        b = ThreeWayPartitioner().partition({k: v.iloc[:-1] for k, v in ds.items()})
+        assert a.test_key != b.test_key
+        assert ledger.record_use("same", a.test_key).uses == 1
+        assert ledger.record_use("same", b.test_key).uses == 2
+
+    def test_keys_that_are_not_date_windows_match_exactly(self, ledger):
+        ledger.record_use("ds", "empty")
+        ledger.record_use("ds", "2022-01-03..2024-01-02")
+        assert ledger.count("ds", "empty") == 1
+        assert ledger.count("ds", "k") == 0
 
     def test_different_datasets_are_counted_separately(self, ledger):
         ledger.record_use("us_tech_large", "k")

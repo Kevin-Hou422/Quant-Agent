@@ -147,9 +147,12 @@ def _three_way(dataset, dataset_name: str, purpose: str):
     except Exception as exc:
         logger.error("[S.2] 读不到 s_three_way_enabled，按更严的一侧切三段: %s", exc)
 
+    from app.core.data_engine.data_partitioner import FrozenBoundaryError, split_from_settings
     try:
-        from app.core.data_engine.data_partitioner import split_from_settings
-        split = split_from_settings(dataset)
+        split = split_from_settings(dataset, dataset_key=dataset_name)
+    except FrozenBoundaryError as exc:
+        # 有冻结边界却切不出选择段：退回全量就是把 Test 段交给调用方（F04），只能拒绝
+        raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
         logger.warning("[S.2] %s 三段切割失败（%s）→ 退回全量面板，本次无冻结 Test 段。",
                        purpose, exc)
@@ -918,6 +921,9 @@ class DatasetHealthResponse(BaseModel):
     n_zero_volume: int
     mean_nan_pct:  float
     notes:         List[str]
+    #: 硬性条件的违反项；非空时不论综合分多少，数据都不可用于交易
+    hard_failures: List[str] = []
+    healthy:       Optional[bool] = None
 
 
 @router.get("/datasets/{name}/health", response_model=DatasetHealthResponse, tags=["Data"])
@@ -946,11 +952,13 @@ def dataset_health(
         close = ds.data.get("close")
         n_t = close.shape[1] if close is not None else 0
         n_d = close.shape[0] if close is not None else 0
+        # 检查器不可用：报 0 分 + 不健康，而不是一个看起来正常的 1.0
         return DatasetHealthResponse(
-            name=name, overall_score=1.0,
+            name=name, overall_score=0.0,
             n_tickers=n_t, n_dates=n_d,
             n_gaps=0, n_spikes=0, n_zero_volume=0,
             mean_nan_pct=0.0, notes=["Health checker unavailable"],
+            hard_failures=["健康检查器不可用"], healthy=False,
         )
 
     nan_pct = float(report.nan_summary["nan_pct"].mean()) if not report.nan_summary.empty else 0.0
@@ -965,6 +973,8 @@ def dataset_health(
         n_zero_volume = len(report.zero_volume),
         mean_nan_pct  = float(nan_pct),
         notes         = list(report.notes),
+        hard_failures = list(report.hard_failures),
+        healthy       = not report.hard_failures,
     )
 
 
@@ -1292,7 +1302,9 @@ def alpha_validate(
     dataset_name: str = Query("us_tech_large", description=_DATASET_FIELD_DESC),
     dataset_start: str = Query("2021-01-01"),
     dataset_end:   str = Query("2024-01-01"),
-    n_trials:     int = Query(1, ge=1, description="产生该候选试过的策略总数，用于 DSR 去膨胀"),
+    n_trials:     Optional[int] = Query(
+        None, ge=1, description="产生该候选试过的策略总数，用于 DSR 去膨胀。"
+                                "不传 = 用全局试验台账的累计数（外部审查 2026-10-18 F05：此前默认 1）"),
     store:        AlphaStore = Depends(get_store),
 ) -> ValidateResponse:
     """
@@ -1316,7 +1328,8 @@ def alpha_validate(
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"真实数据集加载失败：{exc}")
 
-    result = ValidationGate().evaluate(record.dsl, ds.data, n_trials=n_trials)
+    result = ValidationGate().evaluate(record.dsl, ds.data, n_trials=n_trials,
+                                       dataset_key=dataset_name)
     new_status = record.status
     if result.passed:
         try:
@@ -1468,8 +1481,18 @@ def strategy_propose(store: AlphaStore = Depends(get_store),
     from app.core.data_engine.dataset_registry import load_registry_dataset
     from app.db.strategy_store import StrategyStore
     from app.config import settings
+    from app.core.data_engine.data_partitioner import FrozenBoundaryError, split_from_settings
     ds = load_registry_dataset(settings.paper_dataset,
                                start=settings.paper_start, end=settings.paper_end).data
+    # 外部审查 2026-10-18 F03：边际筛选、权重拟合与策略门此前拿的是**完整**面板（含冻结 Test 段）。
+    # 提案属于选择流程，只许看选择段。有冻结边界却切不出来 → 拒绝（退回全量就是把 Test 段交出去）；
+    # 数据太短、根本没有 Test 段 → 与其它入口同一口径：全量研究并留痕。
+    try:
+        ds = split_from_settings(ds, dataset_key=settings.paper_dataset).selection
+    except FrozenBoundaryError as exc:
+        raise HTTPException(status_code=422, detail=f"切不出研究窗口，拒绝用全量数据提案：{exc}")
+    except ValueError as exc:
+        logger.warning("[strategy_propose] 数据不足以三段切割，按全量提案（本次没有冻结 Test 段）: %s", exc)
     cfg = propose_from_paper_factors(store, ds, aum=float(settings.paper_aum))
     if cfg is None:
         raise HTTPException(status_code=400, detail="无 PAPER/ACTIVE 因子，无法构建策略配置")
@@ -1524,33 +1547,61 @@ def strategy_approve(sid: int, req: StrategyDecisionRequest = StrategyDecisionRe
             # TR.4 第 5 步：→ACTIVE 是"逼近真钱"的最严门 —— 需 ≥N 交易日前向 realized IC 且 t>阈值。
             # 【审计 F15】门**先于**任何状态变更判定：以前先改成 approved 再抛 409，
             # 重试时 approve 又只接受 proposed，这份策略就卡死了。
-            from app.core.lifecycle.promotion_gate import check_active_promotion
-            from app.tasks.daily_trading_loop import PORTFOLIO_BOOK_ID
-            # 只用真前向样本（is_forward=True），且只用**这份策略创建之后**的日子 —— 之前的
-            # 组合 IC 来自别的成分 / 基准库，不能借来给新策略过门。
-            # 局限（如实）：组合账本仍只有一个（book 0），创建之后到激活之前的 IC 也来自当时
-            # 在交易的配置；按策略版本分账见 MUTATION_LEDGER / 路线图的未修项。
-            since = rec.created_at.date() if rec.created_at else None
-            ics = [h.realized_ic for h in store.get_forward_ic(PORTFOLIO_BOOK_ID)
-                   if since is None or pd.Timestamp(h.date).date() >= since]
-            ok, detail = check_active_promotion(ics)
+            # 外部审查 2026-10-18 F06：只用**这份策略（id + 规格哈希）自己**的前向证据 ——
+            # 每日循环从它被提出那天起就按它的规格存档信号、次日结算（见 _record_strategy_evidence）。
+            # 此前读 book 0 的组合 IC 并按"创建日期之后"筛，那些数来自当时在交易的别的配置。
+            ok, detail = _active_gate(rec, sid)
             if not ok and getattr(settings, "tr_enforce_active_gate", False):
                 raise HTTPException(status_code=409,
                                     detail=f"→ACTIVE 门未过：{'; '.join(detail.get('reasons', []))}")
-        sstore.update_status(sid, "approved")
-        sstore.record_decision(sid, "approve", "proposed", "approved", req.reason, req.actor)
+        # 外部审查 2026-10-18 F14：批准 / 退役旧的 / 激活新的 / 谱系，**一个事务**
+        steps = [(sid, "approved", "approve", req.reason, req.actor)]
         if req.activate:
-            # 同一时刻只交易一份策略：激活新版本时，旧的 active 一并退役（留谱系）
-            for other in sstore.query(status="active"):
-                if other.id != sid:
-                    sstore.update_status(other.id, "retired")
-                    sstore.record_decision(other.id, "retire", "active", "retired",
-                                           f"被策略 #{sid} 取代", req.actor)
-            sstore.update_status(sid, "active")
-            sstore.record_decision(
-                sid, "activate", "approved", "active",
-                (req.reason + f" | TR.4 门: {'过' if ok else '未过(仅记录)'} "
-                 f"n={detail.get('n_days')} t={detail.get('ic_tstat')}"), req.actor)
+            steps += _activation_steps(sstore, sid, req, ok, detail)
+        sstore.apply_transitions(steps)
+    except IllegalStrategyTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return StrategyStore.to_dict(sstore.get(sid))
+
+
+def _activation_steps(sstore, sid: int, req, ok: bool, detail: dict) -> list:
+    """同一时刻只交易一份策略：激活新版本时，旧的 active 一并退役（留谱系）。"""
+    steps = [(o.id, "retired", "retire", f"被策略 #{sid} 取代", req.actor)
+             for o in sstore.query(status="active") if o.id != sid]
+    steps.append((sid, "active", "activate",
+                  (req.reason + f" | TR.4 门: {'过' if ok else '未过(仅记录)'} "
+                   f"n={detail.get('n_days')} t={detail.get('ic_tstat')}"), req.actor))
+    return steps
+
+
+def _active_gate(rec, sid: int):
+    from app.core.lifecycle.promotion_gate import check_active_promotion
+    from app.db.evidence_store import EvidenceStore
+    spec_h = json.loads(rec.verdict or "{}").get("spec_hash", "")
+    ics = ([e.ic for e in EvidenceStore().strategy_forward_ic(sid, spec_h)] if spec_h else [])
+    return check_active_promotion(ics)
+
+
+@router.post("/strategies/{sid}/activate", tags=["Strategy"])
+def strategy_activate(sid: int, req: StrategyDecisionRequest = StrategyDecisionRequest(),
+                      sstore=Depends(get_strategy_store)) -> dict:
+    """
+    已批准（approved）的配置 → active（外部审查 2026-10-18 F14：此前"批准"之后没有独立的激活接口，
+    只能在批准时顺带激活）。→ACTIVE 门与 approve 时同一口径；旧的 active 一并退役，同一事务。
+    """
+    from app.config import settings
+    from app.db.strategy_store import StrategyStore, IllegalStrategyTransition
+    rec = sstore.get(sid)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"Strategy id={sid} 不存在")
+    if str(rec.status) != "approved":
+        raise HTTPException(status_code=409, detail=f"仅 approved 可激活，当前={rec.status}")
+    ok, detail = _active_gate(rec, sid)
+    if not ok and getattr(settings, "tr_enforce_active_gate", False):
+        raise HTTPException(status_code=409,
+                            detail=f"→ACTIVE 门未过：{'; '.join(detail.get('reasons', []))}")
+    try:
+        sstore.apply_transitions(_activation_steps(sstore, sid, req, ok, detail))
     except IllegalStrategyTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return StrategyStore.to_dict(sstore.get(sid))
@@ -2701,7 +2752,8 @@ def workflow_generate(
         )
 
         try:
-            result = wf.run(hypothesis=req.hypothesis, dataset=dataset)
+            result = wf.run(hypothesis=req.hypothesis, dataset=dataset,
+                            dataset_key=req.dataset_name or None)
         except Exception as exc:
             logger.exception("workflow_generate failed")
             raise HTTPException(status_code=500, detail=str(exc))
@@ -2789,7 +2841,7 @@ def workflow_optimize(
         )
 
         try:
-            result = wf.run(dsl=req.dsl, dataset=dataset)
+            result = wf.run(dsl=req.dsl, dataset=dataset, dataset_key=req.dataset_name or None)
         except Exception as exc:
             logger.exception("workflow_optimize failed")
             raise HTTPException(status_code=500, detail=str(exc))
@@ -2934,7 +2986,8 @@ async def workflow_optimize_stream(
             oos_ratio       = req.oos_ratio,
             seed            = req.seed,
         )
-        result = wf.run(dsl=req.dsl, dataset=dataset, on_progress=emit_text)
+        result = wf.run(dsl=req.dsl, dataset=dataset, on_progress=emit_text,
+                        dataset_key=req.dataset_name or None)
         resp_dict = result.to_dict()
         resp_dict["metrics"] = _null_ratios_if_insufficient(resp_dict.get("metrics") or {})
         _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)
@@ -2990,7 +3043,8 @@ async def workflow_generate_stream(
             oos_ratio       = req.oos_ratio,
             seed            = req.seed,
         )
-        result = wf.run(hypothesis=req.hypothesis, dataset=dataset, on_progress=emit_text)
+        result = wf.run(hypothesis=req.hypothesis, dataset=dataset, on_progress=emit_text,
+                        dataset_key=req.dataset_name or None)
         resp_dict = result.to_dict()
         resp_dict["metrics"] = _null_ratios_if_insufficient(resp_dict.get("metrics") or {})
         _add_workflow_pnl(resp_dict, result.best_dsl, result.best_config, is_data, oos_data)

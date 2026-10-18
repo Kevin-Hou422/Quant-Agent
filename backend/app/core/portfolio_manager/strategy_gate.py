@@ -59,19 +59,19 @@ _COST_INPUT_FIELDS = ("close", "high", "low", "volume")
 
 
 def _panel_fingerprint(df) -> tuple:
-    """单张面板的 O(N) 指纹：形状 + 索引端点 + 首末行和 + 前 4 个列名。"""
-    arr = df.to_numpy()
-    try:
-        head = float(np.nansum(arr[0])) if len(arr) else 0.0
-        tail = float(np.nansum(arr[-1])) if len(arr) else 0.0
-    except Exception as exc:
-        # 指纹退化只会削弱缓存区分度（不会致错），但仍记录，避免"缓存突然总不命中"无从查起
-        logger.debug("[strategy_gate] 缓存指纹计算失败，退化为形状级键: %s", exc)
-        head = tail = 0.0
-    idx = df.index
-    return (df.shape, str(idx[0]) if len(idx) else "",
-            str(idx[-1]) if len(idx) else "",
-            round(head, 6), round(tail, 6), tuple(map(str, df.columns[:4])))
+    """
+    单张面板的**内容**哈希（索引、列名、每一个值）。
+
+    外部审查 2026-10-18 F11（R13）：此前只看形状 + 索引端点 + 首末行和 + 前 4 个列名，
+    改中间的 high 而保留首末行，键完全相同 —— 真实推导的价差从 12.85 bps 变成 1584.34 bps，
+    缓存却给出旧值，成本与门的结论取决于调用顺序。全量哈希是 O(T·N)，比它要缓存的推导便宜得多。
+    """
+    import hashlib
+    h = hashlib.sha256()
+    h.update(repr(df.shape).encode())
+    h.update("\x1f".join(map(str, df.columns)).encode("utf-8"))
+    h.update(pd.util.hash_pandas_object(df, index=True).to_numpy().tobytes())
+    return (df.shape, h.hexdigest())
 
 
 def _cache_key(kind: str, dataset: WidePanel, aum: float) -> tuple:
@@ -81,8 +81,10 @@ def _cache_key(kind: str, dataset: WidePanel, aum: float) -> tuple:
     缓存里存的是**成本参数与无交易带**，串号意味着 A 数据集的成本被用到 B 的回测上。
     （实测表现为全量跑时 test_phase_pm_s 偶发失败，单独跑必过。）
 
-    指纹覆盖 `_COST_INPUT_FIELDS` 的**每一张**面板，外加**券商档位**
-    —— 后者决定佣金与最小票面费，换个券商成本就不同，原来也不在键里。
+    指纹覆盖 `_COST_INPUT_FIELDS` 的**每一张**面板的全部内容，外加推导**实际读取**的券商字段：
+    `trading_broker`（佣金 / 最小票面费的档位）、账户类型、能否做空。
+    （此前读的是 `trading_broker_profile` / `broker_profile` —— 推导根本不用这两个名字，
+    真正决定成本的 `trading_broker` 换了，键不变。外部审查 2026-10-18 F11。）
     """
     from app.config import settings
 
@@ -90,10 +92,10 @@ def _cache_key(kind: str, dataset: WidePanel, aum: float) -> tuple:
     for name in _COST_INPUT_FIELDS:
         df = dataset.get(name)
         parts.append((name,) + (_panel_fingerprint(df) if df is not None else ("absent",)))
-    broker = str(getattr(settings, "trading_broker_profile", "")
-                 or getattr(settings, "broker_profile", ""))
+    broker = str(getattr(settings, "trading_broker", "moomoo_us"))
     acct = str(getattr(settings, "trading_account_type", ""))
-    return (kind, float(aum), broker, acct, tuple(parts))
+    short = bool(getattr(settings, "trading_allow_short", False))
+    return (kind, float(aum), broker, acct, short, tuple(parts))
 
 
 def _cache_put(key: tuple, val):
@@ -151,7 +153,9 @@ def resolve_cost_params(dataset: WidePanel, aum: float, cost_params=None):
 def strategy_net_returns(factor_signals: Signals, dataset: WidePanel,
                          aum: float = 1_000_000.0, method: str = "ic_weighted",
                          cost_params=None, apply_risk: bool = True,
-                         walk_forward_folds: Optional[int] = None) -> Tuple[pd.Series, pd.DataFrame]:
+                         walk_forward_folds: Optional[int] = None,
+                         fixed_combo_weights: Optional[Dict[str, float]] = None,
+                         no_trade_band: Optional[float] = None) -> Tuple[pd.Series, pd.DataFrame]:
     """
     把多因子信号经 PortfolioManager 合成组合权重，再经 BacktestEngine 得**策略净收益序列**。
     返回 (net_returns, composite_signal)。
@@ -160,6 +164,8 @@ def strategy_net_returns(factor_signals: Signals, dataset: WidePanel,
     使**门评估的账本 == 实际交易的账本**（修"验证的和交易的不是同一个组合"）。
     成本参数 None → grounded（见 `resolve_cost_params`）。
     `walk_forward_folds`：组合权重按滚动前推拟合（审计 F10）；策略门的分段 OOS 必须用它。
+    `fixed_combo_weights` / `no_trade_band`：评估**被批准的那份**策略（外部审查 2026-10-18 F07）——
+    冻结的合成权重（此时不再滚动拟合）与冻结的无交易带。不给 → 按 method 拟合、带按配置/数据推导。
     """
     from app.core.portfolio_manager.manager import PortfolioManager
     from app.core.backtest_engine.backtest_engine import BacktestEngine
@@ -171,26 +177,21 @@ def strategy_net_returns(factor_signals: Signals, dataset: WidePanel,
 
     cp = resolve_cost_params(dataset, aum, cost_params)
     pm = PortfolioManager(aum=aum, method=method, cost_params=cp)
-    book = pm.build_book(factor_signals, prices, volume, walk_forward_folds=walk_forward_folds)
+    book = pm.build_book(factor_signals, prices, volume, walk_forward_folds=walk_forward_folds,
+                         fixed_combo_weights=fixed_combo_weights)
     weights = book.weights
 
     if apply_risk:
         try:
-            from app.config import settings
-            from app.core.portfolio_manager.risk_gate import PortfolioRiskGate, RiskLimits
+            from app.core.portfolio_manager.executable_spec import risk_limits_from_settings
+            from app.core.portfolio_manager.risk_gate import PortfolioRiskGate
             from app.core.portfolio_manager.horizon import apply_no_trade_band
 
-            limits = RiskLimits(
-                max_gross=float(getattr(settings, "risk_max_gross", 1.0)),
-                max_net=float(getattr(settings, "risk_max_net", 1.0)),
-                max_name_weight=float(getattr(settings, "risk_max_name_weight", 0.10)),
-                max_sector_weight=float(getattr(settings, "risk_max_sector_weight", 0.30)),
-                target_vol_ann=(float(getattr(settings, "risk_target_vol_ann", 0.0)) or None),
-                long_only=(not getattr(settings, "trading_allow_short", False)),
-            )
+            limits = risk_limits_from_settings()
             sectors = dataset["sector"].iloc[-1] if "sector" in dataset else None
             weights, _ = PortfolioRiskGate(limits).apply(weights, sectors=sectors)
-            weights = apply_no_trade_band(weights, resolve_band(dataset, aum))
+            band = resolve_band(dataset, aum) if no_trade_band is None else float(no_trade_band)
+            weights = apply_no_trade_band(weights, band)
         except Exception as exc:
             # 【缺陷 N-3，2026-09-20 修】原先这里是
             #     logger.warning("风控/调仓对齐失败，用原始权重: %s", exc)
@@ -269,6 +270,9 @@ class StrategyValidationResult:
             "t_stat": round(self.t_stat, 4), "n_trials": self.n_trials,
             "pbo": (round(self.pbo, 4) if self.pbo is not None else None),
             "pbo_method": self.pbo_method,
+            # 外部审查 2026-10-18 F14：PBO 只检查已选因子的单因子收益矩阵 —— 它不覆盖 GP 搜过的结构、
+            # 组合权重、风控参数与人工挑选；单因子跳过 PBO 也不等于不可能过拟合。
+            "pbo_scope": "selected_factor_returns_only",
         }
 
 
@@ -319,7 +323,9 @@ class StrategyGate:
         self.embargo_days = int(embargo_days)
 
     def evaluate(self, factor_signals: Signals, dataset: WidePanel,
-                 cost_params=None, n_trials: Optional[int] = None) -> StrategyValidationResult:
+                 cost_params=None, n_trials: Optional[int] = None,
+                 fixed_combo_weights: Optional[Dict[str, float]] = None,
+                 no_trade_band: Optional[float] = None) -> StrategyValidationResult:
         from app.core.backtest_engine.performance_analyzer import deflated_sharpe_from_returns
 
         factors = list(factor_signals)
@@ -367,7 +373,9 @@ class StrategyGate:
             # 来自用全样本（含该段本身）拟合出的权重，"分段 OOS"名不副实。
             rets, _ = strategy_net_returns(factor_signals, dataset, aum=self.aum,
                                            method=self.method, cost_params=cost_params,
-                                           walk_forward_folds=self.n_segments)
+                                           walk_forward_folds=self.n_segments,
+                                           fixed_combo_weights=fixed_combo_weights,
+                                           no_trade_band=no_trade_band)
         except Exception as exc:  # fail-closed
             logger.warning("[strategy_gate] 策略回测失败 → 不通过: %s", exc)
             res.reasons = [f"策略回测失败: {exc}"]

@@ -118,14 +118,25 @@ def test_run_portfolio_marks_forward_from(tmp_path):
           "vwap": close, "volume": pd.DataFrame(1e6, idx, cols),
           "returns": close.pct_change().fillna(0.0)}
 
-    cutoff = idx[-20].date()                     # 最后 20 天算前向
-    DailyTradingLoop(store=store, broker=broker).run_portfolio(
-        ds, aum=10_000.0, forward_from=cutoff)
-
+    # 外部审查 2026-10-18 F06：一次跑完整段历史，不管 forward_from 怎么说都是**回放**
+    # （那些天的信号当时没有存档）；逐日再跑，存过信号的第二天才是前向。
+    from datetime import timedelta
+    from app.core.data_engine.market_calendar import session_close_utc
+    from app.db.evidence_store import EvidenceStore
+    ev = EvidenceStore(f"sqlite:///{tmp_path/'e.db'}")
+    days = [d for d in idx if session_close_utc(d) is not None]
+    first = {k: v.loc[:days[-3]] for k, v in ds.items()}
+    DailyTradingLoop(store=store, broker=broker, evidence_store=ev).run_portfolio(
+        first, aum=10_000.0, forward_from=idx[-20].date(), now=session_close_utc(days[-3]) + timedelta(hours=2))
+    assert store.get_forward_ic(PORTFOLIO_BOOK_ID) == []
+    for d in days[-2:]:
+        DailyTradingLoop(store=store, broker=broker, evidence_store=ev).run_portfolio(
+            {k: v.loc[:d] for k, v in ds.items()}, aum=10_000.0,
+            now=session_close_utc(d) + timedelta(hours=2))
     all_ic = store.get_ic_history(PORTFOLIO_BOOK_ID, limit=5000)
     fwd = store.get_forward_ic(PORTFOLIO_BOOK_ID)
-    assert len(all_ic) > len(fwd) > 0                       # 有回放也有前向
-    assert all(f.date >= cutoff for f in fwd)               # 前向都在 cutoff 之后
+    assert len(all_ic) > len(fwd)
+    assert [pd.Timestamp(f.date) for f in fwd] == days[-2:]
 
 
 # ---------------------------------------------------------------------------

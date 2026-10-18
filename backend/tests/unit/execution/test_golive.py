@@ -381,7 +381,11 @@ def _strategy_db(tmp_path, statuses, active=True):
             store.update_status(aid, nxt)
         ids.append(str(aid))
     ss = StrategyStore(db_url=url)
-    sid = ss.save(StrategyConfig(factors=ids, combo_weights={i: 1.0 for i in ids}, aum=1e6))
+    from tests.conftest import approved_verdict
+    sid = ss.save(StrategyConfig(factors=ids, combo_weights={i: 1.0 for i in ids}, aum=1e6,
+                                 verdict=approved_verdict({i: "rank(close)" for i in ids},
+                                                          {i: 1.0 for i in ids}, 1e6,
+                                                          settings=_settings(tmp_path))))
     if active:
         ss.update_status(sid, "approved")
         ss.update_status(sid, "active")

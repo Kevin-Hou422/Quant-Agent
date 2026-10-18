@@ -86,6 +86,9 @@ class DailyIngest:
             start = backfill_start or settings.paper_start
             res = self.ingest(dataset_name, start, end, as_of=as_of, upto=target,
                               pit_required=True)
+            if res.accepted:
+                store.write_meta({"price_source": str(getattr(settings, "price_source", "yahoo"))},
+                                 name=dataset_name)
             res.mode = "full"
             res.forward_from = None               # 回填全部算回放，不是前向证据
             res.n_new_bars = res.n_dates
@@ -117,15 +120,42 @@ class DailyIngest:
                                 reject_reason="no_new_bar", calendar_note=note)
 
         # ---- 3) 只把**增量**写进 PIT（而非整段重写） ----
+        #     例外：数据源重算了历史复权价（分红 / 拆股），或者价格源换了 —— 这时新 bar 与库里
+        #     的旧 bar 不是同一个尺度，直接拼接会在接缝处造出一个假收益（外部审查 2026-10-18 F02：
+        #     旧 100、新 50，拼出 −50%，而数据源自己算的收益是 0）。改为整段重取，作为新 vintage 追加：
+        #     旧 vintage 原样保留（双时点历史不丢），最新视图是同一个尺度。
         first_new = pd.Timestamp(min(new_dates)).normalize()
-        increment = {f: df.loc[df.index > last] for f, df in (inc.dataset or {}).items()
-                     if isinstance(df, pd.DataFrame)}
+        source = str(getattr(settings, "price_source", "yahoo"))
+        rebase_reason = _rebase_reason(store, dataset_name, last, inc.dataset or {}, source)
+        mode = "incremental"
+        if rebase_reason:
+            logger.warning("[daily_ingest] %s → 整段重取历史，按新尺度作为新 vintage 追加", rebase_reason)
+            start_full = store.earliest_timestamp(dataset_name) or pd.Timestamp(settings.paper_start)
+            full_res = self.ingest(dataset_name, start_full.strftime("%Y-%m-%d"), end,
+                                   append_pit=False, as_of=as_of, upto=target)
+            if not full_res.accepted:
+                return IngestResult(False, dataset_name, as_of, mode="incremental",
+                                    reject_reason=f"rebase_failed: {full_res.reject_reason}")
+            to_write = {f: df for f, df in (full_res.dataset or {}).items() if isinstance(df, pd.DataFrame)}
+            mode = "incremental_rebased"
+        else:
+            to_write = {f: df.loc[df.index > last] for f, df in (inc.dataset or {}).items()
+                        if isinstance(df, pd.DataFrame)}
         try:
-            self._append_pit(dataset_name, increment, as_of)
+            self._append_pit(dataset_name, to_write, as_of)
         except Exception as exc:
             logger.error("[daily_ingest] 增量写 PIT 失败: %s", exc)
             return IngestResult(False, dataset_name, as_of, mode="incremental",
                                 reject_reason=f"pit_append_failed: {exc}")
+        try:
+            meta = store.read_meta(dataset_name)
+            meta["price_source"] = source
+            if rebase_reason:
+                meta.update(last_rebase=as_of, last_rebase_reason=rebase_reason)
+            store.write_meta(meta, name=dataset_name)
+        except Exception as exc:
+            # 数据已经落盘；元数据写不进去只影响下次的"换源"判断 —— 记错误，不拒绝今天的摄取
+            logger.error("[daily_ingest] PIT 元数据写入失败（下次换源检查可能失灵）: %s", exc)
 
         # ---- 4) 交易循环消费"回填+全部增量"的完整面板（从 PIT 读） ----
         panel = store.load_pit(name=dataset_name) or {}
@@ -138,7 +168,7 @@ class DailyIngest:
             True, dataset_name, as_of, health_score=inc.health_score,
             n_dates=0 if close is None else len(close),
             n_tickers=0 if close is None else close.shape[1],
-            dataset=full, mode="incremental",
+            dataset=full, mode=mode,
             forward_from=first_new.strftime("%Y-%m-%d"),
             n_new_bars=len(new_dates), calendar_note=note,
         )
@@ -187,14 +217,22 @@ class DailyIngest:
             return IngestResult(False, dataset_name, as_of, reject_reason="empty_close")
 
         # 健康门
-        score = 1.0
         try:
             report = check_dataset_health(ds, min_score=self.min_health, warn_only=True)
-            if report is not None:
-                score = float(report.overall_score)
         except Exception as exc:
             logger.warning("[daily_ingest] 健康检查异常，保守拒绝: %s", exc)
             return IngestResult(False, dataset_name, as_of, reject_reason=f"health_error: {exc}")
+        if report is None:
+            # 检查器内部出错时返回 None。此前这里按满分 1.0 放行 —— 检查器坏了，门就开着
+            logger.warning("[daily_ingest] 健康检查没有给出结果 → 保守拒绝当日摄取")
+            return IngestResult(False, dataset_name, as_of, reject_reason="health_unavailable")
+        score = float(report.overall_score)
+        if report.hard_failures:
+            logger.warning("[daily_ingest] 数据硬性条件未满足 → **拒绝当日摄取**: %s", report.hard_failures)
+            return IngestResult(
+                False, dataset_name, as_of, health_score=score,
+                n_dates=close.shape[0], n_tickers=close.shape[1],
+                reject_reason="health_hard_failure: " + "；".join(report.hard_failures))
 
         if score < self.min_health:
             logger.warning(
@@ -245,6 +283,41 @@ class DailyIngest:
         store.append(data, as_of=as_of, name=dataset_name)
 
 
+#: 重叠那一根 bar 的收盘价，库里的与这次取到的相对差超过这个值 → 认为数据源重算了历史复权价。
+#: 同一 vintage 重取应当逐位相同；分红带来的前复权调整通常 ≥ 1e-4。
+REBASE_REL_TOL = 1e-6
+
+
+def _rebase_reason(store, dataset_name: str, last: pd.Timestamp, inc: Dict[str, pd.DataFrame],
+                   source: str) -> str:
+    """需要整段重取的原因（空串 = 不需要）。只看重叠的那一根 bar（`last`）与 PIT 元数据。"""
+    meta = store.read_meta(dataset_name)
+    old_src = meta.get("price_source")
+    if old_src and old_src != source:
+        return f"价格源从 {old_src} 换成了 {source}"
+    new_close = inc.get("close")
+    if new_close is None or new_close.empty:
+        return ""
+    day = pd.Timestamp(last).normalize()
+    rows = [d for d in new_close.index if pd.Timestamp(d).normalize() == day]
+    if not rows:
+        return ""
+    old = store.load_pit(fields=["close"], start=str(day.date()), end=str(day.date()), name=dataset_name)
+    old_close = (old or {}).get("close")
+    if old_close is None or old_close.empty:
+        return ""
+    a = old_close.iloc[-1]
+    b = new_close.loc[rows[-1]].reindex(a.index)
+    both = a.notna() & b.notna() & (a != 0)
+    rel = ((b[both] / a[both]) - 1.0).abs()
+    moved = rel[rel > REBASE_REL_TOL]
+    if moved.empty:
+        return ""
+    tk = moved.idxmax()
+    return (f"{len(moved)} 只票在 {day.date()} 的复权收盘价与库中不一致"
+            f"（最大 {tk}: {float(a[tk]):.4f} → {float(b[tk]):.4f}），数据源重算了历史复权")
+
+
 def _execution_on() -> bool:
     from app.config import settings
     return str(getattr(settings, "execution_mode", "off")) != "off"
@@ -276,10 +349,10 @@ def _with_fundamentals(dataset_name: str, panel: Dict[str, pd.DataFrame]) -> Dic
         return panel
 
 
-def _run_portfolio_safely(loop, dataset, forward_from) -> Dict[str, Any]:
+def _run_portfolio_safely(loop, dataset, forward_from, now=None) -> Dict[str, Any]:
     """组合账本失败不拖垮 per-factor 监控；但执行层仍要对账/续做全平（失败时不加新风险）。"""
     try:
-        return loop.run_portfolio(dataset, forward_from=forward_from)
+        return loop.run_portfolio(dataset, forward_from=forward_from, now=now)
     except Exception as exc:
         logger.error("[daily_pipeline] 组合账本失败 → 本轮不调仓，只做对账/熔断维护: %s", exc)
         pf = {"n_factors": 0, "days_processed": 0, "error": str(exc)}
@@ -320,7 +393,7 @@ def run_daily_pipeline(dataset_name: str, start: str = "", end: str = "",
                 panel = PITStore(settings.pit_store_dir).load_pit(name=dataset_name) or {}
                 if panel.get("close") is not None and not panel["close"].empty:
                     panel = _with_fundamentals(dataset_name, panel)
-                    out["portfolio"] = _run_portfolio_safely(DailyTradingLoop(), panel, None)
+                    out["portfolio"] = _run_portfolio_safely(DailyTradingLoop(), panel, None, now)
                 else:
                     out["portfolio"] = {"execution": DailyTradingLoop()._maintain_live("no_data")}
             logger.info("[daily_pipeline] 无新 bar（%s）", ing.calendar_note)
@@ -335,9 +408,10 @@ def run_daily_pipeline(dataset_name: str, start: str = "", end: str = "",
 
     loop = DailyTradingLoop()
     panel = _with_fundamentals(dataset_name, ing.dataset)
-    report = loop.run(panel, forward_from=ing.forward_from)   # per-factor：IC 监控 + 衰减
+    # `now` = 决策时刻：当天的信号以它为存档时刻，明天据此判断结算是不是前向（F06）
+    report = loop.run(panel, forward_from=ing.forward_from, now=now)   # per-factor：IC 监控 + 衰减
     # Phase PM.4：组合账本（真实 AUM 的美元账本，多因子净持仓 + 容量）
-    pf = _run_portfolio_safely(loop, panel, ing.forward_from)
+    pf = _run_portfolio_safely(loop, panel, ing.forward_from, now)
     return {
         "ingest_accepted": True, "as_of": ing.as_of, "health_score": ing.health_score,
         "mode": ing.mode, "forward_from": ing.forward_from, "n_new_bars": ing.n_new_bars,

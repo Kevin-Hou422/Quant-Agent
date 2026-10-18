@@ -280,9 +280,9 @@ def test_backtest_run(backtest_result, dates):
     # positions shape
     assert res.positions.shape == (N_DAYS, N_ASSETS)
 
-    # turnover ∈ [0, 1]
-    assert ((res.turnover >= 0) & (res.turnover <= 1.0 + 1e-9)).all(), \
-        "换手率应在 [0, 1] 范围内"
+    # 外部审查 2026-10-18 F10：成交从**漂移后**的调仓前权重算起；多空两腿各自涨跌后，调仓前的
+    # 总敞口可以略超 1，于是单边换手可以略超 1。上界放到 1.1（日内价格变动的量级）
+    assert ((res.turnover >= 0) & (res.turnover <= 1.1)).all(), "换手率越界"
 
     print(f"\nEquity: {res.equity_curve.iloc[-1]:.4f}")
     print(f"Trades: {len(res.trade_log)}")

@@ -204,6 +204,9 @@ class TestGlobalTrials:
         assert res.n_trials == 1
         assert any("多重检验" in r.getMessage() for r in caplog.records), (
             "试验台账不可读却没有留下 ERROR —— 门悄悄变松了")
+        # 外部审查 2026-10-18 F05：其余指标全部过线，仍因证据不完整判不通过
+        assert res.passed is False and res.n_trials_source == "unavailable"
+        assert res.reasons == ["全局试验台账不可读：DSR 的多重检验校正缺失，证据不完整"]
 
     def test_explicit_n_trials_wins(self, monkeypatch):
         monkeypatch.setattr(ValidationGate, "_walk_forward",
@@ -305,7 +308,7 @@ PROVEN_EQUIVALENT = {
     # 这一条原本一句话盖了两个模块，逐模块对账时会把两个点都算到 trial_ledger 上。
     # 拆开写 —— 键里的模块前缀是对账的唯一依据，不允许一条横跨两个模块。
     "app/db/trial_ledger.py ×1 — L49 `sessionmaker(..., expire_on_commit=False)` -> True":
-        "`add()` 在**同一个 session 内**读 row.total（过期后会自动 refresh 拿得到），"
+        "`add()` 提交后用一条**新查询**读 total（不读提交前加载的对象属性），"
         "`total()` 走的是只读 session、不 commit 因此不触发过期。"
         "两种取值在本模块的任何调用路径上都观察不到差别。",
 
@@ -335,7 +338,7 @@ def test_ledger_and_diagnostics_read_inside_their_sessions():
     import app.db.trial_ledger as tl
 
     add_src = inspect.getsource(tl.TrialLedger.add)
-    assert "s.commit()" in add_src and "return int(row.total)" in add_src
+    assert "s.commit()" in add_src and "return int(s.scalar(select(TrialCount.total)" in add_src
     save_src = inspect.getsource(ds.DiagnosticsStore.save)
     assert "s.commit()" in save_src and "rec.id" in save_src
     for fn in (tl.TrialLedger.total, ds.DiagnosticsStore.recent):

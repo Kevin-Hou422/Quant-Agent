@@ -23,6 +23,7 @@ from .transaction_cost import (
     LiquidityConstraint,
     TradeRecord,
     TransactionCostEngine,
+    drift_weights,
     simulate_partial_fills,
 )
 
@@ -159,11 +160,19 @@ class BacktestEngine:
         else:
             cap_trade_mat = np.full_like(adv_usd, np.inf)
 
+        # 价格涨跌矩阵 (T, N)（漂移与毛收益共用）
+        price_chg_mat             = np.zeros((T, N))
+        safe_prev_mat             = np.where(prices_arr[:-1] == 0, np.nan, prices_arr[:-1])
+        price_chg_mat[1:]         = (prices_arr[1:] - prices_arr[:-1]) / safe_prev_mat
+
+        # F10：每天先把昨仓按今日价格漂移成**调仓前权重**，再撮合到目标；成交差额 = 目标 − 漂移后
         adj_weights = np.zeros((T, N), dtype=float)
+        pre_w_mat   = np.zeros((T, N), dtype=float)
         prev_filled = np.zeros(N, dtype=float)
         for t in range(T):
-            fr = simulate_partial_fills(
-                prev_filled, tgt_arr[t], cap_trade_mat[t], max_net=self.max_net)
+            pre = drift_weights(prev_filled, price_chg_mat[t]) if t > 0 else prev_filled
+            fr = simulate_partial_fills(pre, tgt_arr[t], cap_trade_mat[t], max_net=self.max_net)
+            pre_w_mat[t] = pre
             adj_weights[t] = fr.filled_w
             prev_filled = fr.filled_w
 
@@ -180,15 +189,10 @@ class BacktestEngine:
         # --- E1: 预计算不依赖 equity 的数组（减少 Python 循环体积）---
         # prev_w_mat[t] = adj_weights[t-1]，t=0 时为零向量
         prev_w_mat  = np.vstack([np.zeros((1, N)), adj_weights[:-1]])    # (T, N)
-        delta_w_mat = adj_weights - prev_w_mat                           # (T, N)
+        delta_w_mat = adj_weights - pre_w_mat                            # (T, N)：真实成交量
 
         # 换手（单边）— 全量向量化
         turnover_arr_pre = np.sum(np.abs(delta_w_mat), axis=1) / 2.0    # (T,)
-
-        # 价格涨跌矩阵 (T, N)
-        price_chg_mat             = np.zeros((T, N))
-        safe_prev_mat             = np.where(prices_arr[:-1] == 0, np.nan, prices_arr[:-1])
-        price_chg_mat[1:]         = (prices_arr[1:] - prices_arr[:-1]) / safe_prev_mat
 
         # 毛收益与多空腿分离 — 全量向量化
         long_w_mat  = np.maximum(prev_w_mat, 0.0)

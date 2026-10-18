@@ -205,7 +205,8 @@ def test_submitted_rows_always_carry_a_broker_order_id():
     missing = [name for name in sets_submitted if "broker_order_id" not in dumps[name]]
     assert missing == [], f"这些函数设置了 SUBMITTED 却没写订单号：{missing}"
     planned = _func(tree, "_upsert_planned")
-    assert any(isinstance(n, ast.Assign) and getattr(n.targets[0], "attr", None) == "broker_order_id"
+    # 外部审查 2026-10-18 F08 之后，意图行由一份 values 字典整体写入（原子 UPDATE / INSERT 共用）
+    assert any(isinstance(n, ast.keyword) and n.arg == "broker_order_id"
                and getattr(n.value, "value", "x") is None for n in ast.walk(planned)), \
         "写意图时没有把订单号置 None"
 

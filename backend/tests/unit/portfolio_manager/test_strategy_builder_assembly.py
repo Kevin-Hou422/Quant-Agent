@@ -284,9 +284,11 @@ class TestDatasetDefaults:
 
     def test_supplied_risk_limits_win_over_the_default(self, wiring):
         """`limits = risk_limits or RiskLimits()` —— 传了就不能被默认值顶掉。"""
-        mine = object()
-        build_strategy_config({"f1": _sig(1)}, _panel(), aum=1e5, risk_limits=mine)
+        from app.core.portfolio_manager.risk_gate import RiskLimits
+        mine = RiskLimits(max_gross=0.55)      # 要进可执行规格（F07），必须是真的 RiskLimits
+        cfg = build_strategy_config({"f1": _sig(1)}, _panel(), aum=1e5, risk_limits=mine)
         assert wiring.seen["risk"][0]["limits"] is mine
+        assert cfg.verdict["executable_spec"]["risk_limits"]["max_gross"] == 0.55
 
     def test_the_default_risk_limits_are_constructed_when_none_supplied(self, wiring):
         build_strategy_config({"f1": _sig(1)}, _panel(), aum=1e5)

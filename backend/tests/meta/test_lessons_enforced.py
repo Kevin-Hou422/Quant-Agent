@@ -1151,7 +1151,8 @@ class TestLessonV_NoMutationResidueInRepo:
             ("app/tasks/daily_trading_loop.py",
              "aum = float(aum) if aum is not None else",
              "aum 为 None 时才回退 broker 资金；写成 `is None` 会 float(None) 崩溃且忽略传参"),
-            ("app/tasks/daily_trading_loop.py",
+            # 外部审查 2026-10-18 F07：风控上限的唯一装配处从每日循环移到了 executable_spec
+            ("app/core/portfolio_manager/executable_spec.py",
              "long_only=(not getattr(settings",
              "long_only 必须是 allow_short 的取反"),
             ("app/tasks/daily_trading_loop.py",

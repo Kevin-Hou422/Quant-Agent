@@ -462,6 +462,44 @@ def _fundamentals_wanted(spec: DatasetSpec, explicit: Optional[bool]) -> bool:
         return False
 
 
+#: 送进健康检查的字段（有就送；价格缺失、成交量为零、OHLC 不合法都要能被看见）
+_HEALTH_FIELDS = ("close", "open", "high", "low", "volume")
+
+
+def _health_long_panel(ds) -> "tuple[pd.DataFrame, List[str]]":
+    """
+    宽表 → 长表（timestamp | ticker | close | open | high | low | volume），**保留缺失**。
+
+    用 日期 × 股票池 的完整网格显式构造，不用 `DataFrame.stack()`：pandas 2.x 的 stack
+    默认丢 NaN（3.x 不丢），缺失的观测在 2.x 下会直接从检查里消失 —— 外部审查 R10 里
+    95% 缺失、成交量全零的面板在 2.x 下拿到 1.0 分。股票池取 Dataset.universe（没有就用列）。
+    """
+    close = ds.data["close"]
+    universe = [str(t) for t in (getattr(ds, "universe", None) or list(close.columns))]
+    idx = pd.DatetimeIndex(close.index)
+    grid = pd.MultiIndex.from_product([idx, universe], names=["timestamp", "ticker"])
+    cols = {}
+    for f in _HEALTH_FIELDS:
+        df = ds.data.get(f)
+        if isinstance(df, pd.DataFrame):
+            wide = df.reindex(index=idx, columns=universe)
+            cols[f] = pd.Series(wide.to_numpy(dtype=float).reshape(-1), index=grid)
+    return pd.DataFrame(cols).reset_index(), universe
+
+
+def _expected_sessions(ds, index) -> Optional[pd.DatetimeIndex]:
+    """美股数据集：交易所日历给出的 [首日, 末日] 交易日。其它市场 / 日历不可用 → None（只记日志）。"""
+    spec = _SPECS.get(getattr(ds, "name", ""))
+    if spec is None or spec.region != "US" or len(index) == 0:
+        return None
+    try:
+        from .market_calendar import trading_days
+        return trading_days(pd.Timestamp(index[0]), pd.Timestamp(index[-1]))
+    except Exception as exc:
+        logger.warning("[health] 交易日历不可用，跳过'整天缺失'检查: %s", exc)
+        return None
+
+
 def clear_registry_cache() -> None:
     _CACHE.clear()
 
@@ -645,26 +683,25 @@ def check_dataset_health(
     HealthReport 或 None（检查器不可用时）
     """
     try:
-        from .health_report import DataHealthChecker
+        from .health_report import DataHealthChecker, hard_failures
 
         close = ds.data.get("close")
         if close is None or close.empty:
             logger.warning("Dataset '%s': 无 close 数据，跳过健康检查", ds.name)
             return None
 
-        # 转为 long-format：timestamp | ticker | close
-        # 按位置命名而非 level_0/level_1：close 的行索引常带名字（如 yfinance 的 "Date"），
-        # 靠 level_* 重命名会漏改 → 下游 KeyError('timestamp') 被吞掉、健康门形同虚设。
-        long_df = close.stack().reset_index()
-        long_df.columns = ["timestamp", "ticker", "close"]
-
+        long_df, universe = _health_long_panel(ds)
         checker = DataHealthChecker()
         report  = checker.check(long_df, date_col="timestamp", ticker_col="ticker")
+        report.hard_failures = hard_failures(
+            {k: v for k, v in ds.data.items() if isinstance(v, pd.DataFrame)}, universe,
+            expected_sessions=_expected_sessions(ds, close.index))
 
-        if report.overall_score < min_score:
+        if report.hard_failures or report.overall_score < min_score:
             msg = (
-                f"Dataset '{ds.name}' 健康得分 {report.overall_score:.3f} < {min_score}。"
+                f"Dataset '{ds.name}' 健康得分 {report.overall_score:.3f}（阈值 {min_score}）。"
                 f" gaps={len(report.gaps)}, spikes={len(report.spikes)}"
+                + (f"；硬性条件未满足：{'；'.join(report.hard_failures)}" if report.hard_failures else "")
             )
             if warn_only:
                 logger.warning(msg)

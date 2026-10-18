@@ -22,7 +22,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -93,6 +93,26 @@ def grade_paper_entry(strategy_verdict: dict,
 # 第 5 步：→ ACTIVE（逼近真钱，最严）
 # ---------------------------------------------------------------------------
 
+def newey_west_tstat(x: np.ndarray, lags: Optional[int] = None) -> float:
+    """
+    均值的 Newey-West（HAC）t 统计量。日度 IC 有序列相关（持仓重叠、因子缓变），
+    普通 mean/std·√n 会把正相关的序列当成 n 个独立观测，t 偏大（外部审查 2026-10-18 F14）。
+    lags 缺省 = floor(4·(n/100)^(2/9))（Newey-West 1994 的经验规则）。
+    """
+    x = np.asarray(x, dtype=float)
+    n = x.size
+    if n < 3:
+        return 0.0
+    L = int(np.floor(4.0 * (n / 100.0) ** (2.0 / 9.0))) if lags is None else int(lags)
+    e = x - x.mean()
+    lrv = float(e @ e) / n
+    for k in range(1, min(L, n - 1) + 1):
+        lrv += 2.0 * (1.0 - k / (L + 1.0)) * float(e[k:] @ e[:-k]) / n
+    if not np.isfinite(lrv) or lrv <= 1e-18:
+        return 0.0
+    return float(x.mean() / np.sqrt(lrv / n))
+
+
 def check_active_promotion(ic_values: Sequence[float],
                            th: PromotionThresholds | None = None) -> Tuple[bool, dict]:
     """
@@ -115,8 +135,12 @@ def check_active_promotion(ic_values: Sequence[float],
 
     mu = float(np.mean(x))
     sd = float(np.std(x, ddof=1)) if n > 1 else 0.0
-    t = (mu / sd) * np.sqrt(n) if sd > 1e-12 else 0.0
+    t_iid = (mu / sd) * np.sqrt(n) if sd > 1e-12 else 0.0
+    t_hac = newey_west_tstat(x)
+    # 取两者中**较小**的那个：正相关时 HAC 更小，负相关时独立同分布的更小 —— 门只朝更严的方向走
+    t = min(float(t_iid), float(t_hac))
     detail.update({"ic_mean": round(mu, 6), "ic_tstat": round(float(t), 3),
+                   "ic_tstat_iid": round(float(t_iid), 3), "ic_tstat_hac": round(float(t_hac), 3),
                    "min_ic_tstat": th.min_ic_tstat})
 
     if mu <= th.min_ic_mean:

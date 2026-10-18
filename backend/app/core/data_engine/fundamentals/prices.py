@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 
 #: 不复权/复权 比值单日变化超过这个倍数才算拆股（分红只造成 1–2% 的台阶）
 SPLIT_MIN_RATIO = 1.5
+#: 比值跳变在 [这个, SPLIT_MIN_RATIO) 之间：可能是小比例送股，也可能是特别分红 —— 不当拆股，但告警
+SPLIT_AMBIGUOUS_RATIO = 1.15
+#: 拆股当天，不复权价必须反向跳了差不多同样的倍数（容许 ±30% 的当日行情）。只有复权因子跳、
+#: 不复权价没动 → 是数据问题（两份不同 vintage 的复权价拼在一起），不是拆股（外部审查 2026-10-18 F13）
+SPLIT_PRICE_TOL = 1.30
 
 Splits = Dict[str, pd.Series]          # ticker → Series(拆股日 → 股本乘数；一拆十 = 10.0)
 
@@ -39,8 +44,21 @@ def detect_splits(raw_close: pd.Series, adj_close: pd.Series) -> pd.Series:
     """
     f = (raw_close / adj_close).replace([np.inf, -np.inf], np.nan).dropna()
     r = (f.shift(1) / f).dropna()
-    r = r[(r >= SPLIT_MIN_RATIO) | (r <= 1.0 / SPLIT_MIN_RATIO)]
-    return r.round(4)
+    big = r[(r >= SPLIT_MIN_RATIO) | (r <= 1.0 / SPLIT_MIN_RATIO)]
+    small = r[((r >= SPLIT_AMBIGUOUS_RATIO) & (r < SPLIT_MIN_RATIO))
+              | ((r <= 1.0 / SPLIT_AMBIGUOUS_RATIO) & (r > 1.0 / SPLIT_MIN_RATIO))]
+    if len(small):
+        logger.warning("[fundamentals] %s 复权因子有 %d 次 %.2f–%.2f 倍的跳变（%s）—— 可能是小比例送股或特别分红，"
+                       "**没有**当作拆股；若是送股，这几天之后的市值会偏差相应倍数",
+                       raw_close.name, len(small), SPLIT_AMBIGUOUS_RATIO, SPLIT_MIN_RATIO,
+                       [str(pd.Timestamp(d).date()) for d in small.index])
+    raw = raw_close.reindex(f.index)
+    jump = (raw / raw.shift(1)).reindex(big.index)
+    ok = (jump * big).between(1.0 / SPLIT_PRICE_TOL, SPLIT_PRICE_TOL)
+    if (~ok).any():
+        logger.warning("[fundamentals] %s 有 %d 次复权因子跳变没有伴随不复权价的反向跳变（%s）—— 当作数据问题，不当拆股",
+                       raw_close.name, int((~ok).sum()), [str(pd.Timestamp(d).date()) for d in big.index[~ok]])
+    return big[ok].round(4)
 
 
 def unsplit(split_adjusted_close: pd.Series, splits: pd.Series) -> pd.Series:

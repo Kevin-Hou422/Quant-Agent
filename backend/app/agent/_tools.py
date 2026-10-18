@@ -119,6 +119,21 @@ class QuantTools:
             self._full_dataset = ds
             self._data_source = "synthetic"
 
+        # 外部审查 2026-10-18 F03/F04：真实数据集先按**冻结边界**切出研究窗口，agent 的一切工具
+        # （含聊天里跑的工作流）只看它；冻结 Test 段只能经 tool_run_backtest(use_test_set=True)
+        # 这一个出口、并且每次都记账。此前 agent 自己按比例切（Test=最后 10%），
+        # 它的 Validate 段正好落在冻结的最近两年里。
+        self._dataset_key = dataset_name if dataset_name and self._data_source.startswith("real") else ""
+        self._holdout_split = None
+        if self._dataset_key:
+            from app.core.data_engine.data_partitioner import split_from_settings
+            try:
+                self._holdout_split = split_from_settings(ds, dataset_key=self._dataset_key)
+                ds = self._full_dataset = self._holdout_split.selection
+            except ValueError as exc:
+                logger.warning("QuantTools: 数据集 %s 切不出冻结 Test 段（%s），按全量研究",
+                               self._dataset_key, exc)
+
         # F6 修复：三段式切割 IS / Validate(GP OOS) / Test(真实样本外)
         # GP 全程只接触 IS + Validate；Test 段仅在最终验证时用一次。
         try:
@@ -383,7 +398,15 @@ class QuantTools:
         )
 
         # F6: 选择 OOS 段
-        if use_test_set and self._test_data is not None:
+        holdout = None
+        if use_test_set and self._holdout_split is not None and self._holdout_split.n_test > 0:
+            # 真实数据：冻结 Test 段，先记账再算（F03）
+            from app.core.data_engine.data_partitioner import account_holdout_use
+            holdout = account_holdout_use(self._holdout_split, dataset_key=self._dataset_key,
+                                          purpose="agent/run_backtest")
+            oos_data        = self._holdout_split.test
+            is_true_holdout = True
+        elif use_test_set and self._test_data is not None:
             oos_data       = self._test_data
             is_true_holdout = True
             logger.info("tool_run_backtest: 使用 Test 段（真实样本外）进行最终验证")
@@ -403,6 +426,8 @@ class QuantTools:
                 "summary": f"Backtest failed: {exc}",
             }
         metrics["is_true_holdout"] = is_true_holdout
+        if holdout is not None:
+            metrics["holdout_usage"] = holdout
         return json.dumps(metrics, default=str)
 
     # ------------------------------------------------------------------

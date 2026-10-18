@@ -57,9 +57,12 @@ def test_three_way_raises_on_tiny_data():
 
 
 def test_generation_workflow_reports_heldout_test():
-    """GP 跑完后，metrics 里有 held-out Test 数字（该段 GP 未参与选择）。"""
+    """
+    显式要求时（report_test=True），metrics 里有 held-out Test 数字（该段 GP 未参与选择）。
+    外部审查 2026-10-18 F03：默认不汇报 —— 此前每次都自动算、不记账。
+    """
     wf = GenerationWorkflow(pop_size=8, n_generations=1, n_optuna_trials=1, seed=42)
-    res = wf.run("momentum", _ds(300))
+    res = wf.run("momentum", _ds(300), report_test=True)
     assert res.metrics.get("held_out_test") is True
     assert "test_sharpe" in res.metrics                     # 诚实样本外数字已汇报
     # Validate（GP 选择用）与 Test（held-out）是两个独立数字

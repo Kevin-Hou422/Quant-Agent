@@ -147,6 +147,31 @@ class StrategyStore:
             rec.status = new_status
             s.commit(); return rec
 
+    def apply_transitions(self, steps: List[tuple]) -> None:
+        """
+        一组状态流转 + 谱系记录**在一个事务里**完成（外部审查 2026-10-18 F14）。
+        steps：[(sid, new_status, decision, reason, actor), ...]，按顺序校验；任何一步非法 →
+        整组回滚，什么都不改。此前批准、退役旧配置、激活、写 decision 分别提交，中途出错会留下
+        "已批准却没有 active"或谱系不全的状态。
+        """
+        with self._Session() as s:
+            try:
+                for sid, new_status, decision, reason, actor in steps:
+                    rec = s.get(StrategyConfigRecord, sid)
+                    if rec is None:
+                        raise KeyError(f"Strategy id={sid} 不存在")
+                    old = str(rec.status)
+                    if new_status not in _ALLOWED.get(old, set()):
+                        raise IllegalStrategyTransition(f"非法流转 {old} → {new_status}（#{sid}）")
+                    rec.status = new_status
+                    s.add(StrategyDecision(strategy_id=sid, decision=decision, from_status=old,
+                                           to_status=new_status, reason=reason, actor=actor))
+                    s.flush()
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+
     def record_decision(self, sid: int, decision: str, from_status: str,
                         to_status: str, reason: str = "", actor: str = "human") -> None:
         with self._Session() as s:

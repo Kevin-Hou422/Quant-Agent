@@ -58,8 +58,14 @@ def _env(tmp_path, cash=100_000.0, **ctx_kw):
     return SimpleNamespace(ctx=ctx, gw=gw, es=es, ps=ps, clock=clock, om=om)
 
 
-def _cycle(e, d, w=W, px=PX1, adv=ADV):
+def _cycle(e, d, w=W, px=PX1, adv=ADV, quote=True):
+    """
+    quote=True：独立行情报价与决策价一致（正常的市场）。外部审查 2026-10-18 F09 之后，
+    没有独立报价的新开仓会被下单门拦下 —— 那条路径的用例传 quote=False 或自己改 e.ctx.quotes。
+    """
     e.clock.after_close(d)
+    if quote:
+        e.ctx.quotes.update({k: float(v) for k, v in px.items()})
     return e.om.run_cycle(pd.Series(w, dtype=float), pd.Series(px, dtype=float),
                           pd.Series(adv, dtype=float), d)
 
@@ -162,6 +168,7 @@ def test_crash_after_place_before_persist_is_adopted_not_resubmitted(tmp_path):
     # ……进程在 mark_submitted 之前死掉。新进程：
     om2 = OrderManager(e.gw, e.es, e.ps, limits=LIM, paper_aum=100_000.0, limit_band_bps=50.0,
                        flatten_band_bps=500.0, clock=e.clock)
+    e.ctx.quotes.update(PX1)
     rep = om2.run_cycle(pd.Series(W), pd.Series(PX1), pd.Series(ADV), D1)
     assert rep.blocked == ""
     codes = [p[0] for p in _placed(e)]
