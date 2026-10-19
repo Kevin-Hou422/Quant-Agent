@@ -274,7 +274,7 @@ def test_a_portfolio_crash_still_maintains_the_broker(monkeypatch):
     calls = []
 
     class Loop:
-        def run_portfolio(self, ds, forward_from=None, now=None):
+        def run_portfolio(self, ds, forward_from=None, now=None, data_source=None):
             raise RuntimeError("pm exploded")
 
         def _maintain_live(self, reason):

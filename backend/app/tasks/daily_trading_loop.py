@@ -170,7 +170,8 @@ class DailyTradingLoop:
     # ------------------------------------------------------------------
 
     def run_portfolio(self, dataset: Dict[str, pd.DataFrame], aum: Optional[float] = None,
-                      forward_from=None, now: Optional[datetime] = None) -> dict:
+                      forward_from=None, now: Optional[datetime] = None,
+                      data_source: Optional[str] = None) -> dict:
         """
         把全部 PAPER/ACTIVE/DECAYING 因子经 PortfolioManager 合成**一个组合账本**
         （多因子净持仓 + 容量约束 + 真实 AUM），在保留 book id=PORTFOLIO_BOOK_ID 下交易。
@@ -194,7 +195,7 @@ class DailyTradingLoop:
 
         # F06：每份带规格的策略（proposed / approved / active）各自存档信号、结算前向 IC ——
         # 与今天交不交易无关，所以放在一切提前返回之前。失败不影响交易。
-        self._record_strategy_evidence(dataset, now)
+        self._record_strategy_evidence(dataset, now, data_source)
 
         # 组合成分 = 活跃因子
         recs = []
@@ -286,7 +287,8 @@ class DailyTradingLoop:
                             "used_baseline": used_baseline,
                             "execution": self._maintain_live("active_spec_missing")}
                 dsl_of = {str(r.id): r.dsl for r in recs}
-                diff = verify_against_runtime(spec, {f: dsl_of.get(f) for f in cfg_factors}, aum)
+                diff = verify_against_runtime(spec, {f: dsl_of.get(f) for f in cfg_factors}, aum,
+                                              settings=self._runtime_settings(data_source))
                 if diff:
                     why = f"active 策略 #{active.id} 批准后交易参数变了：{diff}"
                     logger.error("[portfolio] %s → 本轮不调仓，需要重新提案并审批", why)
@@ -437,18 +439,14 @@ class DailyTradingLoop:
         if limits.target_vol_ann:
             try:
                 # 用**已实现**的组合日收益估计波动：权重(t-1) · 收益(t)，避免用当日权重看当日收益。
-                rets = dataset["close"].pct_change().reindex(columns=weights.columns)
-                port_ret = (weights.shift(1) * rets).sum(axis=1).dropna()
-                lookback = int(getattr(settings, "risk_vol_lookback", 60))
-                sample = port_ret.tail(lookback)
-                if len(sample) >= 20:
-                    port_vol_ann = float(sample.std(ddof=1) * np.sqrt(252.0))
-                    if not np.isfinite(port_vol_ann) or port_vol_ann <= 1e-9:
-                        port_vol_ann = None
+                # 与策略门共用同一个估计（复审 2026-10-19 N05）
+                from app.core.portfolio_manager.executable_spec import estimate_port_vol
+                port_vol_ann = estimate_port_vol(weights, dataset["close"],
+                                                 int(getattr(settings, "risk_vol_lookback", 60)))
                 if port_vol_ann is None:
                     logger.warning(
-                        "[portfolio] PM.5 目标波动已配置(%.3f)但样本不足(%d<20)，本轮不缩放",
-                        limits.target_vol_ann, len(sample))
+                        "[portfolio] PM.5 目标波动已配置(%.3f)但可用样本不足或估计无效，本轮不缩放",
+                        limits.target_vol_ann)
                 else:
                     logger.info("[portfolio] PM.5 目标波动 %.3f / 实际估计 %.3f",
                                 limits.target_vol_ann, port_vol_ann)
@@ -505,14 +503,15 @@ class DailyTradingLoop:
                 band = 0.0
         to_before = annualized_turnover(weights)
         gated_last = weights.iloc[-1].copy()            # 风控之后、无交易带之前 → 券商执行的目标
-        weights = apply_no_trade_band(weights, band)
         # 【审计 F07】无交易带会取消小幅减仓、保留大幅加仓，重新引入上游已削掉的超限
         # （例：[.085,.085,.13] 在 band=.02 下变回 [.10,.10,.13]，gross 33% > 30%）。
         # 风控优先于省换手：带后再施加一次，并独立 check —— 还不过就是 bug，执行层不加风险。
         # 外部审查 2026-10-18 F07（R7）：这一次只做**硬约束投影**，不再传 port_vol_ann ——
         # 波动缩放是一次性的；再传一次，同一个缩放系数会乘两遍（10%/20% → .8→.4→.2），
         # 券商拿到的是 .4（gated_last），模拟账本拿到的是 .2。
-        weights, _ = PortfolioRiskGate(limits).apply(weights, sectors=sectors, port_vol_ann=None)
+        # 与策略门共用（复审 2026-10-19 N05）：无交易带 → 硬约束投影
+        from app.core.portfolio_manager.executable_spec import band_then_reproject
+        weights = band_then_reproject(weights, band, limits, sectors)
         post_band_violations = PortfolioRiskGate(limits).check(weights.tail(1), sectors=sectors)
         if post_band_violations:
             logger.error("[portfolio] 无交易带 + 二次风控后仍违规：%s → 券商执行不加新风险",
@@ -744,8 +743,17 @@ class DailyTradingLoop:
     #: 每份策略每次最多回看这么多根 bar 去结算（停机更久的那几天本来也不是前向）
     STRATEGY_SETTLE_LOOKBACK = 10
 
+    @staticmethod
+    def _runtime_settings(data_source: Optional[str]):
+        """运行时口径：settings，但价格源换成**这份面板实际的来源**（PIT 元数据），而不是 settings 声称的。"""
+        from app.config import settings
+        if not data_source:
+            return settings
+        return settings.model_copy(update={"price_source": str(data_source)})
+
     def _record_strategy_evidence(self, dataset: Dict[str, pd.DataFrame],
-                                  now: Optional[datetime]) -> Dict[str, int]:
+                                  now: Optional[datetime],
+                                  data_source: Optional[str] = None) -> Dict[str, int]:
         """
         外部审查 2026-10-18 F06：**按策略版本**积累前向证据。
 
@@ -772,9 +780,25 @@ class DailyTradingLoop:
         except Exception as exc:
             logger.error("[evidence] 策略版本证据本轮跳过（读不到配置）: %s", exc)
             return out
+        from app.core.portfolio_manager.executable_spec import verify_against_runtime
+        rt = self._runtime_settings(data_source)
         for rec in configs:
             spec = approved_spec(rec)
             if spec is None or any(v is None for v in spec["factors"].values()):
+                continue
+            # 复审 2026-10-19 N02：证据路径也要核对规格 —— 运行时与规格对不上（换了价格源、风控、AUM…），
+            # 算出来的就不是这份策略的信号，不能记在它的名下。隔离留痕，不计入正式前向。
+            diff = verify_against_runtime(spec, dict(spec["factors"]), float(self.broker.initial_capital),
+                                          settings=rt)
+            if diff:
+                logger.error("[evidence] 策略 #%s 的规格与运行时不一致 → 本轮不记前向证据：%s", rec.id, diff)
+                out[f"strategy:{rec.id}"] = -1
+                try:
+                    ev.log_revision("strategy_evidence_quarantine", f"strategy:{rec.id}",
+                                    dataset["close"].index[-1], "", "; ".join(diff)[:500],
+                                    "运行时与可执行规格不一致，本轮信号不存档、不结算")
+                except Exception as exc:
+                    logger.error("[evidence] 隔离记录写入失败: %s", exc)
                 continue
             try:
                 sigs = {f: SignalProcessor(signal_config()).process(

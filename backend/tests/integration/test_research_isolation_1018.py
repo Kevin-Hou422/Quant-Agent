@@ -25,7 +25,7 @@ import pytest
 from tests.conftest import _make_dataset
 
 from app.core.data_engine.data_partitioner import FrozenBoundaryError, split_from_settings
-from app.db.trial_ledger import BoundaryStore, HoldoutLedger, TrialLedger, record_trials
+from app.db.trial_ledger import BoundaryStore, HoldoutLedger, TrialLedger
 
 BACKEND = Path(__file__).resolve().parents[2]
 
@@ -279,7 +279,8 @@ class TestTrialAccounting:
         expected = sum(g["population_size"] for g in res.evolution_log)
         assert expected > 0 and res.n_structures_evaluated == expected
         assert res.trials_recorded is True
-        assert [(r.n, r.source) for r in TrialLedger().runs()] == [(expected, "gp")]
+        # 复审 2026-10-19 N07：先登记、逐代累加、正常结束
+        assert [(r.n_recorded, r.source, r.status) for r in TrialLedger().run_states()] == [(expected, "gp", "done")]
         assert TrialLedger().total() == expected
 
     def test_optuna_records_the_trials_it_ran(self, fresh_db):
@@ -288,15 +289,20 @@ class TestTrialAccounting:
         opt = AlphaOptimizer(dsl="rank(close)", is_dataset=d, n_trials=3, seed=1)
         _, summary = opt.optimize()
         assert summary.n_trials == 3 and opt.trials_recorded is True
-        assert [(r.n, r.source) for r in TrialLedger().runs()] == [(3, "optuna")]
+        assert [(r.n_recorded, r.source, r.status) for r in TrialLedger().run_states()] == [(3, "optuna", "done")]
 
-    def test_a_ledger_failure_does_not_stop_the_search_but_is_reported(self, monkeypatch, caplog):
+    def test_an_unwritable_ledger_refuses_to_start_a_search(self, monkeypatch):
+        """复审 2026-10-19 N07：登记不进去就不搜 —— 没登记的尝试会从研究史里消失。"""
+        from app.core.gp_engine.population_evolver import PopulationEvolver
+        from app.db.trial_ledger import TrialLedgerUnavailable
+
         def boom(*a, **k):
             raise RuntimeError("ledger down")
         monkeypatch.setattr("app.db.trial_ledger.TrialLedger", boom)
-        with caplog.at_level("ERROR"):
-            assert record_trials(7, source="gp") is False
-        assert [r.levelname for r in caplog.records if "7 次尝试没进全局计数" in r.getMessage()] == ["ERROR"]
+        d = _make_dataset(n_days=120, n_tickers=6)
+        with pytest.raises(TrialLedgerUnavailable, match="拒绝开始 gp 搜索"):
+            PopulationEvolver({k: v.iloc[:80] for k, v in d.items()}, {k: v.iloc[80:] for k, v in d.items()},
+                              pop_size=4, n_generations=1, seed=1).run(seed_dsl="rank(close)", n_optuna_trials=0)
 
     def test_validate_api_defaults_to_the_global_count(self, test_client, fresh_db):
         from app.db.alpha_store import AlphaResult, AlphaStore

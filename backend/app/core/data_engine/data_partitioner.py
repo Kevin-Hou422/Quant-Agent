@@ -815,6 +815,23 @@ def split_from_settings(
             f"冻结段不能拿来做研究 —— 请把起点往前延长。") from exc
 
 
+def research_window(dataset: Dict[str, pd.DataFrame], dataset_key: Optional[str]) -> Dict[str, pd.DataFrame]:
+    """
+    研究流程被允许看的那一段（复审 2026-10-19 N09：所有入口共用这一个，不再各自切）。
+
+    真实数据集 → 冻结边界之前的选择段；有冻结边界却切不出 → FrozenBoundaryError（调用方拒绝，
+    绝不退回全量）；数据太短、根本没有 Test 段（且没有冻结边界）→ 全量并告警。
+    """
+    try:
+        return split_from_settings(dataset, dataset_key=dataset_key).selection
+    except FrozenBoundaryError:
+        raise
+    except ValueError as exc:
+        logger.warning("[S.2] %s 数据不足以三段切割，按全量研究（本次没有冻结 Test 段）: %s",
+                       dataset_key or "synthetic", exc)
+        return dataset
+
+
 def account_holdout_use(
     split:       ThreeWaySplit,
     dataset_key: str,

@@ -154,27 +154,17 @@ class BacktestEngine:
         # 用户决定 #4：接受由此产生的历史回测收益变化，前后对比见
         # docs/A6_ENGINE_UNIFICATION.md。
         tgt_arr = weights.to_numpy(dtype=float)
-        if self.initial_capital > 0:
-            cap_trade_mat = (
-                adv_usd * self.params.max_participation_pct / self.initial_capital)
-        else:
-            cap_trade_mat = np.full_like(adv_usd, np.inf)
 
         # 价格涨跌矩阵 (T, N)（漂移与毛收益共用）
         price_chg_mat             = np.zeros((T, N))
         safe_prev_mat             = np.where(prices_arr[:-1] == 0, np.nan, prices_arr[:-1])
         price_chg_mat[1:]         = (prices_arr[1:] - prices_arr[:-1]) / safe_prev_mat
 
-        # F10：每天先把昨仓按今日价格漂移成**调仓前权重**，再撮合到目标；成交差额 = 目标 − 漂移后
+        # F10：每天先把昨仓按今日价格漂移成**调仓前权重**，再撮合到目标；成交差额 = 目标 − 漂移后。
+        # 复审 2026-10-19 N08：ADV 成交上限按**调仓前市值**换成权重 —— 它依赖当天的权益，
+        # 所以撮合与净值递推放在同一个逐日循环里（下面），不再预先算好。
         adj_weights = np.zeros((T, N), dtype=float)
         pre_w_mat   = np.zeros((T, N), dtype=float)
-        prev_filled = np.zeros(N, dtype=float)
-        for t in range(T):
-            pre = drift_weights(prev_filled, price_chg_mat[t]) if t > 0 else prev_filled
-            fr = simulate_partial_fills(pre, tgt_arr[t], cap_trade_mat[t], max_net=self.max_net)
-            pre_w_mat[t] = pre
-            adj_weights[t] = fr.filled_w
-            prev_filled = fr.filled_w
 
         # --- E3: 从实际日期范围动态计算年化系数 ---
         if T >= 2:
@@ -186,28 +176,14 @@ class BacktestEngine:
         # --- F5: 日化借券成本（年化 bps → 日化率）---
         daily_borrow_rate = self.params.short_borrow_annual_bps * 1e-4 / tdays_per_year
 
-        # --- E1: 预计算不依赖 equity 的数组（减少 Python 循环体积）---
-        # prev_w_mat[t] = adj_weights[t-1]，t=0 时为零向量
-        prev_w_mat  = np.vstack([np.zeros((1, N)), adj_weights[:-1]])    # (T, N)
-        delta_w_mat = adj_weights - pre_w_mat                            # (T, N)：真实成交量
-
-        # 换手（单边）— 全量向量化
-        turnover_arr_pre = np.sum(np.abs(delta_w_mat), axis=1) / 2.0    # (T,)
-
-        # 毛收益与多空腿分离 — 全量向量化
-        long_w_mat  = np.maximum(prev_w_mat, 0.0)
-        short_w_mat = np.minimum(prev_w_mat, 0.0)
-        gross_ret_pre = np.nansum(prev_w_mat  * price_chg_mat, axis=1)   # (T,)
-        long_ret_pre  = np.nansum(long_w_mat  * price_chg_mat, axis=1)   # (T,)
-        short_ret_pre = np.nansum(short_w_mat * price_chg_mat, axis=1)   # (T,)
-        gross_ret_pre[0] = long_ret_pre[0] = short_ret_pre[0] = 0.0      # 首日无价格变化
-
-        # 借券成本 — 全量向量化（不依赖 equity，只依赖权重）
-        short_exp_arr  = np.sum(np.maximum(-prev_w_mat, 0.0), axis=1)    # (T,)
-        borrow_arr_pre = short_exp_arr * daily_borrow_rate                # (T,)
-
-        # --- 逐日迭代（仅剩 equity 递推 + 交易成本归一化）---
+        # --- 逐日迭代：毛收益（昨仓 × 今日涨跌）→ 漂移 → 按调仓前市值撮合 → 成本 → 净值 ---
         equity          = self.initial_capital
+        prev_filled     = np.zeros(N, dtype=float)
+        delta_w_mat     = np.zeros((T, N), dtype=float)
+        gross_ret_pre   = np.zeros(T)
+        long_ret_pre    = np.zeros(T)
+        short_ret_pre   = np.zeros(T)
+        borrow_arr_pre  = np.zeros(T)
         all_records:    List[TradeRecord] = []
         equity_series   = np.zeros(T)
         gross_ret_arr   = np.zeros(T)
@@ -215,23 +191,41 @@ class BacktestEngine:
         long_ret_arr    = np.zeros(T)
         short_ret_arr   = np.zeros(T)
         cost_bps_arr    = np.zeros(T)
-        realized_pos    = adj_weights.copy()   # positions = target weights
+        realized_pos    = adj_weights          # 逐日在下面的循环里填（成交后的持仓）
         ruin_date: Optional[pd.Timestamp] = None
 
         for t in range(T):
-            # 交易成本（仍需 equity 做归一化，无法向量化）
-            cost_w, _, records = self._tc.compute(
+            chg = price_chg_mat[t]
+            if t > 0:
+                gross_ret_pre[t] = float(np.nansum(prev_filled * chg))
+                long_ret_pre[t]  = float(np.nansum(np.maximum(prev_filled, 0.0) * chg))
+                short_ret_pre[t] = float(np.nansum(np.minimum(prev_filled, 0.0) * chg))
+            borrow_arr_pre[t] = float(np.sum(np.maximum(-prev_filled, 0.0))) * daily_borrow_rate
+            pre = drift_weights(prev_filled, chg) if t > 0 else prev_filled
+            v_pre = equity * (1.0 + gross_ret_pre[t])          # 调仓前市值（N08）
+            if v_pre > 0:
+                cap = adv_usd[t] * self.params.max_participation_pct / v_pre
+            else:
+                cap = np.full(N, np.inf)
+            fr = simulate_partial_fills(pre, tgt_arr[t], cap, max_net=self.max_net)
+            pre_w_mat[t] = pre
+            adj_weights[t] = fr.filled_w
+            delta_w_mat[t] = fr.filled_w - pre
+            prev_filled = fr.filled_w
+
+            # 交易成本：成交额 = Δw × 调仓前市值；当天净收益按期初权益归一（N08）
+            _, cost_usd, records = self._tc.compute(
                 date          = dates[t],
                 delta_w       = delta_w_mat[t],
                 prices        = prices_arr[t],
                 adv_usd       = adv_usd[t],
                 daily_vol     = daily_vol_arr[t],
-                portfolio_val = equity,
+                portfolio_val = max(v_pre, 0.0),
                 tickers       = tickers,
             )
             all_records.extend(records)
 
-            cost_ret = float(cost_w.sum())
+            cost_ret = float(cost_usd) / equity if equity > 0 else 0.0
             net_ret  = gross_ret_pre[t] - cost_ret - borrow_arr_pre[t]
 
             # 更新净值（递推，必须串行）
@@ -244,7 +238,8 @@ class BacktestEngine:
             cost_bps_arr[t]      = (cost_ret + borrow_arr_pre[t]) * 10_000
 
             # ── E6 熔断：净值归零后停止模拟 ─────────────────────────────
-            if equity <= 0:
+            # 初始资金为 0 的回测（只看权重、不设容量上限）没有"净值归零"一说
+            if self.initial_capital > 0 and equity <= 0:
                 ruin_date = dates[t]
                 logger.warning(
                     "净值归零熔断 | date=%s | day=%d/%d | 剩余 %d 天填充为 0",
@@ -260,8 +255,8 @@ class BacktestEngine:
                     t, T, dates[t].date(), equity / self.initial_capital,
                 )
 
-        # turnover_arr 已向量化，直接使用
-        turnover_arr = turnover_arr_pre
+        # 换手（单边）= 真实成交量（漂移后 → 成交后）
+        turnover_arr = np.sum(np.abs(delta_w_mat), axis=1) / 2.0
 
         logger.info(
             "回测完成: %d 天 × %d 资产 | tdays/yr=%.1f | 最终净值=%.4f | 总交易=%d%s",

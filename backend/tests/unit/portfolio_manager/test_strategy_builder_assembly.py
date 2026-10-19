@@ -68,6 +68,9 @@ class _Verdict:
     def __init__(self, passed=True, payload=None):
         self.passed = passed
         self._payload = payload or {"passed": passed, "sharpe": 1.2}
+        # StrategyValidationResult 的字段（提案把流程 OOS 的这几项抄进 verdict，复审 N05）
+        self.sharpe, self.deflated_sharpe, self.t_stat = 1.2, 0.95, 3.0
+        self.reasons = [] if passed else ["未过"]
 
     def to_dict(self):
         return dict(self._payload)
@@ -112,8 +115,12 @@ def wiring(monkeypatch):
         def __init__(self, aum, method):
             seen["gate"].append({"aum": aum, "method": method})
 
-        def evaluate(self, signals, dataset, cost_params=None):
+        def evaluate(self, signals, dataset, cost_params=None, fixed_combo_weights=None,
+                     no_trade_band=None):
+            # 复审 2026-10-19 N05：提案会调两次 —— 冻结规格本身、流程的滚动前推
             seen["gate"][-1]["cost_params"] = cost_params
+            seen["gate"][-1].setdefault("calls", []).append(
+                {"fixed_combo_weights": fixed_combo_weights, "no_trade_band": no_trade_band})
             return _Verdict()
 
     class _RiskGate:

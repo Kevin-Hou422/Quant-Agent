@@ -459,7 +459,7 @@ class _CapturingLoop:
         _CapturingLoop.seen.append(("factors", set(dataset), forward_from))
         return SimpleNamespace(n_alphas=0, n_alerts=0, n_errors=0)
 
-    def run_portfolio(self, dataset, forward_from=None, now=None):
+    def run_portfolio(self, dataset, forward_from=None, now=None, data_source=None):
         _CapturingLoop.seen.append(("portfolio", set(dataset), forward_from))
         return {"n_factors": 0}
 

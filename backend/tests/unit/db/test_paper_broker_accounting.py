@@ -409,7 +409,9 @@ def test_a_reduction_that_cannot_fill_is_booked_at_its_true_state(broker):
                 daily_vol=_series([0.02], tk))
     assert broker.store.latest_positions(37)["A"] == pytest.approx(0.20, abs=1e-12)
 
-    adv_small = 0.05 * CAPITAL / cap_pct          # 当日最多成交 5% 权重
+    # 当日最多成交 5% 权重 —— 权重相对**调仓前市值**（复审 2026-10-19 N08；价格不动时 = 期初权益，
+    # 而第 1 天的成本已经让它略小于 CAPITAL）
+    adv_small = 0.05 * broker.store.latest_equity(37) * CAPITAL / cap_pct
     broker.step(alpha_id=37, date="2024-02-09",
                 target_w=_series([0.0], tk), prices_t=_series([100.0], tk),
                 prices_prev=_series([100.0], tk), adv_usd=_series([adv_small], tk),
@@ -843,7 +845,7 @@ class TestPositionsOutsideTheNewTargetAreNotDropped:
         """
         self._both(broker, 53)
         cap_pct = broker.params.max_participation_pct
-        adv_a = 0.10 * CAPITAL / cap_pct
+        adv_a = 0.10 * broker.store.latest_equity(53) * CAPITAL / cap_pct   # 相对调仓前市值（N08）
         broker.step(alpha_id=53, date="2024-04-02",
                     target_w=_series([1.0], ["B"]),
                     prices_t=_series([100.0, 100.0], ["A", "B"]),

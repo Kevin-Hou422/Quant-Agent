@@ -132,3 +132,39 @@ def verify_against_runtime(spec: dict, factor_dsl: Dict[str, Optional[str]], aum
     current = build_spec(factor_dsl, spec.get("combo_weights") or {}, spec.get("method", ""),
                          aum, float(spec.get("no_trade_band", 0.0)), settings=settings)
     return spec_diff(spec, current)
+
+
+# ---------------------------------------------------------------------------
+# 共用的风险路径（复审 2026-10-19 N05：策略门与每日循环此前各拼一套）
+# ---------------------------------------------------------------------------
+
+#: 波动估计至少要这么多个已实现日收益
+MIN_VOL_SAMPLE = 20
+
+
+def estimate_port_vol(weights, close, lookback: int = 60) -> Optional[float]:
+    """
+    组合年化波动的估计：**已实现**日收益 = 权重(t−1) · 收益(t)（不用当日权重看当日收益）。
+    样本不足 MIN_VOL_SAMPLE / 非有限 / 非正 → None（调用方据此本轮不做目标波动缩放）。
+    """
+    import numpy as np
+    rets = close.pct_change().reindex(columns=weights.columns)
+    port_ret = (weights.shift(1) * rets).sum(axis=1).dropna()
+    sample = port_ret.tail(int(lookback))
+    if len(sample) < MIN_VOL_SAMPLE:
+        return None
+    vol = float(sample.std(ddof=1) * np.sqrt(252.0))
+    return vol if np.isfinite(vol) and vol > 1e-9 else None
+
+
+def band_then_reproject(weights, band: float, limits, sectors=None):
+    """
+    无交易带 → **硬约束投影**（不再传波动估计：波动缩放是一次性的，第二次传会把同一个系数乘两遍）。
+    无交易带会取消小幅减仓、保留大幅加仓，重新引入上游已削掉的超限，所以带后必须再投影一次。
+    """
+    from app.core.portfolio_manager.horizon import apply_no_trade_band
+    from app.core.portfolio_manager.risk_gate import PortfolioRiskGate
+    banded = apply_no_trade_band(weights, float(band))
+    out, _ = PortfolioRiskGate(limits).apply(banded, sectors=sectors, port_vol_ann=None)
+    return out
+

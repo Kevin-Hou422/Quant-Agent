@@ -137,8 +137,14 @@ class PaperBroker:
         #
         # `adv_cap_pct`（持仓容量）与 `max_participation_pct`（单日成交量）
         # 已拆成两个参数 —— 前者属于构建层，后者才是这里该用的（用户决策 #3）。
-        if self.initial_capital > 0:
-            cap_trade_w = adv * self.params.max_participation_pct / self.initial_capital
+        # 复审 2026-10-19 N08：三个量分开 —— 期初权益 v_prev（昨收）、调仓前市值 v_pre（昨仓按今日价）、
+        # 调仓后净值。漂移后的权重是相对 v_pre 的，所以权重 → 美元（成交额、成本、ADV 上限）都乘 v_pre；
+        # 当天的净收益按期初权益 v_prev 归一。此前一律乘 v_prev：A 涨 10% 后调回 50/50，
+        # 成交 500 美元被记成 476，100 bps 的费用记成 4.76 而不是 5。
+        v_prev = equity * self.initial_capital
+        v_pre = v_prev * (1.0 + gross_ret)
+        if v_pre > 0:
+            cap_trade_w = adv * self.params.max_participation_pct / v_pre
         else:
             cap_trade_w = np.full_like(adv, np.inf)
         # 没有行情的名字今天**不能交易** —— 成交量上限置 0，
@@ -154,9 +160,9 @@ class PaperBroker:
         # 4) 调仓成本 —— 基于**实际成交量**，不是想要的量
         cost_w, _cost_usd_total, _ = self._tc.compute(
             date=date, delta_w=delta, prices=p_t, adv_usd=adv, daily_vol=vol,
-            portfolio_val=equity * self.initial_capital, tickers=tickers,
+            portfolio_val=max(v_pre, 0.0), tickers=tickers,
         )
-        cost_ret = float(np.sum(cost_w))
+        cost_ret = float(_cost_usd_total) / v_prev if v_prev > 0 else 0.0
 
         # 5) 净收益 + 净值
         net_ret   = gross_ret - cost_ret - borrow_ret
@@ -166,7 +172,7 @@ class PaperBroker:
         fills: List[dict] = []
         # 逐名成本（USD）——按 |delta| 占比分摊 total（TransactionCostEngine 已逐名，
         # 这里用 cost_w×组合市值近似逐名 USD，仅供审计展示）
-        pv = equity * self.initial_capital
+        pv = max(v_pre, 0.0)
         for i, tk in enumerate(tickers):
             if abs(delta[i]) < 1e-12 and abs(filled[i]) < 1e-12:
                 continue

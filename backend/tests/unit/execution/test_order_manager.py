@@ -66,6 +66,8 @@ def _cycle(e, d, w=W, px=PX1, adv=ADV, quote=True):
     e.clock.after_close(d)
     if quote:
         e.ctx.quotes.update({k: float(v) for k, v in px.items()})
+        # 复审 2026-10-19 N06：报价必须来自最近一个已收盘交易日 —— 这里就是决策日收盘时的价
+        e.ctx.quote_time = f"{d:%Y-%m-%d} 16:00:00.000"
     return e.om.run_cycle(pd.Series(w, dtype=float), pd.Series(px, dtype=float),
                           pd.Series(adv, dtype=float), d)
 

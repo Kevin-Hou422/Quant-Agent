@@ -31,9 +31,14 @@ def check(orders, ctx, limits):
     报价本身的规则见 test_claim_lock_quotes_1018.py。
     """
     import dataclasses
+    from datetime import datetime, timezone
     from app.core.execution.broker_gateway import Quote
     if ctx.quotes is None:
-        ctx = dataclasses.replace(ctx, quotes={o.ticker: Quote(float(o.ref_price), None) for o in orders})
+        # 复审 2026-10-19 N06：报价要有时刻、来自最近一个已收盘交易日 —— 这里给一个周二收盘后的决策时刻
+        # 与当天收盘的报价（交易所本地时间）
+        now = ctx.now or datetime(2025, 3, 4, 22, 0, tzinfo=timezone.utc)
+        ctx = dataclasses.replace(ctx, now=now, quotes={
+            o.ticker: Quote(float(o.ref_price), datetime(2025, 3, 4, 16, 0)) for o in orders})
     return _check(orders, ctx, limits)
 
 def _no_wait(e):

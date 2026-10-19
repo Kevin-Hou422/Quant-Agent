@@ -101,8 +101,8 @@ def test_paper_execution_trades_the_risk_gated_row_of_the_active_strategy(loop_e
     _, sid = _activate_strategy(loop, settings, monkeypatch, tmp_path)
     ds = _dataset()
     ctx.mark(ds["close"].iloc[-1].to_dict())          # 独立报价 = 决策日收盘（F09）
-    from datetime import datetime as _dt
-    ctx.quote_time = _dt.now().strftime("%Y-%m-%d %H:%M:%S.000")   # 这个循环用真实时钟：报价也是"刚刚"的
+    # 这个循环用真实时钟：报价也是"刚刚"的 —— 交易所本地时间（复审 N06：不能用本机时区冒充）
+    ctx.quote_time = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d %H:%M:%S.000")
     out = loop.run_portfolio(ds, aum=AUM)
 
     assert out["active_config"] == sid and out["combo_weights"] == pytest.approx(

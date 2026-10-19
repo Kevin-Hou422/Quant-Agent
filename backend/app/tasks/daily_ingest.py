@@ -51,6 +51,32 @@ class DailyIngest:
     # Phase 11.1 / 11.3：真增量摄取（不再整段重拉）
     # ------------------------------------------------------------------
 
+    def _rebuild_for_source(self, store, dataset_name: str, end: str, as_of: str,
+                            target: pd.Timestamp, reason: str) -> "IngestResult":
+        """整段按新价格源重取，作为新 vintage 追加（旧 vintage 保留），并更新 PIT 元数据。"""
+        from app.config import settings
+        logger.warning("[daily_ingest] %s → 整段重取历史，按新源作为新 vintage 追加", reason)
+        start_full = store.earliest_timestamp(dataset_name) or pd.Timestamp(settings.paper_start)
+        full = self.ingest(dataset_name, start_full.strftime("%Y-%m-%d"), end,
+                           append_pit=False, as_of=as_of, upto=target)
+        if not full.accepted:
+            return IngestResult(False, dataset_name, as_of, mode="rebased",
+                                reject_reason=f"rebase_failed: {full.reject_reason}")
+        try:
+            self._append_pit(dataset_name, {f: df for f, df in (full.dataset or {}).items()
+                                            if isinstance(df, pd.DataFrame)}, as_of)
+            meta = store.read_meta(dataset_name)
+            meta.update(price_source=str(getattr(settings, "price_source", "yahoo")),
+                        last_rebase=as_of, last_rebase_reason=reason)
+            store.write_meta(meta, name=dataset_name)
+        except Exception as exc:
+            logger.error("[daily_ingest] 换源重建写 PIT 失败: %s", exc)
+            return IngestResult(False, dataset_name, as_of, mode="rebased",
+                                reject_reason=f"pit_append_failed: {exc}")
+        full.mode, full.forward_from, full.n_new_bars = "rebased", None, 0
+        full.calendar_note = reason
+        return full
+
     def ingest_incremental(self, dataset_name: str,
                            backfill_start: Optional[str] = None,
                            now: Optional[datetime] = None) -> IngestResult:
@@ -98,6 +124,13 @@ class DailyIngest:
 
         # ---- 2) 已有数据 → 只拉增量 ----
         if last.normalize() >= target.normalize():
+            # 复审 2026-10-19 N02：PIT 已是最新、当天换了价格源 → 此前直接"无新 bar"返回，
+            # 交易循环接着用旧源的 PIT。换源检查必须在消费 PIT 之前做，不只在有新 bar 时做。
+            old_src = (store.read_meta(dataset_name) or {}).get("price_source")
+            src_now = str(getattr(settings, "price_source", "yahoo"))
+            if old_src and old_src != src_now:
+                return self._rebuild_for_source(store, dataset_name, end, as_of, target,
+                                                f"价格源从 {old_src} 换成了 {src_now}（无新 bar）")
             note = f"PIT 最新 bar {last.date()} 已是最近已收盘交易日 {target.date()}"
             logger.info("[daily_ingest] 无新 bar（%s）→ 跳过", note)
             return IngestResult(False, dataset_name, as_of, mode="no_new_bar",
@@ -216,9 +249,13 @@ class DailyIngest:
         if close is None or close.empty:
             return IngestResult(False, dataset_name, as_of, reject_reason="empty_close")
 
-        # 健康门
+        # 健康门 —— 检查的必须是**截断之后**、真正会被落盘和使用的那份面板（复审 2026-10-19 N04）。
+        # 此前检查的是截断前的 `ds`：一根完整的未收盘 bar 能把前一个已收盘日只有 10% 覆盖的问题盖住。
+        import copy
+        checked = copy.copy(ds)
+        checked.data = data
         try:
-            report = check_dataset_health(ds, min_score=self.min_health, warn_only=True)
+            report = check_dataset_health(checked, min_score=self.min_health, warn_only=True)
         except Exception as exc:
             logger.warning("[daily_ingest] 健康检查异常，保守拒绝: %s", exc)
             return IngestResult(False, dataset_name, as_of, reject_reason=f"health_error: {exc}")
@@ -227,6 +264,13 @@ class DailyIngest:
             logger.warning("[daily_ingest] 健康检查没有给出结果 → 保守拒绝当日摄取")
             return IngestResult(False, dataset_name, as_of, reject_reason="health_unavailable")
         score = float(report.overall_score)
+        held_gap = _held_without_close(data)
+        if held_gap:
+            # 持仓标的的报价不能被宇宙的平均覆盖率抵消：缺一只也可能让那只票被当成 0 或被平掉
+            logger.warning("[daily_ingest] %s → 拒绝当日摄取", held_gap)
+            return IngestResult(False, dataset_name, as_of, health_score=score,
+                                n_dates=close.shape[0], n_tickers=close.shape[1],
+                                reject_reason=f"health_hard_failure: {held_gap}")
         if report.hard_failures:
             logger.warning("[daily_ingest] 数据硬性条件未满足 → **拒绝当日摄取**: %s", report.hard_failures)
             return IngestResult(
@@ -318,6 +362,27 @@ def _rebase_reason(store, dataset_name: str, last: pd.Timestamp, inc: Dict[str, 
             f"（最大 {tk}: {float(a[tk]):.4f} → {float(b[tk]):.4f}），数据源重算了历史复权")
 
 
+def _held_without_close(data: Dict[str, pd.DataFrame]) -> str:
+    """券商账本里持有的标的，在最后一个交易日没有收盘价 → 说明原因；都有 → 空串。读不到持仓 → 拒绝。"""
+    close = data.get("close")
+    if close is None or close.empty:
+        return ""
+    try:
+        from app.core.execution.order_manager import LIVE_BOOK_ID
+        from app.db.position_store import PositionStore
+        held = [tk for tk, w in (PositionStore().latest_positions(LIVE_BOOK_ID) or {}).items()
+                if abs(float(w)) > 1e-12]
+    except Exception as exc:
+        logger.error("[daily_ingest] 读不到券商账本持仓 → 拒绝当日摄取: %s", exc)
+        return f"读不到券商账本持仓，无法核对持仓标的的报价（{exc}）"
+    last = close.iloc[-1]
+    missing = sorted(tk for tk in held if tk not in close.columns or pd.isna(last.get(tk)))
+    if not missing:
+        return ""
+    return (f"持仓标的 {missing[:10]}{' …' if len(missing) > 10 else ''} 在最后一个交易日 "
+            f"{pd.Timestamp(close.index[-1]).date()} 没有收盘价")
+
+
 def _execution_on() -> bool:
     from app.config import settings
     return str(getattr(settings, "execution_mode", "off")) != "off"
@@ -349,10 +414,21 @@ def _with_fundamentals(dataset_name: str, panel: Dict[str, pd.DataFrame]) -> Dic
         return panel
 
 
-def _run_portfolio_safely(loop, dataset, forward_from, now=None) -> Dict[str, Any]:
+def _pit_source(dataset_name: str) -> Optional[str]:
+    """PIT 元数据里记的**实际**价格源（复审 2026-10-19 N02：证据与规格核对用它，不用 settings 的声称）。"""
+    try:
+        from app.config import settings
+        from app.core.data_engine.pit_store import PITStore
+        return (PITStore(settings.pit_store_dir).read_meta(dataset_name) or {}).get("price_source")
+    except Exception as exc:
+        logger.error("[daily_pipeline] 读不到 PIT 元数据里的价格源: %s", exc)
+        return None
+
+
+def _run_portfolio_safely(loop, dataset, forward_from, now=None, data_source=None) -> Dict[str, Any]:
     """组合账本失败不拖垮 per-factor 监控；但执行层仍要对账/续做全平（失败时不加新风险）。"""
     try:
-        return loop.run_portfolio(dataset, forward_from=forward_from, now=now)
+        return loop.run_portfolio(dataset, forward_from=forward_from, now=now, data_source=data_source)
     except Exception as exc:
         logger.error("[daily_pipeline] 组合账本失败 → 本轮不调仓，只做对账/熔断维护: %s", exc)
         pf = {"n_factors": 0, "days_processed": 0, "error": str(exc)}
@@ -393,7 +469,8 @@ def run_daily_pipeline(dataset_name: str, start: str = "", end: str = "",
                 panel = PITStore(settings.pit_store_dir).load_pit(name=dataset_name) or {}
                 if panel.get("close") is not None and not panel["close"].empty:
                     panel = _with_fundamentals(dataset_name, panel)
-                    out["portfolio"] = _run_portfolio_safely(DailyTradingLoop(), panel, None, now)
+                    out["portfolio"] = _run_portfolio_safely(DailyTradingLoop(), panel, None, now,
+                                                             _pit_source(dataset_name))
                 else:
                     out["portfolio"] = {"execution": DailyTradingLoop()._maintain_live("no_data")}
             logger.info("[daily_pipeline] 无新 bar（%s）", ing.calendar_note)
@@ -411,7 +488,7 @@ def run_daily_pipeline(dataset_name: str, start: str = "", end: str = "",
     # `now` = 决策时刻：当天的信号以它为存档时刻，明天据此判断结算是不是前向（F06）
     report = loop.run(panel, forward_from=ing.forward_from, now=now)   # per-factor：IC 监控 + 衰减
     # Phase PM.4：组合账本（真实 AUM 的美元账本，多因子净持仓 + 容量）
-    pf = _run_portfolio_safely(loop, panel, ing.forward_from, now)
+    pf = _run_portfolio_safely(loop, panel, ing.forward_from, now, _pit_source(dataset_name))
     return {
         "ingest_accepted": True, "as_of": ing.as_of, "health_score": ing.health_score,
         "mode": ing.mode, "forward_from": ing.forward_from, "n_new_bars": ing.n_new_bars,

@@ -45,7 +45,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from typing import List, Tuple
@@ -76,6 +76,26 @@ class TrialRun(_Base):
     n:          int      = Column(Integer, nullable=False)
     source:     str      = Column(String(32), nullable=False, default="")
     created_at: datetime = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class TrialRunState(_Base):
+    """
+    一次搜索运行的生命周期（复审 2026-10-19 N07）：开始前登记 running，逐批累加 n_recorded，
+    结束时置 done / aborted。进程被杀、机器重启 → 永远停在 running → 过了 STALE_AFTER 就是
+    "试验史不完整"，门据此拒绝给出正式结论，直到有人用 resolve_run 补记并写明理由。
+    """
+    __tablename__ = "trial_run_state"
+    run_id:      str      = Column(String(64), primary_key=True)
+    source:      str      = Column(String(32), nullable=False, default="")
+    status:      str      = Column(String(16), nullable=False, default="running")
+    n_recorded:  int      = Column(Integer, nullable=False, default=0)
+    started_at:  datetime = Column(DateTime, nullable=False)
+    finished_at: datetime = Column(DateTime, nullable=True)
+    note:        str      = Column(String(512), nullable=False, default="")
+
+
+#: running 状态超过这么久还没结束 → 视为中断（GP / Optuna 单次运行远短于此）
+STALE_AFTER = timedelta(hours=6)
 
 
 class TrialLedger:
@@ -125,6 +145,77 @@ class TrialLedger:
             row = s.scalars(select(TrialCount).where(TrialCount.id == 1)).first()
             return int(row.total) if row else 0
 
+    # ------------------------------------------------------------------ 运行生命周期（N07）
+    def begin_run(self, source: str) -> str:
+        """搜索开始**之前**登记一次运行（写不进去就抛 —— 调用方据此拒绝开始搜索）。"""
+        import uuid
+        run_id = f"{source}:{uuid.uuid4().hex}"
+        with self._Session() as s:
+            s.add(TrialRunState(run_id=run_id, source=(source or "")[:32], status="running",
+                                n_recorded=0, started_at=datetime.utcnow()))
+            s.commit()
+        return run_id
+
+    def add_progress(self, run_id: str, n: int) -> int:
+        """把这一批实际评估过的 n 个尝试记进全局累计与这次运行（一个事务）。返回新的累计总数。"""
+        n = max(0, int(n))
+        with self._Session() as s:
+            if s.get(TrialCount, 1) is None:
+                s.add(TrialCount(id=1, total=0))
+                s.flush()
+            s.execute(update(TrialCount).where(TrialCount.id == 1)
+                      .values(total=TrialCount.total + n, updated_at=datetime.utcnow()))
+            hit = s.execute(update(TrialRunState).where(TrialRunState.run_id == run_id)
+                            .values(n_recorded=TrialRunState.n_recorded + n)).rowcount
+            if hit != 1:
+                s.rollback()
+                raise KeyError(f"没有登记过的运行 {run_id}")
+            s.commit()
+            return int(s.scalar(select(TrialCount.total).where(TrialCount.id == 1)) or 0)
+
+    def finish_run(self, run_id: str, status: str = "done", note: str = "") -> None:
+        with self._Session() as s:
+            s.execute(update(TrialRunState).where(TrialRunState.run_id == run_id)
+                      .values(status=status, finished_at=datetime.utcnow(), note=(note or "")[:512]))
+            s.commit()
+
+    def incomplete_runs(self, now: Optional[datetime] = None) -> List[TrialRunState]:
+        """停在 running 超过 STALE_AFTER 的运行（被杀 / 崩溃 / 记账写失败后没能结束）。"""
+        cutoff = (now or datetime.utcnow()) - STALE_AFTER
+        with self._Session() as s:
+            return list(s.scalars(select(TrialRunState).where(
+                TrialRunState.status == "running", TrialRunState.started_at < cutoff)).all())
+
+    def resolve_run(self, run_id: str, extra_trials: int, actor: str, reason: str) -> int:
+        """
+        人工结案一次中断的运行：把**估计**漏记的尝试数补进全局累计（宁可估多），写明是谁、为什么。
+        漏记无法从数据里恢复，这里只能靠人判断 —— 所以必须留痕。
+        """
+        if not actor or not reason:
+            raise ValueError("结案必须写明操作人与原因")
+        extra = max(0, int(extra_trials))
+        with self._Session() as s:
+            row = s.get(TrialRunState, run_id)
+            if row is None or row.status != "running":
+                raise KeyError(f"{run_id} 不是一个未结束的运行")
+            if s.get(TrialCount, 1) is None:
+                s.add(TrialCount(id=1, total=0))
+                s.flush()
+            s.execute(update(TrialCount).where(TrialCount.id == 1)
+                      .values(total=TrialCount.total + extra, updated_at=datetime.utcnow()))
+            row.status, row.finished_at = "resolved", datetime.utcnow()
+            row.n_recorded = int(row.n_recorded) + extra
+            row.note = f"{actor}: {reason}（补记 {extra}）"[:512]
+            s.commit()
+            return int(s.scalar(select(TrialCount.total).where(TrialCount.id == 1)) or 0)
+
+    def run_states(self, source: Optional[str] = None) -> List[TrialRunState]:
+        with self._Session() as s:
+            q = select(TrialRunState).order_by(TrialRunState.started_at)
+            if source:
+                q = q.where(TrialRunState.source == source)
+            return list(s.scalars(q).all())
+
     def runs(self, source: Optional[str] = None) -> List[TrialRun]:
         with self._Session() as s:
             q = select(TrialRun).order_by(TrialRun.created_at)
@@ -143,23 +234,64 @@ class TrialLedger:
             s.commit()
 
 
-def record_trials(n: int, source: str, run_id: Optional[str] = None) -> bool:
+class TrialRecorder:
     """
-    搜索底层用的记账入口：记 n 个试验，返回是否记上。
+    搜索底层用的记账器（复审 2026-10-19 N07）：
 
-    记不上**不打断搜索**（搜索结果本身没错），但必须让调用方知道 —— 调用方把
-    `trials_recorded=False` 带进结果，验证门据此把"全局试验数"标成不完整。
+        rec = TrialRecorder("gp")        # 登记不进去 → 抛 TrialLedgerUnavailable，搜索不开始
+        rec.add(len(results))            # 每一代 / 每个 trial 记一次
+        rec.finish("done")               # 或 "aborted"
+
+    逐批写失败不打断搜索，但这次运行会停在 running → 过期后门判"试验史不完整"。
     """
-    import uuid
-    if int(n) <= 0:
-        return True
+
+    def __init__(self, source: str) -> None:
+        self.source, self.ok, self.n = source, True, 0
+        try:
+            self.ledger = TrialLedger()
+            self.run_id = self.ledger.begin_run(source)
+        except Exception as exc:
+            raise TrialLedgerUnavailable(
+                f"试验台账不可写（{exc}）—— 拒绝开始 {source} 搜索：没登记的尝试会从研究史里消失，"
+                f"之后的 DSR / 策略门都会按残缺的试验数给结论") from exc
+
+    def add(self, n: int) -> None:
+        n = int(n)
+        if n <= 0:
+            return
+        self.n += n
+        try:
+            self.ledger.add_progress(self.run_id, n)
+        except Exception as exc:
+            self.ok = False
+            logger.error("[S.3] %s 的 %d 次尝试没进全局计数（运行 %s 将保持未结束，门会判试验史不完整）: %s",
+                         self.source, n, self.run_id, exc)
+
+    def finish(self, status: str = "done") -> None:
+        if not self.ok:
+            return                       # 有漏记：故意不结束，让它过期后被门看见
+        try:
+            self.ledger.finish_run(self.run_id, status)
+        except Exception as exc:
+            logger.error("[S.3] 运行 %s 结束标记写不进去（会被当作中断）: %s", self.run_id, exc)
+
+
+class TrialLedgerUnavailable(RuntimeError):
+    """试验台账写不进去：搜索不得开始。"""
+
+
+def trial_history_problem() -> str:
+    """门用：试验史是否完整。不完整 → 说明原因（门据此不给正式结论）；完整 → 空串。"""
     try:
-        TrialLedger().add(int(n), run_id=run_id or f"{source}:{uuid.uuid4().hex}", source=source)
-        return True
+        bad = TrialLedger().incomplete_runs()
     except Exception as exc:
-        logger.error("[S.3] 试验数记账失败（%s 的 %d 次尝试没进全局计数，DSR 会少校正）: %s",
-                     source, n, exc)
-        return False
+        logger.error("[S.3] 读不到试验运行状态 → 按试验史不完整处理: %s", exc)
+        return f"读不到试验运行状态（{exc}）"
+    if not bad:
+        return ""
+    return (f"{len(bad)} 次搜索运行没有正常结束记账（{', '.join(r.run_id for r in bad[:3])}"
+            f"{' …' if len(bad) > 3 else ''}）—— 漏记的尝试数未知，DSR 的多重检验校正不完整；"
+            f"用 TrialLedger.resolve_run 补记并写明理由后再评估")
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +363,18 @@ class HoldoutLedger:
             keys = list(s.scalars(select(HoldoutUse.test_key)
                                   .where(HoldoutUse.dataset_key == dataset_key)).all())
         return _count_overlapping(keys, test_key)
+
+    def earliest_exposed_start(self, dataset_key: str) -> Optional[pd.Timestamp]:
+        """
+        该数据集**看过的**最早一个 Test 窗口的起点（没有记录 → None）。
+        复审 2026-10-19 对 D12 的建议：用它作保守的冻结边界（BoundaryStore.pin），而不是让第一次 API 调用
+        偶然决定。只读，不替你做决定。
+        """
+        with self._Session() as s:
+            keys = list(s.scalars(select(HoldoutUse.test_key)
+                                  .where(HoldoutUse.dataset_key == dataset_key)).all())
+        starts = [w[0] for w in (_parse_window(k) for k in keys) if w is not None]
+        return min(starts) if starts else None
 
     def record_use(
         self, dataset_key: str, test_key: str, purpose: str = "",

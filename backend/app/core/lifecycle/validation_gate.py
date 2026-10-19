@@ -157,6 +157,13 @@ class ValidationGate:
         reasons: List[str] = []
         if source == "unavailable":
             reasons.append("全局试验台账不可读：DSR 的多重检验校正缺失，证据不完整")
+        if source == "global":
+            # 复审 2026-10-19 N07：读得到 total 不等于研究史完整 —— 有中断 / 漏记的运行时不给正式结论
+            from app.db.trial_ledger import trial_history_problem
+            gap = trial_history_problem()
+            if gap:
+                source = "incomplete"
+                reasons.append(f"试验史不完整：{gap}")
         res = ValidationResult(passed=False, dsl=dsl, n_trials=n_trials, n_trials_source=source)
 
         # ---- 0. 三段切割：门只看 selection 段（S.2）----

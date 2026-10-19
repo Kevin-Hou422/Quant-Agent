@@ -12,10 +12,12 @@ engine with a daily scheduler, and a React/TypeScript workspace UI.
 > [backend/RESEARCH_OPERATING_MODEL.md](backend/RESEARCH_OPERATING_MODEL.md).
 
 > **⚠️ How to read the numbers this system produces.** Backtest Sharpe/return figures here are
-> **not validated P&L**. The selection-bias half of the problem is fixed (frozen holdout, purged
-> cross-validation, multiple-testing correction — see [§12](#12-statistical-integrity)), so
-> *relative* conclusions ("is this selection process overfitting?", "does factor B add to strategy
-> A?") are meaningful. The *absolute* level is not: the free price data has no delisted names, so
+> **not validated P&L**. Selection bias is *controlled, not eliminated*: a frozen, metered holdout,
+> purged cross-validation and multiple-testing corrections (DSR, HAC t, PBO) are in place — see
+> [§12](#12-statistical-integrity) — but each has a limited scope (PBO covers the selected factors'
+> returns, not the whole GP / combination / human selection history; the global trial count is only
+> as complete as the recorded runs). *Relative* conclusions ("is this selection process overfitting?",
+> "does factor B add to strategy A?") are informative within those limits. The *absolute* level is not: the free price data has no delisted names, so
 > historical survivorship bias remains, and forward paper-trading evidence has not been accumulated
 > yet. Details in [§12](#12-statistical-integrity).
 
@@ -473,12 +475,15 @@ powershell -ExecutionPolicy Bypass -File scripts\start_forward.ps1 [-RegisterLog
   limits, signal parameters, broker/short flags, dataset and price source. The daily loop trades
   exactly that spec and stops rebalancing if any runtime parameter differs; configs approved before
   2026-10-18 have no spec and must be re-proposed and re-approved (roadmap D13).
-- **New positions need an independent quote** (F09): every order is checked against a timestamped
-  moomoo snapshot; a name not yet held with no (or a stale / mismatched) quote is rejected.
-  Account operations from the scheduler, `run-now`, the API and recovery are serialised by an OS
-  file lock next to the execution database (F08).
+- **Risk-increasing orders need an independent quote** (F09, review N06): opening, adding to or
+  flipping a position requires a moomoo snapshot quote with a price, a timestamp that is not in the
+  future and is from the last closed session or later, and agreement with the reference price.
+  Reductions and flattening need no quote. Account operations from the scheduler, `run-now`, the API
+  and recovery are serialised by an OS file lock next to the execution database (F08); the kill
+  switch is re-read before every order in a batch (N01).
 - **Forward evidence = signal archived before the outcome** (F06). A day's IC counts as forward only
-  if the signal it uses was archived before that session's close; backfilled, re-run or offline
+  if the signal it uses was archived before that session's **open** (review N03 — archiving before
+  the close let most of the scored return happen first); backfilled, re-run or offline
   results are replay. Strategy promotion reads that strategy's own record (id + spec hash), and the
   t-stat is the smaller of the plain and the Newey-West one. Operating limits (daily-only breaker,
   log-only alerts, the T−1 signal clock) are spelled out in `backend/OPERATIONS.md` §7.

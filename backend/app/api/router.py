@@ -96,9 +96,7 @@ def _resolve_dataset(
             from app.core.data_engine.dataset_registry import load_registry_dataset
             ds       = load_registry_dataset(dataset_name, start=dataset_start, end=dataset_end)
             full     = ds.data
-            is_, oos = _partition_dataset(full, oos_ratio)
             logger.info("Loaded real dataset '%s' [%s→%s]", dataset_name, dataset_start, dataset_end)
-            return full, is_, oos
         except Exception as exc:
             if not allow_synthetic_fallback:
                 logger.error("Real dataset '%s' load failed: %s — 返回 502（不静默降级）", dataset_name, exc)
@@ -114,6 +112,16 @@ def _resolve_dataset(
                 "Real dataset '%s' load failed: %s — 显式降级合成数据（allow_synthetic_fallback）",
                 dataset_name, exc,
             )
+        else:
+            # 复审 2026-10-19 N09：IS / OOS（给响应里的 PnL 曲线用）只在**研究窗口**里切。此前对全量切 70/30，
+            # 后 30% 正好压在冻结 Test 段上 —— 人看着这段曲线挑因子，Test 就成了选择集。
+            from app.core.data_engine.data_partitioner import FrozenBoundaryError, research_window
+            try:
+                window = research_window(full, dataset_name)
+            except FrozenBoundaryError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            is_, oos = _partition_dataset(window, oos_ratio)
+            return full, is_, oos
 
     full     = _make_synthetic_dataset(n_tickers, n_days, seed)
     is_, oos = _partition_dataset(full, oos_ratio)

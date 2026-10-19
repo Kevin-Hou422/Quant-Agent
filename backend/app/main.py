@@ -162,6 +162,21 @@ logger = logging.getLogger("main")
 # 数据加载：真实市场数据（首选）或合成数据（回退/测试）
 # ---------------------------------------------------------------------------
 
+def _research_window_cli(dataset: Dict[str, pd.DataFrame], args: argparse.Namespace) -> Dict[str, pd.DataFrame]:
+    """
+    CLI 也只许看研究窗口（复审 2026-10-19 N09）。此前 `run_gp` 直接对全窗口两段切，
+    GP 的 OOS 里有 474 个冻结 Test 段的日期。合成数据（--use-synthetic）没有冻结边界。
+    有冻结边界却切不出选择段 → 直接退出，不退回全量。
+    """
+    from app.core.data_engine.data_partitioner import FrozenBoundaryError, research_window
+    key = None if getattr(args, "use_synthetic", False) else getattr(args, "dataset", settings.default_dataset)
+    try:
+        return research_window(dataset, key)
+    except FrozenBoundaryError as exc:
+        logger.error("拒绝运行：%s", exc)
+        raise SystemExit(2) from exc
+
+
 def _load_dataset(args: argparse.Namespace) -> Dict[str, pd.DataFrame]:
     """
     统一数据加载入口。
@@ -255,7 +270,7 @@ def run_agent(args: argparse.Namespace) -> None:
     from app.agent.alpha_agent import AlphaAgent
     from app.db.alpha_store import AlphaStore
 
-    dataset = _load_dataset(args)
+    dataset = _research_window_cli(_load_dataset(args), args)   # 复审 2026-10-19 N09
     store   = AlphaStore()
     agent   = AlphaAgent(store=store)
 
@@ -285,10 +300,10 @@ def run_gp(args: argparse.Namespace) -> None:
     from app.core.gp_engine.population_evolver import PopulationEvolver
     from app.db.alpha_store import AlphaStore, AlphaResult
 
-    dataset = _load_dataset(args)
+    dataset = _research_window_cli(_load_dataset(args), args)
     store   = AlphaStore()
 
-    # IS / OOS 物理分区（含 Embargo，Task 2.2）
+    # IS / OOS 物理分区（含 Embargo，Task 2.2）—— 只在研究窗口内切（复审 2026-10-19 N09）
     dates        = next(iter(dataset.values())).index
     oos_ratio    = getattr(args, "oos_ratio",   0.30)
     embargo_days = getattr(args, "embargo_days", 20)
@@ -371,7 +386,7 @@ def run_backtest(args: argparse.Namespace) -> None:
     dsl = args.dsl
     logger.info("单条 DSL 回测 | dsl='%s'", dsl)
 
-    dataset = _load_dataset(args)
+    dataset = _research_window_cli(_load_dataset(args), args)   # 复审 2026-10-19 N09：含 walk-forward 分支
 
     # 验证
     node = Parser().parse(dsl)
@@ -439,7 +454,7 @@ def run_realistic(args: argparse.Namespace) -> None:
     )
     from app.core.data_engine.data_partitioner import DataPartitioner
 
-    dataset = _load_dataset(args)
+    dataset = _research_window_cli(_load_dataset(args), args)   # 复审 2026-10-19 N09
 
     cfg = SimulationConfig(
         delay            = args.delay,

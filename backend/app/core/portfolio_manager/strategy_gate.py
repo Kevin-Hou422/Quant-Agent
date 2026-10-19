@@ -183,15 +183,20 @@ def strategy_net_returns(factor_signals: Signals, dataset: WidePanel,
 
     if apply_risk:
         try:
-            from app.core.portfolio_manager.executable_spec import risk_limits_from_settings
+            from app.config import settings
+            from app.core.portfolio_manager.executable_spec import (
+                band_then_reproject, estimate_port_vol, risk_limits_from_settings,
+            )
             from app.core.portfolio_manager.risk_gate import PortfolioRiskGate
-            from app.core.portfolio_manager.horizon import apply_no_trade_band
-
             limits = risk_limits_from_settings()
             sectors = dataset["sector"].iloc[-1] if "sector" in dataset else None
-            weights, _ = PortfolioRiskGate(limits).apply(weights, sectors=sectors)
+            # 复审 2026-10-19 N05：与每日循环**同一条**风险路径 —— 目标波动缩放（用同一个波动估计）、
+            # 无交易带、带后硬约束投影。此前门不传波动估计、带后也不再投影，验证的不是会去交易的那份
+            vol = (estimate_port_vol(weights, prices, int(getattr(settings, "risk_vol_lookback", 60)))
+                   if limits.target_vol_ann else None)
+            weights, _ = PortfolioRiskGate(limits).apply(weights, sectors=sectors, port_vol_ann=vol)
             band = resolve_band(dataset, aum) if no_trade_band is None else float(no_trade_band)
-            weights = apply_no_trade_band(weights, band)
+            weights = band_then_reproject(weights, band, limits, sectors)
         except Exception as exc:
             # 【缺陷 N-3，2026-09-20 修】原先这里是
             #     logger.warning("风控/调仓对齐失败，用原始权重: %s", exc)
@@ -336,8 +341,14 @@ class StrategyGate:
         if n_trials is None:
             if self.use_global_trials:
                 try:
-                    from app.db.trial_ledger import TrialLedger
+                    from app.db.trial_ledger import TrialLedger, trial_history_problem
                     n_trials = max(1, TrialLedger().total())
+                    # 复审 2026-10-19 N07：读得到 total 不等于研究史完整
+                    gap = trial_history_problem()
+                    if gap:
+                        res.n_trials = 0
+                        res.reasons = [f"试验史不完整，无法做可信的多重检验校正 → 不予通过：{gap}"]
+                        return res
                 except Exception as exc:
                     # 【缺陷 N-2，2026-09-20 修】原先这里 `n_trials = 1` 然后继续往下跑。
                     #

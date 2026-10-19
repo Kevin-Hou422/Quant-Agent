@@ -648,6 +648,12 @@ class OrderManager:
                 return rep
             acct = rec.account_obj
 
+        # 复审 2026-10-19 N01：撤单 / 等终态期间可能有人开了熔断 —— 建单之前再读一次
+        if self.store.kill_switch().get("engaged"):
+            rep.flatten = self._ensure_flatten(rec)
+            rep.blocked = "kill_switch_engaged"
+            return rep
+
         pos = rec.position_objs
         equity = self.slice_equity(acct.total_assets)
         # 切片不加杠杆：能花的钱 = 切片权益 − 已持仓市值，且不超过券商给的买入力
@@ -687,7 +693,23 @@ class OrderManager:
                        "invested": round(invested, 2), "planned_buy": round(buys, 2),
                        "planned_sell": round(sells, 2),
                        "utilization_after_buys": (round((invested + buys) / equity, 4) if equity > 0 else None)}
-        for o in dec.approved:
+        for i, o in enumerate(dec.approved):
+            # 复审 2026-10-19 N01：熔断可能在这一批发送途中被开启（API / 另一个进程先落库、不等账户锁）。
+            # 每一张调仓单发出之前读**最新**的持久化状态；开了就停下余下的单，转去撤单 + 全平。
+            if o.purpose != PURPOSE_FLATTEN and self.store.kill_switch().get("engaged"):
+                left = dec.approved[i:]
+                logger.error("[exec] 发送途中熔断已开启 → 余下 %d 张调仓单不发，撤单并全平", len(left))
+                for rest in left:
+                    rep.orders.append({"client_id": rest.client_id, "ticker": rest.ticker,
+                                       "side": rest.side, "qty": rest.qty,
+                                       "result": "skipped_kill_switch"})
+                rep.blocked = "kill_switch_engaged_mid_batch"
+                try:
+                    rep.flatten = self._ensure_flatten(self._reconcile(accept=False))
+                except (BrokerError, CalendarUnavailable) as exc:
+                    logger.error("[exec] 熔断后的对账失败（下个周期续做全平）: %s", exc)
+                    rep.flatten = {"status": "error", "error": str(exc)}
+                break
             rep.orders.append(self._submit(o, decision_date, rep))
         logger.info("[exec] %s | 计划 %d | 重复 %d | 风控拒 %d | 已下 %d | 下单异常 %d",
                     decision_date, rep.n_planned, rep.n_duplicate, rep.n_gate_rejected,

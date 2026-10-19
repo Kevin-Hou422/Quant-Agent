@@ -107,6 +107,19 @@ def next_trading_day(asof: Optional[DateLike] = None,
     return days[0] if len(days) else ts + pd.Timedelta(days=1)
 
 
+def session_open_utc(d: Optional[DateLike] = None,
+                     exchange: str = _DEFAULT_EXCHANGE) -> Optional[datetime]:
+    """某交易日的**开盘 UTC 时刻**（DST 感知）。非交易日 / 日历不可用返回 None。"""
+    cal = _calendar(exchange)
+    ts = (_to_ts(d) if d is not None else pd.Timestamp.utcnow().tz_localize(None)).normalize()
+    if cal is None:
+        return None
+    sched = cal.schedule(start_date=ts, end_date=ts)
+    if len(sched) == 0:
+        return None
+    return pd.Timestamp(sched.iloc[0]["market_open"]).to_pydatetime().astimezone(timezone.utc)
+
+
 def session_close_utc(d: Optional[DateLike] = None,
                       exchange: str = _DEFAULT_EXCHANGE) -> Optional[datetime]:
     """

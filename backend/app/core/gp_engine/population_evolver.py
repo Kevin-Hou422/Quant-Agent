@@ -264,6 +264,19 @@ class PopulationEvolver:
         """
         evolution_log: List[Dict] = []
 
+        # 复审 2026-10-19 N07：搜索开始**之前**登记这次运行；登记不进去就不搜（抛 TrialLedgerUnavailable）。
+        # 之后每一代评估完就记一次 —— 进程中途被杀，已评估的尝试也已经在账上，运行停在 running 会被门看见。
+        from app.db.trial_ledger import TrialRecorder
+        recorder = TrialRecorder("gp")
+        try:
+            return self._run(seed_dsl, seed_dsls, n_optuna_trials, on_generation_end,
+                             evolution_log, recorder)
+        except BaseException:
+            recorder.finish("aborted")
+            raise
+
+    def _run(self, seed_dsl, seed_dsls, n_optuna_trials, on_generation_end,
+             evolution_log, recorder) -> "GPEvolutionResult":
         # R-N1（2026-07-30）：把变异/随机生成的共享随机源绑定到本实例 RNG，
         # 使 generate_random_alpha / mutations.* 全程确定性（相同 seed 可复现）。
         from . import _rng as _shared_rng
@@ -282,6 +295,7 @@ class PopulationEvolver:
         for gen in range(self._n_gen):
             # a. Evaluate all
             results = self._evaluate_population(population)
+            recorder.add(len(results))
             if not results:
                 logger.warning("Gen %d: all evaluations failed", gen + 1)
                 break
@@ -357,9 +371,9 @@ class PopulationEvolver:
 
         # 外部审查 2026-10-18 F05：试验数在**搜索底层**按实际评估数记 —— 直接 GP、工作流、
         # 自主发现、聊天全都经过这里。此前只有自主发现按配置估算一次（工作流会把种群放大，估不准）。
-        from app.db.trial_ledger import record_trials
         n_eval = int(sum(int(g.get("population_size", 0)) for g in evolution_log))
-        recorded = record_trials(n_eval, source="gp")
+        recorder.finish("done")
+        recorded = recorder.ok
         if isinstance(metrics, dict):
             metrics.setdefault("n_structures_evaluated", n_eval)
             metrics.setdefault("trials_recorded", recorded)

@@ -39,6 +39,7 @@ DEV_LESSONS §L 记录过的误删来源，所以这里叫 pretrade_gate。
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -48,6 +49,8 @@ import pandas as pd
 
 from app.core.execution.broker_gateway import DUST_QTY
 from app.core.execution.order_builder import PURPOSE_FLATTEN, PlannedOrder
+
+logger = logging.getLogger(__name__)
 
 #: 权重比较取整位数 / 美元比较取整位数
 _W_DIGITS, _USD_DIGITS = 12, 6
@@ -148,6 +151,43 @@ def _finite(x) -> Optional[float]:
     """有限数 → float；None/'N/A'/NaN/inf → None（调用方据此 fail-closed）。"""
     v = pd.to_numeric(pd.Series([x], dtype=object), errors="coerce").iloc[0]
     return float(v) if pd.notna(v) and math.isfinite(float(v)) else None
+
+
+#: 报价时刻比"现在"晚这么多以上 → 时钟或数据有问题，不可信
+QUOTE_FUTURE_TOL = pd.Timedelta(minutes=5)
+#: 交易所本地时间（moomoo 快照的 update_time 是这个时区的 naive 时间）
+QUOTE_TZ = "America/New_York"
+
+
+def quote_problem(q, ref: float, now: Optional[datetime], limits: "PreTradeLimits") -> str:
+    """加风险订单的报价合同；合格 → 空串，否则返回拒绝原因。"""
+    qp = _finite(getattr(q, "price", None)) if q is not None else None
+    if qp is None or qp <= 0:
+        return "no_independent_quote"
+    asof = getattr(q, "asof", None)
+    if asof is None:
+        return "quote_without_time"
+    if now is None:
+        return "no_decision_clock"
+    t = pd.Timestamp(asof)
+    t = t.tz_localize(QUOTE_TZ) if t.tzinfo is None else t
+    n = pd.Timestamp(now)
+    n = n.tz_localize("UTC") if n.tzinfo is None else n
+    if t - n > QUOTE_FUTURE_TOL:
+        return "quote_in_future"
+    if (n - t) > pd.Timedelta(days=limits.max_quote_age_days):
+        return "stale_quote"
+    try:
+        from app.core.data_engine.market_calendar import last_closed_session
+        need = pd.Timestamp(last_closed_session(n.to_pydatetime())).date()
+    except Exception as exc:          # 日历不可用：无法判断报价属于哪个交易日 → 不加风险
+        logger.error("[pretrade] 取最近收盘交易日失败 → 加风险订单按报价陈旧处理: %s", exc)
+        return "stale_quote"
+    if t.tz_convert(QUOTE_TZ).date() < need:
+        return "stale_quote"            # 报价早于最近一个已收盘交易日：不是当前市场的价
+    if abs(ref - qp) / qp > limits.max_price_deviation:
+        return "quote_mismatch"
+    return ""
 
 
 def increases_risk(current_qty: float, signed_qty: float) -> bool:
@@ -266,20 +306,15 @@ def check(orders: List[PlannedOrder], ctx: GateContext, limits: PreTradeLimits) 
         bp = px_book.get(o.ticker)
         if bp is not None and abs(ref - bp) / bp > limits.max_price_deviation:
             dec.rejected.append((o, "price_mismatch")); continue
-        if o.purpose != PURPOSE_FLATTEN:
-            # F09：参考价必须与独立报价对得上；持仓里没有价的新开仓，没有独立报价就不放行
-            q = (ctx.quotes or {}).get(o.ticker)
-            qp = _finite(getattr(q, "price", None)) if q is not None else None
-            if qp is None or qp <= 0:
-                if bp is None:
-                    dec.rejected.append((o, "no_independent_quote")); continue
-            else:
-                asof = getattr(q, "asof", None)
-                if (ctx.now is not None and asof is not None
-                        and (ctx.now.date() - asof.date()).days > limits.max_quote_age_days):
-                    dec.rejected.append((o, "stale_quote")); continue
-                if abs(ref - qp) / qp > limits.max_price_deviation:
-                    dec.rejected.append((o, "quote_mismatch")); continue
+        if o.purpose != PURPOSE_FLATTEN and increases_risk(
+                float(ctx.current_qty.get(o.ticker, 0.0)), o.signed_qty):
+            # F09 / 复审 2026-10-19 N06：**加风险**的单（新开仓、加仓、反手）必须有合格的独立报价 ——
+            # 有限正价、有报价时刻、不在未来、来自最近一个已收盘交易日或之后、与参考价对得上。
+            # 此前：报价没有时刻就跳过陈旧检查；已有持仓价就算没有独立报价也放行加仓。
+            # 减仓 / 平仓不走这里（保守通道：没有报价也能减风险）。
+            why = quote_problem((ctx.quotes or {}).get(o.ticker), ref, ctx.now, limits)
+            if why:
+                dec.rejected.append((o, why)); continue
 
         before_worst = env.worst(o.ticker)
         before_net = env.net_bounds()

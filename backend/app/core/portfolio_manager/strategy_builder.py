@@ -76,12 +76,46 @@ def build_strategy_config(
         signals, prices, volume)
     weights = book.weights
 
-    # PM.S1 策略门
+    # 复审 2026-10-19 N05：先把要交易的那份冻结下来（合成权重 + 无交易带），门评估的就是它。
+    # 此前门先按 method 滚动拟合评估，之后才确定并保存冻结权重与带 —— 门的结论说的不是存下的那份策略。
+    band = 0.0
+    try:
+        from app.config import settings as _settings
+        band = float(getattr(_settings, "pm_no_trade_band", 0.0))
+        if band <= 0.0:
+            from app.core.trading_context.context import TradingContext
+            band = float(TradingContext(aum=aum).analyze(dataset).rebalance_band)
+    except Exception as exc:
+        logger.warning("[strategy_builder] PM.6 无交易带推导失败（退回 0，换手会被高估）: %s", exc)
+        band = 0.0
+        degraded.append(f"band_derivation_failed: {exc}")
+    combo = {k: float(v) for k, v in (book.combo_weights or {}).items()}
+
+    # PM.S1 策略门：① 冻结规格本身（与每日门同一口径）；② 产出这份规格的**流程**的滚动前推 OOS。
+    # 冻结权重是在整个选择段上拟合的，①在同一段上的收益不是样本外 —— 所以两个都要过，并且如实标注口径。
     verdict = {}
     passed = False
     try:
-        sv = StrategyGate(aum=aum, method=method).evaluate(signals, dataset, cost_params=cost_params)
+        gate = StrategyGate(aum=aum, method=method)
+        sv = gate.evaluate(signals, dataset, cost_params=cost_params,
+                           fixed_combo_weights=combo or None, no_trade_band=band)
         verdict = sv.to_dict(); passed = sv.passed
+        verdict["evidence_scope"] = "frozen_spec_on_selection_in_sample"
+        try:
+            wf = gate.evaluate(signals, dataset, cost_params=cost_params, no_trade_band=band)
+            verdict["procedure_oos"] = {"passed": wf.passed, "sharpe": wf.sharpe,
+                                        "deflated_sharpe": wf.deflated_sharpe, "t_stat": wf.t_stat,
+                                        "reasons": list(wf.reasons),
+                                        "scope": "walk_forward_refit_of_the_procedure"}
+            passed = bool(passed and wf.passed)
+            if not wf.passed:
+                verdict.setdefault("reasons", [])
+                verdict["reasons"] = list(verdict["reasons"]) + [f"流程的滚动前推 OOS 未过：{'; '.join(wf.reasons)}"]
+        except Exception as exc:
+            logger.error("[strategy_builder] 流程 OOS 评估失败（无证据）: %s", exc)
+            verdict["procedure_oos"] = {"evaluated": False, "error": str(exc)}
+            passed = False
+            degraded.append(f"procedure_oos_failed: {exc}")
     except Exception as exc:
         # 策略门崩了 ≠ 策略门未过。前者是"没有证据"，后者是"证据不足"，
         # 二者混为 passed=False 会让人以为门评过了。必须显式标注。
@@ -117,24 +151,12 @@ def build_strategy_config(
         risk_report = {"risk_error": str(exc), "evaluated": False}
         degraded.append(f"risk_snapshot_failed: {exc}")
 
-    # PM.6 换手 / 无交易带（与每日循环同一规则：配置优先，否则由数据推导；之后**冻结进规格**）
-    band = 0.0
-    try:
-        from app.config import settings as _settings
-        band = float(getattr(_settings, "pm_no_trade_band", 0.0))
-        if band <= 0.0:
-            from app.core.trading_context.context import TradingContext
-            band = float(TradingContext(aum=aum).analyze(dataset).rebalance_band)
-    except Exception as exc:
-        logger.warning("[strategy_builder] PM.6 无交易带推导失败（退回 0，换手会被高估）: %s", exc)
-        band = 0.0
-        degraded.append(f"band_derivation_failed: {exc}")
+    # PM.6 换手 / 无交易带（带已在上面冻结：与每日循环同一规则，配置优先，否则由数据推导）
     turnover = annualized_turnover(apply_no_trade_band(weights, band))
 
     if degraded:
         verdict["degraded"] = degraded
         logger.warning("[strategy_builder] 该配置在 %d 处降级产出：%s", len(degraded), degraded)
-    combo = {k: float(v) for k, v in (book.combo_weights or {}).items()}
     # F07：影响交易的全部参数收进一份规格 + 哈希；每日循环照它执行、并核对运行时没变
     spec = build_spec({k: (factor_dsl or {}).get(k) for k in signals}, combo, method, aum, band, limits)
     verdict["executable_spec"] = spec

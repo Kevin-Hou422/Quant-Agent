@@ -279,15 +279,24 @@ class AlphaOptimizer:
             len(next(iter(self._is_dataset.values()))),
         )
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            study.optimize(
-                self._objective,
-                n_trials  = self._n_trials,
-                timeout   = self._timeout,
-                n_jobs    = 1,          # 串行：避免 IS 数据在多线程中被并发修改
-                show_progress_bar = False,
-            )
+        # 复审 2026-10-19 N07：开始前登记、每个 trial 跑完记一次（中途被杀也不丢已跑的）
+        from app.db.trial_ledger import TrialRecorder
+        recorder = TrialRecorder("optuna")
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                study.optimize(
+                    self._objective,
+                    n_trials  = self._n_trials,
+                    timeout   = self._timeout,
+                    n_jobs    = 1,          # 串行：避免 IS 数据在多线程中被并发修改
+                    show_progress_bar = False,
+                    callbacks = [lambda _study, _trial: recorder.add(1)],
+                )
+        except BaseException:
+            recorder.finish("aborted")
+            raise
+        recorder.finish("done")
 
         best_params = study.best_params
         trial_vals  = [t.value for t in study.trials if t.value is not None]
@@ -298,8 +307,7 @@ class AlphaOptimizer:
         )
 
         # 外部审查 2026-10-18 F05：按**实际跑完**的 trial 数记进全局试验台账（超时会少于 n_trials）
-        from app.db.trial_ledger import record_trials
-        self.trials_recorded = record_trials(len(study.trials), source="optuna")
+        self.trials_recorded = recorder.ok
 
         # 构造最优 SimulationConfig
         best_config = self._params_to_config(best_params)

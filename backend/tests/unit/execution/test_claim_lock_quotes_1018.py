@@ -161,8 +161,9 @@ class TestIndependentQuotes:
 
     def test_a_stale_quote_counts_as_none(self, tmp_path):
         e = _env(tmp_path)
-        e.ctx.quote_time = "2025-02-24 16:00:00.000"                  # 决策日 2025-03-03 的 7 天前
-        rep = _cycle(e, D1)
+        e.ctx.quotes.update(PX1)
+        e.ctx.quote_time = "2025-02-28 16:00:00.000"                  # 上周五；决策日 2025-03-03 周一已收盘
+        rep = _cycle(e, D1, quote=False)
         assert {r["reason"] for r in rep.gate["rejected"]} == {"stale_quote"}
 
     def test_a_quote_outage_blocks_new_positions_but_reports_why(self, tmp_path):

@@ -94,14 +94,22 @@ def _as_date(d) -> _date:
 
 
 def session_deadline(d) -> Optional[datetime]:
-    """d 的收盘时刻（UTC，naive）。算不出来（日历不可用 / 非交易日）→ None → 不认前向（保守）。"""
+    """
+    结算 d 这一天的结果时，信号最晚的存档时刻 = **d 的开盘**（UTC，naive）。
+
+    复审 2026-10-19 N03：此前截止是 d 的收盘 —— 收盘前 1 分钟才存档的信号也算"前向"，可那一天的
+    大部分收益已经发生了。被评分的收益是前一个收盘 → d 收盘；信号只能在前一个收盘之后才算得出来，
+    所以最严、又做得到的截止是 d 开盘之前：开盘前存档的信号还来得及在 d 当天交易。
+    （前一个收盘到 d 开盘之间的隔夜跳空仍在被评分窗口里 —— 标签口径是 D14 要统一的事。）
+    算不出来（日历不可用 / 非交易日）→ None → 不认前向（保守）。
+    """
     try:
-        from app.core.data_engine.market_calendar import session_close_utc
-        close = session_close_utc(pd.Timestamp(d))
+        from app.core.data_engine.market_calendar import session_open_utc
+        t = session_open_utc(pd.Timestamp(d))
     except Exception as exc:
-        logger.warning("[evidence] 取 %s 收盘时刻失败，这一天不认前向: %s", d, exc)
+        logger.warning("[evidence] 取 %s 开盘时刻失败，这一天不认前向: %s", d, exc)
         return None
-    return None if close is None else _naive_utc(close)
+    return None if t is None else _naive_utc(t)
 
 
 class EvidenceStore:

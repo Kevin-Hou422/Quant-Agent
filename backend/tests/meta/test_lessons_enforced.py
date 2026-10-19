@@ -1161,8 +1161,9 @@ class TestLessonV_NoMutationResidueInRepo:
             ("app/tasks/daily_trading_loop.py",
              "prices_prev=prices_f.iloc[t - 1] if t > 0 else",
              "第 0 天必须取当日自身；`t >= 0` 会取末行价 → 前视"),
+            # 复审 2026-10-19 N08：期初权益与调仓前市值分开算，乘法换到了这一行
             ("app/core/execution/paper_broker.py",
-             "pv = equity * self.initial_capital",
+             "v_prev = equity * self.initial_capital",
              "组合市值是乘法；写成除法会差 12 个数量级"),
         ]
         bad = []
