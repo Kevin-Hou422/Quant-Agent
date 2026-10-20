@@ -136,14 +136,38 @@ def load_real_dataset(
     ------
     RuntimeError if the registry cannot load the dataset.
     """
+    _, is_data, oos_data = load_real_research(name, start, end, oos_ratio, purpose="load_real_dataset")
+    return is_data, oos_data
+
+
+def load_real_research(
+    name:      str,
+    start:     str   = "2021-01-01",
+    end:       str   = "2024-01-01",
+    oos_ratio: float = 0.30,
+    purpose:   str   = "chat",
+):
+    """
+    加载真实数据集 → 研究上下文 → 在**选择段内**切 IS / OOS。返回 (ctx, is_data, oos_data)。
+
+    复审 2026-10-19 N09-c：此前对全量面板按 70/30 切，OOS 的后段就是冻结 Test 段
+    （chat 里指定数据集跑 GP 时 OOS 含 474 个冻结日期）。有冻结边界却切不出选择段 → 抛错，不退回全量。
+    """
+    from app.core.data_engine.data_partitioner import FrozenBoundaryError
     from app.core.data_engine.dataset_registry import load_registry_dataset
+    from app.core.data_engine.research_context import open_research
     try:
         ds = load_registry_dataset(name, start=start, end=end, use_cache=True)
-        return _partition(ds.data, oos_ratio)
     except Exception as exc:
         raise RuntimeError(
             f"load_real_dataset: failed to load '{name}' [{start} → {end}]: {exc}"
         ) from exc
+    try:
+        ctx = open_research(ds.data, name, purpose)
+    except FrozenBoundaryError as exc:
+        raise RuntimeError(f"load_real_dataset: '{name}' 切不出研究窗口：{exc}") from exc
+    is_data, oos_data = _partition(ctx.selection, oos_ratio)
+    return ctx, is_data, oos_data
 
 
 def _run_backtest_core(

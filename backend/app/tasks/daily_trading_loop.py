@@ -105,7 +105,26 @@ class DailyTradingLoop:
 
     def _forward_book(self, key: str):
         from app.db.evidence_store import ForwardBook
-        return ForwardBook(self._evidence(), key)
+        return ForwardBook(self._evidence(), key, getattr(self, "_identity", None))
+
+    def _set_identity(self, dataset: Dict[str, pd.DataFrame], data_source: Optional[str],
+                      identity: Optional[dict]) -> Optional[dict]:
+        """
+        本轮输入身份（复审 2026-10-19 N02-c）：管线给了就用（摄取时对**交出去的那份面板**算的），
+        否则就地对这份面板算；价格源优先用实际来源（PIT 元数据），没有才退回 settings 的声称。
+        """
+        if identity:
+            self._identity = dict(identity)
+            return self._identity
+        try:
+            from app.config import settings
+            from app.core.data_engine.input_identity import identify
+            self._identity = identify(dataset, price_source=data_source or getattr(settings, "price_source", "")
+                                      ).to_dict()
+        except Exception as exc:
+            logger.error("[daily_loop] 输入身份算不出来（证据行不带身份）: %s", exc)
+            self._identity = None
+        return self._identity
 
     @staticmethod
     def _shared_position_store():
@@ -117,7 +136,8 @@ class DailyTradingLoop:
     # ------------------------------------------------------------------
 
     def run(self, dataset: Dict[str, pd.DataFrame], forward_from=None,
-            now: Optional[datetime] = None) -> LoopReport:
+            now: Optional[datetime] = None, data_source: Optional[str] = None,
+            identity: Optional[dict] = None) -> LoopReport:
         """
         对全部 PAPER / ACTIVE 因子跑交易循环（每个因子从其续跑点到 dataset 末日）。
         逐 alpha 隔离——任一因子失败不影响其他。
@@ -130,6 +150,7 @@ class DailyTradingLoop:
         prices = dataset.get("close")
         if prices is None or prices.empty:
             raise ValueError("dataset 缺少 close 或为空")
+        self._set_identity(dataset, data_source, identity)
 
         # 取活跃因子（PAPER / ACTIVE / DECAYING）
         candidates = []
@@ -171,7 +192,58 @@ class DailyTradingLoop:
 
     def run_portfolio(self, dataset: Dict[str, pd.DataFrame], aum: Optional[float] = None,
                       forward_from=None, now: Optional[datetime] = None,
-                      data_source: Optional[str] = None) -> dict:
+                      data_source: Optional[str] = None, identity: Optional[dict] = None) -> dict:
+        """组合账本一轮（见 `_run_portfolio`）+ 这一天的前向记录（复审 2026-10-19 §7.3；任何提前返回也记）。"""
+        result = self._run_portfolio(dataset, aum=aum, forward_from=forward_from, now=now,
+                                     data_source=data_source, identity=identity)
+        self._record_forward_day(result, dataset, now)
+        return result
+
+    def _record_forward_day(self, result: dict, dataset: Dict[str, pd.DataFrame],
+                            now: Optional[datetime]) -> None:
+        """§7.3 每日记录：只记 active 策略（交易的那一份）；失败不影响交易，但留 ERROR。"""
+        try:
+            import json as _json
+            from datetime import timezone as _tz
+            from app.db.execution_store import ExecutionStore
+            from app.db.forward_record import ForwardRecordStore, build_daily_record
+            from app.db.strategy_store import StrategyStore
+            sid, h = result.get("active_config"), result.get("spec_hash")
+            if sid is None:
+                active = StrategyStore().latest_active()
+                if active is None:
+                    return
+                sid = active.id
+                h = h or _json.loads(active.verdict or "{}").get("spec_hash", "")
+            store = ForwardRecordStore()
+            rec = build_daily_record(
+                result, strategy_id=int(sid), spec_hash=h or "", decision_date=dataset["close"].index[-1],
+                now=now or datetime.now(_tz.utc), dataset=dataset,
+                paper_history=self.broker.store.pnl_history(PORTFOLIO_BOOK_ID, limit=1000),
+                exec_store=self._execution_store or ExecutionStore(),
+                identity=getattr(self, "_identity", None),
+                forward_run=store.run_for(int(sid), h) if h else None)
+            store.record_day(rec)
+            result["forward_record"] = {"formal": rec["formal"], "reason": rec["formal_reason"],
+                                        "missing": sorted(rec["missing"])}
+        except Exception as exc:
+            logger.error("[forward] 每日记录写入失败（不影响交易）: %s", exc)
+
+    def _archived_at(self, key: str, day) -> Optional[str]:
+        """这份组合信号的存档时刻（同日重跑时是第一次存档的时刻）。"""
+        ev = self._evidence()
+        if ev is None:
+            return None
+        try:
+            row = ev.archived_before(key, day, datetime(9999, 1, 1))
+        except Exception as exc:
+            logger.error("[forward] 读不到 %s 的存档时刻: %s", key, exc)
+            return None
+        return row["recorded_at"].isoformat() if row else None
+
+    def _run_portfolio(self, dataset: Dict[str, pd.DataFrame], aum: Optional[float] = None,
+                       forward_from=None, now: Optional[datetime] = None,
+                       data_source: Optional[str] = None, identity: Optional[dict] = None) -> dict:
         """
         把全部 PAPER/ACTIVE/DECAYING 因子经 PortfolioManager 合成**一个组合账本**
         （多因子净持仓 + 容量约束 + 真实 AUM），在保留 book id=PORTFOLIO_BOOK_ID 下交易。
@@ -195,7 +267,7 @@ class DailyTradingLoop:
 
         # F06：每份带规格的策略（proposed / approved / active）各自存档信号、结算前向 IC ——
         # 与今天交不交易无关，所以放在一切提前返回之前。失败不影响交易。
-        self._record_strategy_evidence(dataset, now, data_source)
+        self._record_strategy_evidence(dataset, now, data_source, identity)
 
         # 组合成分 = 活跃因子
         recs = []
@@ -249,6 +321,7 @@ class DailyTradingLoop:
         #   · 没有 active 配置 → 模拟账本照常（PAPER 因子或基准库），但**券商执行不加新风险**：
         #     下真单必须有一份被人批准并激活的策略版本（live_block_reason）。
         using_active_config = None
+        contract = None                      # 复审 2026-10-19 N05-e：有 active 配置 → 照它的合同生成目标
         frozen_combo = None
         combo_method = "ic_weighted"
         spec_band: Optional[float] = None
@@ -276,9 +349,9 @@ class DailyTradingLoop:
                             "used_baseline": used_baseline,
                             "execution": self._maintain_live("active_config_unusable")}
                 # 外部审查 2026-10-18 F07：照**批准时的可执行规格**交易，并核对运行时没变。
-                from app.core.portfolio_manager.executable_spec import approved_spec, verify_against_runtime
-                spec = approved_spec(active)
-                if spec is None:
+                from app.core.portfolio_manager.strategy_contract import StrategyContract
+                contract = StrategyContract.from_record(active)
+                if contract is None:
                     why = (f"active 策略 #{active.id} 没有可执行规格（2026-10-18 之前批准的配置，或规格被改过）"
                            f"—— 无法证明交易的是被批准的那份，请重新提案并审批")
                     logger.error("[portfolio] %s → 本轮不调仓", why)
@@ -287,8 +360,8 @@ class DailyTradingLoop:
                             "used_baseline": used_baseline,
                             "execution": self._maintain_live("active_spec_missing")}
                 dsl_of = {str(r.id): r.dsl for r in recs}
-                diff = verify_against_runtime(spec, {f: dsl_of.get(f) for f in cfg_factors}, aum,
-                                              settings=self._runtime_settings(data_source))
+                diff = contract.verify({f: dsl_of.get(f) for f in cfg_factors}, aum,
+                                       settings=self._runtime_settings(data_source))
                 if diff:
                     why = f"active 策略 #{active.id} 批准后交易参数变了：{diff}"
                     logger.error("[portfolio] %s → 本轮不调仓，需要重新提案并审批", why)
@@ -296,11 +369,20 @@ class DailyTradingLoop:
                             "reason": "active_spec_mismatch", "detail": why, "spec_diff": diff,
                             "used_baseline": used_baseline,
                             "execution": self._maintain_live("active_spec_mismatch")}
-                signals = {k: signals[k] for k in cfg_factors}
+                # 信号按合同算：规格里的表达式 + 规格里的信号参数（verify 已确认与运行时一致）
+                try:
+                    signals = contract.signals(dataset)
+                except Exception as exc:
+                    why = f"active 策略 #{active.id} 按规格算信号失败：{exc}"
+                    logger.error("[portfolio] %s → 本轮不调仓", why)
+                    return {"n_factors": 0, "days_processed": 0,
+                            "reason": "active_config_unusable", "detail": why,
+                            "used_baseline": used_baseline,
+                            "execution": self._maintain_live("active_config_unusable")}
                 using_active_config = active.id
-                frozen_combo = {str(k): float(v) for k, v in spec["combo_weights"].items()} or None
-                combo_method = str(spec["method"])
-                spec_band = float(spec["no_trade_band"])
+                frozen_combo = contract.combo_weights
+                combo_method = contract.method
+                spec_band = contract.band
                 logger.info("[portfolio] PM.7 按 active 策略配置 #%d 交易，成分 %d 因子，权重%s",
                             active.id, len(signals), "冻结" if frozen_combo else "按 method 拟合")
         if using_active_config is None:
@@ -324,10 +406,6 @@ class DailyTradingLoop:
                                 len(sel.steps), len(signals), sel.selected)
             except Exception as exc:                       # 选择失败不阻断，退回全纳入
                 logger.warning("[portfolio] PM.S2 边际准入失败（退回全纳入）: %s", exc)
-
-        res = PortfolioManager(aum=aum, method=combo_method).build_book(
-            signals, prices, volume, fixed_combo_weights=frozen_combo)
-        weights, composite = res.weights, res.composite
 
         # TR.3：组合账本用**真实/推导成本**（moomoo 佣金免费 + Corwin-Schultz 数据估价差），
         # 而非硬编码机构默认。为组合账本单建一个用 grounded 成本的 broker（同一 PositionStore）。
@@ -358,9 +436,12 @@ class DailyTradingLoop:
         # 组合级净敞口上限一旦设在它身上，就会泄漏到影子账本
         # （用户 2026-09-20 明确警告的"把整体限额简单逐 alpha 套用"）。
         # 这个泄漏是给上限接线时被 TestPortfolioNetLimitIsWired 当场抓到的。
+        # 复审 2026-10-19 N05-e：同一套成本 / 容量参数给模拟账本、策略门与合成账本（此前合成账本用默认
+        # CostParams()，门用 grounded —— 容量绑定时门验证的权重与这里交易的不是同一组）
+        cost_params = gp if gp is not None else self.broker.params
         pf_broker = PaperBroker(
             store=self.broker.store,
-            cost_params=gp if gp is not None else self.broker.params,
+            cost_params=cost_params,
             initial_capital=aum,
         )
 
@@ -377,9 +458,9 @@ class DailyTradingLoop:
             from app.core.portfolio_manager import StrategyGate
             try:
                 # F07：有 active 配置时评估的是**被批准的那份**（冻结权重 + 冻结的带），不是重新拟合的 ic_weighted
-                sv = StrategyGate(aum=aum, method=combo_method).evaluate(
-                    signals, dataset, cost_params=gp,
-                    fixed_combo_weights=frozen_combo, no_trade_band=spec_band)
+                gate = StrategyGate(aum=aum, method=combo_method)
+                sv = (contract.evaluate(gate, signals, dataset, cost_params=cost_params) if contract is not None
+                      else gate.evaluate(signals, dataset, cost_params=cost_params))
             except Exception as exc:
                 logger.error("[portfolio] PM.S1 策略门评估失败（无证据）: %s", exc)
                 sv = None
@@ -418,64 +499,19 @@ class DailyTradingLoop:
                     "selection": selection_info, "used_baseline": used_baseline,
                     "execution": self._maintain_live(halt_reason)}
 
-        # ── PM.5：组合级风控（敞口/集中度/目标波动）——在容量后、下单前施加到权重面板。
-        from app.core.portfolio_manager import PortfolioRiskGate
+        # ── PM.5 / PM.6：组合级风控 → 回撤熔断 → 无交易带 → 带后硬约束投影。
+        # 复审 2026-10-19 N05-e：与策略门、提案**同一个**目标生成函数（`strategy_contract.generate_targets`）；
+        # 有 active 配置时参数全部来自它的合同（风控上限、波动窗口、合成权重、带），不再现读 settings。
+        # 【审计 F07】带后再投影一次并独立 check（带会取消小幅减仓、重新引入超限）；
+        # 【F07 R7】带后投影不再传波动估计（同一缩放系数乘两遍）—— 都在 generate_targets 里。
+        from app.core.portfolio_manager import (PortfolioRiskGate, annualized_turnover,
+                                                horizon_profile)
         from app.core.portfolio_manager.executable_spec import risk_limits_from_settings
-        # 净敞口上限等**全部**从 settings 装配（唯一装配处，提案与策略门同一来源；F07）。
-        # 有 active 配置时，上面已核对过它们与批准时一致。
-        limits = risk_limits_from_settings(settings)
-        sectors = None
-        if "sector" in dataset:
-            try:
-                sectors = dataset["sector"].iloc[-1]
-            except Exception as exc:
-                logger.warning("[portfolio] 行业标签读取失败，行业集中度约束本轮不生效: %s", exc)
-                sectors = None
+        from app.core.portfolio_manager.strategy_contract import generate_targets
+        limits = contract.limits() if contract is not None else risk_limits_from_settings(settings)
 
-        # 目标波动缩放需要**当前组合的年化波动估计**。此前调用点不传 port_vol_ann，
-        # 于是 risk_target_vol_ann 配了也永远不生效（vol_scalar 恒为 1.0）——
-        # 配置写了但实线路径没接通（审计 #4 / DEV_LESSONS §K 的参数级形态）。
-        port_vol_ann = None
-        if limits.target_vol_ann:
-            try:
-                # 用**已实现**的组合日收益估计波动：权重(t-1) · 收益(t)，避免用当日权重看当日收益。
-                # 与策略门共用同一个估计（复审 2026-10-19 N05）
-                from app.core.portfolio_manager.executable_spec import estimate_port_vol
-                port_vol_ann = estimate_port_vol(weights, dataset["close"],
-                                                 int(getattr(settings, "risk_vol_lookback", 60)))
-                if port_vol_ann is None:
-                    logger.warning(
-                        "[portfolio] PM.5 目标波动已配置(%.3f)但可用样本不足或估计无效，本轮不缩放",
-                        limits.target_vol_ann)
-                else:
-                    logger.info("[portfolio] PM.5 目标波动 %.3f / 实际估计 %.3f",
-                                limits.target_vol_ann, port_vol_ann)
-            except Exception as exc:
-                logger.error("[portfolio] PM.5 组合波动估计失败，目标波动本轮不生效: %s", exc)
-                port_vol_ann = None
-
-        # ── 把组合级净敞口上限接到**组合账本的执行层**（用户决策 2026-09-20）。
-        #
-        # 为什么只给组合账本、不逐 alpha 套：实测两类账本用的是**同一份资金基数**
-        # （都取 `settings.paper_aum`），所以它们不是一个账户的两块切片 ——
-        #   · 组合账本 `book_id=0`：多因子净持仓 + 容量 + 风控，是**实际意图组合**
-        #     （实测 gross 0.27 / |net| 0.27，long-only）
-        #   · 逐 alpha 账本 `id=N`：每条 alpha 按**全额 AUM** 独立模拟的**影子账本**
-        #     （实测 gross 0.90 / |net| 0.00，市场中性）。它的用途是量这条 alpha
-        #     自己的衰减与已实现 IC，**不授权资金**
-        #
-        # 把整体限额套到影子账本上，等于让"这条 alpha 表现如何"取决于一个它并不
-        # 占用的组合预算 —— 测量会被扭曲。所以影子账本**明确选择不限制**，
-        # 这是判断结果，不是配置缺失后的静默降级。
-        pf_broker.max_net = float(limits.max_net)
-
-        weights, risk_report = PortfolioRiskGate(limits).apply(
-            weights, sectors=sectors, port_vol_ann=port_vol_ann)
-        composite = composite.reindex(columns=weights.columns)
-        logger.info("[portfolio] PM.5 风控：%s", risk_report.to_dict())
-
-        # ── PM.5 回撤熔断：按组合已有净值序列判定；触发且 halt=True → 本轮清仓（全 0）de-risk。
-        halt_info = None
+        # 回撤熔断：按组合已有净值序列判定；触发且 risk_halt_on_drawdown → 本轮目标清零（风控之后、带之前）
+        halt_info, halt_now = None, False
         try:
             hist = self.broker.store.pnl_history(PORTFOLIO_BOOK_ID, limit=1000)
             if hist:
@@ -484,13 +520,10 @@ class DailyTradingLoop:
                 halt_info = {"halt": bool(halt), "drawdown": round(float(dd), 4)}
                 if halt and getattr(settings, "risk_halt_on_drawdown", False):
                     logger.warning("[portfolio] 回撤熔断 dd=%.3f → 本轮清仓 de-risk", dd)
-                    weights = weights * 0.0
+                    halt_now = True
         except Exception as exc:
             logger.warning("[portfolio] 回撤熔断检查失败（不阻断）: %s", exc)
 
-        # ── PM.6：无交易带调仓（合并 TR.1 band，减换手省成本）+ 因子快慢分类 ──
-        from app.core.portfolio_manager import (apply_no_trade_band, annualized_turnover,
-                                                horizon_profile)
         # F07：有 active 配置 → 用批准时冻结的带（此前每天按 settings / 数据重新推导）
         band = spec_band if spec_band is not None else float(getattr(settings, "pm_no_trade_band", 0.0))
         if band <= 0.0 and spec_band is None:             # 由 TradingContext 数据推导（T2）
@@ -501,18 +534,42 @@ class DailyTradingLoop:
                 # band=0 意味着**每天全额调仓**，换手与成本都会显著高于预期设定
                 logger.error("[portfolio] 无交易带推导失败 → 本轮按 band=0（全额调仓）: %s", exc)
                 band = 0.0
-        to_before = annualized_turnover(weights)
-        gated_last = weights.iloc[-1].copy()            # 风控之后、无交易带之前 → 券商执行的目标
-        # 【审计 F07】无交易带会取消小幅减仓、保留大幅加仓，重新引入上游已削掉的超限
-        # （例：[.085,.085,.13] 在 band=.02 下变回 [.10,.10,.13]，gross 33% > 30%）。
-        # 风控优先于省换手：带后再施加一次，并独立 check —— 还不过就是 bug，执行层不加风险。
-        # 外部审查 2026-10-18 F07（R7）：这一次只做**硬约束投影**，不再传 port_vol_ann ——
-        # 波动缩放是一次性的；再传一次，同一个缩放系数会乘两遍（10%/20% → .8→.4→.2），
-        # 券商拿到的是 .4（gated_last），模拟账本拿到的是 .2。
-        # 与策略门共用（复审 2026-10-19 N05）：无交易带 → 硬约束投影
-        from app.core.portfolio_manager.executable_spec import band_then_reproject
-        weights = band_then_reproject(weights, band, limits, sectors)
-        post_band_violations = PortfolioRiskGate(limits).check(weights.tail(1), sectors=sectors)
+        try:
+            if contract is not None:
+                tg = contract.targets(signals, dataset, cost_params=cost_params, halt=halt_now)
+            else:
+                tg = generate_targets(signals, dataset, aum=aum, method=combo_method, limits=limits, band=band,
+                                      cost_params=cost_params,
+                                      vol_lookback=int(getattr(settings, "risk_vol_lookback", 60)),
+                                      halt=halt_now)
+        except Exception as exc:
+            # 此前波动估计失败时照常交易（不缩放 = 比意图更大的风险）；现在与门一样 fail-closed
+            logger.error("[portfolio] 目标生成失败（合成 / 风控 / 波动估计）→ 本轮不调仓: %s", exc)
+            return {"n_factors": len(signals), "days_processed": 0,
+                    "reason": "target_generation_failed", "detail": str(exc),
+                    "strategy_verdict": strategy_verdict, "used_baseline": used_baseline,
+                    "execution": self._maintain_live("target_generation_failed")}
+        weights, composite, risk_report = tg.weights, tg.composite, tg.risk_report
+        sectors = None
+        if "sector" in dataset:
+            try:
+                sectors = dataset["sector"].iloc[-1]
+            except Exception as exc:
+                logger.warning("[portfolio] 行业标签读取失败，行业集中度约束本轮不生效: %s", exc)
+        if limits.target_vol_ann:
+            if tg.port_vol_ann is None:
+                logger.warning("[portfolio] PM.5 目标波动已配置(%.3f)但可用样本不足，本轮不缩放",
+                               limits.target_vol_ann)
+            else:
+                logger.info("[portfolio] PM.5 目标波动 %.3f / 实际估计 %.3f", limits.target_vol_ann, tg.port_vol_ann)
+        logger.info("[portfolio] PM.5 风控：%s", risk_report.to_dict())
+
+        # 组合级净敞口上限只接到**组合账本的执行层**（用户决策 2026-09-20：影子账本是测量，不授权资金）
+        pf_broker.max_net = float(limits.max_net)
+
+        to_before = annualized_turnover(tg.gated)
+        gated_last = tg.gated.iloc[-1].copy()            # 风控之后、无交易带之前 → 券商执行的目标
+        post_band_violations = tg.post_band_violations
         if post_band_violations:
             logger.error("[portfolio] 无交易带 + 二次风控后仍违规：%s → 券商执行不加新风险",
                          post_band_violations)
@@ -563,6 +620,7 @@ class DailyTradingLoop:
             equity = pnl.equity
             n_days += 1
         fbook.archive(dates[-1], composite.reindex(columns=cols).iloc[-1], now)
+        signal_archived_at = self._archived_at("portfolio", dates[-1])
 
         # ── Phase 12：执行层 —— 风控之后、无交易带之前的**最后一行**目标权重下成 moomoo 纸交易单；
         #    无交易带改在订单层按**券商实际持仓**判断（审计 F07：模拟账本重建的历史目标
@@ -629,7 +687,9 @@ class DailyTradingLoop:
         logger.info("[portfolio] 组合账本 | AUM=%.0f | %d 因子 | %d 交易日 | 末净值=%.4f",
                     aum, len(signals), n_days, equity)
         result = {"n_factors": len(signals), "days_processed": n_days,
-                "equity": equity, "aum": aum, "combo_weights": res.combo_weights,
+                "equity": equity, "aum": aum, "combo_weights": tg.combo_weights,
+                "spec_hash": contract.hash if contract is not None else None,   # N05-e：照哪份合同交易的
+                "signal_archived_at": signal_archived_at,  # §7.3 组合信号的存档时刻
                 "used_baseline": used_baseline,
                 "active_config": using_active_config,  # PM.7 交易的 active 策略配置 id
                 "selection": selection_info,          # PM.S2 边际准入轨迹
@@ -753,7 +813,8 @@ class DailyTradingLoop:
 
     def _record_strategy_evidence(self, dataset: Dict[str, pd.DataFrame],
                                   now: Optional[datetime],
-                                  data_source: Optional[str] = None) -> Dict[str, int]:
+                                  data_source: Optional[str] = None,
+                                  identity: Optional[dict] = None) -> Dict[str, int]:
         """
         外部审查 2026-10-18 F06：**按策略版本**积累前向证据。
 
@@ -763,6 +824,7 @@ class DailyTradingLoop:
         不再借 book 0 里别的策略的数；批准之前也在积累（不再"要有 60 天证据才能开始拿证据"）。
         """
         out: Dict[str, int] = {}
+        self._set_identity(dataset, data_source, identity)      # 先于一切提前返回：后面的账本都用它
         ev = self._evidence()
         if ev is None:
             return out
@@ -770,8 +832,7 @@ class DailyTradingLoop:
             import json as _json
             from app.core.alpha_engine.dsl_executor import Executor
             from app.core.alpha_engine.signal_processor import SignalProcessor
-            from app.core.portfolio_manager.executable_spec import approved_spec, signal_config
-            from app.core.portfolio_manager.manager import PortfolioManager
+            from app.core.portfolio_manager.strategy_contract import StrategyContract
             from app.db.strategy_store import StrategyStore
             prices = dataset["close"]
             rets = prices.pct_change()
@@ -780,16 +841,14 @@ class DailyTradingLoop:
         except Exception as exc:
             logger.error("[evidence] 策略版本证据本轮跳过（读不到配置）: %s", exc)
             return out
-        from app.core.portfolio_manager.executable_spec import verify_against_runtime
         rt = self._runtime_settings(data_source)
         for rec in configs:
-            spec = approved_spec(rec)
-            if spec is None or any(v is None for v in spec["factors"].values()):
+            contract = StrategyContract.from_record(rec)            # N05-e：证据也按这份策略的合同生成
+            if contract is None or not contract.complete():
                 continue
             # 复审 2026-10-19 N02：证据路径也要核对规格 —— 运行时与规格对不上（换了价格源、风控、AUM…），
             # 算出来的就不是这份策略的信号，不能记在它的名下。隔离留痕，不计入正式前向。
-            diff = verify_against_runtime(spec, dict(spec["factors"]), float(self.broker.initial_capital),
-                                          settings=rt)
+            diff = contract.verify(contract.factors, float(self.broker.initial_capital), settings=rt)
             if diff:
                 logger.error("[evidence] 策略 #%s 的规格与运行时不一致 → 本轮不记前向证据：%s", rec.id, diff)
                 out[f"strategy:{rec.id}"] = -1
@@ -801,12 +860,7 @@ class DailyTradingLoop:
                     logger.error("[evidence] 隔离记录写入失败: %s", exc)
                 continue
             try:
-                sigs = {f: SignalProcessor(signal_config()).process(
-                            Executor(validate=False).run_expr(dsl, dataset))
-                        for f, dsl in spec["factors"].items()}
-                fixed = {str(k): float(v) for k, v in spec["combo_weights"].items()} or None
-                _, _, composite = PortfolioManager(aum=float(spec["aum"]), method=spec["method"]) \
-                    .combined_weights(sigs, prices, fixed)
+                composite = contract.composite(contract.signals(dataset), prices)
                 key = f"strategy:{rec.id}"
                 book = self._forward_book(key)
                 h = _json.loads(rec.verdict or "{}").get("spec_hash", "")
@@ -820,7 +874,9 @@ class DailyTradingLoop:
                     ic = _cs_spearman(arch["signal"].reindex(cols).to_numpy(dtype=float),
                                       rets.reindex(columns=cols).iloc[t].to_numpy(dtype=float))
                     if not np.isnan(ic) and ev.record_strategy_ic(
-                            rec.id, h, dates[t], ic, dates[t - 1], arch["recorded_at"]):
+                            rec.id, h, dates[t], ic, dates[t - 1], arch["recorded_at"],
+                            identity=getattr(self, "_identity", None),
+                            signal_digest=arch.get("data_digest", "")):
                         n += 1
                 book.archive(dates[-1], composite.iloc[-1], now, spec_hash=h)
                 out[key] = n

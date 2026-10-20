@@ -167,8 +167,9 @@ def strategy_net_returns(factor_signals: Signals, dataset: WidePanel,
     `fixed_combo_weights` / `no_trade_band`：评估**被批准的那份**策略（外部审查 2026-10-18 F07）——
     冻结的合成权重（此时不再滚动拟合）与冻结的无交易带。不给 → 按 method 拟合、带按配置/数据推导。
     """
-    from app.core.portfolio_manager.manager import PortfolioManager
     from app.core.backtest_engine.backtest_engine import BacktestEngine
+    from app.core.portfolio_manager import strategy_contract as _sc
+    from app.core.portfolio_manager.executable_spec import risk_limits_from_settings
 
     prices = dataset["close"]
     volume = dataset.get("volume")
@@ -176,27 +177,21 @@ def strategy_net_returns(factor_signals: Signals, dataset: WidePanel,
         volume = pd.DataFrame(1e6, index=prices.index, columns=prices.columns)
 
     cp = resolve_cost_params(dataset, aum, cost_params)
-    pm = PortfolioManager(aum=aum, method=method, cost_params=cp)
-    book = pm.build_book(factor_signals, prices, volume, walk_forward_folds=walk_forward_folds,
-                         fixed_combo_weights=fixed_combo_weights)
-    weights = book.weights
-
-    if apply_risk:
+    if not apply_risk:
+        tg = _sc.generate_targets(factor_signals, dataset, aum=aum, method=method, limits=None, band=0.0,
+                                  cost_params=cp, fixed_combo_weights=fixed_combo_weights,
+                                  walk_forward_folds=walk_forward_folds, risk=False)
+    else:
         try:
             from app.config import settings
-            from app.core.portfolio_manager.executable_spec import (
-                band_then_reproject, estimate_port_vol, risk_limits_from_settings,
-            )
-            from app.core.portfolio_manager.risk_gate import PortfolioRiskGate
-            limits = risk_limits_from_settings()
-            sectors = dataset["sector"].iloc[-1] if "sector" in dataset else None
-            # 复审 2026-10-19 N05：与每日循环**同一条**风险路径 —— 目标波动缩放（用同一个波动估计）、
-            # 无交易带、带后硬约束投影。此前门不传波动估计、带后也不再投影，验证的不是会去交易的那份
-            vol = (estimate_port_vol(weights, prices, int(getattr(settings, "risk_vol_lookback", 60)))
-                   if limits.target_vol_ann else None)
-            weights, _ = PortfolioRiskGate(limits).apply(weights, sectors=sectors, port_vol_ann=vol)
+            # 复审 2026-10-19 N05 / N05-e：与每日循环、提案**同一个**目标生成函数（合成账本 → 目标波动缩放 →
+            # 硬约束 → 无交易带 → 带后投影；同一套成本 / 容量参数）。门的成交适配器是 BacktestEngine。
             band = resolve_band(dataset, aum) if no_trade_band is None else float(no_trade_band)
-            weights = band_then_reproject(weights, band, limits, sectors)
+            tg = _sc.generate_targets(factor_signals, dataset, aum=aum, method=method,
+                                      limits=risk_limits_from_settings(), band=band, cost_params=cp,
+                                      fixed_combo_weights=fixed_combo_weights,
+                                      walk_forward_folds=walk_forward_folds,
+                                      vol_lookback=int(getattr(settings, "risk_vol_lookback", 60)))
         except Exception as exc:
             # 【缺陷 N-3，2026-09-20 修】原先这里是
             #     logger.warning("风控/调仓对齐失败，用原始权重: %s", exc)
@@ -216,10 +211,11 @@ def strategy_net_returns(factor_signals: Signals, dataset: WidePanel,
                 f"apply_risk=True 但风控/调仓对齐失败，拒绝用未经风控的权重回测: {exc}"
             ) from exc
 
+    composite = tg.composite
     engine = BacktestEngine(cost_params=cp, initial_capital=aum)
-    result = engine.run(weights, prices, volume, book.composite)
+    result = engine.run(tg.weights, prices, volume, composite)
     rets = pd.Series(result.net_returns).dropna()
-    return rets, book.composite
+    return rets, composite
 
 
 def _sharpe(rets: pd.Series, tdays: float = 252.0) -> float:

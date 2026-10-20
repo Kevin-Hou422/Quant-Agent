@@ -195,7 +195,12 @@ class PaperBroker:
                 "cost_usd": float(cost_w[i] * pv), "reject_reason": reject,
                 "traded_weight": float(delta[i]), "unfilled_weight": unfilled,
             })
-        positions = {tk: float(filled[i]) for i, tk in enumerate(tickers) if abs(filled[i]) > 1e-12}
+        # 复审 2026-10-19 N08-b（股数 + 现金参考账本查出）：费用与借券从现金里扣，持仓市值不变、净值变小 ——
+        # 成交后的权重要按**成交后净值**重新归一（w · 调仓前市值 / 成交后净值）。此前直接存成交时的权重，
+        # 第二天的毛收益就按略小的仓位算（每天约 费用率 × 收益率 的偏差，两套引擎一起偏，对账看不出来）。
+        v_post = equity_new * self.initial_capital
+        post = filled * (v_pre / v_post) if v_post > 0 and v_pre > 0 else filled
+        positions = {tk: float(post[i]) for i, tk in enumerate(tickers) if abs(post[i]) > 1e-12}
 
         pnl = DailyPnL(
             alpha_id=alpha_id, date=str(_as_date(date)),

@@ -41,6 +41,9 @@ class IngestResult:
     forward_from:  Optional[str] = None   # 本次新增的第一根 bar 日期 → 之后的 IC 算"真前向"
     n_new_bars:    int = 0
     calendar_note: str = ""            # 数据↔日历 交叉校验说明
+    #: 交给交易循环的那份面板的输入身份（复审 2026-10-19 N02-c / N04-b；见 input_identity.py），
+    #: 外加 checked_last_day / checked_universe_digest = 健康门检查的那份的末日与股票池
+    identity:      Optional[Dict[str, Any]] = None
 
 
 class DailyIngest:
@@ -193,6 +196,17 @@ class DailyIngest:
         # ---- 4) 交易循环消费"回填+全部增量"的完整面板（从 PIT 读） ----
         panel = store.load_pit(name=dataset_name) or {}
         full = panel if panel.get("close") is not None else (inc.dataset or {})
+        # 复审 2026-10-19 N04-b：交出去的面板必须和健康门检查的那份**同一个末日、同一个股票池**
+        # （PIT 读回来少了最后一天 / 少了票，交易就会用一份没被检查过的面板）
+        ident = _identity_of(full, inc.dataset or {}, as_of)
+        if (ident is None or ident["last_day"] != ident["checked_last_day"]
+                or ident["universe_digest"] != ident["checked_universe_digest"]):
+            why = ("算不出输入身份" if ident is None else
+                   f"交易面板末日 {ident['last_day']} / 股票池 {ident['universe_n']} 只，"
+                   f"健康门检查的是 {ident['checked_last_day']} / {ident['checked_universe_n']} 只")
+            logger.error("[daily_ingest] %s → 拒绝", why)
+            return IngestResult(False, dataset_name, as_of, mode=mode,
+                                reject_reason=f"consumed_panel_mismatch: {why}")
         close = full.get("close")
         logger.info("[daily_ingest] 增量摄取：新增 %d 根 bar（%s..%s），PIT 面板 %s",
                     len(new_dates), first_new.date(), max(new_dates).date(),
@@ -203,7 +217,7 @@ class DailyIngest:
             n_tickers=0 if close is None else close.shape[1],
             dataset=full, mode=mode,
             forward_from=first_new.strftime("%Y-%m-%d"),
-            n_new_bars=len(new_dates), calendar_note=note,
+            n_new_bars=len(new_dates), calendar_note=note, identity=ident,
         )
 
     def ingest(
@@ -315,6 +329,7 @@ class DailyIngest:
         return IngestResult(
             True, dataset_name, as_of, health_score=score,
             n_dates=close.shape[0], n_tickers=close.shape[1], dataset=data,
+            identity=_identity_of(data, data, as_of),
         )
 
     @staticmethod
@@ -360,6 +375,23 @@ def _rebase_reason(store, dataset_name: str, last: pd.Timestamp, inc: Dict[str, 
     tk = moved.idxmax()
     return (f"{len(moved)} 只票在 {day.date()} 的复权收盘价与库中不一致"
             f"（最大 {tk}: {float(a[tk]):.4f} → {float(b[tk]):.4f}），数据源重算了历史复权")
+
+
+def _identity_of(consumed: Dict[str, pd.DataFrame], checked: Dict[str, pd.DataFrame],
+                 vintage: Optional[str]) -> Optional[Dict[str, Any]]:
+    """交出去的面板的输入身份 + 健康门检查的那份的末日 / 股票池（两者应一致）。"""
+    from app.config import settings
+    from app.core.data_engine.input_identity import identify
+    try:
+        src = str(getattr(settings, "price_source", ""))
+        out = identify(consumed, price_source=src, vintage=vintage).to_dict()
+        chk = identify(checked, price_source=src, vintage=vintage)
+    except Exception as exc:
+        logger.error("[daily_ingest] 输入身份算不出来: %s", exc)
+        return None
+    out.update(checked_last_day=chk.last_day, checked_universe_digest=chk.universe_digest,
+               checked_universe_n=chk.universe_n, checked_data_digest=chk.data_digest)
+    return out
 
 
 def _held_without_close(data: Dict[str, pd.DataFrame]) -> str:
@@ -425,10 +457,12 @@ def _pit_source(dataset_name: str) -> Optional[str]:
         return None
 
 
-def _run_portfolio_safely(loop, dataset, forward_from, now=None, data_source=None) -> Dict[str, Any]:
+def _run_portfolio_safely(loop, dataset, forward_from, now=None, data_source=None,
+                          identity=None) -> Dict[str, Any]:
     """组合账本失败不拖垮 per-factor 监控；但执行层仍要对账/续做全平（失败时不加新风险）。"""
     try:
-        return loop.run_portfolio(dataset, forward_from=forward_from, now=now, data_source=data_source)
+        return loop.run_portfolio(dataset, forward_from=forward_from, now=now, data_source=data_source,
+                                  identity=identity)
     except Exception as exc:
         logger.error("[daily_pipeline] 组合账本失败 → 本轮不调仓，只做对账/熔断维护: %s", exc)
         pf = {"n_factors": 0, "days_processed": 0, "error": str(exc)}
@@ -486,9 +520,12 @@ def run_daily_pipeline(dataset_name: str, start: str = "", end: str = "",
     loop = DailyTradingLoop()
     panel = _with_fundamentals(dataset_name, ing.dataset)
     # `now` = 决策时刻：当天的信号以它为存档时刻，明天据此判断结算是不是前向（F06）
-    report = loop.run(panel, forward_from=ing.forward_from, now=now)   # per-factor：IC 监控 + 衰减
+    src = _pit_source(dataset_name)
+    ident = dict(ing.identity or {}, price_source=src or (ing.identity or {}).get("price_source", ""))
+    report = loop.run(panel, forward_from=ing.forward_from, now=now,     # per-factor：IC 监控 + 衰减
+                      data_source=src, identity=ident or None)
     # Phase PM.4：组合账本（真实 AUM 的美元账本，多因子净持仓 + 容量）
-    pf = _run_portfolio_safely(loop, panel, ing.forward_from, now, _pit_source(dataset_name))
+    pf = _run_portfolio_safely(loop, panel, ing.forward_from, now, src, ident or None)
     return {
         "ingest_accepted": True, "as_of": ing.as_of, "health_score": ing.health_score,
         "mode": ing.mode, "forward_from": ing.forward_from, "n_new_bars": ing.n_new_bars,

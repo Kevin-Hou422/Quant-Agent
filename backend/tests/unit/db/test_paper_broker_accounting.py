@@ -37,6 +37,16 @@ def _series(vals, tickers):
     return pd.Series(vals, index=tickers, dtype=float)
 
 
+def _filled(broker, alpha_id, date):
+    """
+    成交时的权重（相对**调仓前市值**）。复审 2026-10-19 N08-b 起两个口径分开：
+    成交记录 `filled_weight` = 成交那一刻的权重（与目标、成交量上限同口径）；
+    持仓表 = 相对**成交后净值**的权重（费用从现金扣掉后净值变小，同样的股数占比略大）。
+    断言"成交了多少 / 上限削到多少"读这里，不读持仓表。
+    """
+    return {f.ticker: float(f.filled_weight) for f in broker.store.fills_on(alpha_id, date)}
+
+
 # ---------------------------------------------------------------------------
 # L96：容量上限公式  cap_w = adv * adv_cap_pct / initial_capital
 # ---------------------------------------------------------------------------
@@ -60,7 +70,7 @@ def test_adv_cap_formula_is_exact(broker):
         daily_vol=_series([0.02, 0.02], tk),
     )
     assert pnl is not None
-    pos = broker.store.latest_positions(1)
+    pos = _filled(broker, 1, "2024-01-02")
     assert abs(pos.get("A", 0.0) - cap_expected) < 1e-9, (
         f"A 的持仓应被 ADV 上限削到 {cap_expected:.3e}，实际 {pos.get('A', 0.0):.3e}"
         f"（公式 adv×pct/capital 被改动也不会报错）"
@@ -81,8 +91,8 @@ def test_adv_cap_scales_with_capital(broker, tmp_path):
               daily_vol=_series([0.02], tk))
     broker.step(alpha_id=2, date="2024-01-02", **kw)
     big.step(alpha_id=2, date="2024-01-02", **kw)
-    w_small = broker.store.latest_positions(2)["A"]
-    w_big = big.store.latest_positions(2)["A"]
+    w_small = _filled(broker, 2, "2024-01-02")["A"]
+    w_big = _filled(big, 2, "2024-01-02")["A"]
     assert abs(w_big - w_small / 2.0) < 1e-9, (
         f"资金翻倍后权重上限应减半：{w_small:.3e} → 期望 {w_small/2:.3e}，实际 {w_big:.3e}"
     )
@@ -258,19 +268,22 @@ def test_price_change_uses_subtraction_not_addition(broker):
     """
     钉死 `price_chg = (p_t - p_prev) / p_prev` 的符号。
     把 `-` 写成 `+` 不会报错，只会让"涨跌幅"变成"价格和的比值"（恒 ≈ 2）。
-    构造：昨仓满仓、价格从 100 涨到 110 → 毛收益必须精确等于 +10%。
+    构造：昨仓满仓、价格从 100 涨到 110 → 毛收益必须精确等于 持仓权重 × 10%
+    （持仓权重相对成交后净值，首日费用让它略大于 1，见 _filled 的说明）。
     """
     tk = ["A"]
     broker.step(alpha_id=9, date="2024-01-01",
                 target_w=_series([1.0], tk), prices_t=_series([100.0], tk),
                 prices_prev=_series([100.0], tk), adv_usd=_series([1e12], tk),
                 daily_vol=_series([0.02], tk))
+    held = broker.store.latest_positions(9)["A"]
+    assert held == pytest.approx(1.0, abs=1e-2)
     pnl = broker.step(alpha_id=9, date="2024-01-02",
                       target_w=_series([1.0], tk), prices_t=_series([110.0], tk),
                       prices_prev=_series([100.0], tk), adv_usd=_series([1e12], tk),
                       daily_vol=_series([0.02], tk))
-    assert abs(pnl.gross_ret - 0.10) < 1e-9, (
-        f"满仓且价格 100→110，毛收益应精确为 0.10，实际 {pnl.gross_ret:.6f}"
+    assert abs(pnl.gross_ret - 0.10 * held) < 1e-9, (
+        f"满仓（{held:.6f}）且价格 100→110，毛收益应精确为 {0.10 * held:.6f}，实际 {pnl.gross_ret:.6f}"
     )
 
 
@@ -386,7 +399,7 @@ def test_a_constrained_name_does_not_enlarge_the_others(broker):
                 prices_prev=_series([100.0, 100.0], tk),
                 adv_usd=_series([adv_a, 1e15], tk),
                 daily_vol=_series([0.02, 0.02], tk))
-    pos = broker.store.latest_positions(36)
+    pos = _filled(broker, 36, "2024-02-07")
     assert pos.get("A", 0.0) == pytest.approx(0.01, abs=1e-9), (
         f"A 应被成交量上限削到 1%，实际 {pos.get('A', 0.0)}")
     assert pos.get("B", 0.0) == pytest.approx(-0.10, abs=1e-9), (
@@ -407,7 +420,10 @@ def test_a_reduction_that_cannot_fill_is_booked_at_its_true_state(broker):
                 target_w=_series([0.20], tk), prices_t=_series([100.0], tk),
                 prices_prev=_series([100.0], tk), adv_usd=_series([1e15], tk),
                 daily_vol=_series([0.02], tk))
-    assert broker.store.latest_positions(37)["A"] == pytest.approx(0.20, abs=1e-12)
+    assert _filled(broker, 37, "2024-02-08")["A"] == pytest.approx(0.20, abs=1e-12)
+    # 持仓 = 同样的股数占**成交后净值**的比例（调仓前市值 = 初始资金，成交后净值 = 权益 × 初始资金）
+    held = broker.store.latest_positions(37)["A"]
+    assert held == pytest.approx(0.20 / broker.store.latest_equity(37), abs=1e-12)
 
     # 当日最多成交 5% 权重 —— 权重相对**调仓前市值**（复审 2026-10-19 N08；价格不动时 = 期初权益，
     # 而第 1 天的成本已经让它略小于 CAPITAL）
@@ -416,13 +432,14 @@ def test_a_reduction_that_cannot_fill_is_booked_at_its_true_state(broker):
                 target_w=_series([0.0], tk), prices_t=_series([100.0], tk),
                 prices_prev=_series([100.0], tk), adv_usd=_series([adv_small], tk),
                 daily_vol=_series([0.02], tk))
-    pos = broker.store.latest_positions(37)
-    assert pos.get("A", 0.0) == pytest.approx(0.15, abs=1e-9), (
-        f"只成交了 5%，应还剩 15%，实际 {pos.get('A', 0.0)} —— 平仓失败被当成了已平")
+    pos = _filled(broker, 37, "2024-02-09")
+    assert pos.get("A", 0.0) == pytest.approx(held - 0.05, abs=1e-9), (
+        f"只成交了 5%，应还剩 {held - 0.05:.6f}，实际 {pos.get('A', 0.0)} —— 平仓失败被当成了已平")
     f = {x.ticker: x for x in broker.store.fills_on(37, "2024-02-09")}["A"]
     assert f.traded_weight == pytest.approx(-0.05, abs=1e-9)
-    assert f.unfilled_weight == pytest.approx(-0.15, abs=1e-9), (
-        f"未成交的减仓量记成了 {f.unfilled_weight}，应为 -0.15")
+    assert f.unfilled_weight == pytest.approx(-(held - 0.05), abs=1e-9), (
+        f"未成交的减仓量记成了 {f.unfilled_weight}，应为 {-(held - 0.05):.6f}")
+    assert broker.store.latest_positions(37).get("A", 0.0) > 0.149, "持仓表里也必须还有这笔没平掉的仓"
 
 
 def test_cost_bps_is_consistent_with_gross_minus_net(broker):
@@ -559,7 +576,7 @@ class TestGrossExposureFollowsTheTarget:
             adv_usd=_series([1e15] * len(tk), tk),      # 上限不绑定
             daily_vol=_series([0.02] * len(tk), tk),
         )
-        return broker.store.latest_positions(alpha_id)
+        return _filled(broker, alpha_id, "2024-01-02")
 
     @pytest.mark.parametrize("weights,gross", [
         ([0.25, 0.25], 0.5),        # 波动率目标把敞口缩了一半
@@ -607,7 +624,17 @@ class TestSubEpsilonPositionsAreADeliberatePolicy:
 
     构造：`project_to_capped_l1` 在 L1 已等于 target、ADV 上限不绑定时是恒等映射，
     于是目标权重里的 1e-12 **逐位**原样出现在 `filled` 里。
+
+    本组用**零成本**的券商（复审 2026-10-19 N08-b）：持仓 = 成交权重 × 调仓前市值 / 成交后净值，
+    零成本时这个系数恰为 1.0，持仓才逐位等于成交权重 —— 下面的构造都依赖这一点。
     """
+
+    @pytest.fixture
+    def broker(self, tmp_path):
+        free = CostParams(fixed_bps=0.0, min_ticket_fee=0.0, spread_bps=0.0, impact_coef=0.0,
+                          short_borrow_annual_bps=0.0)
+        return PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp_path/'pb_free.db'}"),
+                           cost_params=free, initial_capital=CAPITAL)
 
     @staticmethod
     def _run(broker):
@@ -812,19 +839,22 @@ class TestPositionsOutsideTheNewTargetAreNotDropped:
     def test_a_dropped_name_still_contributes_its_return(self, broker):
         """A 占 50% 且当日 +10% → 毛收益必须是 +5%，哪怕 A 已不在今日目标里。"""
         self._both(broker, 51)
+        held = broker.store.latest_positions(51)["A"]          # 相对成交后净值，略大于 0.5
+        assert held == pytest.approx(0.5, abs=1e-3)
         pnl = broker.step(alpha_id=51, date="2024-04-02",
                           target_w=_series([1.0], ["B"]),
                           prices_t=_series([110.0, 100.0], ["A", "B"]),
                           prices_prev=_series([100.0, 100.0], ["A", "B"]),
                           adv_usd=_series([1e15, 1e15], ["A", "B"]),
                           daily_vol=_series([0.02, 0.02], ["A", "B"]))
-        assert pnl.gross_ret == pytest.approx(0.05, abs=1e-9), (
+        assert pnl.gross_ret == pytest.approx(0.10 * held, abs=1e-9), (
             f"毛收益 {pnl.gross_ret:.6f}，应为 +5% —— "
             f"不在今日目标里的旧持仓没有参与估值")
 
     def test_a_dropped_name_is_actually_closed(self, broker):
         """并且要真的平掉：落账持仓里不该再有 A，且有 A 的平仓成交。"""
         self._both(broker, 52)
+        held = broker.store.latest_positions(52)["A"]          # 相对成交后净值（N08-b）
         broker.step(alpha_id=52, date="2024-04-02",
                     target_w=_series([1.0], ["B"]),
                     prices_t=_series([110.0, 100.0], ["A", "B"]),
@@ -835,8 +865,9 @@ class TestPositionsOutsideTheNewTargetAreNotDropped:
         assert "A" not in pos, f"A 没有被平掉：{pos}"
         fills = {f.ticker: f for f in broker.store.fills_on(52, "2024-04-02")}
         assert "A" in fills, "A 的平仓没有留下成交记录 —— 仓位凭空消失"
-        # 外部审查 2026-10-18 F10（R6）：A 涨了 10%，调仓前它是 0.55/1.05 = 52.38%，不是 50%
-        assert fills["A"].traded_weight == pytest.approx(-0.55 / 1.05, abs=1e-9)
+        # 外部审查 2026-10-18 F10（R6）：A 涨了 10%，调仓前它是 1.1h / (1 + 0.1h)（h = 昨仓权重，
+        # 无成本时 = 0.55/1.05 = 52.38%），不是 h
+        assert fills["A"].traded_weight == pytest.approx(-1.1 * held / (1 + 0.1 * held), abs=1e-9)
 
     def test_a_dropped_name_that_cannot_fill_stays_on_the_book(self, broker):
         """
@@ -844,6 +875,7 @@ class TestPositionsOutsideTheNewTargetAreNotDropped:
         A 已不在今日目标里，且当日只够成交 10% → 账面还剩 40%，未成交 -0.4。
         """
         self._both(broker, 53)
+        held = broker.store.latest_positions(53)["A"]
         cap_pct = broker.params.max_participation_pct
         adv_a = 0.10 * broker.store.latest_equity(53) * CAPITAL / cap_pct   # 相对调仓前市值（N08）
         broker.step(alpha_id=53, date="2024-04-02",
@@ -852,11 +884,12 @@ class TestPositionsOutsideTheNewTargetAreNotDropped:
                     prices_prev=_series([100.0, 100.0], ["A", "B"]),
                     adv_usd=_series([adv_a, 1e15], ["A", "B"]),
                     daily_vol=_series([0.02, 0.02], ["A", "B"]))
-        pos = broker.store.latest_positions(53)
-        assert pos.get("A", 0.0) == pytest.approx(0.40, abs=1e-9), (
-            f"只成交了 10%，A 应还剩 40%，实际 {pos.get('A', 0.0)}")
+        pos = _filled(broker, 53, "2024-04-02")
+        assert pos.get("A", 0.0) == pytest.approx(held - 0.10, abs=1e-9), (
+            f"只成交了 10%，A 应还剩 {held - 0.10:.6f}，实际 {pos.get('A', 0.0)}")
         f = {x.ticker: x for x in broker.store.fills_on(53, "2024-04-02")}["A"]
-        assert f.unfilled_weight == pytest.approx(-0.40, abs=1e-9)
+        assert f.unfilled_weight == pytest.approx(-(held - 0.10), abs=1e-9)
+        assert broker.store.latest_positions(53).get("A", 0.0) > 0.399, "持仓表里也必须还有这笔没平掉的仓"
 
     def test_a_held_name_without_a_price_is_not_valued_or_traded(self, broker, caplog):
         """
@@ -864,6 +897,7 @@ class TestPositionsOutsideTheNewTargetAreNotDropped:
         并留下 WARNING。`reindex` 给 NaN 而 `nansum` 当 0 —— 那是"悄悄丢掉"。
         """
         self._both(broker, 54)
+        usd_before = broker.store.latest_positions(54)["A"] * broker.store.latest_equity(54)
         with caplog.at_level("WARNING"):
             pnl = broker.step(alpha_id=54, date="2024-04-02",
                               target_w=_series([1.0], ["B"]),
@@ -872,8 +906,10 @@ class TestPositionsOutsideTheNewTargetAreNotDropped:
                               adv_usd=_series([1e15], ["B"]),
                               daily_vol=_series([0.02], ["B"]))
         pos = broker.store.latest_positions(54)
-        assert pos.get("A", 0.0) == pytest.approx(0.5, abs=1e-9), (
-            f"没有行情却把 A 平掉了：{pos}")
+        # A 的**市值**不变（不估值也不交易）；B 的成交费用让净值变小，所以 A 的权重会略升（N08-b）
+        usd_after = pos.get("A", 0.0) * broker.store.latest_equity(54)
+        assert usd_after == pytest.approx(usd_before, abs=1e-12), (
+            f"没有行情却动了 A：{pos}")
         assert pnl.gross_ret == pytest.approx(0.0, abs=1e-9)
         assert any("拿不到今日行情" in r.getMessage() for r in caplog.records), (
             "旧持仓无行情却没有留痕")

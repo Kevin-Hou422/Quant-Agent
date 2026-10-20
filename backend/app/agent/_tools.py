@@ -34,7 +34,7 @@ from app.agent._constants import (
 )
 from app.agent._data_utils import (
     _make_synthetic_dataset, _partition, _partition_three_way,
-    _run_backtest_core, load_real_dataset,
+    _run_backtest_core, load_real_dataset, load_real_research,
 )
 from app.agent._helpers import _safe_json_loads
 
@@ -124,15 +124,11 @@ class QuantTools:
         # 这一个出口、并且每次都记账。此前 agent 自己按比例切（Test=最后 10%），
         # 它的 Validate 段正好落在冻结的最近两年里。
         self._dataset_key = dataset_name if dataset_name and self._data_source.startswith("real") else ""
-        self._holdout_split = None
-        if self._dataset_key:
-            from app.core.data_engine.data_partitioner import split_from_settings
-            try:
-                self._holdout_split = split_from_settings(ds, dataset_key=self._dataset_key)
-                ds = self._full_dataset = self._holdout_split.selection
-            except ValueError as exc:
-                logger.warning("QuantTools: 数据集 %s 切不出冻结 Test 段（%s），按全量研究",
-                               self._dataset_key, exc)
+        # 复审 2026-10-19 N09-c：与 CLI / API / 工作流同一个研究上下文（同一套切法与兜底）
+        from app.core.data_engine.research_context import open_research
+        self._ctx = open_research(ds, self._dataset_key, "chat")
+        ds = self._full_dataset = self._ctx.selection
+        self._holdout_split = self._ctx.split if self._ctx.pinned else None
 
         # F6 修复：三段式切割 IS / Validate(GP OOS) / Test(真实样本外)
         # GP 全程只接触 IS + Validate；Test 段仅在最终验证时用一次。
@@ -305,10 +301,12 @@ class QuantTools:
             )
 
         # Resolve dataset: per-run override > session default
+        ctx = self._ctx
         if dataset_name:
             try:
-                gp_is, gp_oos = load_real_dataset(
-                    dataset_name, dataset_start, dataset_end, self._oos_ratio
+                # 复审 2026-10-19 N09-c：此前 load_real_dataset 对**全量**按 70/30 切，OOS 正好压在冻结 Test 段上
+                ctx, gp_is, gp_oos = load_real_research(
+                    dataset_name, dataset_start, dataset_end, self._oos_ratio, purpose="chat.gp"
                 )
                 logger.info("GP: using real dataset '%s' [%s→%s]", dataset_name, dataset_start, dataset_end)
             except Exception as exc:
@@ -339,11 +337,12 @@ class QuantTools:
             seed           = self._seed,
         )
         try:
-            result = evolver.run(
-                seed_dsl        = seed_dsl or None,
-                seed_dsls       = seed_dsls_list,
-                n_optuna_trials = n_optuna_trials,
-            )
+            with ctx.active():
+                result = evolver.run(
+                    seed_dsl        = seed_dsl or None,
+                    seed_dsls       = seed_dsls_list,
+                    n_optuna_trials = n_optuna_trials,
+                )
         except Exception as exc:
             logger.warning("GP 优化失败: %s", exc)
             fallback_dsl = seed_dsl or (seed_dsls_list[0] if seed_dsls_list else "rank(ts_delta(log(close), 5))")
@@ -613,7 +612,8 @@ class QuantTools:
             seed     = self._seed,
         )
         try:
-            best_cfg, summary = optimizer.optimize()
+            with self._ctx.active():
+                best_cfg, summary = optimizer.optimize()
         except Exception as exc:
             logger.warning("Optuna 优化失败: %s", exc)
             return json.dumps({

@@ -52,7 +52,9 @@ class PaperFill(_Base):
     cost_usd:      float  = Column(Float, default=0.0)
     reject_reason: str    = Column(String(64), default="")
     # 2026-09-19：区分**持仓**与**成交**两个口径（用户决策 #2/#3）。
-    # `filled_weight` 是成交后的持仓，看不出这一笔实际成交了多少；
+    # `filled_weight` 是成交后的持仓（相对**调仓前市值**的权重），看不出这一笔实际成交了多少；
+    # 复审 2026-10-19 N08-b：持仓表存的是同一笔持仓相对**成交后净值**的权重（费用从现金扣，净值变小），
+    # 两者差一个 调仓前市值 / 成交后净值 的系数；
     # 未成交的减仓/平仓必须按真实未成交状态记账，不能只留一个持仓数字。
     traded_weight:   float = Column(Float, default=0.0)   # 本日实际成交的权重变动（有符号）
     unfilled_weight: float = Column(Float, default=0.0)   # 想交易但没成交的部分（有符号）

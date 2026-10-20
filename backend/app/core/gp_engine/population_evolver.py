@@ -267,7 +267,7 @@ class PopulationEvolver:
         # 复审 2026-10-19 N07：搜索开始**之前**登记这次运行；登记不进去就不搜（抛 TrialLedgerUnavailable）。
         # 之后每一代评估完就记一次 —— 进程中途被杀，已评估的尝试也已经在账上，运行停在 running 会被门看见。
         from app.db.trial_ledger import TrialRecorder
-        recorder = TrialRecorder("gp")
+        recorder = TrialRecorder("gp", panels=[self._is_data, self._oos_data])   # 研究上下文里：越界数据不开始
         try:
             return self._run(seed_dsl, seed_dsls, n_optuna_trials, on_generation_end,
                              evolution_log, recorder)

@@ -209,9 +209,7 @@ class BacktestEngine:
                 cap = np.full(N, np.inf)
             fr = simulate_partial_fills(pre, tgt_arr[t], cap, max_net=self.max_net)
             pre_w_mat[t] = pre
-            adj_weights[t] = fr.filled_w
             delta_w_mat[t] = fr.filled_w - pre
-            prev_filled = fr.filled_w
 
             # 交易成本：成交额 = Δw × 调仓前市值；当天净收益按期初权益归一（N08）
             _, cost_usd, records = self._tc.compute(
@@ -230,6 +228,12 @@ class BacktestEngine:
 
             # 更新净值（递推，必须串行）
             equity               = equity * (1 + net_ret)
+            # 成交后的权重按成交后净值重新归一（费用 / 借券从现金扣，持仓市值不变；复审 N08-b）
+            # 只用于第二天的估值；对外报告的 `positions` 仍是成交那一刻的权重（相对调仓前市值，
+            # 与风控上限、目标同一口径 —— 与 PaperBroker 成交记录的 filled_weight 一致）
+            scale = (v_pre / equity) if equity > 0 and v_pre > 0 else 1.0
+            prev_filled = fr.filled_w * scale
+            adj_weights[t] = fr.filled_w
             equity_series[t]     = equity / self.initial_capital
             gross_ret_arr[t]     = gross_ret_pre[t]
             net_ret_arr[t]       = net_ret

@@ -145,14 +145,9 @@ class DiscoveryEngine:
 
     @staticmethod
     def _selection(dataset: WidePanel, dataset_key: Optional[str]) -> WidePanel:
-        from app.core.data_engine.data_partitioner import FrozenBoundaryError, split_from_settings
-        try:
-            return split_from_settings(dataset, dataset_key=dataset_key).selection
-        except FrozenBoundaryError:
-            raise
-        except ValueError as exc:
-            logger.warning("[discovery] 数据不足以三段切割，观察引擎看全量（本次没有冻结 Test 段）: %s", exc)
-            return dataset
+        """观察引擎看的面板：研究上下文的选择段（复审 2026-10-19 N09-c：与其它入口同一个 open_research）。"""
+        from app.core.data_engine.research_context import open_research
+        return open_research(dataset, dataset_key, "discovery.observe").selection
 
     def _run_gate(self, store, aid, dsl, dataset,
                   dataset_key: Optional[str] = None) -> "tuple[bool, Optional[dict]]":

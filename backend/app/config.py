@@ -156,6 +156,9 @@ class Settings(BaseSettings):
     moomoo_security_firm:  str   = "FUTUINC"
     #: 模拟账户 id；0 = 由 SDK 取该市场第一个模拟账户（状态端点会回显实际 acc_id）。
     moomoo_trd_acc_id:     int   = 0
+    #: 账户级跨进程锁的目录（复审 2026-10-19 §5.3）：**整台机器共用**，按券商账户建锁 —— 不同目录的
+    #: 两套部署操作同一个账户也会互斥。空 = Windows 用 %PROGRAMDATA%\QuantAgent，其它用系统临时目录
+    account_lock_dir:      str   = ""
     #: 调仓限价 = 参考收盘价 × (1 ± band)。收盘后下单、次日开盘成交，
     #: 限价把"开盘跳空过大时追价"挡在外面；挡住的部分如实记为未成交。
     exec_limit_band_bps:   float = 50.0
@@ -179,6 +182,8 @@ class Settings(BaseSettings):
     #: 全路径强制三段切割（IS / Validate / Test）。关掉 = 退回两段，
     #: 汇报的 OOS 就是选择时用过的那一段（循环论证）。默认 True。
     s_three_way_enabled:   bool  = True
+    #: 研究上下文的实验名（复审 2026-10-19 N09-c；写进每次搜索的运行记录）
+    research_experiment:   str   = "default"
     #: Test 段按**日历**冻结的年数（不随数据集长度漂移）。
     s_test_freeze_years:   float = 2.0
     #: Validate 占「剔除 Test 后剩余样本」的比例。

@@ -281,7 +281,7 @@ class AlphaOptimizer:
 
         # 复审 2026-10-19 N07：开始前登记、每个 trial 跑完记一次（中途被杀也不丢已跑的）
         from app.db.trial_ledger import TrialRecorder
-        recorder = TrialRecorder("optuna")
+        recorder = TrialRecorder("optuna", panels=[self._is_dataset])   # 研究上下文里：越界数据不开始
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")

@@ -109,9 +109,13 @@ class TestAccountLock:
         release.write_text("x")
         proc.wait(timeout=20)
 
-    def test_the_lock_lives_next_to_the_execution_db(self, tmp_path):
+    def test_the_lock_is_named_after_the_broker_account(self, tmp_path):
+        """复审 2026-10-19 §5.3：此前锁在执行库同目录 —— 不同目录的两套部署不互斥。"""
+        from app.config import settings
+        from pathlib import Path
         e = _env(tmp_path)
-        assert e.om._account_lock_path() == tmp_path / ".locks" / "account-book-1.lock"
+        assert e.om._account_lock_path() == (
+            Path(settings.account_lock_dir) / ".locks" / "account-moomoo-FUTUINC-SIMULATE-2001.lock")
 
     def test_another_process_holding_the_account_blocks_the_cycle(self, busy):
         with pytest.raises(BrokerError, match="另一个进程正在操作这个账户"):

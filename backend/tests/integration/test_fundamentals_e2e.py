@@ -455,11 +455,11 @@ class _CapturingLoop:
     """替身交易循环：只记下喂进来的面板长什么样。"""
     seen: list = []
 
-    def run(self, dataset, forward_from=None, now=None):
+    def run(self, dataset, forward_from=None, now=None, data_source=None, identity=None):
         _CapturingLoop.seen.append(("factors", set(dataset), forward_from))
         return SimpleNamespace(n_alphas=0, n_alerts=0, n_errors=0)
 
-    def run_portfolio(self, dataset, forward_from=None, now=None, data_source=None):
+    def run_portfolio(self, dataset, forward_from=None, now=None, data_source=None, identity=None):
         _CapturingLoop.seen.append(("portfolio", set(dataset), forward_from))
         return {"n_factors": 0}
 

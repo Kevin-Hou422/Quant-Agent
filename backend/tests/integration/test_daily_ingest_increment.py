@@ -526,7 +526,7 @@ class TestDailyPipelineContract:
         monkeypatch.setattr(dtl.DailyTradingLoop, "__init__",
                             lambda self, *a, **k: None)
         monkeypatch.setattr(dtl.DailyTradingLoop, "run",
-                            lambda self, ds, forward_from=None, now=None: _Report())
+                            lambda self, ds, forward_from=None, now=None, data_source=None, identity=None: _Report())
         monkeypatch.setattr(dtl.DailyTradingLoop, "run_portfolio",
                             lambda self, ds, **k: {"n_factors": 1, "days_processed": 1})
 

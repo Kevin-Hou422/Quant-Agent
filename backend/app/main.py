@@ -162,16 +162,18 @@ logger = logging.getLogger("main")
 # 数据加载：真实市场数据（首选）或合成数据（回退/测试）
 # ---------------------------------------------------------------------------
 
-def _research_window_cli(dataset: Dict[str, pd.DataFrame], args: argparse.Namespace) -> Dict[str, pd.DataFrame]:
+def _research_cli(dataset: Dict[str, pd.DataFrame], args: argparse.Namespace, purpose: str):
     """
     CLI 也只许看研究窗口（复审 2026-10-19 N09）。此前 `run_gp` 直接对全窗口两段切，
     GP 的 OOS 里有 474 个冻结 Test 段的日期。合成数据（--use-synthetic）没有冻结边界。
     有冻结边界却切不出选择段 → 直接退出，不退回全量。
+    返回 ResearchContext（N09-c：与 API / chat / 工作流同一个上下文；`ctx.selection` 是唯一可看的面板）。
     """
-    from app.core.data_engine.data_partitioner import FrozenBoundaryError, research_window
+    from app.core.data_engine.data_partitioner import FrozenBoundaryError
+    from app.core.data_engine.research_context import open_research
     key = None if getattr(args, "use_synthetic", False) else getattr(args, "dataset", settings.default_dataset)
     try:
-        return research_window(dataset, key)
+        return open_research(dataset, key, purpose, experiment=getattr(args, "experiment", None))
     except FrozenBoundaryError as exc:
         logger.error("拒绝运行：%s", exc)
         raise SystemExit(2) from exc
@@ -270,12 +272,14 @@ def run_agent(args: argparse.Namespace) -> None:
     from app.agent.alpha_agent import AlphaAgent
     from app.db.alpha_store import AlphaStore
 
-    dataset = _research_window_cli(_load_dataset(args), args)   # 复审 2026-10-19 N09
+    ctx     = _research_cli(_load_dataset(args), args, "cli.agent")   # 复审 2026-10-19 N09
+    dataset = ctx.selection
     store   = AlphaStore()
     agent   = AlphaAgent(store=store)
 
     logger.info("AlphaAgent 启动 | hypothesis='%s'", args.hypothesis)
-    log = agent.run(hypothesis=args.hypothesis, dataset=dataset)
+    with ctx.active():
+        log = agent.run(hypothesis=args.hypothesis, dataset=dataset)
 
     print("\n" + "=" * 60)
     print("ReasoningLog:")
@@ -300,7 +304,8 @@ def run_gp(args: argparse.Namespace) -> None:
     from app.core.gp_engine.population_evolver import PopulationEvolver
     from app.db.alpha_store import AlphaStore, AlphaResult
 
-    dataset = _research_window_cli(_load_dataset(args), args)
+    ctx     = _research_cli(_load_dataset(args), args, "cli.gp")
+    dataset = ctx.selection
     store   = AlphaStore()
 
     # IS / OOS 物理分区（含 Embargo，Task 2.2）—— 只在研究窗口内切（复审 2026-10-19 N09）
@@ -340,10 +345,11 @@ def run_gp(args: argparse.Namespace) -> None:
             f"\n      → {log['best_dsl'][:80]}"
         )
 
-    gp_result = evolver.run(
-        n_optuna_trials   = getattr(args, "optuna_trials", 5),
-        on_generation_end = _on_gen,
-    )
+    with ctx.active():
+        gp_result = evolver.run(
+            n_optuna_trials   = getattr(args, "optuna_trials", 5),
+            on_generation_end = _on_gen,
+        )
 
     print("\n" + "=" * 60)
     print(f"GP 完成 | {gp_result.generations_run} 代 | 最优 DSL:")
@@ -386,7 +392,7 @@ def run_backtest(args: argparse.Namespace) -> None:
     dsl = args.dsl
     logger.info("单条 DSL 回测 | dsl='%s'", dsl)
 
-    dataset = _research_window_cli(_load_dataset(args), args)   # 复审 2026-10-19 N09：含 walk-forward 分支
+    dataset = _research_cli(_load_dataset(args), args, "cli.backtest").selection   # 复审 2026-10-19 N09：含 walk-forward 分支
 
     # 验证
     node = Parser().parse(dsl)
@@ -454,7 +460,7 @@ def run_realistic(args: argparse.Namespace) -> None:
     )
     from app.core.data_engine.data_partitioner import DataPartitioner
 
-    dataset = _research_window_cli(_load_dataset(args), args)   # 复审 2026-10-19 N09
+    dataset = _research_cli(_load_dataset(args), args, "cli.realistic").selection   # 复审 2026-10-19 N09
 
     cfg = SimulationConfig(
         delay            = args.delay,

@@ -27,6 +27,25 @@ from tests.unit.execution.moomoo_fake import FakeTradeContext, make_gateway
 AUM = 100_000.0
 
 
+def _decision_now():
+    """
+    决策时钟 = 最近一个已收盘交易日收盘后 90 分钟（固定，不随运行时刻变）。
+    复审 2026-10-19 §8 排查：此前报价时间取**真实当前时刻** —— 周末 / 假日跑这个用例，报价落在非交易日，
+    被 N06-d 的 session 合同拒为 quote_outside_session，用例就红；工作日跑则绿。
+    """
+    from datetime import timedelta
+    from app.core.data_engine.market_calendar import session_close_utc
+    last = last_closed_session(datetime.now(timezone.utc))
+    return session_close_utc(pd.Timestamp(last)) + timedelta(minutes=90)
+
+
+@pytest.fixture(autouse=True)
+def _pinned_clock(monkeypatch):
+    now = _decision_now()
+    monkeypatch.setattr("app.core.execution.order_manager._utcnow", lambda: now)
+    return now
+
+
 def _dataset(n=160, n_tickers=8, seed=3):
     last = last_closed_session(datetime.now(timezone.utc))
     idx = trading_days(pd.Timestamp(last) - pd.Timedelta(days=400), last)[-n:]
@@ -102,7 +121,7 @@ def test_paper_execution_trades_the_risk_gated_row_of_the_active_strategy(loop_e
     ds = _dataset()
     ctx.mark(ds["close"].iloc[-1].to_dict())          # 独立报价 = 决策日收盘（F09）
     # 这个循环用真实时钟：报价也是"刚刚"的 —— 交易所本地时间（复审 N06：不能用本机时区冒充）
-    ctx.quote_time = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d %H:%M:%S.000")
+    ctx.quote_time = pd.Timestamp(_decision_now()).tz_convert("America/New_York").strftime("%Y-%m-%d %H:%M:%S.000")
     out = loop.run_portfolio(ds, aum=AUM)
 
     assert out["active_config"] == sid and out["combo_weights"] == pytest.approx(

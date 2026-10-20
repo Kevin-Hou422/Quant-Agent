@@ -472,20 +472,43 @@ powershell -ExecutionPolicy Bypass -File scripts\start_forward.ps1 [-RegisterLog
   other factors; its frozen combination weights are used as approved, not refitted daily.
 - **The active config must carry an executable spec** (external review 2026-10-18, F07). Proposals
   store a hashed spec — component expressions, frozen weights, method, AUM, no-trade band, risk
-  limits, signal parameters, broker/short flags, dataset and price source. The daily loop trades
-  exactly that spec and stops rebalancing if any runtime parameter differs; configs approved before
-  2026-10-18 have no spec and must be re-proposed and re-approved (roadmap D13).
+  limits and vol-estimation window, signal parameters, broker/short flags, dataset and price source,
+  the universe (ticker hash), the execution account and order/quote rules, and the submission
+  schedule (spec v2, review §5.2). The daily loop trades exactly that spec and stops rebalancing if
+  any runtime parameter differs; configs approved before 2026-10-18 have no spec and must be
+  re-proposed and re-approved (roadmap D13).
+- **One strategy contract** (review N05-e). `strategy_contract.StrategyContract` is frozen at
+  proposal, the gate evaluates that contract, and the proposal's risk snapshot, the strategy gate's
+  backtest, the daily loop's simulated book and broker targets, and forward evidence are all
+  generated from it through a single `generate_targets` (book → vol targeting → hard limits →
+  drawdown flatten → no-trade band → post-band projection). Only the fill adapter differs
+  (BacktestEngine vs PaperBroker + broker).
 - **Risk-increasing orders need an independent quote** (F09, review N06): opening, adding to or
   flipping a position requires a moomoo snapshot quote with a price, a timestamp that is not in the
-  future and is from the last closed session or later, and agreement with the reference price.
-  Reductions and flattening need no quote. Account operations from the scheduler, `run-now`, the API
-  and recovery are serialised by an OS file lock next to the execution database (F08); the kill
-  switch is re-read before every order in a batch (N01).
+  future, agreement with the reference price, and an eligible session (exchange time): within 30
+  minutes of the last closed session's close, that day's after-hours, or a later session's
+  pre-market / regular hours — earlier intraday, same-day pre-market and non-trading-day timestamps
+  are rejected (review N06-d). Reductions and flattening need no quote. Account operations from the
+  scheduler, `run-now`, the API and recovery are serialised by an OS file lock keyed by the **broker
+  account** in a machine-wide directory (`ACCOUNT_LOCK_DIR`, default `%PROGRAMDATA%\QuantAgent`), and
+  the execution DB refuses to trade a different account than the one it was first bound to (review
+  §5.3); the kill switch is re-read before every order in a batch (N01).
 - **Forward evidence = signal archived before the outcome** (F06). A day's IC counts as forward only
   if the signal it uses was archived before that session's **open** (review N03 — archiving before
   the close let most of the scored return happen first); backfilled, re-run or offline
   results are replay. Strategy promotion reads that strategy's own record (id + spec hash), and the
-  t-stat is the smaller of the plain and the Newey-West one. Operating limits (daily-only breaker,
+  t-stat is the smaller of the plain and the Newey-West one. Evidence rows carry the input identity
+  (data digest, universe, actual price source, PIT vintage, code version), and a spec/runtime
+  mismatch quarantines the day instead of crediting it (review N02).
+- **Formal forward days are recorded, and started by a human** (review §7.3). `forward_record.py`
+  writes one record per strategy per decision day (signal / target times, expected and actual
+  session, target weights and shares, fills, unfilled reasons, cash and positions, costs, net return,
+  benchmark excess, drawdown, gross/net, capital utilisation, reconcile status and anomalies; values
+  that cannot be computed are `None` with a reason). A day is *formal* only after a human start
+  record (unique start time, spec hash, code version, data identity, environment) and only if it ran
+  between the decision-day close and the next open with execution live; late reruns cannot overwrite
+  a formal day. No formal forward has been started. The benchmark defaults to the equal-weight
+  universe (roadmap D16). Operating limits (daily-only breaker,
   log-only alerts, the T−1 signal clock) are spelled out in `backend/OPERATIONS.md` §7.
 - **The daily job runs twice** (21:30 UTC and a 22:45 UTC retry for late data). Every run reconciles
   and continues a pending flatten even when there is no new bar or the ingest is rejected; reruns are
@@ -525,7 +548,10 @@ Base URL `http://localhost:8000/api` (interactive docs at `/docs`).
 
 > Every one of these applies the three-way split and returns a `partition` block describing it.
 > Touching the frozen Test segment requires an explicit `report_test=true` and is **metered**
-> (see [§12](#12-statistical-integrity)).
+> (see [§12](#12-statistical-integrity)). The split comes from one place — `research_context.open_research`
+> (review N09-c) — which the CLI, chat, workflows, discovery, the API, the validation gate and the
+> proposal all use; its context (dataset / universe / experiment / frozen boundary) is written into
+> every GP / Optuna run record, and a search handed frozen-segment dates refuses to start.
 
 **Factor lifecycle** — `GET /alphas/dashboard` · `/alphas/pending` · `/alphas/{id}/ic_history` ·
 `/alphas/{id}/walk_forward` · `/alphas/{id}/decisions` · `PATCH /alphas/{id}/status` ·
@@ -671,7 +697,7 @@ the file itself is the authority and documents *why* each default is what it is.
 | `ENABLE_SCHEDULER` / `ENABLE_PAPER_TRADING` / `ENABLE_DISCOVERY` | `false` | nothing starts trading or mining by itself |
 | `AUTONOMY_MODE` | `manual` | `manual` = human approves every promotion |
 | `PAPER_AUM` | `1_000_000` | the single source of AUM for PM capacity and broker costs |
-| `S_THREE_WAY_ENABLED` | `true` | force the three-way split on every research path |
+| `S_THREE_WAY_ENABLED` | `true` | force the three-way split on every research path; `false` cannot unfreeze a dataset whose Test boundary is already pinned (review N09-c) |
 | `S_TEST_FREEZE_YEARS` / `S_HOLDOUT_BUDGET` | `2.0` / `1` | frozen holdout window and one-shot budget |
 | `S_FITNESS_MODE` / `S_CV_FOLDS` / `S_EMBARGO_DAYS` | `purged_cv` / `5` / `20` | GP fitness discipline |
 | `S_USE_CPCV` | `true` | PBO estimator (CSCV understates overfitting) |
@@ -693,7 +719,7 @@ the file itself is the authority and documents *why* each default is what it is.
 ## 15. Testing & Engineering Discipline
 
 ```bash
-cd backend  && pytest -q          # 5171 tests (2 skipped, ~48 min; last full run 2026-10-19). One skip is the live-SEC
+cd backend  && pytest -q          # 5256 tests (2 skipped, ~54 min; last full run 2026-10-20). One skip is the live-SEC
                                   # contract test (needs EDGAR_USER_AGENT); the live-OpenD test also skips when OpenD is down
 cd frontend && npm run test       # 121 passed (11 files)
 cd frontend && npx tsc -b         # type check (what CI runs; `--noEmit` on the root tsconfig checks nothing)
@@ -736,6 +762,7 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
 | Risk attribution + structured covariance | ✅ Phase R.2 (part) |
 | moomoo paper execution: reconciliation/crash recovery, pre-trade gate, two-step kill switch, sim-vs-paper fidelity, live T3 providers, execution panel | ✅ Phase 12 + FE-12 (code; **not yet run against a live OpenD gateway**) |
 | External review 2026-10-18 (F01–F14): health-gate hard checks, re-fetch on re-adjustment, frozen Test boundaries + overlap-metered holdout, selection-only research paths, trial counting at the search layer, executable strategy spec, archived-signal forward evidence per strategy version, atomic order claims + account lock, independent quotes, weight drift, content-hashed cost cache, factor-return min-variance, SUE/8-K alignment, single-transaction approvals | ✅ (see the roadmap's fix log; the strategy approved before 2026-10-18 must be re-proposed — D13) |
+| Re-review 2026-10-19 (N01–N09, §5, §7.3): mid-batch kill switch, input identity on evidence, open-time archive deadline, health gate on the consumed panel, freeze-then-evaluate proposals, quote sessions, trial-run lifecycle, pre-trade-value costs + post-trade renormalisation (checked against a share + cash ledger), one research context, one strategy contract, spec v2, broker-account lock, formal-forward daily records | ✅ code (per-item status in `backend/docs/REVIEW_2026-10-19_TRACKER.md`; mutation review owed — D5) |
 
 **Not built yet** — the honest list:
 
@@ -748,9 +775,11 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
   open-decisions register: whether to spend the one-shot holdout budget on a fundamental factor,
   where multi-class share counts should come from, and whether earnings surprises should become
   visible at the press release rather than the 10-Q.
-- **Open after the 2026-10-18 review** (roadmap D12–D15): the frozen Test start for the live
-  database, re-approval of the active strategy, one clock for signal / fill / IC (the daily loop
-  currently trades a T−1 signal), and an alert channel (alerts are log-only). Not built: an intraday
+- **Open after the 2026-10-18 review and the 2026-10-19 re-review** (roadmap D12–D16): the frozen
+  Test start for the live database, re-approval of the active strategy, one clock for signal / fill /
+  IC (the daily loop currently trades a T−1 signal), an alert channel (alerts are log-only), and the
+  forward-record benchmark. Per-item status of the re-review is in
+  `backend/docs/REVIEW_2026-10-19_TRACKER.md`. Not built: an intraday
   breaker watchdog, a backup-restore drill, and storing unadjusted prices + corporate actions in PIT.
 - **Phase 13/14 — red-team agent, fully autonomous mode, validation-period operations.**
 - **R.2 remainder** — residual-based style neutralisation (changes signals, so it needs its own

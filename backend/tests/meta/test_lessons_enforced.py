@@ -567,7 +567,8 @@ class TestLessonK_WrittenMeansWired:
                 continue
             if fn.name in self.THREE_WAY_EXEMPT:
                 continue
-            if "_three_way" not in called:
+            # 复审 2026-10-19 N09-c：`_research` 是 `_three_way` 的底层（同一个 open_research，还多给出研究上下文供 ctx.active()）
+            if "_three_way" not in called and "_research" not in called:
                 offenders.append(f"{fn.name}（router.py:{fn.lineno}）")
         assert not offenders, (
             "以下端点加载了数据集却**没有**做三段切割 —— 它们汇报的『样本外』"
@@ -1155,8 +1156,9 @@ class TestLessonV_NoMutationResidueInRepo:
             ("app/core/portfolio_manager/executable_spec.py",
              "long_only=(not getattr(settings",
              "long_only 必须是 allow_short 的取反"),
-            ("app/tasks/daily_trading_loop.py",
-             "weights = weights * 0.0",
+            # 复审 2026-10-19 N05-e：熔断清仓随目标生成一起收进 strategy_contract.generate_targets
+            ("app/core/portfolio_manager/strategy_contract.py",
+             "gated = gated * 0.0",
              "熔断清仓是乘 0，写成除 0 会产生 inf/NaN 权重"),
             ("app/tasks/daily_trading_loop.py",
              "prices_prev=prices_f.iloc[t - 1] if t > 0 else",

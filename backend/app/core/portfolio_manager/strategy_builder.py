@@ -39,10 +39,9 @@ def build_strategy_config(
     factor_dsl : 各成分的表达式。进可执行规格（F07）：每日循环据此核对"交易的成分还是批准时那几条"。
                  不给 → 规格里成分表达式为空，每日循环会因对不上而拒绝按它交易。
     """
-    from app.core.portfolio_manager import (
-        PortfolioManager, StrategyGate, marginal_factor_selection,
-        PortfolioRiskGate, RiskLimits, apply_no_trade_band, annualized_turnover,
-    )
+    from app.core.portfolio_manager import StrategyGate, annualized_turnover, marginal_factor_selection
+    from app.core.portfolio_manager import strategy_contract as _sc
+    from app.core.portfolio_manager.executable_spec import risk_limits_from_settings
 
     prices = dataset["close"]
     volume = dataset.get("volume")
@@ -71,10 +70,10 @@ def build_strategy_config(
             logger.warning("[strategy_builder] PM.S2 边际筛选失败（沿用全部因子）: %s", exc)
             degraded.append(f"marginal_selection_failed: {exc}")
 
-    # PM.1 合成账本
-    book = PortfolioManager(aum=aum, method=method, cost_params=cost_params).build_book(
-        signals, prices, volume)
-    weights = book.weights
+    # PM.1 合成账本（只为拟合合成权重；目标权重之后按冻结的合同生成）
+    fit = _sc.generate_targets(signals, dataset, aum=aum, method=method, limits=None, band=0.0,
+                               cost_params=cost_params, risk=False)
+    limits = risk_limits or risk_limits_from_settings()
 
     # 复审 2026-10-19 N05：先把要交易的那份冻结下来（合成权重 + 无交易带），门评估的就是它。
     # 此前门先按 method 滚动拟合评估，之后才确定并保存冻结权重与带 —— 门的结论说的不是存下的那份策略。
@@ -89,7 +88,10 @@ def build_strategy_config(
         logger.warning("[strategy_builder] PM.6 无交易带推导失败（退回 0，换手会被高估）: %s", exc)
         band = 0.0
         degraded.append(f"band_derivation_failed: {exc}")
-    combo = {k: float(v) for k, v in (book.combo_weights or {}).items()}
+    combo = dict(fit.combo_weights)
+    # 复审 2026-10-19 N05-e：三步合同的第 1 步 —— 冻结。之后的门、风控快照、存下的规格都是这一份
+    contract = _sc.StrategyContract.freeze({k: (factor_dsl or {}).get(k) for k in signals}, combo, method,
+                                           aum, band, limits)
 
     # PM.S1 策略门：① 冻结规格本身（与每日门同一口径）；② 产出这份规格的**流程**的滚动前推 OOS。
     # 冻结权重是在整个选择段上拟合的，①在同一段上的收益不是样本外 —— 所以两个都要过，并且如实标注口径。
@@ -97,10 +99,10 @@ def build_strategy_config(
     passed = False
     try:
         gate = StrategyGate(aum=aum, method=method)
-        sv = gate.evaluate(signals, dataset, cost_params=cost_params,
-                           fixed_combo_weights=combo or None, no_trade_band=band)
+        sv = contract.evaluate(gate, signals, dataset, cost_params=cost_params)       # 第 2 步：验证
         verdict = sv.to_dict(); passed = sv.passed
         verdict["evidence_scope"] = "frozen_spec_on_selection_in_sample"
+        verdict["evaluated_spec_hash"] = contract.hash
         try:
             wf = gate.evaluate(signals, dataset, cost_params=cost_params, no_trade_band=band)
             verdict["procedure_oos"] = {"passed": wf.passed, "sharpe": wf.sharpe,
@@ -137,36 +139,38 @@ def build_strategy_config(
         verdict["paper_grade"] = "unknown"
         degraded.append(f"paper_grading_failed: {exc}")
 
-    # PM.5 风控（快照，不改配置权重——配置记录的是合成后的目标）
-    # F07：上限与每日循环同一来源（此前缺省用 RiskLimits() 的 dataclass 默认，与实际交易的上限不同）
-    from app.core.portfolio_manager.executable_spec import build_spec, risk_limits_from_settings, spec_hash
+    # PM.5 风控快照 + PM.6 换手：第 3 步 —— 按冻结的合同生成目标（与每日循环同一函数、同一参数）。
+    # 此前快照不做目标波动缩放、换手按未经风控的权重算，说的不是会去交易的那份。
     risk_report = {}
-    limits = risk_limits or risk_limits_from_settings()
+    turnover = 0.0
     try:
-        sectors = dataset["sector"].iloc[-1] if "sector" in dataset else None
-        _, rep = PortfolioRiskGate(limits).apply(weights, sectors=sectors)
-        risk_report = rep.to_dict()
+        tg = contract.targets(signals, dataset, cost_params=cost_params)
+        risk_report = tg.risk_report.to_dict() if tg.risk_report is not None else {}
+        if tg.post_band_violations:
+            risk_report["post_band_violations"] = list(tg.post_band_violations)
+        turnover = annualized_turnover(tg.weights)
     except Exception as exc:
         logger.error("[strategy_builder] PM.5 风控快照失败（该配置无风险证据）: %s", exc)
         risk_report = {"risk_error": str(exc), "evaluated": False}
         degraded.append(f"risk_snapshot_failed: {exc}")
 
-    # PM.6 换手 / 无交易带（带已在上面冻结：与每日循环同一规则，配置优先，否则由数据推导）
-    turnover = annualized_turnover(apply_no_trade_band(weights, band))
-
     if degraded:
         verdict["degraded"] = degraded
         logger.warning("[strategy_builder] 该配置在 %d 处降级产出：%s", len(degraded), degraded)
-    # F07：影响交易的全部参数收进一份规格 + 哈希；每日循环照它执行、并核对运行时没变
-    spec = build_spec({k: (factor_dsl or {}).get(k) for k in signals}, combo, method, aum, band, limits)
-    verdict["executable_spec"] = spec
-    verdict["spec_hash"] = spec_hash(spec)
+    # F07：影响交易的全部参数收进一份规格 + 哈希；每日循环照它执行、并核对运行时没变。
+    # 存下的就是上面冻结、被门评估的那份（N05-e）
+    verdict["executable_spec"] = contract.spec
+    verdict["spec_hash"] = contract.hash
+    # 提案时的代码版本：不进哈希（否则每次部署都要重新审批），但要能事后知道这份规格是哪版代码给出的
+    from app.core.data_engine.input_identity import code_version
+    verdict["approved_code_version"] = code_version()
+    # 配置里的合成权重与带取自**冻结的合同**（规格里的取整值）：门评估的、每日循环交易的都是这一份
     return StrategyConfig(
         factors=list(signals.keys()),
-        combo_weights=combo,
+        combo_weights=dict(contract.combo_weights or {}),
         aum=float(aum), method=method, passed=bool(passed),
         verdict=verdict, risk_report=risk_report,
-        turnover_ann=float(turnover), no_trade_band=float(band),
+        turnover_ann=float(turnover), no_trade_band=float(contract.band),
         name=name, status="proposed",
     )
 

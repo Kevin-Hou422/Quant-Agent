@@ -160,6 +160,11 @@ class Quote:
     asof:  Optional[datetime]
 
 
+#: 订单有效期与是否允许常规盘外成交。进可执行规格（复审 2026-10-19 §5.2）
+ORDER_TIME_IN_FORCE = "DAY"
+ORDER_OUTSIDE_RTH = False
+
+
 class BrokerGateway(ABC):
     """执行层看到的券商。所有方法失败时抛 BrokerError。"""
 
@@ -439,7 +444,7 @@ class MoomooGateway(BrokerGateway):
             price=float(req.limit_price), qty=int(req.qty), code=_to_moomoo_code(req.ticker),
             trd_side=m.TrdSide.BUY if req.side == "BUY" else m.TrdSide.SELL,
             order_type=m.OrderType.NORMAL, remark=req.client_id,
-            time_in_force=m.TimeInForce.DAY, fill_outside_rth=False,
+            time_in_force=getattr(m.TimeInForce, ORDER_TIME_IN_FORCE), fill_outside_rth=ORDER_OUTSIDE_RTH,
             **self._env_kwargs()), what=f"place_order {req.client_id}")
         if len(df) == 0 or "order_id" not in df.columns:
             raise BrokerError(f"place_order {req.client_id} 未返回订单号")

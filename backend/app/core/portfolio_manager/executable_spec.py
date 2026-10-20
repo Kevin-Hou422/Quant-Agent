@@ -31,7 +31,8 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-SPEC_VERSION = 1
+#: 2：加入 universe / execution / submission（复审 2026-10-19 §5.2）
+SPEC_VERSION = 2
 
 #: 每日循环 / 提案 / 策略门共用的信号处理参数（此前三处各写一份字面量）
 SIGNAL_CONFIG = {"delay": 1, "decay_window": 0, "truncation_min_q": 0.05, "truncation_max_q": 0.95}
@@ -77,11 +78,56 @@ def build_spec(factor_dsl: Dict[str, Optional[str]], combo_weights: Dict[str, fl
         "no_trade_band": _r(no_trade_band),
         "risk_limits": {k: (None if v is None else (_r(v) if isinstance(v, float) else v))
                         for k, v in asdict(limits).items()},
+        # 目标波动缩放用的波动估计窗口（复审 2026-10-19 N05-e：它改变目标权重，此前不在规格里）
+        "risk_vol_lookback": int(getattr(settings, "risk_vol_lookback", 60)),
         "signal": dict(SIGNAL_CONFIG),
         "trading": {"broker": str(getattr(settings, "trading_broker", "moomoo_us")),
                     "allow_short": bool(getattr(settings, "trading_allow_short", False))},
         "data": {"dataset": str(getattr(settings, "paper_dataset", "")),
                  "price_source": str(getattr(settings, "price_source", ""))},
+        "universe": _universe_section(str(getattr(settings, "paper_dataset", ""))),
+        "execution": _execution_section(settings),
+        "submission": _submission_section(settings),
+    }
+
+
+def _universe_section(dataset: str) -> dict:
+    """有效股票池：数据集登记的标的列表（排序后的哈希）。登记里换了票就是另一个策略。"""
+    try:
+        from app.core.data_engine.dataset_registry import registry_spec
+        tickers = sorted(str(t) for t in registry_spec(dataset).universe)
+    except Exception as exc:
+        logger.warning("[spec] 数据集 %s 的股票池读不到，规格里记为空: %s", dataset, exc)
+        tickers = []
+    return {"tickers_digest": hashlib.sha256("\x1f".join(tickers).encode("utf-8")).hexdigest()[:16],
+            "n": len(tickers)}
+
+
+def _execution_section(settings) -> dict:
+    """执行账户与下单 / 报价规则（下单门与订单管理实际读取的那几项）。"""
+    from app.core.execution.pretrade_gate import REGULAR_CLOSE_TOL
+    return {
+        "account_firm": str(getattr(settings, "moomoo_security_firm", "")),
+        "account_id": int(getattr(settings, "moomoo_trd_acc_id", 0) or 0),
+        "limit_band_bps": _r(getattr(settings, "exec_limit_band_bps", 0.0)),
+        "flatten_band_bps": _r(getattr(settings, "exec_flatten_band_bps", 0.0)),
+        "max_daily_loss": _r(getattr(settings, "exec_max_daily_loss", 0.0)),
+        "max_price_deviation": _r(getattr(settings, "exec_max_price_deviation", 0.0)),
+        "max_quote_age_days": int(getattr(settings, "exec_max_quote_age_days", 0)),
+        "quote_close_tol_min": int(REGULAR_CLOSE_TOL.total_seconds() // 60),
+    }
+
+
+def _submission_section(settings) -> dict:
+    """提交时段：调度时刻、时区、订单有效期、是否允许常规盘外成交。"""
+    from app.core.execution.broker_gateway import ORDER_OUTSIDE_RTH, ORDER_TIME_IN_FORCE
+    from app.tasks.scheduler import DAILY_TRADING_AT, DAILY_TRADING_RETRY_AT
+    return {
+        "daily_trading": "%02d:%02d" % DAILY_TRADING_AT,
+        "retry": "%02d:%02d" % DAILY_TRADING_RETRY_AT,
+        "scheduler_timezone": str(getattr(settings, "scheduler_timezone", "")),
+        "time_in_force": ORDER_TIME_IN_FORCE,
+        "outside_rth": bool(ORDER_OUTSIDE_RTH),
     }
 
 

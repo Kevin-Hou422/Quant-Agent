@@ -229,19 +229,41 @@ class OrderManager:
         with _LOCK:  # 进程内线程互斥（RLock，可重入）
             try:
                 with process_lock(self._account_lock_path(), timeout_s=self.ACCOUNT_LOCK_TIMEOUT_S):
+                    self._check_account_binding()
                     yield
             except ProcessLockTimeout as exc:
                 raise BrokerError(f"另一个进程正在操作这个账户（{exc}）—— 本轮不动它") from exc
 
+    def _account_key(self) -> str:
+        """
+        券商账户身份 = 券商 / 证券公司 / 环境 / 解析出的账户 id（复审 2026-10-19 §5.3）。
+        拿不到账户 id → 不交易：锁和对账都要知道是哪个账户。
+        """
+        d = self.gw.describe() or {}
+        acc = d.get("acc_id")
+        if not acc:
+            raise BrokerError(f"券商账户身份不明（{d}）—— 不知道是哪个账户，不加锁、不交易")
+        return f"{d.get('broker', '?')}-{d.get('security_firm', '')}-{d.get('trd_env', '')}-{acc}"
+
     def _account_lock_path(self):
-        import tempfile
-        from pathlib import Path
+        """锁按**券商账户**建在整台机器共用的目录里 —— 不同执行库目录的两套部署操作同一账户也互斥。"""
         from app.db.process_lock import lock_path_for
-        url = self.store._engine.url                                   # noqa: SLF001
-        base = (Path(url.database).resolve().parent
-                if url.get_backend_name() == "sqlite" and url.database not in (None, "", ":memory:")
-                else Path(tempfile.gettempdir()) / "quant_agent")
-        return lock_path_for("account", f"book{self.book_id}", base)
+        return lock_path_for("account", self._account_key(), _account_lock_dir())
+
+    def _check_account_binding(self) -> None:
+        """
+        执行库第一次用时绑定账户；之后解析出另一个账户（如 moomoo_trd_acc_id=0 自动取到了别的模拟账户）
+        → 拒绝：这份执行库里的基准、在途单、持仓都属于原来那个账户。
+        """
+        key = self._account_key()
+        bound = self.store.get_state("bound_account")
+        if bound is None:
+            self.store.set_state("bound_account", key)
+            self.store.add_event("account_bound", "system", key)
+            return
+        if bound != key:
+            raise BrokerError(f"账户身份变了：执行库绑定的是 {bound}，这次连到的是 {key} —— 不交易。"
+                              f"确认无误要换账户，请用新的执行库")
 
     @classmethod
     def from_settings(cls, gateway: BrokerGateway, store: Optional[ExecutionStore] = None,
@@ -851,6 +873,19 @@ class OrderManager:
         if not positions:
             return {"status": "flat"}
         return self._place_flatten(positions)
+
+
+def _account_lock_dir():
+    import os
+    import tempfile
+    from pathlib import Path
+    from app.config import settings
+    configured = str(getattr(settings, "account_lock_dir", "") or "")
+    if configured:
+        return Path(configured)
+    if os.name == "nt" and os.environ.get("PROGRAMDATA"):
+        return Path(os.environ["PROGRAMDATA"]) / "QuantAgent"
+    return Path(tempfile.gettempdir()) / "quant_agent"
 
 
 def _missing_order(row):

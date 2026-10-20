@@ -133,15 +133,24 @@ def _research_split(
     test_ratio:  float = 0.15,
     dataset_key: Optional[str] = None,
 ):
-    """`_partition_three_way` 的完整版：返回 ThreeWaySplit（带冻结边界，见 F04）。"""
-    from ..data_engine.data_partitioner import split_from_settings
+    """`_partition_three_way` 的完整版：返回 ThreeWaySplit（带冻结边界，见 F04）。切不出 → ValueError。"""
+    ctx = _research_ctx(dataset, oos_ratio, test_ratio, dataset_key, "workflow.partition")
+    if ctx.split is None:
+        raise ValueError(ctx.note or "数据不足以三段切割")
+    return ctx.split
+
+
+def _research_ctx(dataset, oos_ratio: float, test_ratio: float, dataset_key: Optional[str], purpose: str):
+    """
+    工作流的研究上下文（复审 2026-10-19 N09-c：与 CLI / API / chat / 验证门同一个 open_research）。
+    工作流在选择段里的 IS / Validate 比例与其它入口不同，冻结边界相同。
+    """
+    from ..data_engine.research_context import open_research
 
     val_share = max(1e-6, float(oos_ratio) - float(test_ratio))
     val_ratio = min(0.9, val_share / max(1e-6, 1.0 - float(test_ratio)))
-    return split_from_settings(
-        dataset, dataset_key=dataset_key,
-        test_ratio=test_ratio, val_ratio=val_ratio, min_train_days=20,
-    )
+    return open_research(dataset, dataset_key, purpose,
+                         test_ratio=test_ratio, val_ratio=val_ratio, min_train_days=20)
 
 
 def _partition_three_way(
@@ -789,18 +798,18 @@ class GenerationWorkflow:
 
         # Step 1: 三段切割 IS / Validate / Test（Phase S.1+S.2）
         # GP 只在 Validate 上做适应度选择；Test 为 held-out，GP 全程不可见，仅最终汇报。
-        split = None
-        try:
-            split = _research_split(dataset, self._oos_ratio, self._test_ratio, dataset_key)
+        ctx = _research_ctx(dataset, self._oos_ratio, self._test_ratio, dataset_key, "workflow.generation")
+        split = ctx.split
+        if split is not None:
             is_data, oos_data, test_data = split.train, split.validate, split.test
-        except ValueError as exc:
+        else:
             # 数据太短无法三段 → 退回两段（无 held-out test）。
             # metrics 里的 held_out_test 会置 False，但**退化本身此前无任何告警** ——
             # 使用者不看那个字段就以为拿到了真样本外数字。
             logger.warning("[Workflow A] 数据不足以三段切割，退回两段：**本次无 held-out Test**，"
-                           "汇报的 OOS 是 GP 选择时用过的那一段: %s", exc)
+                           "汇报的 OOS 是 GP 选择时用过的那一段: %s", ctx.note)
             _emit("[Workflow A] ⚠ 数据不足以三段切割 → 无 held-out Test，OOS 非真正样本外")
-            is_data, oos_data = _partition(dataset, self._oos_ratio)
+            is_data, oos_data = _partition(ctx.selection, self._oos_ratio)
             test_data = {}
 
         # Step 2: Generate ≥10 diverse seed DSLs
@@ -838,11 +847,12 @@ class GenerationWorkflow:
             n_generations  = self._n_gen,
             seed           = self._seed,
         )
-        gp_result: GPEvolutionResult = evolver.run(
-            seed_dsls         = seed_dsls,
-            n_optuna_trials   = self._n_optuna,
-            on_generation_end = _on_gen_end,
-        )
+        with ctx.active():                       # 运行记录带研究上下文；越界数据不开始（N09-c）
+            gp_result: GPEvolutionResult = evolver.run(
+                seed_dsls         = seed_dsls,
+                n_optuna_trials   = self._n_optuna,
+                on_generation_end = _on_gen_end,
+            )
 
         m = gp_result.metrics
         # B-6 边界：GP 内部用 min_obs=0 拿到可比较的数值（否则短段上全 NaN，
@@ -1003,13 +1013,13 @@ class OptimizationWorkflow:
         canonical = repr(node)
 
         # Step 2: IS/OOS partition（只在选择段内）+ quick initial evaluation
-        try:
-            split = _research_split(dataset, self._oos_ratio, 0.15, dataset_key)
-            is_data, oos_data = split.train, split.validate
-        except ValueError as exc:
-            logger.warning("[Workflow B] 数据不足以三段切割，退回两段（本次没有冻结 Test 段）: %s", exc)
+        ctx = _research_ctx(dataset, self._oos_ratio, 0.15, dataset_key, "workflow.optimization")
+        if ctx.split is not None:
+            is_data, oos_data = ctx.split.train, ctx.split.validate
+        else:
+            logger.warning("[Workflow B] 数据不足以三段切割，退回两段（本次没有冻结 Test 段）: %s", ctx.note)
             _emit("[Workflow B] ⚠ 数据不足以三段切割 → 无冻结 Test，OOS 是 GP 选择用的那一段")
-            is_data, oos_data = _partition(dataset, self._oos_ratio)
+            is_data, oos_data = _partition(ctx.selection, self._oos_ratio)
         init_metrics = _quick_metrics(canonical, is_data, oos_data)
         logger.info(
             "[Workflow B] Initial metrics: is_sharpe=%.4f oos_sharpe=%.4f "
@@ -1067,11 +1077,12 @@ class OptimizationWorkflow:
             n_generations  = self._n_gen,
             seed           = self._seed,
         )
-        gp_result: GPEvolutionResult = evolver.run(
-            seed_dsls         = seed_dsls,
-            n_optuna_trials   = self._n_optuna,
-            on_generation_end = _on_gen_end,
-        )
+        with ctx.active():                       # 运行记录带研究上下文；越界数据不开始（N09-c）
+            gp_result: GPEvolutionResult = evolver.run(
+                seed_dsls         = seed_dsls,
+                n_optuna_trials   = self._n_optuna,
+                on_generation_end = _on_gen_end,
+            )
 
         m = gp_result.metrics
         oos_s = m.get("oos_sharpe")

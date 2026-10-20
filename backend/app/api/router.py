@@ -115,9 +115,10 @@ def _resolve_dataset(
         else:
             # 复审 2026-10-19 N09：IS / OOS（给响应里的 PnL 曲线用）只在**研究窗口**里切。此前对全量切 70/30，
             # 后 30% 正好压在冻结 Test 段上 —— 人看着这段曲线挑因子，Test 就成了选择集。
-            from app.core.data_engine.data_partitioner import FrozenBoundaryError, research_window
+            from app.core.data_engine.data_partitioner import FrozenBoundaryError
+            from app.core.data_engine.research_context import open_research
             try:
-                window = research_window(full, dataset_name)
+                window = open_research(full, dataset_name, "api.resolve").selection     # N09-c
             except FrozenBoundaryError as exc:
                 raise HTTPException(status_code=422, detail=str(exc))
             is_, oos = _partition_dataset(window, oos_ratio)
@@ -145,30 +146,29 @@ def _three_way(dataset, dataset_name: str, purpose: str):
 
     切不动时**不静默**：`meta["three_way"]=False` + `reason`，响应体里看得见。
     """
-    meta = {"three_way": True}
-    try:
-        from app.config import settings
-        if not settings.s_three_way_enabled:
-            logger.warning("[S.2] s_three_way_enabled=False → %s 看到全部数据"
-                           "（含本该冻结的段），结果按样本内解读。", purpose)
-            return dataset, None, {"three_way": False, "reason": "disabled_by_config"}
-    except Exception as exc:
-        logger.error("[S.2] 读不到 s_three_way_enabled，按更严的一侧切三段: %s", exc)
+    ctx, meta = _research(dataset, dataset_name, purpose)
+    return ctx.selection, ctx.split, meta
 
-    from app.core.data_engine.data_partitioner import FrozenBoundaryError, split_from_settings
+
+def _research(dataset, dataset_name: str, purpose: str):
+    """
+    研究上下文（复审 2026-10-19 N09-c）+ 响应体里的口径说明。与 CLI / chat / 工作流 / 验证门同一个
+    `open_research`：s_three_way_enabled=False 关不掉已冻结的边界；只有"数据太短、又没有边界"才看全量；
+    其它异常不再退回全量（此前任何异常都退回全量面板）。
+    """
+    from app.core.data_engine.data_partitioner import FrozenBoundaryError
+    from app.core.data_engine.research_context import open_research
     try:
-        split = split_from_settings(dataset, dataset_key=dataset_name)
+        ctx = open_research(dataset, dataset_name, purpose)
     except FrozenBoundaryError as exc:
         # 有冻结边界却切不出选择段：退回全量就是把 Test 段交给调用方（F04），只能拒绝
         raise HTTPException(status_code=422, detail=str(exc))
-    except Exception as exc:
-        logger.warning("[S.2] %s 三段切割失败（%s）→ 退回全量面板，本次无冻结 Test 段。",
-                       purpose, exc)
-        return dataset, None, {"three_way": False, "reason": str(exc)}
-
-    meta.update(split.to_dict())
-    meta["dataset_key"] = dataset_name or "synthetic"
-    return split.selection, split, meta
+    if ctx.split is None:
+        reason = "disabled_by_config" if ctx.note.startswith("three_way_disabled") else ctx.note
+        return ctx, {"three_way": False, "reason": reason, "research_context": ctx.describe()}
+    meta = {"three_way": True, **ctx.split.to_dict(), "dataset_key": dataset_name or "synthetic",
+            "research_context": ctx.describe()}
+    return ctx, meta
 
 
 def _held_out_report(split, dataset_name: str, purpose: str, fn) -> Dict[str, Any]:
@@ -458,11 +458,13 @@ def agent_run(
     )
     # Phase S.2：agent 会按 IC-IR 在候选之间挑 —— 那是一次选择，
     # 所以它看的数据必须与其他选择路径同口径：冻结段不可见。
-    dataset, _, partition = _three_way(full, req.dataset_name, "agent/run")
+    ctx, partition = _research(full, req.dataset_name, "agent/run")
+    dataset = ctx.selection
     agent = AlphaAgent(store=store)
 
     try:
-        log = agent.run(hypothesis=req.hypothesis, dataset=dataset)
+        with ctx.active():
+            log = agent.run(hypothesis=req.hypothesis, dataset=dataset)
     except Exception as exc:
         logger.exception("AlphaAgent.run failed")
         raise HTTPException(status_code=500, detail=str(exc))
@@ -508,8 +510,8 @@ def gp_evolve(
         )
         # Phase S.1/S.2：GP 在 selection 段里搜索与择优，冻结 Test 段全程不可见。
         # 此前这里是两段切割 —— GP 直接按最后一段择优，那段就成了第二个样本内。
-        selection, _, gp_partition = _three_way(full, req.dataset_name, "gp/evolve")
-        is_data, oos_data = _partition_dataset(selection, 0.30)
+        ctx, gp_partition = _research(full, req.dataset_name, "gp/evolve")
+        is_data, oos_data = _partition_dataset(ctx.selection, 0.30)
 
         evolver = PopulationEvolver(
             is_data       = is_data,
@@ -523,7 +525,8 @@ def gp_evolve(
 
         def _run() -> None:
             try:
-                result_holder.append(evolver.run(n_optuna_trials=5))
+                with ctx.active():                      # 线程不继承 contextvar
+                    result_holder.append(evolver.run(n_optuna_trials=5))
             except Exception as exc:
                 error_holder.append(exc)
 
@@ -1489,19 +1492,20 @@ def strategy_propose(store: AlphaStore = Depends(get_store),
     from app.core.data_engine.dataset_registry import load_registry_dataset
     from app.db.strategy_store import StrategyStore
     from app.config import settings
-    from app.core.data_engine.data_partitioner import FrozenBoundaryError, split_from_settings
+    from app.core.data_engine.data_partitioner import FrozenBoundaryError
+    from app.core.data_engine.research_context import open_research
     ds = load_registry_dataset(settings.paper_dataset,
                                start=settings.paper_start, end=settings.paper_end).data
     # 外部审查 2026-10-18 F03：边际筛选、权重拟合与策略门此前拿的是**完整**面板（含冻结 Test 段）。
     # 提案属于选择流程，只许看选择段。有冻结边界却切不出来 → 拒绝（退回全量就是把 Test 段交出去）；
     # 数据太短、根本没有 Test 段 → 与其它入口同一口径：全量研究并留痕。
+    # 复审 2026-10-19 N09-c：与其它入口同一个研究上下文（同一套切法与兜底）
     try:
-        ds = split_from_settings(ds, dataset_key=settings.paper_dataset).selection
+        ctx = open_research(ds, settings.paper_dataset, "proposal")
     except FrozenBoundaryError as exc:
         raise HTTPException(status_code=422, detail=f"切不出研究窗口，拒绝用全量数据提案：{exc}")
-    except ValueError as exc:
-        logger.warning("[strategy_propose] 数据不足以三段切割，按全量提案（本次没有冻结 Test 段）: %s", exc)
-    cfg = propose_from_paper_factors(store, ds, aum=float(settings.paper_aum))
+    with ctx.active():
+        cfg = propose_from_paper_factors(store, ctx.selection, aum=float(settings.paper_aum))
     if cfg is None:
         raise HTTPException(status_code=400, detail="无 PAPER/ACTIVE 因子，无法构建策略配置")
     sid = sstore.save(cfg)
@@ -2475,8 +2479,8 @@ def alpha_optimize(req: OptimizeRequest) -> EvalResponse:
     )
     # Phase S.1/S.2：Optuna 照着 Validate 段调参，所以那段**不是**样本外。
     # 冻结 Test 段在本端点全程不可见（连最终评估也不用它）。
-    selection, _, partition = _three_way(full, req.dataset_name, "alpha/optimize")
-    is_data, oos_data = _partition_dataset(selection, req.oos_ratio)
+    ctx, partition = _research(full, req.dataset_name, "alpha/optimize")
+    is_data, oos_data = _partition_dataset(ctx.selection, req.oos_ratio)
 
     # Step 2: 构造搜索空间
     ss = req.search_space
@@ -2498,7 +2502,8 @@ def alpha_optimize(req: OptimizeRequest) -> EvalResponse:
             n_trials     = req.n_trials,
             seed         = req.seed,
         )
-        best_config, study_summary = optimizer.optimize()
+        with ctx.active():
+            best_config, study_summary = optimizer.optimize()
     except Exception as exc:
         logger.exception("AlphaOptimizer.optimize failed")
         raise HTTPException(status_code=500, detail=f"优化失败: {exc}")

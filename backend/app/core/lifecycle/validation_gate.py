@@ -235,21 +235,16 @@ class ValidationGate:
         切不动（数据太短）时退回全量面板，并**记 warning** —— 这时候门的判定
         里含有本该冻结的数据，结论强度更弱，这件事必须留痕而不是静默发生。
         """
-        if not self.three_way:
-            logger.warning("[validation_gate] 三段切割被显式关闭 → 门将看到**全部**"
-                           "数据（含本该冻结的 Test 段），结论按『样本内』解读。")
-            return dataset, None
-        from app.core.data_engine.data_partitioner import FrozenBoundaryError, split_from_settings
-        try:
-            split = split_from_settings(dataset, dataset_key=dataset_key, embargo_days=self.embargo_days)
-            return split.selection, split
-        except FrozenBoundaryError:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "[validation_gate] 三段切割失败（%s）→ 退回全量面板。"
-                "本次**没有**冻结 Test 段，判定依据与汇报口径相同。", exc)
-            return dataset, None
+        # 复审 2026-10-19 N09-c：与其它入口同一个研究上下文。三段切割被关掉时，已冻结的边界照样生效
+        # （此前 three_way=False 让门看全量、含冻结段）；只有"数据太短、又没有边界"才看全量。
+        # 其它异常不再退回全量面板。
+        from app.core.data_engine.research_context import open_research
+        ctx = open_research(dataset, dataset_key, "validation_gate", three_way=self.three_way,
+                            embargo_days=self.embargo_days)
+        if ctx.split is None:
+            logger.warning("[validation_gate] 本次**没有**冻结 Test 段（%s），门看全量，结论按『样本内』解读。",
+                           ctx.note)
+        return ctx.selection, ctx.split
 
     def _report_on_test(self, dsl: str, split, dataset_key: str) -> dict:
         """在冻结 Test 段上算一次夏普并记账（S.2）。失败不影响门结论。"""

@@ -49,6 +49,13 @@ class SignalArchive(_Base):
     spec_hash:   str      = Column(String(64), nullable=False, default="")
     payload:     str      = Column(Text, nullable=False)                     # {ticker: value}
     recorded_at: datetime = Column(DateTime, nullable=False)                 # UTC，naive
+    # 复审 2026-10-19 N02-c：这份信号 / 这次结算用的输入（见 data_engine/input_identity.py）
+    price_source:    str      = Column(String(16), nullable=True)
+    data_digest:     str      = Column(String(64), nullable=True)
+    universe_digest: str      = Column(String(16), nullable=True)
+    universe_n:      int      = Column(Integer, nullable=True)
+    vintage:         str      = Column(String(40), nullable=True)
+    code_version:    str      = Column(String(40), nullable=True)
 
 
 class StrategyEvidence(_Base):
@@ -62,6 +69,14 @@ class StrategyEvidence(_Base):
     signal_asof:  object   = Column(Date, nullable=False)        # 用的是哪一天的信号
     decision_ts:  datetime = Column(DateTime, nullable=False)    # 那份信号存档的时刻
     recorded_at:  datetime = Column(DateTime, nullable=False)
+    # 复审 2026-10-19 N02-c：**结算**时用的输入；决策时的输入摘要在 signal_digest（见 data_engine/input_identity.py）
+    price_source:    str      = Column(String(16), nullable=True)
+    data_digest:     str      = Column(String(64), nullable=True)
+    universe_digest: str      = Column(String(16), nullable=True)
+    universe_n:      int      = Column(Integer, nullable=True)
+    vintage:         str      = Column(String(40), nullable=True)
+    code_version:    str      = Column(String(40), nullable=True)
+    signal_digest:   str      = Column(String(64), nullable=True)
 
 
 class EvidenceRevision(_Base):
@@ -124,18 +139,45 @@ class EvidenceStore:
         from ._sqlite_utils import harden_sqlite_engine
         harden_sqlite_engine(self._engine)
         _Base.metadata.create_all(self._engine)
+        self._migrate_add_columns()
         self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
+
+    #: 后加的可空列（create_all 不会给已存在的表补列）
+    _ADDED_COLUMNS = {
+        "signal_archive": {"price_source": "VARCHAR(16)", "data_digest": "VARCHAR(64)",
+                           "universe_digest": "VARCHAR(16)", "universe_n": "INTEGER",
+                           "vintage": "VARCHAR(40)", "code_version": "VARCHAR(40)"},
+        "strategy_evidence": {"price_source": "VARCHAR(16)", "data_digest": "VARCHAR(64)",
+                              "universe_digest": "VARCHAR(16)", "universe_n": "INTEGER",
+                              "vintage": "VARCHAR(40)", "code_version": "VARCHAR(40)",
+                              "signal_digest": "VARCHAR(64)"},
+    }
+
+    def _migrate_add_columns(self) -> None:
+        """只加、不改、不删（2026-10-18 那版建的表没有输入身份列）。"""
+        from sqlalchemy import inspect, text
+        insp = inspect(self._engine)
+        for table, cols in self._ADDED_COLUMNS.items():
+            have = {c["name"] for c in insp.get_columns(table)}
+            for name, typ in cols.items():
+                if name not in have:
+                    with self._engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {typ}"))
 
     # ------------------------------------------------------------------ 信号存档
     def archive(self, book_key: str, asof, vector: pd.Series, spec_hash: str = "",
-                recorded_at: Optional[datetime] = None) -> bool:
-        """存一份信号（只写一次）。已有且内容不同 → 不改，记修订事件。返回是否新写入。"""
+                recorded_at: Optional[datetime] = None, identity: Optional[dict] = None) -> bool:
+        """
+        存一份信号（只写一次）。已有且内容不同 → 不改，记修订事件。返回是否新写入。
+        identity：算出这份信号时用的输入（InputIdentity.to_dict()），一并存下。
+        """
+        ident = _ident_cols(identity)
         payload = json.dumps({str(k): (None if not np.isfinite(v) else float(v))
                               for k, v in vector.astype(float).items()}, sort_keys=True)
         day = _as_date(asof)
         with self._Session() as s:
             s.add(SignalArchive(book_key=book_key, asof=day, spec_hash=spec_hash or "",
-                                payload=payload, recorded_at=_naive_utc(recorded_at)))
+                                payload=payload, recorded_at=_naive_utc(recorded_at), **ident))
             try:
                 s.commit()
                 return True
@@ -160,7 +202,8 @@ class EvidenceStore:
             return None
         vec = pd.Series({k: (np.nan if v is None else v) for k, v in json.loads(row.payload).items()},
                         dtype=float)
-        return {"signal": vec, "recorded_at": row.recorded_at, "spec_hash": row.spec_hash}
+        return {"signal": vec, "recorded_at": row.recorded_at, "spec_hash": row.spec_hash,
+                "price_source": row.price_source or "", "data_digest": row.data_digest or ""}
 
     def archive_dates(self, book_key: str) -> Dict[_date, datetime]:
         """该账本键所有存档的 {信号日期: 存档时刻}（不读向量本身，结算前先用它筛）。"""
@@ -178,12 +221,14 @@ class EvidenceStore:
 
     # ------------------------------------------------------------------ 策略版本证据
     def record_strategy_ic(self, strategy_id: int, spec_hash: str, day, ic: float,
-                           signal_asof, decision_ts: datetime) -> bool:
+                           signal_asof, decision_ts: datetime, identity: Optional[dict] = None,
+                           signal_digest: str = "") -> bool:
         day = _as_date(day)
         with self._Session() as s:
             s.add(StrategyEvidence(strategy_id=int(strategy_id), spec_hash=spec_hash, date=day,
                                    ic=float(ic), signal_asof=_as_date(signal_asof),
-                                   decision_ts=_naive_utc(decision_ts), recorded_at=_utcnow()))
+                                   decision_ts=_naive_utc(decision_ts), recorded_at=_utcnow(),
+                                   signal_digest=signal_digest or None, **_ident_cols(identity)))
             try:
                 s.commit()
                 return True
@@ -221,11 +266,21 @@ class EvidenceStore:
             return list(s.scalars(q).all())
 
 
-class ForwardBook:
-    """一个账本键的前向结算助手：先一次取出全部存档日期，逐日只在可能是前向时才读向量。"""
+def _ident_cols(identity: Optional[dict]) -> dict:
+    keys = ("price_source", "data_digest", "universe_digest", "universe_n", "vintage", "code_version")
+    return {k: (identity or {}).get(k) for k in keys}
 
-    def __init__(self, store: Optional[EvidenceStore], book_key: str) -> None:
-        self.store, self.key = store, book_key
+
+class ForwardBook:
+    """
+    一个账本键的前向结算助手：先一次取出全部存档日期，逐日只在可能是前向时才读向量。
+    identity：本轮的输入身份。复审 2026-10-19 N02-d：存档时的价格源与本轮不同 → 不当前向结算
+    （不同数据源的历史与前向证据不能混用）。
+    """
+
+    def __init__(self, store: Optional[EvidenceStore], book_key: str,
+                 identity: Optional[dict] = None) -> None:
+        self.store, self.key, self.identity = store, book_key, identity or {}
         try:
             self._idx = store.archive_dates(book_key) if store is not None else {}
         except Exception as exc:
@@ -240,13 +295,20 @@ class ForwardBook:
         deadline = session_deadline(day)
         if deadline is None or rec_at >= deadline:
             return None
-        return self.store.archived_before(self.key, prev_day, deadline)
+        arch = self.store.archived_before(self.key, prev_day, deadline)
+        now_src = str(self.identity.get("price_source") or "")
+        if arch is not None and arch["price_source"] and now_src and arch["price_source"] != now_src:
+            logger.warning("[evidence] %s 在 %s 的存档信号来自 %s，本轮数据来自 %s → 不当前向结算",
+                           self.key, _as_date(prev_day), arch["price_source"], now_src)
+            return None
+        return arch
 
     def archive(self, asof, vector: pd.Series, now: Optional[datetime], spec_hash: str = "") -> None:
         if self.store is None:
             return
         try:
-            self.store.archive(self.key, asof, vector, spec_hash=spec_hash, recorded_at=now)
+            self.store.archive(self.key, asof, vector, spec_hash=spec_hash, recorded_at=now,
+                               identity=self.identity)
         except Exception as exc:
             # 存不上 → 明天这一天的结果只能算回放（前向证据少一天），不影响今天的交易
             logger.error("[evidence] %s 的 %s 信号存档失败（明天的结算不会算前向）: %s",

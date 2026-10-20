@@ -62,6 +62,7 @@ class _Book:
     def __init__(self, weights, combo):
         self.weights = weights
         self.combo_weights = combo
+        self.composite = weights
 
 
 class _Verdict:
@@ -82,6 +83,18 @@ class _RiskRep:
 
     def to_dict(self):
         return dict(self._payload)
+
+
+def set_pm(monkeypatch, cls):
+    import app.core.portfolio_manager.manager as MG
+    monkeypatch.setattr(MG, "PortfolioManager", cls)
+    monkeypatch.setattr(PM, "PortfolioManager", cls, raising=False)
+
+
+def set_risk(monkeypatch, cls):
+    import app.core.portfolio_manager.risk_gate as RG
+    monkeypatch.setattr(RG, "PortfolioRiskGate", cls)
+    monkeypatch.setattr(PM, "PortfolioRiskGate", cls, raising=False)
 
 
 @pytest.fixture
@@ -106,7 +119,7 @@ def wiring(monkeypatch):
             seen["pm"].append({"aum": aum, "method": method,
                                "cost_params": cost_params})
 
-        def build_book(self, signals, prices, volume):
+        def build_book(self, signals, prices, volume, **kw):
             seen["pm"][-1]["n_signals"] = len(signals)
             seen["pm"][-1]["volume_mean"] = float(np.asarray(volume).mean())
             return _Book(weights, {k: 1.0 / len(signals) for k in signals})
@@ -127,18 +140,23 @@ def wiring(monkeypatch):
         def __init__(self, limits):
             seen["risk"].append({"limits": limits})
 
-        def apply(self, w, sectors=None):
+        def apply(self, w, sectors=None, port_vol_ann=None):
             seen["risk"][-1]["sectors_is_none"] = sectors is None
             return w, _RiskRep()
+
+        def check(self, w, sectors=None):
+            return []
 
     class _Limits:
         pass
 
     monkeypatch.setattr(PM, "marginal_factor_selection", marginal, raising=False)
-    monkeypatch.setattr(PM, "PortfolioManager", _PMgr, raising=False)
     monkeypatch.setattr(PM, "StrategyGate", _Gate, raising=False)
-    monkeypatch.setattr(PM, "PortfolioRiskGate", _RiskGate, raising=False)
     monkeypatch.setattr(PM, "RiskLimits", _Limits, raising=False)
+    # 复审 2026-10-19 N05-e：合成账本与风控都在 strategy_contract.generate_targets 里装配（唯一一处），
+    # 它从这两个模块取类 —— 桩要打在这里，不再打在包命名空间上
+    set_pm(monkeypatch, _PMgr)
+    set_risk(monkeypatch, _RiskGate)
 
     import app.core.portfolio_manager.strategy_gate as SG
     monkeypatch.setattr(SG, "resolve_cost_params",
@@ -249,10 +267,10 @@ class TestHappyPath:
             def __init__(self, **k):
                 pass
 
-            def build_book(self, signals, prices, volume):
+            def build_book(self, signals, prices, volume, **kw):
                 return _Book(wiring.weights, None)
 
-        wiring.monkeypatch.setattr(PM, "PortfolioManager", _PMgr, raising=False)
+        set_pm(wiring.monkeypatch, _PMgr)
         cfg = build_strategy_config({"f1": _sig(1)}, _panel(), aum=1e5)
         assert cfg.combo_weights == {}
 
@@ -294,7 +312,8 @@ class TestDatasetDefaults:
         from app.core.portfolio_manager.risk_gate import RiskLimits
         mine = RiskLimits(max_gross=0.55)      # 要进可执行规格（F07），必须是真的 RiskLimits
         cfg = build_strategy_config({"f1": _sig(1)}, _panel(), aum=1e5, risk_limits=mine)
-        assert wiring.seen["risk"][0]["limits"] is mine
+        # 目标按冻结的规格生成：风控上限取自规格（N05-e），是同值的新对象，不是同一个对象
+        assert wiring.seen["risk"][0]["limits"] == mine
         assert cfg.verdict["executable_spec"]["risk_limits"]["max_gross"] == 0.55
 
     def test_the_default_risk_limits_are_constructed_when_none_supplied(self, wiring):
@@ -427,7 +446,7 @@ class TestDegradationTrail:
             def apply(self, *a, **k):
                 raise RuntimeError("风控快照炸了")
 
-        wiring.monkeypatch.setattr(PM, "PortfolioRiskGate", _BoomRisk, raising=False)
+        set_risk(wiring.monkeypatch, _BoomRisk)
         cfg = build_strategy_config({"f1": _sig(1)}, _panel(), aum=1e5)
         assert cfg.risk_report != {}, "风控失败后报告是空字典 —— 会被读成'无风险项'"
         assert cfg.risk_report.get("evaluated") is False
@@ -493,7 +512,7 @@ class TestDegradationTrail:
                                    lambda *a, **k: (_ for _ in ()).throw(
                                        RuntimeError("m")), raising=False)
         wiring.monkeypatch.setattr(PM, "StrategyGate", _BoomGate, raising=False)
-        wiring.monkeypatch.setattr(PM, "PortfolioRiskGate", _BoomRisk, raising=False)
+        set_risk(wiring.monkeypatch, _BoomRisk)
         wiring.monkeypatch.setattr(PG, "grade_paper_entry",
                                    lambda v, th=None: (_ for _ in ()).throw(
                                        RuntimeError("p")))

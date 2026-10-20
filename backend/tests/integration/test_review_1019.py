@@ -348,14 +348,26 @@ class TestIncompleteTrialHistory:
         (st,) = led.run_states()
         assert st.status == "resolved" and "kevin" in st.note
 
-    def test_a_progress_write_failure_leaves_the_run_open(self, fresh_db, monkeypatch):
-        from app.db.trial_ledger import TrialLedger, TrialRecorder
+    def test_a_progress_write_failure_marks_the_run_incomplete(self, fresh_db, monkeypatch):
+        from app.db.trial_ledger import TrialLedger, TrialRecorder, trial_history_problem
         rec = TrialRecorder("gp")
         monkeypatch.setattr(TrialLedger, "add_progress", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
         rec.add(7)
         rec.finish("done")
         (st,) = TrialLedger().run_states()
-        assert rec.ok is False and st.status == "running"               # 故意不结束：过期后被门看见
+        assert rec.ok is False and st.status == "incomplete" and "7 次" in st.note
+        assert trial_history_problem() != ""                             # 立即生效，不等过期
+
+    def test_if_even_the_finish_marker_fails_the_run_stays_running(self, fresh_db, monkeypatch):
+        from app.db.trial_ledger import TrialLedger, TrialRecorder
+        rec = TrialRecorder("gp")
+        boom = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))   # noqa: E731
+        monkeypatch.setattr(TrialLedger, "add_progress", boom)
+        monkeypatch.setattr(TrialLedger, "finish_run", boom)
+        rec.add(7)
+        rec.finish("done")
+        (st,) = TrialLedger().run_states()
+        assert st.status == "running"                                    # 过了 STALE_AFTER 被门看见
 
     def test_a_crashing_search_keeps_what_it_already_recorded(self, fresh_db, monkeypatch):
         from app.core.gp_engine.population_evolver import PopulationEvolver
@@ -402,10 +414,11 @@ def test_the_backtest_engine_charges_the_same_fee(tmp_path):
     res = BacktestEngine(cost_params=CostParams(fixed_bps=100, min_ticket_fee=0, spread_bps=0, impact_coef=0,
                                                 short_borrow_annual_bps=0),
                          initial_capital=10000).run(w, close, pd.DataFrame(1e12, index=idx, columns=close.columns), w)
-    # 第一天买入 10,000 × 100 bps = 100 → 期末权益 9,900（各 4,950）；第二天 A 涨到 5,445，调仓前市值 10,395，
-    # 两腿各成交 247.5，共 495 × 100 bps = 4.95（按旧口径会少算成 495 / 1.05 × 1% ≈ 4.71）
+    # 股数 + 现金账本：第一天买入 10,000 × 100 bps = 100，费用从**现金**扣 → 两腿市值各 5,000、现金 -100、
+    # 净值 9,900；第二天 A 涨到 5,500，调仓前市值 10,400，目标各 5,200 → 卖 A 300、买 B 200，
+    # 共 500 × 100 bps = 5.00。（此前这里写 4.95 = 把第一天的费用摊进了持仓，正是 N08-b 的那个偏差）
     day2_cost = (res.gross_returns.iloc[1] - res.net_returns.iloc[1]) * res.equity_curve.iloc[0] * 10000
-    assert day2_cost == pytest.approx(4.95)
+    assert day2_cost == pytest.approx(5.00)
 
 
 # ---------------------------------------------------------------------------
@@ -463,3 +476,267 @@ def test_the_earliest_exposed_test_window_can_be_looked_up_for_d12(fresh_db):
     led.record_use("us_x", "2022-11-03..2024-11-01")
     led.record_use("us_x", "empty")
     assert led.earliest_exposed_start("us_x") == pd.Timestamp("2022-11-03")
+
+
+# ---------------------------------------------------------------------------
+# N07-c：审查方脚本 residual_lost_trials_not_persisted 的等价场景
+# （原脚本用的 record_trials 已删除，那一项是 ImportError，不算验证）
+# ---------------------------------------------------------------------------
+
+def test_the_review_n07_scenario_blocks_the_gate_right_after_a_lost_write(fresh_db, monkeypatch):
+    """先登记 1 次；一次 7 个尝试的搜索记账写入暂时失败；**恢复之后马上**评估策略门 —— 不得通过。"""
+    import app.core.portfolio_manager.strategy_gate as sg
+    from app.db.trial_ledger import TrialLedger, TrialRecorder
+    TrialLedger().add(1)
+    rec = TrialRecorder("gp")
+    real = TrialLedger.add_progress
+    monkeypatch.setattr(TrialLedger, "add_progress",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("temporary write failure")))
+    rec.add(7)
+    monkeypatch.setattr(TrialLedger, "add_progress", real)            # 写入恢复
+    rec.finish("done")
+    ds = _make_dataset(300, 10)
+    rets = pd.Series(np.random.default_rng(2).normal(.01, .001, 300), index=ds["close"].index)
+    with patch.object(sg, "strategy_net_returns", return_value=(rets, ds["close"])):
+        verdict = sg.StrategyGate().evaluate({"f": ds["close"]}, ds)
+    assert verdict.passed is False and "试验史不完整" in verdict.reasons[0]
+    (st,) = TrialLedger().run_states()
+    assert st.status == "incomplete" and "7" in st.note
+
+
+# ---------------------------------------------------------------------------
+# N06-d：按常规盘 / 盘前 / 盘后定义报价合同（复审："避免简单 4 个自然日被当成任意时段的可交易报价标准"）
+# 2026-01-05（周一）收盘后决策；参考价 = 当日收盘。
+# ---------------------------------------------------------------------------
+
+class TestQuoteSessions:
+
+    @staticmethod
+    def _reason(quote_ny, now_utc=datetime(2026, 1, 5, 22, tzinfo=timezone.utc)):
+        from app.core.execution.broker_gateway import Quote
+        dec = _check(_buy(), {"AAA": Quote(100., quote_ny)}, now=now_utc)
+        return [r for _, r in dec.rejected]
+
+    def test_a_regular_session_quote_hours_before_the_close_is_stale(self):
+        """11:00 之后就没更新过 → 这只票下午大概停牌 / 没成交，不是收盘时的市场价。"""
+        assert self._reason(datetime(2026, 1, 5, 11, 0)) == ["quote_stale_in_session"]
+
+    def test_a_quote_near_the_close_is_accepted(self):
+        assert self._reason(datetime(2026, 1, 5, 15, 45)) == []
+
+    def test_an_after_hours_quote_of_the_closed_session_is_accepted(self):
+        assert self._reason(datetime(2026, 1, 5, 16, 45)) == []           # 决策时刻 = 纽约 17:00
+
+    def test_a_pre_market_quote_of_the_next_session_is_accepted(self):
+        now = datetime(2026, 1, 6, 13, 30, tzinfo=timezone.utc)          # 纽约 08:30，次日盘前
+        assert self._reason(datetime(2026, 1, 6, 8, 0), now_utc=now) == []
+
+    def test_a_pre_market_quote_of_the_closed_day_is_stale(self):
+        assert self._reason(datetime(2026, 1, 5, 8, 0)) == ["stale_quote"]
+
+    def test_a_quote_stamped_on_a_non_trading_day_is_rejected(self):
+        now = datetime(2026, 1, 5, 22, tzinfo=timezone.utc)
+        assert self._reason(datetime(2026, 1, 3, 12, 0), now_utc=now) == ["quote_outside_session"]   # 周六
+
+
+# ---------------------------------------------------------------------------
+# N02-c/d + N04-b：输入身份（数据摘要、有效股票池、价格源、数据 vintage、代码版本）
+# ---------------------------------------------------------------------------
+
+class TestInputIdentity:
+
+    def test_identity_changes_with_the_data_and_the_universe(self):
+        from app.core.data_engine.input_identity import identify
+        ds = _make_dataset(60, 8)
+        a = identify(ds, price_source="moomoo", vintage="2026-01-05T22:00:00Z")
+        changed = {k: v.copy() for k, v in ds.items()}
+        changed["close"].iloc[10, 2] *= 1.01                              # 历史中段改一个数
+        fewer = {k: v.copy() for k, v in ds.items()}
+        fewer["close"].iloc[-1, 0] = np.nan                               # 末日少一只票
+        assert identify(changed, price_source="moomoo").data_digest != a.data_digest
+        assert identify(fewer, price_source="moomoo").universe_digest != a.universe_digest
+        assert identify(fewer, price_source="moomoo").universe_n == a.universe_n - 1
+        assert a.price_source == "moomoo" and a.vintage == "2026-01-05T22:00:00Z" and a.last_day == str(ds["close"].index[-1].date())
+        assert a.code_version != ""
+
+    def test_strategy_evidence_rows_carry_the_input_identity(self, fresh_db):
+        from app.core.portfolio_manager.executable_spec import spec_hash
+        from tests.integration.test_forward_evidence_1018 import _after_close, _panel, _upto
+        spec, sid, ev, loop = TestEvidenceIdentity()._setup(fresh_db)
+        ds = _panel()
+        a, b = ds["close"].index[-2:]
+        loop._record_strategy_evidence(_upto(ds, a), _after_close(a), data_source="yahoo")
+        loop._record_strategy_evidence(ds, _after_close(b), data_source="yahoo")
+        (row,) = ev.strategy_forward_ic(sid, spec_hash(spec))
+        assert row.price_source == "yahoo" and len(row.data_digest) == 64
+        assert row.universe_n == ds["close"].shape[1] and row.code_version != ""
+        assert row.signal_digest and row.signal_digest != row.data_digest   # 决策时的输入 ≠ 结算时的输入
+
+    def test_a_signal_archived_under_another_price_source_does_not_settle_as_forward(self, tmp_path):
+        """N02-d：不同数据源的历史与前向证据不能混用 —— 不靠规格，账本层面就拦住。"""
+        from tests.integration.test_forward_evidence_1018 import _after_close, _fwd_dates, _panel, _upto, world
+        w = world.__wrapped__(tmp_path)
+        ds = _panel()
+        a, b = ds["close"].index[-2:]
+        w.loop().run(_upto(ds, a), now=_after_close(a), data_source="yahoo")
+        w.loop().run(ds, now=_after_close(b), data_source="moomoo")
+        assert _fwd_dates(w.store, w.aid) == []
+
+    def test_the_ingest_reports_the_identity_of_the_panel_it_hands_to_trading(self, tmp_path, monkeypatch):
+        from tests.integration.test_adjusted_price_rebase import DAYS, Provider, _close_utc
+        import app.core.data_engine.dataset_registry as reg
+        from app.config import settings
+        from app.tasks.daily_ingest import DailyIngest
+        monkeypatch.setattr(settings, "pit_store_dir", str(tmp_path / "pit"))
+        monkeypatch.setattr(settings, "paper_start", str(DAYS[0].date()))
+        monkeypatch.setattr(settings, "price_source", "moomoo")
+        monkeypatch.setattr(reg, "load_registry_dataset", Provider().load)
+        monkeypatch.setattr(reg, "check_dataset_health",
+                            lambda ds, min_score=0.7, warn_only=True: SimpleNamespace(overall_score=1.0, hard_failures=[]))
+        DailyIngest().ingest_incremental("px", now=_close_utc(pd.Timestamp("2024-03-19")))
+        res = DailyIngest().ingest_incremental("px", now=_close_utc(pd.Timestamp("2024-03-20")))
+        ident = res.identity
+        assert ident["last_day"] == "2024-03-20" and ident["price_source"] == "moomoo"
+        assert ident["universe_n"] == 2 and ident["vintage"] == res.as_of
+        assert ident["checked_last_day"] == ident["last_day"]                # 检查的末日 = 交出去的末日
+
+    def test_a_consumed_panel_that_does_not_end_where_the_health_check_ended_is_refused(self, tmp_path, monkeypatch):
+        from tests.integration.test_adjusted_price_rebase import DAYS, Provider, _close_utc
+        import app.core.data_engine.dataset_registry as reg
+        from app.config import settings
+        from app.core.data_engine.pit_store import PITStore
+        from app.tasks.daily_ingest import DailyIngest
+        monkeypatch.setattr(settings, "pit_store_dir", str(tmp_path / "pit"))
+        monkeypatch.setattr(settings, "paper_start", str(DAYS[0].date()))
+        monkeypatch.setattr(settings, "price_source", "moomoo")
+        monkeypatch.setattr(reg, "load_registry_dataset", Provider().load)
+        monkeypatch.setattr(reg, "check_dataset_health",
+                            lambda ds, min_score=0.7, warn_only=True: SimpleNamespace(overall_score=1.0, hard_failures=[]))
+        DailyIngest().ingest_incremental("px", now=_close_utc(pd.Timestamp("2024-03-19")))
+        real = PITStore.load_pit
+        monkeypatch.setattr(PITStore, "load_pit",                           # PIT 读回来少了最后一天
+                            lambda self, *a, **k: {f: df.iloc[:-1] for f, df in real(self, *a, **k).items()})
+        res = DailyIngest().ingest_incremental("px", now=_close_utc(pd.Timestamp("2024-03-20")))
+        assert res.accepted is False and res.reject_reason.startswith("consumed_panel_mismatch")
+
+    def test_old_evidence_tables_get_the_new_columns(self, tmp_path):
+        import sqlite3
+        db = tmp_path / "old.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE signal_archive (id INTEGER PRIMARY KEY, book_key VARCHAR(64) NOT NULL, asof DATE NOT NULL,"
+                    " spec_hash VARCHAR(64) NOT NULL, payload TEXT NOT NULL, recorded_at DATETIME NOT NULL)")
+        con.execute("CREATE TABLE strategy_evidence (id INTEGER PRIMARY KEY, strategy_id INTEGER NOT NULL, spec_hash VARCHAR(64) NOT NULL,"
+                    " date DATE NOT NULL, ic FLOAT NOT NULL, signal_asof DATE NOT NULL, decision_ts DATETIME NOT NULL,"
+                    " recorded_at DATETIME NOT NULL)")
+        con.commit(); con.close()
+        from app.db.evidence_store import EvidenceStore
+        EvidenceStore(f"sqlite:///{db.as_posix()}")
+        con = sqlite3.connect(db)
+        cols = {r[1] for r in con.execute("PRAGMA table_info(strategy_evidence)")}
+        arch = {r[1] for r in con.execute("PRAGMA table_info(signal_archive)")}
+        assert {"price_source", "data_digest", "universe_digest", "universe_n", "vintage", "code_version",
+                "signal_digest"} <= cols
+        assert {"price_source", "data_digest", "universe_digest", "universe_n", "vintage", "code_version"} <= arch
+
+
+# ---------------------------------------------------------------------------
+# §5.2：规格覆盖有效股票池 / 执行账户 / 报价与下单规则 / 提交时段
+# （数据 vintage 每天都变，不进规格，进证据行；代码版本记在审批时的 verdict 与每条证据行里，不当作不一致）
+# ---------------------------------------------------------------------------
+
+class TestSpecCoverage:
+
+    @pytest.mark.parametrize("setting,value,field", [
+        ("exec_limit_band_bps", 80.0, "execution.limit_band_bps"),
+        ("exec_max_price_deviation", 0.30, "execution.max_price_deviation"),
+        ("exec_max_quote_age_days", 9, "execution.max_quote_age_days"),
+        ("moomoo_trd_acc_id", 123456, "execution.account_id"),
+        ("scheduler_timezone", "America/New_York", "submission.scheduler_timezone"),
+    ])
+    def test_changing_an_execution_rule_after_approval_is_a_mismatch(self, monkeypatch, setting, value, field):
+        from app.config import settings
+        from app.core.portfolio_manager.executable_spec import build_spec, verify_against_runtime
+        spec = build_spec({"1": "rank(close)"}, {"1": 1.}, "equal_weight", 1e4, .01)
+        monkeypatch.setattr(settings, setting, value)
+        diff = verify_against_runtime(spec, {"1": "rank(close)"}, 1e4)
+        assert any(d.startswith(field + ":") for d in diff), diff
+
+    def test_a_changed_universe_is_a_mismatch(self, monkeypatch):
+        import app.core.data_engine.dataset_registry as reg
+        from app.config import settings
+        from app.core.portfolio_manager.executable_spec import build_spec, verify_against_runtime
+        monkeypatch.setitem(reg._SPECS, "spec_cov", reg.DatasetSpec("spec_cov", "yfinance", "US", "x", ["AAA", "BBB"]))
+        monkeypatch.setattr(settings, "paper_dataset", "spec_cov")
+        spec = build_spec({"1": "rank(close)"}, {"1": 1.}, "equal_weight", 1e4, .01)
+        assert spec["universe"]["n"] == 2
+        monkeypatch.setitem(reg._SPECS, "spec_cov", reg.DatasetSpec("spec_cov", "yfinance", "US", "x", ["AAA", "CCC"]))
+        diff = verify_against_runtime(spec, {"1": "rank(close)"}, 1e4)
+        assert any(d.startswith("universe.tickers_digest:") for d in diff), diff
+
+    def test_the_submission_window_comes_from_the_code_that_schedules_it(self):
+        from app.core.execution.broker_gateway import ORDER_OUTSIDE_RTH, ORDER_TIME_IN_FORCE
+        from app.core.portfolio_manager.executable_spec import build_spec
+        from app.tasks.scheduler import DAILY_TRADING_AT, DAILY_TRADING_RETRY_AT
+        sub = build_spec({"1": "rank(close)"}, {"1": 1.}, "equal_weight", 1e4, .01)["submission"]
+        assert sub["daily_trading"] == "%02d:%02d" % DAILY_TRADING_AT
+        assert sub["retry"] == "%02d:%02d" % DAILY_TRADING_RETRY_AT
+        assert (sub["time_in_force"], sub["outside_rth"]) == (ORDER_TIME_IN_FORCE, ORDER_OUTSIDE_RTH)
+
+    def test_a_spec_of_the_previous_version_is_a_mismatch(self):
+        from app.core.portfolio_manager.executable_spec import build_spec, verify_against_runtime
+        old = build_spec({"1": "rank(close)"}, {"1": 1.}, "equal_weight", 1e4, .01)
+        old = {k: v for k, v in old.items() if k not in ("universe", "execution", "submission")}
+        old["version"] = 1
+        assert any(d.startswith("version:") for d in verify_against_runtime(old, {"1": "rank(close)"}, 1e4))
+
+    def test_the_proposal_records_the_code_version_outside_the_hash(self):
+        from app.core.portfolio_manager.strategy_builder import build_strategy_config
+        from app.core.data_engine.input_identity import code_version
+        ds = _make_dataset(80, 10)
+        cfg = build_strategy_config({"1": ds["close"].rank(axis=1)}, ds, 1e4, factor_dsl={"1": "rank(close)"})
+        assert cfg.verdict["approved_code_version"] == code_version()
+        assert "code_version" not in cfg.verdict["executable_spec"]
+
+
+# ---------------------------------------------------------------------------
+# §5.3：账户锁按券商账户建锁域；校验账户身份
+# ---------------------------------------------------------------------------
+
+class TestAccountLockDomain:
+
+    def _om(self, tmp_path, sub, acc_id=2001):
+        from tests.unit.execution.moomoo_fake import FakeTradeContext, default_accounts, make_gateway
+        from tests.unit.execution.test_order_manager import LIM, Clock
+        from app.core.execution.order_manager import OrderManager
+        from app.db.execution_store import ExecutionStore
+        from app.db.position_store import PositionStore
+        accts = [dict(a, acc_id=acc_id) if a["trd_env"] == "SIMULATE" else a for a in default_accounts()]
+        ctx = FakeTradeContext(accounts=accts)
+        d = tmp_path / sub
+        d.mkdir(parents=True, exist_ok=True)
+        return OrderManager(make_gateway(ctx), ExecutionStore(f"sqlite:///{(d / 'e.db').as_posix()}"),
+                            PositionStore(f"sqlite:///{(d / 'p.db').as_posix()}"), limits=LIM,
+                            paper_aum=100_000.0, limit_band_bps=50.0, flatten_band_bps=500.0, clock=Clock())
+
+    def test_two_deployments_in_different_directories_share_one_lock_for_one_account(self, tmp_path):
+        a, b = self._om(tmp_path, "deploy_a"), self._om(tmp_path, "deploy_b")
+        assert a._account_lock_path() == b._account_lock_path()
+        assert "2001" in a._account_lock_path().name
+
+    def test_different_accounts_have_different_locks(self, tmp_path):
+        assert self._om(tmp_path, "a", 2001)._account_lock_path() != self._om(tmp_path, "b", 2002)._account_lock_path()
+
+    def test_the_lock_dir_is_machine_wide_not_next_to_the_db(self, tmp_path):
+        from app.config import settings
+        p = self._om(tmp_path, "x")._account_lock_path()
+        assert p.parent == __import__("pathlib").Path(settings.account_lock_dir) / ".locks"
+
+    def test_a_different_account_behind_the_same_store_is_refused(self, tmp_path):
+        """moomoo_trd_acc_id=0 会自动取第一个模拟账户 —— 换了账户不能悄悄接着交易。"""
+        from app.core.execution.broker_gateway import BrokerError
+        first = self._om(tmp_path, "same", 2001)
+        first.reconcile()                                               # 绑定 2001
+        second = self._om(tmp_path, "same", 2002)                        # 同一个执行库，另一个账户
+        with pytest.raises(BrokerError, match="账户身份变了"):
+            second.reconcile()
+        assert second.store.get_state("bound_account").endswith("2001")

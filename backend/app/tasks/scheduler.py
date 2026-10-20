@@ -96,6 +96,12 @@ def daily_trading_job() -> dict:
     return out
 
 
+#: 每日交易任务与补跑的触发时刻（scheduler_timezone 下的 时, 分）。进可执行规格（复审 2026-10-19 §5.2）：
+#: 改了提交时段就是另一个策略版本
+DAILY_TRADING_AT = (21, 30)
+DAILY_TRADING_RETRY_AT = (22, 45)
+
+
 def nightly_discovery_job() -> None:
     """Phase 9.2：收盘后自主因子发现。观察市场 → GP → 赢家存为 CANDIDATE（不依赖用户假设）。"""
     from app.core.data_engine.dataset_registry import load_registry_dataset
@@ -207,7 +213,8 @@ def create_scheduler(
         if settings.enable_paper_trading:
             sched.add_job(
                 daily_trading_job,
-                trigger = CronTrigger(hour=21, minute=30, timezone=timezone),  # 巡检之后
+                trigger = CronTrigger(hour=DAILY_TRADING_AT[0], minute=DAILY_TRADING_AT[1],
+                                      timezone=timezone),                  # 巡检之后
                 id      = "daily_trading",
                 name    = "每日数据摄取 + 交易循环",
                 replace_existing = True,
@@ -217,7 +224,8 @@ def create_scheduler(
             # 收盘后挂的 DAY 单仍在次日开盘前（审计设计问题 #4："每天只触发一次"）。
             sched.add_job(
                 daily_trading_job,
-                trigger = CronTrigger(hour=22, minute=45, timezone=timezone),
+                trigger = CronTrigger(hour=DAILY_TRADING_RETRY_AT[0], minute=DAILY_TRADING_RETRY_AT[1],
+                                      timezone=timezone),
                 id      = "daily_trading_retry",
                 name    = "每日交易循环补跑（数据延迟兜底）",
                 replace_existing = True,

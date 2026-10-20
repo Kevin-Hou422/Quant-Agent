@@ -51,7 +51,7 @@ from typing import Optional
 from typing import List, Tuple
 
 import pandas as pd
-from sqlalchemy import Column, DateTime, Integer, String, create_engine, select, update
+from sqlalchemy import Column, DateTime, Integer, String, Text, create_engine, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -92,6 +92,9 @@ class TrialRunState(_Base):
     started_at:  datetime = Column(DateTime, nullable=False)
     finished_at: datetime = Column(DateTime, nullable=True)
     note:        str      = Column(String(512), nullable=False, default="")
+    #: 这次运行所在的研究上下文（ResearchContext.to_json()：dataset / universe / experiment / boundary）；
+    #: 空 = 不在任何上下文里跑的（复审 2026-10-19 N09-c）
+    context:     str      = Column(Text, nullable=True)
 
 
 #: running 状态超过这么久还没结束 → 视为中断（GP / Optuna 单次运行远短于此）
@@ -113,7 +116,22 @@ class TrialLedger:
         from ._sqlite_utils import harden_sqlite_engine
         harden_sqlite_engine(self._engine)
         _Base.metadata.create_all(self._engine)
+        self._migrate_add_columns()
         self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
+
+    #: 后加的可空列（create_all 不会给已存在的表补列）
+    _ADDED_COLUMNS = {"trial_run_state": {"context": "TEXT"}}
+
+    def _migrate_add_columns(self) -> None:
+        """只加、不改、不删。"""
+        from sqlalchemy import inspect, text
+        insp = inspect(self._engine)
+        for table, cols in self._ADDED_COLUMNS.items():
+            have = {c["name"] for c in insp.get_columns(table)}
+            for name, typ in cols.items():
+                if name not in have:
+                    with self._engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {typ}"))
 
     def add(self, n: int, run_id: Optional[str] = None, source: str = "") -> int:
         """
@@ -146,13 +164,13 @@ class TrialLedger:
             return int(row.total) if row else 0
 
     # ------------------------------------------------------------------ 运行生命周期（N07）
-    def begin_run(self, source: str) -> str:
+    def begin_run(self, source: str, context: Optional[str] = None) -> str:
         """搜索开始**之前**登记一次运行（写不进去就抛 —— 调用方据此拒绝开始搜索）。"""
         import uuid
         run_id = f"{source}:{uuid.uuid4().hex}"
         with self._Session() as s:
             s.add(TrialRunState(run_id=run_id, source=(source or "")[:32], status="running",
-                                n_recorded=0, started_at=datetime.utcnow()))
+                                n_recorded=0, started_at=datetime.utcnow(), context=context))
             s.commit()
         return run_id
 
@@ -180,11 +198,16 @@ class TrialLedger:
             s.commit()
 
     def incomplete_runs(self, now: Optional[datetime] = None) -> List[TrialRunState]:
-        """停在 running 超过 STALE_AFTER 的运行（被杀 / 崩溃 / 记账写失败后没能结束）。"""
+        """
+        研究史里有缺口的运行：
+          · status=incomplete —— 运行中有记账写失败、结束时已知漏记（立即生效）；
+          · 停在 running 超过 STALE_AFTER —— 被杀 / 崩溃 / 连结束标记都没写进去。
+        """
         cutoff = (now or datetime.utcnow()) - STALE_AFTER
         with self._Session() as s:
             return list(s.scalars(select(TrialRunState).where(
-                TrialRunState.status == "running", TrialRunState.started_at < cutoff)).all())
+                (TrialRunState.status == "incomplete")
+                | ((TrialRunState.status == "running") & (TrialRunState.started_at < cutoff)))).all())
 
     def resolve_run(self, run_id: str, extra_trials: int, actor: str, reason: str) -> int:
         """
@@ -196,8 +219,8 @@ class TrialLedger:
         extra = max(0, int(extra_trials))
         with self._Session() as s:
             row = s.get(TrialRunState, run_id)
-            if row is None or row.status != "running":
-                raise KeyError(f"{run_id} 不是一个未结束的运行")
+            if row is None or row.status not in ("running", "incomplete"):
+                raise KeyError(f"{run_id} 不是一个未结束 / 漏记的运行")
             if s.get(TrialCount, 1) is None:
                 s.add(TrialCount(id=1, total=0))
                 s.flush()
@@ -238,18 +261,27 @@ class TrialRecorder:
     """
     搜索底层用的记账器（复审 2026-10-19 N07）：
 
-        rec = TrialRecorder("gp")        # 登记不进去 → 抛 TrialLedgerUnavailable，搜索不开始
+        rec = TrialRecorder("gp", panels=[is_data, oos_data])   # 登记不进去 → 抛 TrialLedgerUnavailable
         rec.add(len(results))            # 每一代 / 每个 trial 记一次
         rec.finish("done")               # 或 "aborted"
 
     逐批写失败不打断搜索，但这次运行会停在 running → 过期后门判"试验史不完整"。
+
+    在 `with ctx.active():`（研究上下文，复审 2026-10-19 N09-c）里：登记时把上下文写进运行记录，
+    并检查 `panels` —— 含冻结 Test 段的日期 → FrozenBoundaryError，**不登记、不开始**。
     """
 
-    def __init__(self, source: str) -> None:
-        self.source, self.ok, self.n = source, True, 0
+    def __init__(self, source: str, panels=None) -> None:
+        self.source, self.ok, self.n, self.lost = source, True, 0, 0
+        from app.core.data_engine.research_context import current
+        ctx = current()
+        if ctx is not None:
+            ctx.check_panels(panels or [], what=f"{source} 搜索")
+        else:
+            logger.info("[S.3] %s 搜索不在研究上下文里运行（运行记录不带 dataset / experiment / boundary）", source)
         try:
             self.ledger = TrialLedger()
-            self.run_id = self.ledger.begin_run(source)
+            self.run_id = self.ledger.begin_run(source, ctx.to_json() if ctx is not None else None)
         except Exception as exc:
             raise TrialLedgerUnavailable(
                 f"试验台账不可写（{exc}）—— 拒绝开始 {source} 搜索：没登记的尝试会从研究史里消失，"
@@ -264,14 +296,17 @@ class TrialRecorder:
             self.ledger.add_progress(self.run_id, n)
         except Exception as exc:
             self.ok = False
+            self.lost += n
             logger.error("[S.3] %s 的 %d 次尝试没进全局计数（运行 %s 将保持未结束，门会判试验史不完整）: %s",
                          self.source, n, self.run_id, exc)
 
     def finish(self, status: str = "done") -> None:
-        if not self.ok:
-            return                       # 有漏记：故意不结束，让它过期后被门看见
+        # 有漏记 → 标 incomplete（门**立即**看得见，不必等过期；复审 2026-10-19 N07 的场景：
+        # 写入暂时失败、恢复后马上评估）。连这个标记都写不进去 → 停在 running，过期后被看见。
+        final = status if self.ok else "incomplete"
+        note = "" if self.ok else f"运行中有 {self.lost} 次尝试的记账写失败，没进全局计数"
         try:
-            self.ledger.finish_run(self.run_id, status)
+            self.ledger.finish_run(self.run_id, final, note=note)
         except Exception as exc:
             logger.error("[S.3] 运行 %s 结束标记写不进去（会被当作中断）: %s", self.run_id, exc)
 

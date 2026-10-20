@@ -47,6 +47,8 @@ def _hermetic_run_flags(tmp_path_factory):
     settings.pit_store_dir = str(tmp_path_factory.mktemp("hermetic_pit"))
     # 部署 .env 把调度库指到真实数据目录；测试建的调度器不得写进去（任务定义会被持久化）。
     settings.scheduler_db_url = f"sqlite:///{tmp_path_factory.mktemp('hermetic_sched') / 'jobs.db'}"
+    # 账户锁是整台机器共用的（复审 2026-10-19 §5.3）：测试不得去碰真实部署的锁目录
+    settings.account_lock_dir = str(tmp_path_factory.mktemp("hermetic_locks"))
     yield
 
 

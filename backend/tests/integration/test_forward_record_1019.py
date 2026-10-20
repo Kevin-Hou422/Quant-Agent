@@ -1,0 +1,115 @@
+"""
+复审 2026-10-19 §7.3：正式前向的启动记录与每日记录。
+
+  "记录唯一启动时间、规格哈希、代码版本、数据身份和环境版本。联调和历史回放不得补记成正式天数。"
+  "每天至少记录：信号/目标生成与存档时间、预期与实际 session、目标权重/股数、实际成交、未成交原因、
+   持仓现金、成本、净收益、基准超额、回撤、gross/net、资金利用率、对账状态及异常。"
+
+从每日管线入口连跑两个交易日（假券商按真实契约成交），检查每条记录逐项都有、能算的都算出来了、
+算不出的写明原因；没启动 → 不算正式；启动后在决策窗口里跑 → 正式；事后补跑不能把正式日覆盖成非正式。
+"""
+
+from __future__ import annotations
+
+from datetime import timedelta
+
+import pandas as pd
+import pytest
+
+from app.core.data_engine.market_calendar import session_close_utc, session_open_utc
+from tests.integration.test_forward_daily_e2e import D1, D2, world  # noqa: F401
+
+
+def _active():
+    import json
+    from app.db.strategy_store import StrategyStore
+    a = StrategyStore().latest_active()
+    return a.id, json.loads(a.verdict)["spec_hash"]
+
+
+def _day(sid, d):
+    from app.db.forward_record import ForwardRecordStore
+    rows = [r for r in ForwardRecordStore().days(sid) if r["decision_date"] == str(pd.Timestamp(d).date())]
+    assert len(rows) == 1, f"{d} 没有（或不止一条）每日记录"
+    return rows[0]
+
+
+def test_every_day_is_recorded_with_all_required_fields(world):
+    from app.db.forward_record import REQUIRED_FIELDS
+    world["run_day"](D1)
+    sid, _ = _active()
+    rec = _day(sid, D1)
+    assert not [k for k in REQUIRED_FIELDS if k not in rec], "缺 §7.3 要求的字段"
+    assert rec["formal"] is False and rec["formal_reason"] == "no_formal_start", "没启动却算成了正式前向"
+    assert rec["expected_session"] == str(D2.date())
+    assert rec["signal_archived_at"] and rec["targets_generated_at"]
+    assert rec["target_weights"] and rec["target_shares"], "目标权重 / 股数没记"
+    assert rec["benchmark"]["name"] == "ew_universe" and rec["benchmark"]["return"] is not None
+    assert rec["costs"]["broker_fees"] is None and "costs.broker_fees" in rec["missing"], \
+        "算不出的项要写明原因，不能当 0"
+
+
+def test_the_second_day_settles_the_first_days_orders(world):
+    from app.db.forward_record import ForwardRecordStore
+    world["run_day"](D1)
+    sid, h = _active()
+    # 人启动正式前向（D13：重新提案并批准之后）；启动时刻在 D2 开盘之前
+    run = ForwardRecordStore().start(sid, h, "kevin", "re-proposed and approved",
+                                     started_at=session_open_utc(D2) - timedelta(hours=1))
+    assert run.code_version and run.environment and "python" in run.environment
+    with pytest.raises(ValueError):
+        ForwardRecordStore().start(sid, h, "kevin", "again")       # 启动时间唯一
+
+    world["open_session"](D2)
+    world["yahoo"].published_through = D2
+    world["clear"]()
+    world["run_day"](D2)
+    rec = _day(sid, D2)
+    assert rec["formal"] is True, rec["formal_reason"]
+    assert rec["fills"], "D1 的单在 D2 开盘成交了，记录里没有"
+    assert {f["decision_date"] for f in rec["fills"]} == {str(D1.date())}
+    assert rec["actual_sessions"] == [str(D2.date())], "实际成交 session 不对"
+    assert rec["expected_session"] == "2025-03-05"
+    assert rec["cash"] is not None and rec["positions"], "持仓现金没记"
+    assert rec["costs"]["paper_cost_bps"] is not None and rec["costs"]["broker_slippage_bps"] is not None
+    assert rec["net_return"]["paper"] is not None and rec["net_return"]["broker"] is not None
+    assert rec["excess_return"]["paper"] is not None and rec["excess_return"]["broker"] is not None
+    assert rec["drawdown"]["paper"] is not None and rec["drawdown"]["broker"] is not None
+    e = rec["exposure"]
+    assert None not in (e["target_gross"], e["target_net"], e["actual_gross"], e["actual_net"])
+    assert rec["capital_utilization"] is not None
+    assert rec["reconcile_status"] == "clean"
+    assert isinstance(rec["anomalies"], list) and isinstance(rec["unfilled"], list)
+    assert rec["data_identity"] and rec["code_version"] and rec["spec_hash"] == h
+
+
+def test_a_late_rerun_cannot_turn_a_formal_day_into_a_replay_or_overwrite_it(world):
+    from app.db.forward_record import ForwardRecordStore
+    world["run_day"](D1)
+    sid, h = _active()
+    ForwardRecordStore().start(sid, h, "kevin", "go", started_at=session_open_utc(D2) - timedelta(hours=1))
+    world["open_session"](D2)
+    world["yahoo"].published_through = D2
+    world["clear"]()
+    world["run_day"](D2)
+    before = _day(sid, D2)
+    assert before["formal"] is True
+    # 第二天开盘之后再跑同一个决策日：不在决策窗口 → 不是正式；也不能覆盖已经是正式的那条
+    world["clear"]()
+    late = (session_open_utc(pd.Timestamp("2025-03-05")) - session_close_utc(D2)).total_seconds() / 60 + 30
+    world["run_day"](D2, minutes_after_close=int(late))
+    after = _day(sid, D2)
+    assert after == before, "事后补跑覆盖了正式那天的记录"
+
+
+def test_a_replayed_day_is_never_formal(world):
+    """启动之后，用事后的时钟补跑一个决策日 → 记录写明 not_run_in_decision_window。"""
+    from app.db.forward_record import ForwardRecordStore
+    world["run_day"](D1)
+    sid, h = _active()
+    ForwardRecordStore().start(sid, h, "kevin", "go", started_at=session_close_utc(D1) - timedelta(hours=1))
+    world["clear"]()
+    late = (session_open_utc(D2) - session_close_utc(D1)).total_seconds() / 60 + 30
+    world["run_day"](D1, minutes_after_close=int(late))
+    rec = _day(sid, D1)
+    assert rec["formal"] is False and rec["formal_reason"] in ("not_run_in_decision_window", "execution_not_live")

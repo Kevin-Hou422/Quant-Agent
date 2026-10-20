@@ -157,6 +157,8 @@ def _finite(x) -> Optional[float]:
 QUOTE_FUTURE_TOL = pd.Timedelta(minutes=5)
 #: 交易所本地时间（moomoo 快照的 update_time 是这个时区的 naive 时间）
 QUOTE_TZ = "America/New_York"
+#: 常规盘内的报价，离那天收盘最多这么久（再早就是盘中某时刻之后不再更新 —— 停牌 / 没成交，不是收盘时的价）
+REGULAR_CLOSE_TOL = pd.Timedelta(minutes=30)
 
 
 def quote_problem(q, ref: float, now: Optional[datetime], limits: "PreTradeLimits") -> str:
@@ -177,17 +179,44 @@ def quote_problem(q, ref: float, now: Optional[datetime], limits: "PreTradeLimit
         return "quote_in_future"
     if (n - t) > pd.Timedelta(days=limits.max_quote_age_days):
         return "stale_quote"
-    try:
-        from app.core.data_engine.market_calendar import last_closed_session
-        need = pd.Timestamp(last_closed_session(n.to_pydatetime())).date()
-    except Exception as exc:          # 日历不可用：无法判断报价属于哪个交易日 → 不加风险
-        logger.error("[pretrade] 取最近收盘交易日失败 → 加风险订单按报价陈旧处理: %s", exc)
-        return "stale_quote"
-    if t.tz_convert(QUOTE_TZ).date() < need:
-        return "stale_quote"            # 报价早于最近一个已收盘交易日：不是当前市场的价
+    why = _session_problem(t, n)
+    if why:
+        return why
     if abs(ref - qp) / qp > limits.max_price_deviation:
         return "quote_mismatch"
     return ""
+
+
+def _session_problem(t: pd.Timestamp, n: pd.Timestamp) -> str:
+    """
+    报价时段合同（复审 2026-10-19 N06-d）。决策在收盘后、按收盘价做；能代表"现在的市场"的报价是：
+      · 最近一个已收盘交易日的常规盘**收盘前 REGULAR_CLOSE_TOL 内**、或那天的盘后；
+      · 之后交易日的盘前，或更新的盘中报价。
+    拒绝：那天常规盘更早时刻的报价（之后就没更新 —— 停牌 / 没成交）、那天或更早的盘前、非交易日时间戳。
+    日历不可用 → 无法判断时段 → 不加风险。
+    """
+    try:
+        from app.core.data_engine.market_calendar import (
+            last_closed_session, session_close_utc, session_open_utc,
+        )
+        need = pd.Timestamp(last_closed_session(n.to_pydatetime())).normalize()
+        day = t.tz_convert(QUOTE_TZ).tz_localize(None).normalize()
+        o_, c_ = session_open_utc(day), session_close_utc(day)
+    except Exception as exc:
+        logger.error("[pretrade] 交易日历不可用 → 加风险订单按报价陈旧处理: %s", exc)
+        return "stale_quote"
+    if o_ is None or c_ is None:
+        return "quote_outside_session"            # 周末 / 假日的时间戳：数据有问题
+    o_, c_ = pd.Timestamp(o_), pd.Timestamp(c_)
+    if day < need:
+        return "stale_quote"                      # 早于最近一个已收盘交易日
+    if day == need:
+        if t < o_:
+            return "stale_quote"                  # 那天的盘前：还没反映当天的收盘
+        if t <= c_ and c_ - t > REGULAR_CLOSE_TOL:
+            return "quote_stale_in_session"       # 盘中较早时刻之后再没更新
+        return ""                                 # 收盘前不久 / 盘后
+    return ""                                     # 之后交易日的盘前 / 盘中：更新的市场价
 
 
 def increases_risk(current_qty: float, signed_qty: float) -> bool:
