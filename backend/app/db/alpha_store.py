@@ -50,6 +50,8 @@ class AlphaRecord(_Base):
     ann_turnover: float    = Column(Float, default=0.0)
     status:       str      = Column(String(32), default="active")
     reasoning:    str      = Column(Text, default="")
+    #: 这些研究指标是在哪种信号 / 成交时钟下算的（复审 2026-10-19 §5.1；NULL = 2026-10-20 之前，c1）
+    clock_version: str     = Column(String(16), nullable=True)
 
 
 class AlphaICRecord(_Base):
@@ -70,6 +72,7 @@ class AlphaICRecord(_Base):
     # 只有摄取到**新 bar 之后**产生的 IC 才算前向。TR.4 的 →ACTIVE 门只能用 is_forward=True 的样本，
     # 否则会把历史回放当成前向战绩（这正是该门此前只能"仅记录不拦"的原因）。
     is_forward:      bool     = Column(Boolean, default=False, index=True)
+    clock_version:   str      = Column(String(16), nullable=True)      # §5.1；NULL = 2026-10-20 之前（c1）
 
 
 class AlphaDecision(_Base):
@@ -89,6 +92,11 @@ class AlphaDecision(_Base):
 # ---------------------------------------------------------------------------
 # Input dataclass
 # ---------------------------------------------------------------------------
+
+def _clock() -> str:
+    from app.core.data_engine.input_identity import clock_version
+    return clock_version()
+
 
 @dataclass
 class AlphaResult:
@@ -147,16 +155,18 @@ class AlphaStore:
         目前只有 Phase 11 的 `alpha_ic_history.is_forward`。SQLite 的
         ADD COLUMN 是 O(1) 元数据操作，安全且幂等。
         """
-        try:
-            with self._engine.begin() as conn:
-                cols = {r[1] for r in conn.exec_driver_sql(
-                    "PRAGMA table_info(alpha_ic_history)").fetchall()}
-                if cols and "is_forward" not in cols:
-                    conn.exec_driver_sql(
-                        "ALTER TABLE alpha_ic_history ADD COLUMN is_forward BOOLEAN DEFAULT 0")
-                    logger.info("[alpha_store] 迁移：alpha_ic_history 增列 is_forward")
-        except Exception as exc:      # 迁移失败不应让系统起不来，但要看得见
-            logger.warning("[alpha_store] 迁移 is_forward 失败（旧库将缺该列）: %s", exc)
+        adds = (("alpha_ic_history", "is_forward", "BOOLEAN DEFAULT 0"),
+                ("alpha_ic_history", "clock_version", "VARCHAR(16)"),
+                ("alpha_records", "clock_version", "VARCHAR(16)"))
+        for table, col, typ in adds:
+            try:
+                with self._engine.begin() as conn:
+                    cols = {r[1] for r in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()}
+                    if cols and col not in cols:
+                        conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+                        logger.info("[alpha_store] 迁移：%s 增列 %s", table, col)
+            except Exception as exc:      # 迁移失败不应让系统起不来，但要看得见
+                logger.warning("[alpha_store] 迁移 %s.%s 失败（旧库将缺该列）: %s", table, col, exc)
 
     def save(self, result: AlphaResult) -> int:
         """持久化一条 Alpha，返回自增 id。"""
@@ -171,6 +181,7 @@ class AlphaStore:
             ann_turnover = result.ann_turnover,
             status       = result.status,
             reasoning    = result.reasoning,
+            clock_version = _clock(),
         )
         with self._Session() as session:
             session.add(record)
@@ -295,6 +306,7 @@ class AlphaStore:
                 existing.realized_ic     = float(realized_ic)
                 existing.realized_return = float(realized_return)
                 existing.recorded_at     = datetime.utcnow()
+                existing.clock_version   = _clock()
                 if is_forward:
                     existing.is_forward = True
             else:
@@ -304,6 +316,7 @@ class AlphaStore:
                     realized_ic     = float(realized_ic),
                     realized_return = float(realized_return),
                     is_forward      = bool(is_forward),
+                    clock_version   = _clock(),
                 ))
             session.commit()
 

@@ -56,6 +56,13 @@ class SignalArchive(_Base):
     universe_n:      int      = Column(Integer, nullable=True)
     vintage:         str      = Column(String(40), nullable=True)
     code_version:    str      = Column(String(40), nullable=True)
+    clock_version:   str      = Column(String(16), nullable=True)      # §5.1；NULL = 2026-10-20 之前（c1）
+
+
+#: 策略证据的类别（复审 2026-10-19 N03-b）：forward = 用结果发生前就存档的信号结算；
+#: replay = 没有及时存档（首跑、停机补拉、晚到归档、换源）→ 按当下重算的信号结算，**只供研究**，
+#: 不进 →ACTIVE 门。NULL = 2026-10-20 之前的行（那时只记 forward）。
+EVIDENCE_FORWARD, EVIDENCE_REPLAY = "forward", "replay"
 
 
 class StrategyEvidence(_Base):
@@ -77,6 +84,8 @@ class StrategyEvidence(_Base):
     vintage:         str      = Column(String(40), nullable=True)
     code_version:    str      = Column(String(40), nullable=True)
     signal_digest:   str      = Column(String(64), nullable=True)
+    clock_version:   str      = Column(String(16), nullable=True)
+    evidence_class:  str      = Column(String(8), nullable=True)
 
 
 class EvidenceRevision(_Base):
@@ -146,11 +155,13 @@ class EvidenceStore:
     _ADDED_COLUMNS = {
         "signal_archive": {"price_source": "VARCHAR(16)", "data_digest": "VARCHAR(64)",
                            "universe_digest": "VARCHAR(16)", "universe_n": "INTEGER",
-                           "vintage": "VARCHAR(40)", "code_version": "VARCHAR(40)"},
+                           "vintage": "VARCHAR(40)", "code_version": "VARCHAR(40)",
+                           "clock_version": "VARCHAR(16)"},
         "strategy_evidence": {"price_source": "VARCHAR(16)", "data_digest": "VARCHAR(64)",
                               "universe_digest": "VARCHAR(16)", "universe_n": "INTEGER",
                               "vintage": "VARCHAR(40)", "code_version": "VARCHAR(40)",
-                              "signal_digest": "VARCHAR(64)"},
+                              "signal_digest": "VARCHAR(64)", "clock_version": "VARCHAR(16)",
+                              "evidence_class": "VARCHAR(8)"},
     }
 
     def _migrate_add_columns(self) -> None:
@@ -222,13 +233,16 @@ class EvidenceStore:
     # ------------------------------------------------------------------ 策略版本证据
     def record_strategy_ic(self, strategy_id: int, spec_hash: str, day, ic: float,
                            signal_asof, decision_ts: datetime, identity: Optional[dict] = None,
-                           signal_digest: str = "") -> bool:
+                           signal_digest: str = "", evidence_class: str = EVIDENCE_FORWARD) -> bool:
+        if evidence_class not in (EVIDENCE_FORWARD, EVIDENCE_REPLAY):
+            raise ValueError(f"未知的证据类别 {evidence_class!r}")
         day = _as_date(day)
         with self._Session() as s:
             s.add(StrategyEvidence(strategy_id=int(strategy_id), spec_hash=spec_hash, date=day,
                                    ic=float(ic), signal_asof=_as_date(signal_asof),
                                    decision_ts=_naive_utc(decision_ts), recorded_at=_utcnow(),
-                                   signal_digest=signal_digest or None, **_ident_cols(identity)))
+                                   signal_digest=signal_digest or None, evidence_class=evidence_class,
+                                   **_ident_cols(identity)))
             try:
                 s.commit()
                 return True
@@ -244,10 +258,20 @@ class EvidenceStore:
         return False
 
     def strategy_forward_ic(self, strategy_id: int, spec_hash: Optional[str] = None) -> List[StrategyEvidence]:
+        """正式前向证据（→ACTIVE 门只读这些）。replay 行不在内（N03-b）。"""
+        return self._strategy_rows(strategy_id, spec_hash, forward=True)
+
+    def strategy_replay_ic(self, strategy_id: int, spec_hash: Optional[str] = None) -> List[StrategyEvidence]:
+        """回放证据：没有及时存档的那几天按重算信号结算 —— 只供研究，不能升级成正式前向。"""
+        return self._strategy_rows(strategy_id, spec_hash, forward=False)
+
+    def _strategy_rows(self, strategy_id: int, spec_hash: Optional[str], forward: bool) -> List[StrategyEvidence]:
         with self._Session() as s:
             q = select(StrategyEvidence).where(StrategyEvidence.strategy_id == int(strategy_id))
             if spec_hash:
                 q = q.where(StrategyEvidence.spec_hash == spec_hash)
+            cls = StrategyEvidence.evidence_class
+            q = q.where((cls == EVIDENCE_FORWARD) | cls.is_(None)) if forward else q.where(cls == EVIDENCE_REPLAY)
             return list(s.scalars(q.order_by(StrategyEvidence.date)).all())
 
     # ------------------------------------------------------------------ 修订事件
@@ -267,8 +291,13 @@ class EvidenceStore:
 
 
 def _ident_cols(identity: Optional[dict]) -> dict:
-    keys = ("price_source", "data_digest", "universe_digest", "universe_n", "vintage", "code_version")
-    return {k: (identity or {}).get(k) for k in keys}
+    keys = ("price_source", "data_digest", "universe_digest", "universe_n", "vintage", "code_version",
+            "clock_version")
+    out = {k: (identity or {}).get(k) for k in keys}
+    if not out["clock_version"]:                 # 没给身份也要标时钟（§5.1：每一行都分版本）
+        from app.core.data_engine.input_identity import clock_version
+        out["clock_version"] = clock_version()
+    return out
 
 
 class ForwardBook:

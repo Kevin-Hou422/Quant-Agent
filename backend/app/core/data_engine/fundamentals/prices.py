@@ -37,19 +37,34 @@ SPLIT_PRICE_TOL = 1.30
 Splits = Dict[str, pd.Series]          # ticker → Series(拆股日 → 股本乘数；一拆十 = 10.0)
 
 
+def _factor_jumps(raw_close: pd.Series, adj_close: pd.Series) -> pd.Series:
+    f = (raw_close / adj_close).replace([np.inf, -np.inf], np.nan).dropna()
+    return (f.shift(1) / f).dropna()
+
+
+def detect_ambiguous(raw_close: pd.Series, adj_close: pd.Series) -> pd.Series:
+    """
+    跳变日 → 倍数：复权因子 1.15–1.5 倍的跳变（可能是小比例送股，也可能是特别分红，分不清）。
+    不当拆股，但调用方要把估值字段**异常隔离**（复审 2026-10-19 F13：此前只告警，市值照样偏）。
+    """
+    r = _factor_jumps(raw_close, adj_close)
+    small = r[((r >= SPLIT_AMBIGUOUS_RATIO) & (r < SPLIT_MIN_RATIO))
+              | ((r <= 1.0 / SPLIT_AMBIGUOUS_RATIO) & (r > 1.0 / SPLIT_MIN_RATIO))]
+    return small.round(4)
+
+
 def detect_splits(raw_close: pd.Series, adj_close: pd.Series) -> pd.Series:
     """
     拆股日 → 股本乘数（一拆十 = 10.0，十并一 = 0.1）。
     复权因子 f = raw/adj；拆股当天 f 跳变，乘数 = 前一日 f / 当日 f。
     """
     f = (raw_close / adj_close).replace([np.inf, -np.inf], np.nan).dropna()
-    r = (f.shift(1) / f).dropna()
+    r = _factor_jumps(raw_close, adj_close)
     big = r[(r >= SPLIT_MIN_RATIO) | (r <= 1.0 / SPLIT_MIN_RATIO)]
-    small = r[((r >= SPLIT_AMBIGUOUS_RATIO) & (r < SPLIT_MIN_RATIO))
-              | ((r <= 1.0 / SPLIT_AMBIGUOUS_RATIO) & (r > 1.0 / SPLIT_MIN_RATIO))]
+    small = detect_ambiguous(raw_close, adj_close)
     if len(small):
         logger.warning("[fundamentals] %s 复权因子有 %d 次 %.2f–%.2f 倍的跳变（%s）—— 可能是小比例送股或特别分红，"
-                       "**没有**当作拆股；若是送股，这几天之后的市值会偏差相应倍数",
+                       "**没有**当作拆股；估值字段在新股本到来前异常隔离（见 panels.build_panels）",
                        raw_close.name, len(small), SPLIT_AMBIGUOUS_RATIO, SPLIT_MIN_RATIO,
                        [str(pd.Timestamp(d).date()) for d in small.index])
     raw = raw_close.reindex(f.index)
@@ -74,11 +89,12 @@ def unsplit(split_adjusted_close: pd.Series, splits: pd.Series) -> pd.Series:
 
 def moomoo_raw_and_splits(tickers: List[str], start: str, end: str, *, host: str, port: int,
                           adj_close: Optional[pd.DataFrame] = None,
-                          provider_factory=None) -> Tuple[pd.DataFrame, Splits]:
+                          provider_factory=None, ambiguous_out: Optional[Splits] = None) -> Tuple[pd.DataFrame, Splits]:
     """
     adj_close : 同一次加载里已经拿到的前复权 close（单一 vintage）；None → 自己再取一次。
                 **不要传 PIT 增量拼出来的面板** —— 那是多个 vintage 的复权价拼接，拆股日前后
                 的比值不跳变，拆股会漏检。
+    ambiguous_out : 给了就把疑似小比例送股（detect_ambiguous）按 ticker 填进去（yahoo 路径的拆股列本身含送股）。
     """
     if provider_factory is None:
         from ..providers.moomoo_provider import MoomooProvider
@@ -89,9 +105,14 @@ def moomoo_raw_and_splits(tickers: List[str], start: str, end: str, *, host: str
     splits: Splits = {}
     for tk in raw.columns:
         if tk in adj_close.columns:
-            s = detect_splits(raw[tk], adj_close[tk].reindex(raw.index))
+            adj = adj_close[tk].reindex(raw.index)
+            s = detect_splits(raw[tk], adj)
             if not s.empty:
                 splits[tk] = s
+            if ambiguous_out is not None:
+                a = detect_ambiguous(raw[tk], adj)
+                if not a.empty:
+                    ambiguous_out[tk] = a
     return raw, splits
 
 

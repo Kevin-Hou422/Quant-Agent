@@ -140,13 +140,14 @@ def fundamentals_dir(settings) -> Path:
 
 
 def fetch_raw_and_splits(tickers: List[str], start: str, end: str, settings,
-                         adj_close: Optional[pd.DataFrame] = None):
+                         adj_close: Optional[pd.DataFrame] = None, ambiguous_out: Optional[dict] = None):
     """按 `price_source` 取不复权收盘价 + 拆股记录（两个源口径不同，见 prices.py）。"""
     from . import prices
     if str(getattr(settings, "price_source", "yahoo")) == "moomoo":
         return prices.moomoo_raw_and_splits(
             tickers, start, end, host=getattr(settings, "moomoo_host", "127.0.0.1"),
-            port=int(getattr(settings, "moomoo_port", 11111)), adj_close=adj_close)
+            port=int(getattr(settings, "moomoo_port", 11111)), adj_close=adj_close,
+            ambiguous_out=ambiguous_out)
     return prices.yahoo_raw_and_splits(tickers, start, end)
 
 
@@ -236,7 +237,8 @@ def cached_raw_and_splits(store: FundamentalsStore, tickers: List[str], index: p
     数据源没返回的票（代码不对 / 没权限）不记区间，下次还会再试。
     `index` 的首末日来自价格面板，都是真实有 bar 的交易日（周末加载不会因此多取一次）。
     """
-    fetch = fetch or (lambda tk, s, e, adj: fetch_raw_and_splits(tk, s, e, settings, adj))
+    amb: dict = {}
+    fetch = fetch or (lambda tk, s, e, adj: fetch_raw_and_splits(tk, s, e, settings, adj, ambiguous_out=amb))
     source = str(getattr(settings, "price_source", "yahoo") or "yahoo")
     start, end = pd.Timestamp(index[0]).normalize(), pd.Timestamp(index[-1]).normalize()
     got = store.load_raw_prices(source)
@@ -262,7 +264,7 @@ def cached_raw_and_splits(store: FundamentalsStore, tickers: List[str], index: p
                         if tk in coverage else since.strftime("%Y-%m-%d"),
                         pd.Timestamp(raw[tk].last_valid_index()).strftime("%Y-%m-%d")] for tk in have}
         store.save_raw_prices(source, raw[have], {tk: s for tk, s in (splits or {}).items() if tk in have},
-                              new_cov)
+                              new_cov, ambiguous={tk: s for tk, s in amb.items() if tk in have})
     if jobs:
         got = store.load_raw_prices(source)
         logger.info("[fundamentals] 不复权价：整段取 %d 只，取增量 %d 只，其余 %d 只读缓存",
@@ -318,17 +320,26 @@ def attach_fundamentals(
                "请配置 EDGAR_USER_AGENT（形如 \"Your Name you@example.com\"，SEC 要求声明身份）。"))
 
     raw = splits = None
+    ambiguous: dict = {}
     try:
         if price_fetch is not None:
-            raw, splits = price_fetch()
+            got = price_fetch()
+            raw, splits = got[0], got[1]
+            ambiguous = got[2] if len(got) > 2 else {}
         else:
             raw, splits = cached_raw_and_splits(store, list(universe), index, settings, adj_close)
+            ambiguous = store.load_ambiguous(str(getattr(settings, "price_source", "yahoo") or "yahoo"))
     except Exception as exc:
         logger.error("[fundamentals] 取不复权收盘价失败 → 估值字段（earnings_yield / book_to_price）"
                      "本次**不提供**；其余基本面字段照常: %s", exc)
 
     metrics = {tk: cached_metrics(store, tk, fx) for tk, fx in facts.items()}
-    panels, rep = build_panels(index, list(universe), facts, events, raw, splits, metrics)
+    panels, rep = build_panels(index, list(universe), facts, events, raw, splits, metrics,
+                               ambiguous=ambiguous)
+    try:
+        store.save_report(rep, index[-1])                  # §5.4 质量门读它
+    except Exception as exc:
+        logger.error("[fundamentals] 质量报告落盘失败（用到基本面的策略本轮会被质量门拦下）: %s", exc)
     for name, df in panels.items():
         data[name] = df.reindex(index=close.index, columns=close.columns)
     logger.info("[fundamentals] 已挂字段 %s | 末日覆盖率 %s | 无事实 %d 只 | 拆股 %d 只",

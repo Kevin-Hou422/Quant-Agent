@@ -79,14 +79,19 @@ def fresh_db(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def approved_verdict(dsl_by_id: dict, combo_weights: dict, aum: float, method: str = "ic_weighted",
-                     band: float = 0.0, settings=None) -> dict:
+                     band: float = 0.0, settings=None, design_at: str = "2000-01-03T00:00:00") -> dict:
     """
     批准时的可执行规格（外部审查 2026-10-18 F07）。每日循环只按带规格的 active 配置交易；
     用例里激活配置时用它，并且要在 settings 改完之后调用（规格记的是批准那一刻的交易参数）。
+    另带一份预登记的验证设计（复审 2026-10-19 N05-d：真实提案都会登记；→ACTIVE 只认登记之后的前向证据）。
+    `design_at` 缺省早于用例里的任何证据日期；测"登记之前的证据不算"时显式给一个更晚的时刻。
     """
+    from app.core.lifecycle.validation_design import design_hash, register_design
     from app.core.portfolio_manager.executable_spec import build_spec, spec_hash
     spec = build_spec(dsl_by_id, combo_weights, method, aum, band, settings=settings)
-    return {"executable_spec": spec, "spec_hash": spec_hash(spec)}
+    design = register_design(now=pd.Timestamp(design_at))
+    return {"executable_spec": spec, "spec_hash": spec_hash(spec),
+            "validation_design": design, "validation_design_hash": design_hash(design)}
 
 
 def _make_dataset(

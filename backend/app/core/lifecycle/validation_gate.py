@@ -40,6 +40,11 @@ logger = logging.getLogger(__name__)
 WidePanel = Dict[str, pd.DataFrame]
 
 
+def _clock() -> str:
+    from app.core.data_engine.input_identity import clock_version
+    return clock_version()
+
+
 @dataclass
 class ValidationResult:
     passed:          bool
@@ -61,6 +66,8 @@ class ValidationResult:
     partition:       Optional[dict] = None
     #: 冻结 Test 段上的一次性汇报（仅 report_test=True 时有值，**不参与门判定**）。
     held_out_test:   Optional[dict] = None
+    #: 信号 / 成交时钟口径（复审 2026-10-19 §5.1）
+    clock_version:   str = field(default_factory=lambda: _clock())
 
     def to_dict(self) -> dict:
         return {
@@ -75,6 +82,7 @@ class ValidationResult:
             "n_trials_source": self.n_trials_source,
             "partition": self.partition,
             "held_out_test": self.held_out_test,
+            "clock_version": self.clock_version,
         }
 
 

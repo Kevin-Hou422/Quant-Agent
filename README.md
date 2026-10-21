@@ -499,7 +499,21 @@ powershell -ExecutionPolicy Bypass -File scripts\start_forward.ps1 [-RegisterLog
   results are replay. Strategy promotion reads that strategy's own record (id + spec hash), and the
   t-stat is the smaller of the plain and the Newey-West one. Evidence rows carry the input identity
   (data digest, universe, actual price source, PIT vintage, code version), and a spec/runtime
-  mismatch quarantines the day instead of crediting it (review N02).
+  mismatch quarantines the day instead of crediting it (review N02). Days whose signal was not
+  archived in time (first run, backfill after downtime, late archive, source change) are kept as
+  `replay` evidence for research but never count as forward (review N03-b). Promotion to ACTIVE uses
+  the validation design **registered at proposal time** — thresholds, t-stat rule, evidence rule,
+  clock version, registration time, hashed — and counts only forward evidence dated after
+  registration; later changes to the `TR_*` settings do not move an existing strategy's bar (review
+  N05-d). Every stored result carries the signal/fill clock version (`c1` today) so results from
+  before and after the D14 clock change can be told apart (review §5.1).
+- **Fundamentals have a source / period quality gate** (review §5.4, F13). A strategy whose
+  expressions use fundamental fields passes proposal and trades only if the fundamentals quality
+  report for that very panel shows last-day coverage ≥ `FUND_MIN_COVERAGE` (0.8) for each field
+  used, and at most `FUND_MAX_ESTIMATED_SHARES` (10%) of names valued with an estimated share count
+  (diluted weighted average). SUE is paired with earnings releases by **fiscal quarter**, not by date
+  order; the share count expires with its own fact; suspected small stock dividends (1.15–1.5× jumps
+  in the adjustment factor) quarantine valuation fields until a newer share count arrives.
 - **Formal forward days are recorded, and started by a human** (review §7.3). `forward_record.py`
   writes one record per strategy per decision day (signal / target times, expected and actual
   session, target weights and shares, fills, unfilled reasons, cash and positions, costs, net return,
@@ -719,7 +733,7 @@ the file itself is the authority and documents *why* each default is what it is.
 ## 15. Testing & Engineering Discipline
 
 ```bash
-cd backend  && pytest -q          # 5256 tests (2 skipped, ~54 min; last full run 2026-10-20). One skip is the live-SEC
+cd backend  && pytest -q          # 5280 tests (2 skipped, ~53 min; last full run 2026-10-21). One skip is the live-SEC
                                   # contract test (needs EDGAR_USER_AGENT); the live-OpenD test also skips when OpenD is down
 cd frontend && npm run test       # 121 passed (11 files)
 cd frontend && npx tsc -b         # type check (what CI runs; `--noEmit` on the root tsconfig checks nothing)

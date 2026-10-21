@@ -117,10 +117,37 @@ class FundamentalsStore:
                   for tk, v in meta.get("splits", {}).items()}
         return raw, splits, dict(meta.get("coverage", {}))
 
+    def load_ambiguous(self, source: str) -> Dict[str, pd.Series]:
+        """{ticker: Series(跳变日 → 倍数)}：疑似小比例送股（复审 2026-10-19 F13，估值字段要异常隔离）。"""
+        jp = self._price_dir(source) / "meta.json"
+        if not jp.exists():
+            return {}
+        meta = json.loads(jp.read_text(encoding="utf-8"))
+        return {tk: pd.Series(list(v.values()), index=pd.DatetimeIndex(list(v)), dtype=float)
+                for tk, v in meta.get("ambiguous", {}).items()}
+
+    def save_report(self, report, asof) -> None:
+        """最近一次挂基本面时的质量报告（§5.4 质量门读它；asof = 那份面板的末日）。"""
+        self.root.mkdir(parents=True, exist_ok=True)
+        tmp = self.root / "_quality.json.tmp"
+        tmp.write_text(json.dumps({"asof": str(pd.Timestamp(asof).date()), "report": report.to_dict()},
+                                  ensure_ascii=False, default=str), encoding="utf-8")
+        tmp.replace(self.root / "_quality.json")
+
+    def load_report(self):
+        """(FundamentalsReport, 面板末日)；没有 → None。"""
+        from .panels import FundamentalsReport
+        p = self.root / "_quality.json"
+        if not p.exists():
+            return None
+        d = json.loads(p.read_text(encoding="utf-8"))
+        return FundamentalsReport.from_dict(d["report"]), pd.Timestamp(d["asof"])
+
     def save_raw_prices(self, source: str, raw: pd.DataFrame, splits: Dict[str, pd.Series],
-                        coverage: dict) -> None:
-        """与已有缓存合并后落盘：已有的值保留，只补新日期 / 新标的；拆股按日期并集。"""
+                        coverage: dict, ambiguous: Optional[Dict[str, pd.Series]] = None) -> None:
+        """与已有缓存合并后落盘：已有的值保留，只补新日期 / 新标的；拆股与疑似送股按日期并集。"""
         d = self._price_dir(source)
+        old_amb = self.load_ambiguous(source)
         old = self.load_raw_prices(source)
         merged_splits = {tk: s.copy() for tk, s in (old[1] if old else {}).items()}
         merged_cov = dict(old[2]) if old else {}
@@ -132,10 +159,18 @@ class FundamentalsStore:
             prev = merged_splits.get(tk)
             merged_splits[tk] = s if prev is None else pd.concat([prev, s[~s.index.isin(prev.index)]])
         merged_cov.update(coverage)
+        merged_amb = {tk: s.copy() for tk, s in old_amb.items()}
+        for tk, s in (ambiguous or {}).items():
+            if s is None or len(s) == 0:
+                continue
+            prev = merged_amb.get(tk)
+            merged_amb[tk] = s if prev is None else pd.concat([prev, s[~s.index.isin(prev.index)]])
         _atomic_parquet(raw.sort_index(), d / "raw_close.parquet", index=True)
         meta = {"coverage": merged_cov,
                 "splits": {tk: {str(pd.Timestamp(k).date()): float(v) for k, v in s.sort_index().items()}
-                           for tk, s in merged_splits.items()}}
+                           for tk, s in merged_splits.items()},
+                "ambiguous": {tk: {str(pd.Timestamp(k).date()): float(v) for k, v in s.sort_index().items()}
+                              for tk, s in merged_amb.items()}}
         tmp = d / "meta.json.tmp"
         tmp.write_text(json.dumps(meta), encoding="utf-8")
         tmp.replace(d / "meta.json")

@@ -1587,11 +1587,13 @@ def _activation_steps(sstore, sid: int, req, ok: bool, detail: dict) -> list:
 
 
 def _active_gate(rec, sid: int):
-    from app.core.lifecycle.promotion_gate import check_active_promotion
+    # 复审 2026-10-19 N05-d：按这份策略**预登记**的验证设计判（门槛取登记时的，不现读 settings），
+    # 只用登记之后、同一规格的 forward 证据（replay 不算，N03-b）
+    from app.core.lifecycle.validation_design import check_registered_activation
     from app.db.evidence_store import EvidenceStore
     spec_h = json.loads(rec.verdict or "{}").get("spec_hash", "")
-    ics = ([e.ic for e in EvidenceStore().strategy_forward_ic(sid, spec_h)] if spec_h else [])
-    return check_active_promotion(ics)
+    rows = EvidenceStore().strategy_forward_ic(sid, spec_h) if spec_h else []
+    return check_registered_activation(rec, rows)
 
 
 @router.post("/strategies/{sid}/activate", tags=["Strategy"])

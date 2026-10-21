@@ -154,6 +154,15 @@ def build_strategy_config(
         risk_report = {"risk_error": str(exc), "evaluated": False}
         degraded.append(f"risk_snapshot_failed: {exc}")
 
+    # 复审 2026-10-19 §5.4：用到基本面字段的策略，提案时就过来源 / 期间质量门（不过 → 不通过，并写明原因）
+    from app.core.data_engine.fundamentals.quality import strategy_quality_problem
+    fq = strategy_quality_problem({k: (factor_dsl or {}).get(k) for k in signals}, prices.index[-1])
+    if fq:
+        verdict["fundamentals_quality"] = fq
+        verdict.setdefault("reasons", [])
+        verdict["reasons"] = list(verdict["reasons"]) + [f"基本面质量门未过：{fq}"]
+        passed = False
+
     if degraded:
         verdict["degraded"] = degraded
         logger.warning("[strategy_builder] 该配置在 %d 处降级产出：%s", len(degraded), degraded)
@@ -162,8 +171,14 @@ def build_strategy_config(
     verdict["executable_spec"] = contract.spec
     verdict["spec_hash"] = contract.hash
     # 提案时的代码版本：不进哈希（否则每次部署都要重新审批），但要能事后知道这份规格是哪版代码给出的
-    from app.core.data_engine.input_identity import code_version
+    from app.core.data_engine.input_identity import clock_version, code_version
     verdict["approved_code_version"] = code_version()
+    verdict["clock_version"] = clock_version()                     # §5.1：门的证据是在哪种时钟下评的
+    # 复审 2026-10-19 N05-d：预登记 →ACTIVE 的验证设计（门槛 / 口径 / 登记时刻）。冻结权重是在选择段上拟合的，
+    # 上面门的结论不是未见样本外；资格只能来自这份设计 + 登记之后的前向数据
+    from app.core.lifecycle.validation_design import design_hash, register_design
+    verdict["validation_design"] = register_design()
+    verdict["validation_design_hash"] = design_hash(verdict["validation_design"])
     # 配置里的合成权重与带取自**冻结的合同**（规格里的取整值）：门评估的、每日循环交易的都是这一份
     return StrategyConfig(
         factors=list(signals.keys()),

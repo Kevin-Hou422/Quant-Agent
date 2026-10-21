@@ -369,6 +369,16 @@ class DailyTradingLoop:
                             "reason": "active_spec_mismatch", "detail": why, "spec_diff": diff,
                             "used_baseline": used_baseline,
                             "execution": self._maintain_live("active_spec_mismatch")}
+                # 复审 2026-10-19 §5.4：用到基本面字段 → 这份面板的基本面质量报告必须过门，否则不调仓
+                from app.core.data_engine.fundamentals.quality import strategy_quality_problem
+                fq = strategy_quality_problem(contract.factors, prices.index[-1])
+                if fq:
+                    why = f"active 策略 #{active.id} 用到基本面字段，质量门未过：{fq}"
+                    logger.error("[portfolio] %s → 本轮不调仓", why)
+                    return {"n_factors": 0, "days_processed": 0,
+                            "reason": "fundamentals_quality", "detail": why,
+                            "used_baseline": used_baseline,
+                            "execution": self._maintain_live("fundamentals_quality")}
                 # 信号按合同算：规格里的表达式 + 规格里的信号参数（verify 已确认与运行时一致）
                 try:
                     signals = contract.signals(dataset)
@@ -866,18 +876,27 @@ class DailyTradingLoop:
                 h = _json.loads(rec.verdict or "{}").get("spec_hash", "")
                 dates = composite.index
                 n = 0
+                cols = composite.columns
                 for t in range(max(1, len(dates) - self.STRATEGY_SETTLE_LOOKBACK), len(dates)):
                     arch = book.signal_for(dates[t - 1], dates[t])
-                    if arch is None or arch["spec_hash"] != h:
+                    if arch is not None and arch["spec_hash"] != h:
+                        continue                          # 那份存档属于另一个规格版本
+                    realized = rets.reindex(columns=cols).iloc[t].to_numpy(dtype=float)
+                    if arch is not None:                  # 前向：结果发生前就存档的那份信号
+                        ic = _cs_spearman(arch["signal"].reindex(cols).to_numpy(dtype=float), realized)
+                        if not np.isnan(ic) and ev.record_strategy_ic(
+                                rec.id, h, dates[t], ic, dates[t - 1], arch["recorded_at"],
+                                identity=getattr(self, "_identity", None),
+                                signal_digest=arch.get("data_digest", "")):
+                            n += 1
                         continue
-                    cols = composite.columns
-                    ic = _cs_spearman(arch["signal"].reindex(cols).to_numpy(dtype=float),
-                                      rets.reindex(columns=cols).iloc[t].to_numpy(dtype=float))
-                    if not np.isnan(ic) and ev.record_strategy_ic(
-                            rec.id, h, dates[t], ic, dates[t - 1], arch["recorded_at"],
-                            identity=getattr(self, "_identity", None),
-                            signal_digest=arch.get("data_digest", "")):
-                        n += 1
+                    # 复审 2026-10-19 N03-b：没有及时存档（首跑 / 停机补拉 / 晚到 / 换源）→ 按当下重算的信号
+                    # 记一条 **replay**：保留研究价值，不进 →ACTIVE 门（strategy_forward_ic 不读它）
+                    ic = _cs_spearman(composite.iloc[t - 1].to_numpy(dtype=float), realized)
+                    if not np.isnan(ic):
+                        ev.record_strategy_ic(rec.id, h, dates[t], ic, dates[t - 1],
+                                              now or datetime.utcnow(), identity=getattr(self, "_identity", None),
+                                              evidence_class="replay")
                 book.archive(dates[-1], composite.iloc[-1], now, spec_hash=h)
                 out[key] = n
             except Exception as exc:

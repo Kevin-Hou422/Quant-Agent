@@ -182,6 +182,10 @@ class Settings(BaseSettings):
     #: 全路径强制三段切割（IS / Validate / Test）。关掉 = 退回两段，
     #: 汇报的 OOS 就是选择时用过的那一段（循环论证）。默认 True。
     s_three_way_enabled:   bool  = True
+    #: 基本面质量门（复审 2026-10-19 §5.4）：策略用到基本面字段时，末日覆盖率不低于这个、
+    #: 估值字段里用估计股本（稀释加权平均）的标的占比不高于这个，才允许提案通过 / 交易
+    fund_min_coverage:     float = 0.80
+    fund_max_estimated_shares: float = 0.10
     #: 研究上下文的实验名（复审 2026-10-19 N09-c；写进每次搜索的运行记录）
     research_experiment:   str   = "default"
     #: Test 段按**日历**冻结的年数（不随数据集长度漂移）。

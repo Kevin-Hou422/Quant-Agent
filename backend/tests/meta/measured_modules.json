@@ -1370,7 +1370,7 @@
    "proof_entries_min": 97,
    "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
    "refuted_entries_min": 2,
-   "unmeasured_points_max": 2662
+   "unmeasured_points_max": 2727
   },
   "refuted_by_counterexample": {
    "count": 2,
@@ -1398,9 +1398,9 @@
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
   "measured_points": 1982,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-  "current_plan_points": 4644,
+  "current_plan_points": 4709,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-  "unmeasured_points": 2662,
+  "unmeasured_points": 2727,
   "newly_in_scope_modules": [
    "app/core/risk_engine/factor_model.py",
    "app/core/execution/broker_gateway.py",
@@ -1425,7 +1425,9 @@
    "app/core/data_engine/input_identity.py",
    "app/core/data_engine/research_context.py",
    "app/core/portfolio_manager/strategy_contract.py",
-   "app/db/forward_record.py"
+   "app/db/forward_record.py",
+   "app/core/data_engine/fundamentals/quality.py",
+   "app/core/lifecycle/validation_design.py"
   ],
   "per_module_delta": {
    "app/agent/_agent.py": {
@@ -1928,10 +1930,10 @@
    {
     "date": "2026-10-19 (复审修复批)",
     "from": 2407,
-    "to": 2662,
-    "why": "复审 2026-10-19（N01–N09）的修复：N01 发单途中熔断复查；N02/N04 输入身份（input_identity）、健康门检查截断后的面板；N03 前向截止改为开盘；N05 提案先冻结规格、门与每日循环共用风险路径；N06 报价合同与交易时段；N07 试验运行生命周期；N08 调仓前市值口径 + 成交后净值归一（股数 + 现金参考账本验算）；N09 研究上下文 research_context（全部研究入口同一切法）；N05-e 策略合同 strategy_contract（唯一目标生成函数）；§5.2 规格 v2；§5.3 按券商账户建锁；§7.3 正式前向每日记录 forward_record。",
+    "to": 2727,
+    "why": "复审 2026-10-19（N01–N09）的修复：N01 发单途中熔断复查；N02/N04 输入身份（input_identity）、健康门检查截断后的面板；N03 前向截止改为开盘；N05 提案先冻结规格、门与每日循环共用风险路径；N06 报价合同与交易时段；N07 试验运行生命周期；N08 调仓前市值口径 + 成交后净值归一（股数 + 现金参考账本验算）；N09 研究上下文 research_context（全部研究入口同一切法）；N05-e 策略合同 strategy_contract（唯一目标生成函数）；§5.2 规格 v2；§5.3 按券商账户建锁；§7.3 正式前向每日记录 forward_record；第三轮：§5.1 时钟版本标识、N03-b 证据分 forward / replay、N05-d 预登记验证设计 validation_design、F13 / §5.4 基本面（SUE 期间配对、股本逐字段过期、疑似送股异常隔离、质量门 fundamentals/quality）。",
     "how_it_was_handled": "**未做逐点变异复核**（按用户此前要求，登记为欠账；做不做见路线图待决事项 D5；复审建议先补 N01–N09 与恢复的关键路径）。每条发现都有对应的回归用例，其中一部分直接把审查的复现脚本改写成了断言修复后的行为。",
-    "owed": "这 255 个点欠逐点复核。 新进入范围的模块：['app/core/data_engine/input_identity.py', 'app/core/data_engine/research_context.py', 'app/core/portfolio_manager/strategy_contract.py', 'app/db/forward_record.py']。"
+    "owed": "这 320 个点欠逐点复核。 新进入范围的模块：['app/core/data_engine/fundamentals/quality.py', 'app/core/lifecycle/validation_design.py']。"
    }
   ]
  },

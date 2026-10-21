@@ -398,16 +398,21 @@ class TestMinVarianceWeights:
         assert all(v >= 0.0 for v in w.values()), f"出现了负权重：{w}"
         assert sum(w.values()) == pytest.approx(1.0)
 
-    @pytest.mark.parametrize("n_days,equal", [(19, True), (20, False)])
-    def test_the_minimum_sample_is_twenty_usable_days(self, n_days, equal):
-        """`mask.sum() < max(2n, 20)`：恰好 20 个可用日就够，19 个不够（两侧都钉住）。"""
+    @pytest.mark.parametrize("n_factors,n_days,equal", [(2, 59, True), (2, 60, False),
+                                                        (5, 74, True), (5, 75, False)])
+    def test_the_minimum_sample_follows_the_f12_study(self, n_factors, n_days, equal):
+        """
+        复审 2026-10-19 F12：门槛 = max(15 × 因子数, 60) 个可用日（两侧都钉住）。
+        此前是 max(2n, 20) —— `tools/research/min_variance_study.py` 的等波动设计里，8 个因子 20 天时
+        最小方差比等权差 10% 以上的概率是 86%；到 15 天 / 因子才降到 5% 以下（见 docs/F12_MIN_VARIANCE_STUDY.md）。
+        """
         mk, ret, rng = _mv_world(9, n_days=n_days)
-        sigs = {"a": mk(rng.normal(0, 1, (n_days, len(COLS)))),
-                "b": mk(rng.normal(0, 1, (n_days, len(COLS))))}
+        names = [f"f{i}" for i in range(n_factors)]
+        sigs = {k: mk(rng.normal(0, 1, (n_days, len(COLS)))) for k in names}
         usable = int((~np.isnan(np.stack([_factor_returns(v, ret) for v in sigs.values()], 1)).any(1)).sum())
         assert usable == n_days
         w = AlphaCombiner().optimize_weights(sigs, ret, method="min_variance")
-        assert (w == {"a": 0.5, "b": 0.5}) is equal
+        assert (w == {k: pytest.approx(1.0 / n_factors) for k in names}) is equal
 
     def test_identical_alphas_still_produce_usable_weights(self):
         """完全相同的两条因子 → 协方差奇异；岭正则被删会让 `inv` 抛或给出天文数字。"""

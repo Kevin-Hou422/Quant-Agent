@@ -490,7 +490,8 @@ def test_identity_from_settings_builds_a_client(tmp_path, monkeypatch):
     assert data["roe"]["AAPL"].notna().all()
 
 
-_MOOMOO_KW = {"host": "h", "port": 1, "adj_close": "ADJ"}
+# ambiguous_out：疑似小比例送股的回填口（复审 2026-10-19 F13），fetch 没给就是 None
+_MOOMOO_KW = {"host": "h", "port": 1, "adj_close": "ADJ", "ambiguous_out": None}
 
 
 @pytest.mark.parametrize("source,expected,kwargs", [("moomoo", "moomoo", _MOOMOO_KW), ("yahoo", "yahoo", {}),
@@ -638,7 +639,7 @@ def test_cached_values_are_not_overwritten_by_a_later_fetch(tmp_path):
 def test_attach_uses_the_price_cache_on_the_default_path(tmp_path, monkeypatch):
     calls = []
 
-    def fake_fetch(tickers, start, end, settings, adj_close=None):
+    def fake_fetch(tickers, start, end, settings, adj_close=None, ambiguous_out=None):
         calls.append((tuple(tickers), start, end))
         df = fx.moomoo_prices()
         return df["raw"][list(tickers)], {"NVDA": prices.detect_splits(df["raw"]["NVDA"], df["qfq"]["NVDA"])}

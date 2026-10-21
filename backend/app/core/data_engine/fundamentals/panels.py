@@ -24,6 +24,14 @@ panels.py — 基本面事实 → 日频稀疏字段面板（Phase 10.1 / 10.2 /
 
 逐事实过期（F13）：除了"最近一次披露超过 MAX_STALE_DAYS"，每个字段还按**它自己那条事实的期末日**
 过期（MAX_PERIOD_AGE_DAYS）—— 只更新了股本的披露不能让一年前的利润数字继续算"新鲜"。
+股本同样按它自己那条事实的期末日过期（复审 2026-10-19：此前股本没有逐字段过期）。
+
+SUE 与财报公告按**盈利期间**配对（复审 2026-10-19 F13 / D8）：每条 8-K 2.02 对应"公告日之前最近的那个财季末"
+（只用公告日之前已知的财季日历推算）。只有公告对应的财季**比当前 SUE 那一季新**时才置空 SUE；同一季的
+更正公告不再把已申报那季的 SUE 置空到下一份申报。推不出财季的公告退回按时间先后（偏保守）。
+
+疑似小比例送股（复权因子 1.15–1.5 倍跳变，见 prices.detect_ambiguous）进**异常隔离**：从跳变日起、直到出现
+口径日晚于跳变日的股本为止，这只票的市值 / E/P / B/P 置空（不确定股本有没有变，宁可没有也不给一个可能偏 20% 的数）。
 
 市值与拆股
 ----------
@@ -64,13 +72,17 @@ METRIC_LOOKBACK = pd.Timedelta(days=int(365 * 4.5))
 METRIC_COLUMNS = ["filed", "ni_ttm", "rev_ttm", "gp_ttm", "equity", "assets", "assets_prev",
                   "shares", "shares_basis", "sue",
                   # F13：各事实的期末日（逐事实过期）、SUE 对应的季末、股本来源
-                  "ni_end", "rev_end", "gp_end", "eq_end", "at_end", "sue_qend", "shares_source"]
+                  "ni_end", "rev_end", "gp_end", "eq_end", "at_end", "sue_qend", "shares_source",
+                  # 复审 2026-10-19：股本那条事实自己的期末日（股本也逐字段过期）
+                  "sh_end"]
 #: 股本来源（置信度从高到低）：封面页实数 / 资产负债表 / 稀释加权平均（不是期末股本，只是兜底）
 SHARES_SOURCES = {2: "cover", 1: "balance_sheet", 0: "diluted_weighted_average"}
 #: metric_events 的算法版本。改了计算口径就 +1 —— service 层的缓存据此失效。
-METRICS_VERSION = 3
+METRICS_VERSION = 4
 #: 估值合理性护栏：超出即视为股本口径错误（多类别股等），置 NaN 并记入报告
 MAX_ABS_EARNINGS_YIELD, MAX_BOOK_TO_PRICE = 2.0, 20.0
+#: 财报公告（8-K 2.02）距它对应的财季末最多这么多天（大公司 3–6 周，10-K 季可到 60 天以上）
+ANNOUNCE_MAX_LAG = pd.Timedelta(days=100)
 
 
 @dataclass
@@ -88,13 +100,36 @@ class FundamentalsReport:
     shares_source:   Dict[str, str] = field(default_factory=dict)      # ticker → cover / balance_sheet / …
     #: 新公告已出、申报未到而被置空的 SUE 天数（F13）
     sue_pending:     Dict[str, int] = field(default_factory=dict)
+    #: 公告 ↔ 财季配对（复审 2026-10-19 F13 / D8）：{ticker: {paired, unpaired, events: [{announced, quarter_end}]}}
+    sue_pairing:     Dict[str, dict] = field(default_factory=dict)
+    #: 末日市值用的是**估计**股本（稀释加权平均）的标的（复审 2026-10-19 §5.4 质量门用）
+    estimated_shares: List[str] = field(default_factory=list)
+    #: 疑似小比例送股的异常隔离：{ticker: {events: [日期], days: 被置空的天数}}
+    quarantined:     Dict[str, dict] = field(default_factory=dict)
+    #: 面板里的标的数（质量门按比例判断）
+    n_tickers:       int = 0
 
     def to_dict(self) -> dict:
         return {"coverage": {k: round(v, 4) for k, v in self.coverage.items()},
                 "no_facts": list(self.no_facts), "stale": dict(self.stale),
                 "short_history": dict(self.short_history), "splits": self.splits,
                 "sanity_rejected": dict(self.sanity_rejected),
-                "shares_source": dict(self.shares_source), "sue_pending": dict(self.sue_pending)}
+                "shares_source": dict(self.shares_source), "sue_pending": dict(self.sue_pending),
+                "sue_pairing": {k: {"paired": v["paired"], "unpaired": v["unpaired"]}
+                                for k, v in self.sue_pairing.items()},
+                "estimated_shares": list(self.estimated_shares), "quarantined": dict(self.quarantined),
+                "n_tickers": int(self.n_tickers)}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "FundamentalsReport":
+        """`to_dict` 的反向（质量门读落盘的报告用；sue_pairing 只保留计数）。"""
+        return cls(coverage=dict(d.get("coverage", {})), no_facts=list(d.get("no_facts", [])),
+                   stale=dict(d.get("stale", {})), short_history=dict(d.get("short_history", {})),
+                   splits=dict(d.get("splits", {})), sanity_rejected=dict(d.get("sanity_rejected", {})),
+                   shares_source=dict(d.get("shares_source", {})), sue_pending=dict(d.get("sue_pending", {})),
+                   sue_pairing={k: dict(v, events=[]) for k, v in d.get("sue_pairing", {}).items()},
+                   estimated_shares=list(d.get("estimated_shares", [])),
+                   quarantined=dict(d.get("quarantined", {})), n_tickers=int(d.get("n_tickers", 0)))
 
 
 def _split_factor(splits: Optional[pd.Series], basis: np.ndarray,
@@ -131,7 +166,7 @@ def metric_events(facts: pd.DataFrame, since: Optional[pd.Timestamp] = None) -> 
             if cost is not None and cost[1] == rev[1]:
                 gp = (rev[0] - cost[0], rev[1])
         eq, at = pit.latest_instant(vis, "equity"), pit.latest_instant(vis, "assets")
-        shares, basis, source = _shares(vis)
+        shares, basis, source, sh_end = _shares(vis)
         s = pit.sue(vis)
         rows.append({
             "filed": f,
@@ -148,9 +183,10 @@ def metric_events(facts: pd.DataFrame, since: Optional[pd.Timestamp] = None) -> 
             "gp_end": None if gp is None else gp[1],
             "eq_end": None if eq is None else eq["end"], "at_end": None if at is None else at["end"],
             "sue_qend": None if s is None else s[1], "shares_source": source,
+            "sh_end": sh_end,
         })
     out = pd.DataFrame(rows, columns=METRIC_COLUMNS)
-    for c in ("filed", "shares_basis", "ni_end", "rev_end", "gp_end", "eq_end", "at_end", "sue_qend"):
+    for c in ("filed", "shares_basis", "ni_end", "rev_end", "gp_end", "eq_end", "at_end", "sue_qend", "sh_end"):
         out[c] = pd.to_datetime(out[c])
     out["shares_source"] = pd.to_numeric(out["shares_source"], errors="coerce")
     return out
@@ -162,7 +198,7 @@ def _or_nan(v: Optional[float]) -> float:
 
 def _shares(vis: pd.DataFrame):
     """
-    (股本, 口径日, 来源)。候选里取**期末日最新**的；并列时 封面页 > 资产负债表 > 稀释加权平均。
+    (股本, 口径日, 来源, 期末日)。候选里取**期末日最新**的；并列时 封面页 > 资产负债表 > 稀释加权平均。
     来源见 SHARES_SOURCES —— 稀释加权平均不是期末股本（期内回购 / 增发会让它偏离），只是兜底。
     口径日：封面页股本是"截至某日"的实数 → 用它自己的日期；另外两种在后续文件里会被按
     披露时的拆股口径重述 → 用披露日。
@@ -180,9 +216,9 @@ def _shares(vis: pd.DataFrame):
         d = dil.sort_values(["end", "filed"]).iloc[-1]
         cands.append((d["end"], 0, float(d["val"]), d["filed"]))
     if not cands:
-        return np.nan, pd.NaT, np.nan
-    _, src, val, basis = max(cands, key=lambda c: (c[0], c[1]))
-    return (val, basis, src) if val > 0 else (np.nan, pd.NaT, np.nan)
+        return np.nan, pd.NaT, np.nan, pd.NaT
+    end, src, val, basis = max(cands, key=lambda c: (c[0], c[1]))
+    return (val, basis, src, end) if val > 0 else (np.nan, pd.NaT, np.nan, pd.NaT)
 
 
 def _step_frame(events: pd.DataFrame, index: pd.DatetimeIndex) -> pd.DataFrame:
@@ -206,21 +242,76 @@ def _age_mask(index: pd.DatetimeIndex, ends: pd.Series) -> np.ndarray:
     return pd.isna(e) | (age > np.timedelta64(MAX_PERIOD_AGE_DAYS, "D"))
 
 
-def sue_pending_mask(index: pd.DatetimeIndex, sue_since: pd.Series,
-                     events: Optional[pd.DataFrame]) -> np.ndarray:
+def quarter_calendar(facts: pd.DataFrame) -> pd.Series:
+    """这只票的财季末 → 那一季第一次披露的日期（用来推"公告日之前已知的财季日历"）。"""
+    if facts is None or facts.empty:
+        return pd.Series(dtype="datetime64[ns]")
+    q = pit.quarterly(facts, "net_income")
+    ni = facts[facts["concept"].astype(str) == "net_income"]
+    first = {}
+    for e in q:
+        rows = ni[(pd.to_datetime(ni["end"]) - e).abs() <= pit.DATE_TOL]
+        if len(rows):
+            first[pd.Timestamp(e)] = pd.Timestamp(pd.to_datetime(rows["filed"]).min())
+    return pd.Series(first, dtype="datetime64[ns]").sort_index()
+
+
+def pair_announcements(events: Optional[pd.DataFrame], calendar: pd.Series) -> List[dict]:
     """
-    True = 当天有一条**比当前 SUE 更新**的财报公告（8-K 2.02）已经可见，而那一季的申报还没到。
-    sue_since：当前 SUE 那一季第一次可见的披露日（逐日阶梯）。两边都按"披露日之后第一个交易日"生效。
+    每条财报公告 → 它报告的财季末（复审 2026-10-19 F13 / D8：按期间配对，不靠时间先后）。
+    只用公告日**之前**已经披露过的财季（及其整年后的同季）推算：候选财季末 c 满足 c < 公告日 ≤ c + ANNOUNCE_MAX_LAG，
+    取最晚的那个。推不出 → quarter_end = None（调用方按时间先后处理，偏保守）。
+    """
+    out: List[dict] = []
+    if events is None or events.empty:
+        return out
+    known = list(calendar.items())
+    for a in sorted(pd.to_datetime(events["filing_date"]).dropna()):
+        a = pd.Timestamp(a)
+        cands = []
+        for qend, first_filed in known:
+            if pd.Timestamp(first_filed) >= a:
+                continue
+            for k in (0, 1, 2):
+                c = pd.Timestamp(qend) + k * pit.YEAR
+                if c < a <= c + ANNOUNCE_MAX_LAG:
+                    cands.append(c)
+        out.append({"announced": a, "quarter_end": max(cands) if cands else None})
+    return out
+
+
+def sue_pending_mask(index: pd.DatetimeIndex, sue_since: pd.Series,
+                     events: Optional[pd.DataFrame], sue_qend: Optional[pd.Series] = None,
+                     pairing: Optional[List[dict]] = None) -> np.ndarray:
+    """
+    True = 当天可见的最近一条财报公告（8-K 2.02）报告的是**比当前 SUE 更新的那一季**，而那一季的申报还没到。
+    给了 `pairing`（见 pair_announcements）与 `sue_qend` → 按盈利期间比较；公告推不出财季 → 退回按时间：
+    公告日晚于当前 SUE 第一次可见的日子（sue_since）。两边都按"披露日之后第一个交易日"生效。
     """
     out = np.zeros(len(index), dtype=bool)
     if events is None or events.empty or len(index) == 0:
         return out
-    days = np.sort(pd.to_datetime(events["filing_date"]).dropna().values)
+    if pairing is None:
+        pairing = [{"announced": pd.Timestamp(a), "quarter_end": None}
+                   for a in sorted(pd.to_datetime(events["filing_date"]).dropna())]
+    days = np.array([p["announced"] for p in pairing], dtype="datetime64[ns]")
+    qends = np.array([np.datetime64("NaT") if p["quarter_end"] is None else np.datetime64(p["quarter_end"], "ns")
+                      for p in pairing], dtype="datetime64[ns]")
     # 当天可见的最近一条公告：公告日严格早于当天
     pos = np.searchsorted(days, index.values, side="left") - 1
-    latest = np.where(pos >= 0, days[np.clip(pos, 0, None)], np.datetime64("NaT"))
+    has = pos >= 0
+    p = np.clip(pos, 0, None)
+    latest = np.where(has, days[p], np.datetime64("NaT"))
+    latest_q = np.where(has, qends[p], np.datetime64("NaT"))
     since = pd.to_datetime(sue_since).values
-    return ~pd.isna(latest) & ~pd.isna(since) & (latest > since)
+    by_time = ~pd.isna(latest) & ~pd.isna(since) & (latest > since)
+    if sue_qend is None:
+        return by_time
+    cur_q = pd.to_datetime(sue_qend).values
+    tol = np.timedelta64(int(pit.DATE_TOL.days), "D")
+    paired = ~pd.isna(latest_q)
+    newer = paired & (pd.isna(cur_q) | (latest_q > cur_q + tol))
+    return np.where(paired, newer & ~pd.isna(since), by_time)
 
 
 def earnings_days(events: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
@@ -257,6 +348,7 @@ def build_panels(
     raw_close: Optional[pd.DataFrame] = None,
     splits: Optional[Dict[str, pd.Series]] = None,
     metrics: Optional[Dict[str, pd.DataFrame]] = None,
+    ambiguous: Optional[Dict[str, pd.Series]] = None,
 ) -> tuple:
     """
     返回 ({字段: DataFrame(index × tickers)}, FundamentalsReport)。
@@ -266,13 +358,15 @@ def build_panels(
                 字段缺席（引用它的表达式会报错）好过一列用复权价凑出来的数。
     splits    : ticker → Series(拆股日 → 股本乘数)。
     metrics   : ticker → 已算好的 `metric_events` 结果（service 层按披露日增量缓存）；缺的现算。
+    ambiguous : ticker → Series(跳变日 → 倍数)：疑似小比例送股（prices.detect_ambiguous），估值字段异常隔离。
     """
     index = pd.DatetimeIndex(index)
     fields = ALL_FIELDS if raw_close is not None else tuple(
         f for f in ALL_FIELDS if f not in VALUATION_FIELDS)
     panels = {f: pd.DataFrame(np.nan, index=index, columns=tickers) for f in fields}
-    rep = FundamentalsReport()
+    rep = FundamentalsReport(n_tickers=len(tickers))
     splits = splits or {}
+    ambiguous = ambiguous or {}
     since = index[0] - pd.Timedelta(days=MAX_STALE_DAYS + 30)
     for tk in tickers:
         fx = facts.get(tk)
@@ -305,13 +399,21 @@ def build_panels(
             prev = m["assets_prev"].to_numpy(dtype=float)
             panels["asset_growth"][tk] = np.where(prev > 0, at / prev - 1.0, np.nan)
         sue = np.where(_age_mask(index, m["sue_qend"]), np.nan, m["sue"].to_numpy(dtype=float))
-        pending = sue_pending_mask(index, m["sue_since"], ev)
+        pairing = pair_announcements(ev, quarter_calendar(fx))
+        if pairing:
+            rep.sue_pairing[tk] = {"paired": sum(p["quarter_end"] is not None for p in pairing),
+                                   "unpaired": sum(p["quarter_end"] is None for p in pairing),
+                                   "events": [{"announced": p["announced"], "quarter_end": p["quarter_end"]}
+                                              for p in pairing]}
+        pending = sue_pending_mask(index, m["sue_since"], ev, m["sue_qend"], pairing)
         if (pending & np.isfinite(sue)).any():
             rep.sue_pending[tk] = int((pending & np.isfinite(sue)).sum())
         panels["sue"][tk] = np.where(pending, np.nan, sue)
         src = m["shares_source"].iloc[-1] if len(m) else np.nan
         if pd.notna(src):
             rep.shares_source[tk] = SHARES_SOURCES.get(int(src), "unknown")
+            if int(src) == 0:
+                rep.estimated_shares.append(tk)
 
         if raw_close is None or tk not in raw_close:
             continue
@@ -321,7 +423,21 @@ def build_panels(
             rep.splits[tk] = {str(pd.Timestamp(d).date()): float(r) for d, r in sp.items()}
         basis = pd.to_datetime(m["shares_basis"]).values
         factor = _split_factor(sp, basis, index)
-        mcap = raw.to_numpy(dtype=float) * m["shares"].to_numpy(dtype=float) * factor
+        # 股本也按它自己那条事实的期末日过期（复审 2026-10-19）
+        shares = np.where(_age_mask(index, m["sh_end"]), np.nan, m["shares"].to_numpy(dtype=float))
+        mcap = raw.to_numpy(dtype=float) * shares * factor
+        # 疑似小比例送股：跳变日起、到口径日晚于跳变日的股本出现为止，估值字段隔离
+        quarantine = np.zeros(len(index), dtype=bool)
+        amb = ambiguous.get(tk)
+        if amb is not None and len(amb):
+            for e in pd.to_datetime(pd.Index(amb.index)):
+                quarantine |= (index.values >= np.datetime64(e, "ns")) & ~(basis > np.datetime64(e, "ns"))
+            rep.quarantined[tk] = {"events": [str(pd.Timestamp(e).date()) for e in sorted(amb.index)],
+                                   "days": int(quarantine.sum())}
+            if quarantine.any():
+                logger.warning("[fundamentals] %s 有疑似小比例送股 %s → %d 天的市值 / E/P / B/P 异常隔离（置空）",
+                               tk, rep.quarantined[tk]["events"], int(quarantine.sum()))
+            mcap = np.where(quarantine, np.nan, mcap)
         with np.errstate(divide="ignore", invalid="ignore"):
             ey = np.where(mcap > 0, ni / mcap, np.nan)
             # 净资产 ≤ 0（回购把账面权益买成负的：MCD、SBUX、PM …）时 B/P 没有"便宜 / 贵"的含义

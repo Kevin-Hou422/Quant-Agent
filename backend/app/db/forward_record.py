@@ -197,8 +197,10 @@ def build_daily_record(result: Dict[str, Any], *, strategy_id: int, spec_hash: s
     rec = (ex.get("reconcile") or {}) if isinstance(ex, dict) else {}
     now_n = _naive_utc(now)
 
+    from app.core.data_engine.input_identity import clock_version
     out: Dict[str, Any] = {"decision_date": str(day.date()), "strategy_id": int(strategy_id),
-                           "spec_hash": spec_hash, "code_version": code_version(), "data_identity": identity}
+                           "spec_hash": spec_hash, "code_version": code_version(), "data_identity": identity,
+                           "clock_version": clock_version()}
 
     # ---- 信号 / 目标生成与存档时间
     out["targets_generated_at"] = now_n.isoformat()

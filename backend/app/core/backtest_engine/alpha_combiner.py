@@ -225,6 +225,11 @@ class AlphaCombiner:
 
     #: 协方差向对角收缩的比例（样本协方差噪声大；固定值，不做数据驱动调参 —— 那又是一个被拟合的参数）
     MIN_VAR_SHRINK = 0.2
+    #: 估协方差至少要这么多个可用日：max(每因子 × 因子数, 下限)。复审 2026-10-19 F12 的蒙特卡洛
+    #: （tools/research/min_variance_study.py，docs/F12_MIN_VARIANCE_STUDY.md）：等波动时 8 因子 20 天，
+    #: 估出来的权重比等权差 10% 以上的概率是 86%；15 天 / 因子才降到 5% 以下。此前门槛是 max(2n, 20)。
+    MIN_VAR_DAYS_PER_FACTOR = 15
+    MIN_VAR_MIN_DAYS = 60
 
     def _min_variance_weights(
         self,
@@ -258,9 +263,10 @@ class AlphaCombiner:
 
         mat  = np.stack(vecs, axis=1)  # (T, n)：各因子组合的日收益
         mask = ~np.isnan(mat).any(axis=1)
-        if mask.sum() < max(2 * n, 20):
-            logger.warning("[AlphaCombiner] min_variance 可用的因子组合收益只有 %d 天，权重退回**等权**",
-                           int(mask.sum()))
+        need = max(self.MIN_VAR_DAYS_PER_FACTOR * n, self.MIN_VAR_MIN_DAYS)
+        if mask.sum() < need:
+            logger.warning("[AlphaCombiner] min_variance 可用的因子组合收益只有 %d 天（%d 个因子至少要 %d 天），"
+                           "权重退回**等权**", int(mask.sum()), n, need)
             return {dsl: 1.0 / n for dsl in dsls}
 
         sample = np.cov(mat[mask].T)                        # (n, n)

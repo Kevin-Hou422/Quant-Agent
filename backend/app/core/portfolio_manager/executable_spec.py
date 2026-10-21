@@ -81,6 +81,8 @@ def build_spec(factor_dsl: Dict[str, Optional[str]], combo_weights: Dict[str, fl
         # 目标波动缩放用的波动估计窗口（复审 2026-10-19 N05-e：它改变目标权重，此前不在规格里）
         "risk_vol_lookback": int(getattr(settings, "risk_vol_lookback", 60)),
         "signal": dict(SIGNAL_CONFIG),
+        # 信号 / 成交 / IC 的时钟口径（复审 2026-10-19 §5.1）：D14 改口径 = 新的策略版本
+        "clock": _clock(),
         "trading": {"broker": str(getattr(settings, "trading_broker", "moomoo_us")),
                     "allow_short": bool(getattr(settings, "trading_allow_short", False))},
         "data": {"dataset": str(getattr(settings, "paper_dataset", "")),
@@ -89,6 +91,11 @@ def build_spec(factor_dsl: Dict[str, Optional[str]], combo_weights: Dict[str, fl
         "execution": _execution_section(settings),
         "submission": _submission_section(settings),
     }
+
+
+def _clock() -> str:
+    from app.core.data_engine.input_identity import clock_version
+    return clock_version()
 
 
 def _universe_section(dataset: str) -> dict:

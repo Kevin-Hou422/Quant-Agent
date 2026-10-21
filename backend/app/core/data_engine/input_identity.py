@@ -29,6 +29,21 @@ logger = logging.getLogger(__name__)
 
 PRICE_FIELDS = ("open", "high", "low", "close", "volume")
 
+#: 信号 / 成交 / IC 的**时钟口径版本**（复审 2026-10-19 §5.1："尚未统一时钟前，历史结果应分版本标识"）。
+#: 每一类存下来的结果都带它；进可执行规格 —— 时钟一变就是另一个策略版本，旧证据不被继承。
+#: D14 统一时钟时改这里（并在 CLOCK_VERSIONS 里写明新口径）。
+#: 2026-10-20 之前存的行没有这一列（NULL）：那时只有过 c1 这一种口径，读作 c1。
+CLOCK_VERSION = "c1"
+CLOCK_VERSIONS = {
+    "c1": ("T 日收盘后运行：信号 delay=1（用 T−1 的原始信号）；内部模拟按 T 日收盘成交；"
+           "券商订单 T 日收盘后提交、计划 T+1 成交；因子 / 策略 IC = signal[T−1] 对 T 日 close-to-close 收益"),
+}
+
+
+def clock_version() -> str:
+    """当前时钟口径（调用时读模块常量，便于测试换口径）。"""
+    return CLOCK_VERSION
+
 
 @dataclass(frozen=True)
 class InputIdentity:
@@ -39,6 +54,7 @@ class InputIdentity:
     price_source:    str
     vintage:         str
     code_version:    str
+    clock_version:   str = CLOCK_VERSION
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -88,4 +104,5 @@ def identify(panel: Dict[str, pd.DataFrame], price_source: Optional[str] = None,
         price_source=str(price_source or ""),
         vintage=str(vintage or ""),
         code_version=code_version(),
+        clock_version=clock_version(),
     )

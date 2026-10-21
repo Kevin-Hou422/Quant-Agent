@@ -20,7 +20,7 @@
 | N02-d | 不同数据源的历史与前向证据不能借相同策略哈希混用 | ✅ | 存档时的价格源与本轮不同 → 不当前向结算（账本层面拦，不依赖规格核对）；`test_a_signal_archived_under_another_price_source_does_not_settle_as_forward` |
 | N02-e | 无新 bar 时也要在消费 PIT 前核对真实来源 | ✅ | `test_a_source_switch_without_a_new_bar_rebuilds_the_pit` |
 | N03-a | 明确预测标签与执行收益的起点（close-to-close / T+1 open-to-close / open-to-next-open 分别规定存档截止） | ⛔ | 依赖 D14。现在只把截止提前到被评分日开盘，隔夜跳空仍在评分窗口里 |
-| N03-b | 补拉、回放、晚到归档保留研究价值但不升级为正式前向 | 🟡 | 不计入前向 ✅；但"保留研究价值"没有单独的记录类别 |
+| N03-b | 补拉、回放、晚到归档保留研究价值但不升级为正式前向 | ✅ | 策略证据分 `evidence_class` = forward / replay：没有及时存档的那几天（首跑、停机补拉、晚到、换源）按重算信号记 replay（`strategy_replay_ic`），→ACTIVE 只读 forward（`strategy_forward_ic`；旧行 NULL 读作 forward —— 那时只记 forward）。先失败：此前这些天直接跳过，研究价值丢失。§7.1 工作包 4 "影子信号证据与有实际成交的策略收益分开"：信号 IC 在 `strategy_evidence`，实际成交收益在 §7.3 的 `forward_days`。`tests/integration/test_evidence_versions_1019.py` |
 | N04-a | 先截断到目标 session，再检查并持久化同一对象 | ✅ | 审查脚本断言失败；`TestHealthOnTheConsumedPanel` |
 | N04-b | 健康报告的末日、股票池和摘要与消费面板一致 | ✅ | 摄取结果带交给交易循环那份面板的输入身份，并核对它与健康门检查的那份同末日、同股票池，不一致 → 拒绝（`consumed_panel_mismatch`） |
 | N04-c | "未收盘完整日掩盖已收盘缺失日"的回归 | ✅ | 同上 |
@@ -28,7 +28,7 @@
 | N05-a | 先形成候选 spec，再让 gate 消费 spec | ✅ | 审查脚本断言失败；`TestProposalEvaluatesTheFrozenSpec` |
 | N05-b | 共享波动估计与带后投影逻辑 | ✅ | `test_the_gate_applies_vol_targeting_and_the_post_band_projection` |
 | N05-c | 首轮关闭目标波动 | ⛔ | 是配置决定（`RISK_TARGET_VOL_ANN=0`），不是代码 |
-| N05-d | 新规格资格来自预登记的验证设计与此后真正未见的前向数据 | 🟡 | verdict 标了 `evidence_scope`；没有"预登记验证设计"这个对象 |
+| N05-d | 新规格资格来自预登记的验证设计与此后真正未见的前向数据 | ✅ | `app/core/lifecycle/validation_design.py`：提案时登记设计（最少前向天数 / IC 均值 / t 阈值 / t 口径 / 证据口径 / 时钟 / 登记时刻，带哈希）；→ACTIVE（`_active_gate` → `check_registered_activation`）按**登记的**门槛判（之后改 settings 不影响），只算登记日之后、同规格的 forward 证据；设计缺失（2026-10-20 前提出的）/ 被改 / 时钟变了 → 不通过。用例 helper `approved_verdict` 随之带设计（真实提案都会登记）。先失败。`tests/integration/test_evidence_versions_1019.py` |
 | N05-e（§3） | 显式三步合同：构建并冻结 spec → 验证该 spec → 以该 spec 生成目标 / 证据 / 订单 | ✅ | `app/core/portfolio_manager/strategy_contract.py`：`StrategyContract`（freeze / from_record → verify / evaluate → signals / composite / targets）+ 唯一的目标生成函数 `generate_targets`（合成账本 → 目标波动 → 硬约束 → 熔断 → 带 → 带后投影）。提案先冻结合同、门评估它、风控快照与换手按它生成、存下的就是它（`evaluated_spec_hash`）；策略门回测、每日循环的模拟账本与券商目标、前向证据的合成信号都走它（有 active 配置时风控上限 / 波动窗口取自规格，不再现读 settings）。**查出并修了两个真分叉**：① 每日循环的合成账本用默认 `CostParams()`、门用 grounded 成本参数（影响容量 → 容量绑定时门验证的权重≠交易的权重）；② `risk_vol_lookback` 改变目标却不在规格里（已加入规格 v2）。顺带：每日循环波动估计 / 风控抛错此前照常交易（不缩放 = 比意图更大的风险），现在 fail-closed。`tests/integration/test_strategy_contract_1019.py` 7 条（结构检查：合成 / 风控 / 带后投影只在一处装配）。**先失败的证据只有静态的**：补丁先于用例运行打上了，结构检查在旧代码上应列出 builder:75/147、gate:180/197、loop:349/493（据当时 grep），没有实跑旧代码。门里的 PBO 为每个单因子各建等权策略，是反事实对照、不是这份策略的目标 —— 用例显式排除并断言被排除的只有单因子调用 |
 | N06-a | 加风险订单要求有限正报价、明确时间 / 时区、可接受年龄 | ✅ | 审查脚本断言失败；`TestQuoteContract` |
 | N06-b | 缺失、未来或不可信时间拒绝 | ✅ | 同上 |
@@ -50,18 +50,18 @@
 | F02 | 不是完整的公司行动账本 | ⬜ |
 | F04 | 冻结不能清洗已看过的数据（D12 登记） | ⛔ |
 | F08 | 锁依赖共享存储路径，不同目录的两个部署不共锁 | ✅ | 见 §5.3 |
-| F12 | 协方差有效性、估计误差需研究评估 | ⬜ |
-| F13 | 股本 fallback 是估计；小比例送股只告警不更正；8-K 与 SUE 按时间先后而非期间配对 | ⬜（首轮价量关闭基本面可隔离） |
+| F12 | 协方差有效性、估计误差需研究评估 | ✅ 评估已做 | `docs/F12_MIN_VARIANCE_STUDY.md` + `tools/research/min_variance_study.py`（蒙特卡洛，真协方差已知，三种设计）。结论：① 原最少样本 max(2n, 20) 太低 —— 等波动时 8 因子 20 天，比等权差 10% 以上的概率 86% → 改为 max(15n, 60)，该概率 ≤ 4%（先写用例、先失败）；② 协方差非平稳时多给数据也没有可靠优势 → 不能假定 min_variance 更好，只能由策略门的流程滚动前推 OOS 判断，保持非缺省。没覆盖：厚尾 / 波动聚集、> 8 个因子、收缩强度的选择、真实因子收益上的检验 |
+| F13 | 股本 fallback 是估计；小比例送股只告警不更正；8-K 与 SUE 按时间先后而非期间配对 | ✅ | ① SUE 按盈利期间配对（`pair_announcements`：只用公告日之前已知的财季日历推出公告报告的季；只有更新的季才置空 SUE；推不出 → 按时间，偏保守）；② 股本按自己那条事实的期末日过期（`sh_end`，`METRICS_VERSION` 4）；③ 估计股本（稀释加权平均）进报告 `estimated_shares`；④ 1.15–1.5 倍复权因子跳变（moomoo 路径）持久化 + 估值字段**异常隔离**到口径日晚于跳变日的股本出现为止。先失败（真缺陷复现：同季更正 8-K 把 SUE 置空 2024-05-16→07-24）。**真实数据冒烟**（scratchpad 里 Phase 10 取下的 95 只真实 EDGAR 事实，只读不联网）：面板期内公告推出的财季 vs 之后实际申报的那一季 —— 1988 条一致；26 条不一致中 25 条是"申报之后的 2.02 公告"（更正 / 展望 / 重述，配到已申报那季正是要的行为），1 条（SPGI 2025-02-11）是本地事实缺 FY2024 10-K 净利润造成的对账假象，配对本身正确；12 条推不出。1175 个标的日的 SUE 不再被同季公告误置空。估计股本：ACN / CMCSA / MA / META / NKE / SPG / UPS。疑似送股的隔离需要 moomoo 的复权价，离线没验（单元用例覆盖）。`tests/unit/data_engine/test_fundamentals_review_1019.py` |
 | F14 | D14 时钟、D15 通知、持续熔断维护、恢复演练、现场验收 | ⛔ / 🧪 / ⬜ |
 
 ## §5 其他风险
 
 | # | 内容 | 状态 |
 |---|---|---|
-| 5.1 | D14 未统一前，历史结果应分版本标识 | ⬜ |
+| 5.1 | D14 未统一前，历史结果应分版本标识 | ✅ | 唯一来源 `input_identity.CLOCK_VERSION`（现为 c1，口径写在 `CLOCK_VERSIONS`）。带时钟的：研究指标（`alpha_records`）、因子 IC（`alpha_ic_history`）、信号存档、策略证据、规格（`clock` 键 → 时钟一变规格哈希就变，旧证据不被继承）、提案 verdict、验证门结论、§7.3 每日记录、预登记设计。旧行 NULL = c1（那之前只有过这一种）。先失败。`tests/integration/test_evidence_versions_1019.py` |
 | 5.2 | 规格哈希覆盖有效股票池 / 数据 vintage / 代码版本 / 执行账户 / 报价规则 / 提交时段 | ✅ | 规格 v2 加了 universe（登记标的列表哈希）、execution（账户、限价带、价格偏差、日亏、报价年龄与收盘窗口）、submission（调度时刻、时区、DAY、盘外成交）；调度时刻与订单有效期改成具名常量，规格读的就是代码实际用的值。**数据 vintage 不进规格**（每天都变，进了就天天不一致），记在证据行；**代码版本**记在提案 verdict 的 `approved_code_version` 与每条证据行，不当作不一致（否则每次部署都要重新审批）；`TestSpecCoverage`（9 条，先看它失败） |
 | 5.3 | 锁按账户 id 建锁域；首轮专用账户、单部署、固定路径并**校验账户身份** | ✅ | 锁名 = 券商 / 证券公司 / 环境 / 解析出的账户 id，放在整台机器共用的目录（`ACCOUNT_LOCK_DIR`，默认 %PROGRAMDATA%\QuantAgent）；拿不到账户 id 不交易；执行库第一次使用时绑定账户，之后连到别的账户 → 拒绝（`moomoo_trd_acc_id=0` 自动取到另一个模拟账户的情形）；`TestAccountLockDomain` |
-| 5.4 | 基本面来源 / 期间质量门 | ⬜ |
+| 5.4 | 基本面来源 / 期间质量门 | ✅ | `fundamentals/quality.py`：策略表达式用到基本面字段时，这份面板末日的质量报告（`attach_fundamentals` 每次落盘）必须过门 —— 各字段末日覆盖率 ≥ `FUND_MIN_COVERAGE`（0.8）、估值字段用估计股本的标的占比 ≤ `FUND_MAX_ESTIMATED_SHARES`（0.1）；报告缺失 / 不是这份面板的 → 不过。提案不过 → `passed=False` + 原因；每日循环 active 策略不过 → 不调仓（`fundamentals_quality`）。按真实冒烟的数，现在的 gross_margin（58%）会被拦。`tests/unit/data_engine/test_fundamentals_review_1019.py` |
 | 5.5 | 告警、恢复演练、盘中熔断说明 | ⛔ / 🧪 |
 | 5.6 | 统计表述收敛（README） | ✅ |
 
@@ -75,7 +75,7 @@
 | D4 | 公开仓库改合成夹具 | ⛔ |
 | D5 | 先补 N01–N09 与恢复关键路径的变异复核 | ⛔（小时级，按约定先问） |
 | D6 / D7 | 保持关 / 保留 NaN | 现状即如此 |
-| D8 | 不做新闻稿级 SUE，先把名称 / 期间 / 配对写清 | 🟡 名称已改，期间配对没做 |
+| D8 | 不做新闻稿级 SUE，先把名称 / 期间 / 配对写清 | ✅ 名称已改；期间配对见 F13 ①，配对结果进报告 `sue_pairing` |
 | D9 | 允许预热，**优先实现** | ⛔ |
 | D10 | 人工监督的独立验收 | 🧪 |
 | D11 | 改成分模式说明 | ✅ |
