@@ -342,10 +342,10 @@ def test_per_factor_ic_carries_the_forward_flag(tmp_path):
                                   broker=PaperBroker(store=PositionStore(f"sqlite:///{tmp_path / 'p.db'}")))
     ds = _make_dataset(n_days=30, n_tickers=8)
     d1, d2 = ds["close"].index[-2], ds["close"].index[-1]
-    mk().run({k: v.loc[:d1] for k, v in ds.items()}, now=session_close_utc(d1) + timedelta(hours=2))
+    mk().run({k: v.loc[:d1] for k, v in ds.items()}, data_source="yahoo", now=session_close_utc(d1) + timedelta(hours=2))
     assert seen and not any(f for _, f in seen)               # 第一次跑：全是回放
     seen.clear()
-    mk().run(ds, forward_from=str(ds["close"].index[5].date()), now=session_close_utc(d2) + timedelta(hours=2))
+    mk().run(ds, forward_from=str(ds["close"].index[5].date()), data_source="yahoo", now=session_close_utc(d2) + timedelta(hours=2))
     assert seen == [(d2, True)]
 
 

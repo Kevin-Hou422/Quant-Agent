@@ -111,16 +111,20 @@ class DailyTradingLoop:
                       identity: Optional[dict]) -> Optional[dict]:
         """
         本轮输入身份（复审 2026-10-19 N02-c）：管线给了就用（摄取时对**交出去的那份面板**算的），
-        否则就地对这份面板算；价格源优先用实际来源（PIT 元数据），没有才退回 settings 的声称。
+        否则就地对这份面板算。价格源只用**实际来源**（PIT 元数据）。
+        2026-10-22 用户核验 C2：此前实际来源未知时退回 settings 的声称 —— 证据就按声称的来源累计前向。
+        现在未知 → price_source 为空、source_verified=False：探索照常，但前向结算一律不认（见 ForwardBook）。
         """
         if identity:
             self._identity = dict(identity)
+            self._identity.setdefault("source_verified", bool(self._identity.get("price_source")))
             return self._identity
         try:
-            from app.config import settings
             from app.core.data_engine.input_identity import identify
-            self._identity = identify(dataset, price_source=data_source or getattr(settings, "price_source", "")
-                                      ).to_dict()
+            self._identity = identify(dataset, price_source=data_source or "").to_dict()
+            self._identity["source_verified"] = bool(data_source)
+            if not data_source:
+                logger.warning("[daily_loop] 本轮数据的实际价格源未知 → 证据只记回放，不计正式前向")
         except Exception as exc:
             logger.error("[daily_loop] 输入身份算不出来（证据行不带身份）: %s", exc)
             self._identity = None
@@ -209,12 +213,11 @@ class DailyTradingLoop:
             from app.db.forward_record import ForwardRecordStore, build_daily_record
             from app.db.strategy_store import StrategyStore
             sid, h = result.get("active_config"), result.get("spec_hash")
-            if sid is None:
-                active = StrategyStore().latest_active()
-                if active is None:
-                    return
-                sid = active.id
-                h = h or _json.loads(active.verdict or "{}").get("spec_hash", "")
+            active = StrategyStore().get(int(sid)) if sid is not None else StrategyStore().latest_running()
+            if active is None:
+                return
+            sid = active.id
+            h = h or _json.loads(active.verdict or "{}").get("spec_hash", "")
             store = ForwardRecordStore()
             rec = build_daily_record(
                 result, strategy_id=int(sid), spec_hash=h or "", decision_date=dataset["close"].index[-1],
@@ -222,7 +225,9 @@ class DailyTradingLoop:
                 paper_history=self.broker.store.pnl_history(PORTFOLIO_BOOK_ID, limit=1000),
                 exec_store=self._execution_store or ExecutionStore(),
                 identity=getattr(self, "_identity", None),
-                forward_run=store.run_for(int(sid), h) if h else None)
+                forward_run=store.run_for(int(sid), h) if h else None,
+                strategy_status=str(active.status),
+                previous=store.previous_decision(int(sid), dataset["close"].index[-1]))
             store.record_day(rec)
             result["forward_record"] = {"formal": rec["formal"], "reason": rec["formal_reason"],
                                         "missing": sorted(rec["missing"])}
@@ -330,12 +335,19 @@ class DailyTradingLoop:
             try:
                 import json as _json
                 from app.db.strategy_store import StrategyStore
-                active = StrategyStore().latest_active()
+                active = StrategyStore().latest_running()
             except Exception as exc:
                 logger.error("[portfolio] PM.7 读取 active 策略配置失败 → 本轮不调仓: %s", exc)
                 return {"n_factors": 0, "days_processed": 0,
                         "reason": "active_config_unreadable", "used_baseline": used_baseline,
                         "execution": self._maintain_live("active_config_unreadable")}
+            from app.core.lifecycle.strategy_states import label, permissions
+            if active is not None and not permissions(active.status)["trades_simulate"]:
+                # 2026-10-22 C6：旧的 `active` 字样不代表任何权限（未验证、多半没有规格）—— 不按它交易
+                why = f"策略 #{active.id} 的状态是 {label(active.status)}，不能交易；请重新提案后开始纸交易"
+                logger.error("[portfolio] %s → 本轮不调仓", why)
+                return {"n_factors": 0, "days_processed": 0, "reason": "state_not_tradable", "detail": why,
+                        "used_baseline": used_baseline, "execution": self._maintain_live("state_not_tradable")}
             if active is not None:
                 cfg_factors = [str(f) for f in _json.loads(active.factors or "[]")]
                 missing = [f for f in cfg_factors if f not in signals]
@@ -847,7 +859,8 @@ class DailyTradingLoop:
             prices = dataset["close"]
             rets = prices.pct_change()
             configs = [r for r in StrategyStore().query(limit=200)
-                       if str(r.status) in ("proposed", "approved", "active")]
+                       if str(r.status) in ("proposed", "approved", "integration", "paper_running",
+                                            "verified_active")]
         except Exception as exc:
             logger.error("[evidence] 策略版本证据本轮跳过（读不到配置）: %s", exc)
             return out
@@ -887,7 +900,10 @@ class DailyTradingLoop:
                         if not np.isnan(ic) and ev.record_strategy_ic(
                                 rec.id, h, dates[t], ic, dates[t - 1], arch["recorded_at"],
                                 identity=getattr(self, "_identity", None),
-                                signal_digest=arch.get("data_digest", "")):
+                                signal_digest=arch.get("data_digest", ""),
+                                # 2026-10-22 C6：工程联调期的前向证据单独归类，不计入验证
+                                evidence_class=("integration" if str(rec.status) == "integration"
+                                                else "forward")):
                             n += 1
                         continue
                     # 复审 2026-10-19 N03-b：没有及时存档（首跑 / 停机补拉 / 晚到 / 换源）→ 按当下重算的信号

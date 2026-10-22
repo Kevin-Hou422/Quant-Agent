@@ -160,13 +160,15 @@ class TestSchema:
 
 class TestTransitions:
 
-    def test_latest_active_returns_only_active_configs(self, store):
+    def test_latest_running_returns_only_running_configs(self, store):
+        """2026-10-22 C6：运行状态 = integration / paper_running / verified_active（旧字样 active 不再能进入）。"""
         a = store.save(_cfg(name="a"))
         b = store.save(_cfg(name="b"))
-        assert store.latest_active() is None, "没有 active 配置时不得返回任何东西"
+        assert store.latest_running() is None, "没有运行中的配置时不得返回任何东西"
         store.update_status(a, "approved")
-        store.update_status(a, "active")
-        got = store.latest_active()
+        assert store.latest_running() is None, "approved 还没开始运行"
+        store.update_status(a, "paper_running")
+        got = store.latest_running()
         assert got is not None and got.id == a
         assert got.id != b
 

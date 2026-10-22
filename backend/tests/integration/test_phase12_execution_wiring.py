@@ -105,7 +105,7 @@ def _activate_strategy(loop, settings, monkeypatch, tmp_path, dsls=("rank(ts_del
     sid = ss.save(StrategyConfig(factors=ids, combo_weights=cw, aum=AUM, method="ic_weighted",
                                  verdict=approved_verdict(dict(zip(ids, dsls)), cw, AUM)))
     ss.update_status(sid, "approved")
-    ss.update_status(sid, "active")
+    ss.update_status(sid, "paper_running")
     return ids, sid
 
 

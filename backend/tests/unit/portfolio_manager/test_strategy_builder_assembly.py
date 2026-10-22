@@ -523,12 +523,13 @@ class TestDegradationTrail:
         cfg = build_strategy_config({"f1": _sig(1), "f2": _sig(2)}, _panel(), aum=1e5)
         trail = _degraded(cfg)
         kinds = {t.split(":")[0] for t in trail}
-        assert kinds == {"marginal_selection_failed", "strategy_gate_failed",
+        # 2026-10-22 C1：两道策略门（冻结规格 / 流程滚动前推）独立评估 —— 桩门对两次调用都抛，各自留痕，共 6 种
+        assert kinds == {"marginal_selection_failed", "strategy_gate_failed", "procedure_oos_failed",
                          "paper_grading_failed", "risk_snapshot_failed",
                          "band_derivation_failed"}, (
-            f"五道工序全崩，降级痕迹只剩 {sorted(kinds)} —— "
+            f"六道工序全崩，降级痕迹只剩 {sorted(kinds)} —— "
             f"append 被写成了赋值，前面的记录被覆盖")
-        assert len(trail) == 5
+        assert len(trail) == 6
 
     def test_a_clean_run_leaves_no_degraded_key_at_all(self, wiring):
         """

@@ -166,9 +166,9 @@ class TestTradingRealitySnapshot:
         assert defaults.get("tr_experiment_mode") == [True], (
             f"tr_experiment_mode 默认值是 {defaults.get('tr_experiment_mode')}，"
             f"应当是 [True]（未配置时按实验模式处理）")
-        assert set(defaults.get("tr_enforce_active_gate", [])) == {False}, (
-            f"tr_enforce_active_gate 默认值是 "
-            f"{defaults.get('tr_enforce_active_gate')}，应当全为 False")
+        # 2026-10-22 C6：tr_enforce_active_gate 已废弃，路由里不再读它（验证门没有开关）
+        assert "tr_enforce_active_gate" not in defaults, (
+            f"路由又在读 tr_enforce_active_gate（默认 {defaults.get('tr_enforce_active_gate')}）")
 
     def test_the_forward_gate_thresholds_are_pinned(self):
         defaults = _getattr_defaults(_src())
@@ -468,13 +468,14 @@ class TestWorkflowPnlOverfit:
 
 def test_the_activation_decision_note_concatenates_reason_and_gate_detail():
     """
-    `(req.reason + f" | TR.4 门: ...")` —— `+` 改成 `-` 在字符串上直接
-    TypeError（整个上线请求 500）。这条记录是事后审计"当时这个门过没过"
-    的唯一依据，不能丢。
+    `(req.reason + f" | 验证门过：...")` —— `+` 改成 `-` 在字符串上直接
+    TypeError（整个验证请求 500）。这条记录是事后审计"验证时门的结论"
+    的唯一依据，不能丢（2026-10-22 C6：门结论只在 /verify 写，开始纸交易写"未验证"）。
     """
     src = _src()
-    assert 'req.reason + f" | TR.4 门:' in src, (
-        "上线决策记录不再把 reason 与门的结论拼在一起 —— 审计依据丢失")
+    assert '(req.reason + f" | 验证门过：' in src, (
+        "验证决策记录不再把 reason 与门的结论拼在一起 —— 审计依据丢失")
+    assert 'f"{req.reason} | {note}"' in src, "开始运行的决策记录不再写明状态含义"
 
     # 语义对照：字符串上的 `-` 是 TypeError，不是"另一种拼法"
     with pytest.raises(TypeError):

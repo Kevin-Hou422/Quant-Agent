@@ -359,47 +359,38 @@ class TestNanToNone:
 
 class TestActiveGate:
     """
-    `if not ok and getattr(settings, "tr_enforce_active_gate", False):`
+    2026-10-22 用户核验 C6：→verified_active 永远要过验证门。此前是
+    `if not ok and getattr(settings, "tr_enforce_active_gate", False):` —— 开关默认关，证据不足也能"激活"。
+    现在 `/verify` 里是 `if not ok:` 直接 409；开始纸交易（`/activate`、`approve?activate`）不过门、也不叫验证。
 
-    两个变异点：
-      删掉 `not` → 门**过了**才拒绝（通过的策略永远上不了线，没过的畅通无阻）
-      `and` → `or` → 只要开了开关就一律拒绝，或者只要没过门就拒绝
-                     （无视"默认只记录不阻断"的设计）
-
-    第三个是 `getattr(..., False)` 的默认值：翻成 True 会让**没有配置过**
-    这个开关的部署直接进入强制模式 —— 一次配置变更就能让所有上线请求 409。
+    变异点：删掉 `not` → 门过了才拒绝；把开关加回来 → 又能绕过。
     """
 
-    @pytest.mark.parametrize("ok,enforce,expect_block", [
-        (False, True,  True),    # 没过门 + 开了强制 → 拦
-        (False, False, False),   # 没过门 + 没开强制 → 仅记录，放行
-        (True,  True,  False),   # 过了门 → 放行
-        (True,  False, False),
-    ])
-    def test_the_gate_blocks_only_when_both_conditions_hold(
-            self, ok, enforce, expect_block):
-        blocked = (not ok) and enforce
-        assert blocked is expect_block, (
-            f"ok={ok}、enforce={enforce} 时拦截判定算成了 {blocked}，"
-            f"应当是 {expect_block}")
+    def test_the_verify_guard_refuses_exactly_when_the_gate_fails(self):
+        """AST：strategy_verify 里有且只有一个 `if not ok:`，它的分支抛出 409（不是子串匹配）。"""
+        import ast
+        import inspect
+        import textwrap
+        tree = ast.parse(textwrap.dedent(inspect.getsource(R.strategy_verify)))
+        guards = [n for n in ast.walk(tree) if isinstance(n, ast.If)
+                  and isinstance(n.test, ast.UnaryOp) and isinstance(n.test.op, ast.Not)
+                  and isinstance(n.test.operand, ast.Name) and n.test.operand.id == "ok"]
+        assert len(guards) == 1, "验证门的拒绝条件被改了（应当恰好一个 `if not ok:`）"
+        codes = [kw.value.value for r in guards[0].body if isinstance(r, ast.Raise)
+                 for kw in getattr(r.exc, "keywords", []) if kw.arg == "status_code"]
+        assert codes == [409], f"门没过时应抛 409，实际 {codes}"
 
-    def test_the_enforcement_flag_defaults_to_off(self):
-        """
-        `getattr(settings, "tr_enforce_active_gate", False)` 的默认值 ——
-        翻成 True 会让**没有显式配置**的部署直接进强制模式。
-        设计上这道门"默认只记录不阻断"（ic_history 尚未分离回放/前向）。
-        """
+    def test_no_setting_can_bypass_verification(self):
         import inspect
         src = inspect.getsource(R)
-        assert 'getattr(settings, "tr_enforce_active_gate", False)' in src, (
-            "→ACTIVE 强制门的 getattr 默认值不再是 False —— "
-            "未配置的部署会直接进入强制模式")
+        assert 'getattr(settings, "tr_enforce_active_gate"' not in src, (
+            "路由里又出现了读 tr_enforce_active_gate 的分支 —— 验证门不能有开关")
 
-    def test_the_guard_expression_still_uses_and_with_not(self):
+    def test_starting_paper_trading_does_not_run_or_claim_the_gate(self):
         import inspect
-        src = inspect.getsource(R)
-        assert 'if not ok and getattr(settings, "tr_enforce_active_gate", False):' in src, (
-            "→ACTIVE 门的判定表达式被改了")
+        for fn in (R.strategy_approve, R.strategy_activate):
+            assert "_active_gate(" not in inspect.getsource(fn), (
+                f"{fn.__name__} 又在开始纸交易时跑验证门 —— 两件事要分开")
 
 
 # ===========================================================================

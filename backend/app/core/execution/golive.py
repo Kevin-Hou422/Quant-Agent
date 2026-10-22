@@ -166,7 +166,7 @@ def _active_strategy_problem(settings) -> tuple:
     from app.db.alpha_lifecycle import AlphaStatus, coerce_status
     from app.db.alpha_store import AlphaStore
     from app.db.strategy_store import StrategyStore
-    active = StrategyStore(db_url=settings.database_url).latest_active()
+    active = StrategyStore(db_url=settings.database_url).latest_running()
     if active is None:
         return False, ("没有 active 策略配置 —— 券商执行只对账、不下单（基准库与未批准组合"
                        "只进模拟账本）。先提出并批准+激活一份策略配置")
@@ -210,7 +210,7 @@ def _strategy_fundamental_fields(settings) -> List[str]:
     from app.core.alpha_engine.fields import fundamental_fields_used
     from app.db.alpha_store import AlphaStore
     from app.db.strategy_store import StrategyStore
-    active = StrategyStore(db_url=settings.database_url).latest_active()
+    active = StrategyStore(db_url=settings.database_url).latest_running()
     if active is None:
         return []
     store, used = AlphaStore(db_url=settings.database_url), set()

@@ -41,7 +41,7 @@ def test_strategy_endpoints_lifecycle(test_client, fresh_db):
     assert r.status_code == 200 and any(x["id"] == sid for x in r.json())
     # approve + activate
     r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True, "reason": "ok"})
-    assert r.status_code == 200 and r.json()["status"] == "active"
+    assert r.status_code == 200 and r.json()["status"] == "paper_running"
     # 详情含谱系
     r = test_client.get(f"/api/strategies/{sid}")
     assert r.status_code == 200 and len(r.json()["decisions"]) >= 2   # approve + activate
@@ -76,7 +76,7 @@ def test_run_portfolio_trades_active_config(tmp_path):
                                      aum=10_000, passed=True, status="proposed",
                                      verdict=approved_verdict({ids[0]: "rank(ts_delta(close,5))"},
                                                               {ids[0]: 1.0}, 10_000)))
-    sstore.update_status(sid, "approved"); sstore.update_status(sid, "active")
+    sstore.update_status(sid, "approved"); sstore.update_status(sid, "paper_running")
 
     broker = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp_path/'p.db'}"), initial_capital=10_000.0)
     loop = DailyTradingLoop(store=store, broker=broker)
@@ -196,75 +196,67 @@ def _forward_ics(days, start, ic_mean=0.08, seed=0):
                         is_forward=True)
 
 
-def test_a_failed_active_gate_leaves_the_strategy_proposed(test_client, fresh_db, monkeypatch):
-    from app.config import settings
-    monkeypatch.setattr(settings, "tr_enforce_active_gate", True)
-    s, sid = _save_cfg()
+def _verify(test_client, sid):
+    """2026-10-22 C6：开始纸交易（不过门）→ 申请验证（必须过门）。返回验证请求的响应。"""
     r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True})
-    assert r.status_code == 409 and "→ACTIVE 门未过" in r.json()["detail"]
-    assert s.get(sid).status == "proposed", "门没过却已经被改成 approved —— 之后再也批不了"
-    r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": False})
-    assert r.status_code == 200 and r.json()["status"] == "approved"
+    assert r.status_code == 200 and r.json()["status"] == "paper_running", r.json()
+    return test_client.post(f"/api/strategies/{sid}/verify", json={})
 
 
-def test_forward_evidence_before_the_strategy_existed_is_not_borrowed(test_client, fresh_db, monkeypatch):
+def test_a_failed_verification_leaves_the_strategy_paper_running(test_client, fresh_db):
+    """门没过：状态不动（仍在收集证据），且开始收集证据本身不需要过门。"""
+    s, sid = _save_cfg()
+    r = _verify(test_client, sid)
+    assert r.status_code == 409 and "验证门未过" in r.json()["detail"]
+    assert s.get(sid).status == "paper_running", "门没过却改了状态"
+
+
+def test_forward_evidence_before_the_strategy_existed_is_not_borrowed(test_client, fresh_db):
     """创建之前的组合 IC 来自别的成分 / 基准库：哪怕足够好，也不能借来给新策略过门。"""
-    from app.config import settings
-    monkeypatch.setattr(settings, "tr_enforce_active_gate", True)
     _forward_ics(80, "2019-01-02")                       # 远早于任何策略的创建时间，且足够通过门
     s, sid = _save_cfg()
-    r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True})
-    assert r.status_code == 409 and s.get(sid).status == "proposed"
+    assert _verify(test_client, sid).status_code == 409 and s.get(sid).status == "paper_running"
 
 
-def test_this_strategys_own_forward_record_counts(test_client, fresh_db, monkeypatch):
-    from app.config import settings
-    monkeypatch.setattr(settings, "tr_enforce_active_gate", True)
+def test_this_strategys_own_forward_record_counts(test_client, fresh_db):
     s, sid = _save_cfg()
     _strategy_ics(sid, 80, "2024-01-02", seed=1)
-    r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True})
-    assert r.status_code == 200 and r.json()["status"] == "active", r.json()
+    r = _verify(test_client, sid)
+    assert r.status_code == 200 and r.json()["status"] == "verified_active", r.json()
 
 
-def test_book0_ics_after_creation_are_not_borrowed_either(test_client, fresh_db, monkeypatch):
+def test_book0_ics_after_creation_are_not_borrowed_either(test_client, fresh_db):
     """此前按"创建日期之后"筛 book 0 —— 那些数来自当时在交易的别的配置。"""
-    from app.config import settings
-    monkeypatch.setattr(settings, "tr_enforce_active_gate", True)
     s, sid = _save_cfg()
     _forward_ics(80, s.get(sid).created_at.strftime("%Y-%m-%d"), seed=1)
-    r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True})
-    assert r.status_code == 409 and s.get(sid).status == "proposed"
+    assert _verify(test_client, sid).status_code == 409 and s.get(sid).status == "paper_running"
 
 
 def test_activating_a_new_strategy_retires_the_old_one(test_client, fresh_db):
     s, old = _save_cfg()
     assert test_client.post(f"/api/strategies/{old}/approve",
-                            json={"activate": True}).json()["status"] == "active"
+                            json={"activate": True}).json()["status"] == "paper_running"
     _, new = _save_cfg(factors=("3",))
     assert test_client.post(f"/api/strategies/{new}/approve",
-                            json={"activate": True, "actor": "kevin"}).json()["status"] == "active"
+                            json={"activate": True, "actor": "kevin"}).json()["status"] == "paper_running"
     assert s.get(old).status == "retired"
-    assert [x.id for x in s.query(status="active")] == [new]
+    assert [x.id for x in s.query(status="paper_running")] == [new]
     retire = [d for d in s.get_decisions(old) if d.decision == "retire"]
     assert retire and f"#{new}" in retire[0].reason and retire[0].actor == "kevin"
 
 
-def test_a_record_under_another_spec_does_not_count(test_client, fresh_db, monkeypatch):
+def test_a_record_under_another_spec_does_not_count(test_client, fresh_db):
     """同一个 id、不同规格哈希的证据不算（规格变了就是另一个策略）。"""
-    from app.config import settings
-    monkeypatch.setattr(settings, "tr_enforce_active_gate", True)
     s, sid = _save_cfg()
     _strategy_ics(sid, 80, "2024-01-02", spec_hash="0" * 64)
-    r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True})
-    assert r.status_code == 409 and s.get(sid).status == "proposed"
+    assert _verify(test_client, sid).status_code == 409 and s.get(sid).status == "paper_running"
 
 
 def test_exactly_the_minimum_number_of_days_passes(test_client, fresh_db, monkeypatch):
-    """边界：恰好 N 天（≥，不是 >）。"""
+    """边界：恰好 N 天（≥，不是 >）。门槛是**提案登记时**的（预登记设计），所以先设再提案。"""
     from app.config import settings
-    monkeypatch.setattr(settings, "tr_enforce_active_gate", True)
     monkeypatch.setattr(settings, "tr_min_forward_days", 60)
     s, sid = _save_cfg()
     _strategy_ics(sid, 60, "2024-01-02", seed=3)
-    r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True})
-    assert r.status_code == 200 and r.json()["status"] == "active", r.json()
+    r = _verify(test_client, sid)
+    assert r.status_code == 200 and r.json()["status"] == "verified_active", r.json()

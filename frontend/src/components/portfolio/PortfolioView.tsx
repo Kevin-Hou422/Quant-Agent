@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import {
   apiFetchStrategiesPending, apiFetchStrategies, apiProposeStrategy,
-  apiApproveStrategy, apiRejectStrategy, apiActivateStrategy,
+  apiApproveStrategy, apiRejectStrategy, apiActivateStrategy, apiStartIntegration, apiVerifyStrategy,
 } from '../../api/client'
 import type { StrategyConfigItem } from '../../types'
 import TradingRealityPanel from './TradingRealityPanel'
@@ -17,12 +17,23 @@ import ExecutionPanel from './ExecutionPanel'
  * 不是单因子。对齐后端 /strategies/{propose,pending,list,{id},approve,reject}。
  */
 
+// 2026-10-22 C6：运行状态分三种，权限由后端给（verified / permissions），前端不从字样猜"是否已验证"
 const STATUS_STYLE: Record<string, string> = {
-  proposed: 'bg-amber-900/50 text-amber-400',
-  approved: 'bg-sky-900/50 text-sky-400',
-  active:   'bg-emerald-900/60 text-emerald-400',
-  retired:  'bg-slate-800 text-slate-400',
-  rejected: 'bg-rose-900/50 text-rose-400',
+  proposed:        'bg-amber-900/50 text-amber-400',
+  approved:        'bg-sky-900/50 text-sky-400',
+  integration:     'bg-indigo-900/50 text-indigo-300',
+  paper_running:   'bg-teal-900/50 text-teal-300',
+  verified_active: 'bg-emerald-900/60 text-emerald-400',
+  active:          'bg-slate-800 text-slate-400',      // 旧字样：未验证、无规格
+  retired:         'bg-slate-800 text-slate-400',
+  rejected:        'bg-rose-900/50 text-rose-400',
+}
+
+/** 运行中的状态（与后端 strategy_states.RUNNING_STATES 一致） */
+export const RUNNING_STATES = ['integration', 'paper_running', 'verified_active']
+
+const GATE_LABEL: Record<string, string> = {
+  frozen_spec: '冻结规格', procedure_oos: '流程滚动前推', fundamentals_quality: '基本面质量',
 }
 
 function num(v: unknown, d = 3): string {
@@ -39,9 +50,11 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: str
   )
 }
 
-type Decision = 'approve' | 'approve_activate' | 'activate' | 'reject'
+type Decision = 'approve' | 'approve_activate' | 'activate' | 'integration' | 'verify' | 'reject'
 
-function StrategyCard({ cfg, onDecision, busy }: {
+type GateResult = { evaluated?: boolean; passed?: boolean; error?: string; detail?: string }
+
+export function StrategyCard({ cfg, onDecision, busy }: {
   cfg: StrategyConfigItem
   onDecision: (id: number, action: Decision) => void
   busy: boolean
@@ -49,11 +62,15 @@ function StrategyCard({ cfg, onDecision, busy }: {
   const [open, setOpen] = useState(false)
   const v = cfg.verdict || {}
   const r = cfg.risk_report || {}
-  const gatePassed = Boolean((v as { passed?: boolean }).passed)
+  // 2026-10-22 C1：verdict.passed 是**最终**结论（必须的门都评估了且都过了）；各门原始结论在 verdict.gates
+  const gatePassed = Boolean((v as { passed?: boolean }).passed) && cfg.passed
+  const gates = (v['gates'] ?? {}) as Record<string, GateResult>
   const weights = cfg.combo_weights || {}
   const totalW = Object.values(weights).reduce((a, b) => a + Math.abs(b), 0) || 1
   const isProposed = cfg.status === 'proposed'
   const isApproved = cfg.status === 'approved'
+  const isIntegration = cfg.status === 'integration'
+  const isPaperRunning = cfg.status === 'paper_running'
   const specHash = typeof v['spec_hash'] === 'string' ? (v['spec_hash'] as string) : ''
 
   return (
@@ -67,13 +84,22 @@ function StrategyCard({ cfg, onDecision, busy }: {
         <span className="text-xs font-semibold text-slate-200">策略 #{cfg.id}</span>
         {cfg.name && <span className="text-[10px] text-slate-500">{cfg.name}</span>}
         <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${STATUS_STYLE[cfg.status] ?? 'bg-slate-800 text-slate-400'}`}>
-          {cfg.status}
+          {cfg.status_label ?? cfg.status}
         </span>
         <span className="ml-2 flex items-center gap-1 text-[10px]">
           {gatePassed
-            ? <><ShieldCheck size={12} className="text-emerald-400" /><span className="text-emerald-400">策略门通过</span></>
-            : <><ShieldAlert size={12} className="text-amber-400" /><span className="text-amber-400">策略门未过</span></>}
+            ? <><ShieldCheck size={12} className="text-emerald-400" /><span className="text-emerald-400">必须的门全过</span></>
+            : <><ShieldAlert size={12} className="text-amber-400" /><span className="text-amber-400">必须的门未全过</span></>}
         </span>
+        {Object.entries(gates).map(([name, g]) => (
+          <span key={name} data-testid={`gate-${name}`}
+            title={g.error || g.detail || ''}
+            className={`text-[10px] px-1 rounded ${
+              !g.evaluated ? 'bg-slate-800 text-slate-400'
+              : g.passed ? 'bg-emerald-950 text-emerald-400' : 'bg-rose-950 text-rose-300'}`}>
+            {GATE_LABEL[name] ?? name}：{!g.evaluated ? '未评估' : g.passed ? '过' : '未过'}
+          </span>
+        ))}
         {/* TR.4 进 PAPER 分级：A=严门全过 B=未过但Sharpe>0 C=不合格 */}
         {typeof v['paper_grade'] === 'string' && (
           <span
@@ -158,7 +184,7 @@ function StrategyCard({ cfg, onDecision, busy }: {
           </button>
           <button onClick={() => onDecision(cfg.id, 'approve_activate')} disabled={busy}
             className="flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-emerald-800/60 text-emerald-300 hover:bg-emerald-700 transition-colors disabled:opacity-40">
-            <Gauge size={12} /> 批准并启用（active）
+            <Gauge size={12} /> 批准并开始纸交易（收集证据，未验证）
           </button>
           <button onClick={() => onDecision(cfg.id, 'reject')} disabled={busy}
             className="flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-rose-900/50 text-rose-400 hover:bg-rose-900/80 transition-colors disabled:opacity-40">
@@ -166,11 +192,25 @@ function StrategyCard({ cfg, onDecision, busy }: {
           </button>
         </div>
       )}
-      {isApproved && (
+      {(isApproved || isIntegration) && (
         <div className="flex items-center gap-2 px-3 py-2 border-t border-slate-800">
+          {isApproved && (
+            <button onClick={() => onDecision(cfg.id, 'integration')} disabled={busy}
+              className="flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-indigo-900/60 text-indigo-300 hover:bg-indigo-800 transition-colors disabled:opacity-40">
+              <Gauge size={12} /> 进入工程联调（不计证据）
+            </button>
+          )}
           <button onClick={() => onDecision(cfg.id, 'activate')} disabled={busy}
+            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-teal-800/60 text-teal-200 hover:bg-teal-700 transition-colors disabled:opacity-40">
+            <Gauge size={12} /> 开始纸交易（收集证据，未验证）
+          </button>
+        </div>
+      )}
+      {isPaperRunning && (
+        <div className="flex items-center gap-2 px-3 py-2 border-t border-slate-800">
+          <button onClick={() => onDecision(cfg.id, 'verify')} disabled={busy}
             className="flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-emerald-800/60 text-emerald-300 hover:bg-emerald-700 transition-colors disabled:opacity-40">
-            <Gauge size={12} /> 启用（active）
+            <ShieldCheck size={12} /> 申请验证（按预登记设计过门）
           </button>
         </div>
       )}
@@ -253,6 +293,8 @@ export default function PortfolioView() {
     try {
       if (action === 'reject') await apiRejectStrategy(id, reason)
       else if (action === 'activate') await apiActivateStrategy(id, '')
+      else if (action === 'integration') await apiStartIntegration(id, '')
+      else if (action === 'verify') await apiVerifyStrategy(id, '')
       else await apiApproveStrategy(id, action === 'approve_activate', '')
       await refresh()
     } catch (e) {
@@ -262,7 +304,7 @@ export default function PortfolioView() {
     }
   }, [refresh, busyId])
 
-  const active = useMemo(() => others.filter(c => c.status === 'active'), [others])
+  const active = useMemo(() => others.filter(c => RUNNING_STATES.includes(c.status)), [others])
 
   // FE-TR / FE-12：交易现实、执行监控作为并列标签页（不再加顶层导航）
   if (tab === 'reality' || tab === 'execution') {
@@ -299,7 +341,7 @@ export default function PortfolioView() {
       {/* active banner */}
       {active.length > 0 && (
         <div className="mb-4 px-3 py-2 rounded-lg bg-emerald-950/30 border border-emerald-900/50 text-[11px] text-emerald-300 flex items-center gap-2">
-          <Percent size={13} /> 当前**在交易**的配置：#{active.map(c => c.id).join(', ')} —— run_portfolio 只交易其成分。
+          <Percent size={13} /> 当前在模拟账户交易的配置：{active.map(c => `#${c.id}（${c.status_label ?? c.status}）`).join(', ')} —— run_portfolio 只交易其成分。
         </div>
       )}
 

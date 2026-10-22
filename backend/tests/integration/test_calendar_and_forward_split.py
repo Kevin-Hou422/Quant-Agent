@@ -127,11 +127,12 @@ def test_run_portfolio_marks_forward_from(tmp_path):
     days = [d for d in idx if session_close_utc(d) is not None]
     first = {k: v.loc[:days[-3]] for k, v in ds.items()}
     DailyTradingLoop(store=store, broker=broker, evidence_store=ev).run_portfolio(
-        first, aum=10_000.0, forward_from=idx[-20].date(), now=session_close_utc(days[-3]) + timedelta(hours=2))
+        first, aum=10_000.0, forward_from=idx[-20].date(), data_source="yahoo",
+        now=session_close_utc(days[-3]) + timedelta(hours=2))
     assert store.get_forward_ic(PORTFOLIO_BOOK_ID) == []
     for d in days[-2:]:
         DailyTradingLoop(store=store, broker=broker, evidence_store=ev).run_portfolio(
-            {k: v.loc[:d] for k, v in ds.items()}, aum=10_000.0,
+            {k: v.loc[:d] for k, v in ds.items()}, aum=10_000.0, data_source="yahoo",
             now=session_close_utc(d) + timedelta(hours=2))
     all_ic = store.get_ic_history(PORTFOLIO_BOOK_ID, limit=5000)
     fwd = store.get_forward_ic(PORTFOLIO_BOOK_ID)

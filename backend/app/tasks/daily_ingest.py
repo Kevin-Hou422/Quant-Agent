@@ -446,6 +446,18 @@ def _with_fundamentals(dataset_name: str, panel: Dict[str, pd.DataFrame]) -> Dic
         return panel
 
 
+def _pipeline_identity(ing, src: Optional[str]) -> Dict[str, Any]:
+    """
+    交给交易循环的输入身份。价格源**只**取 PIT 元数据里的实际来源（2026-10-22 用户核验 C2：此前读不到时
+    退回摄取时按 settings 声称的来源）。读不到 → 空串 + source_verified=False；声称的来源另存一列供排查。
+    """
+    ident = dict(getattr(ing, "identity", None) or {})
+    ident["claimed_price_source"] = ident.get("price_source", "")
+    ident["price_source"] = str(src or "")
+    ident["source_verified"] = bool(src)
+    return ident
+
+
 def _pit_source(dataset_name: str) -> Optional[str]:
     """PIT 元数据里记的**实际**价格源（复审 2026-10-19 N02：证据与规格核对用它，不用 settings 的声称）。"""
     try:
@@ -521,7 +533,7 @@ def run_daily_pipeline(dataset_name: str, start: str = "", end: str = "",
     panel = _with_fundamentals(dataset_name, ing.dataset)
     # `now` = 决策时刻：当天的信号以它为存档时刻，明天据此判断结算是不是前向（F06）
     src = _pit_source(dataset_name)
-    ident = dict(ing.identity or {}, price_source=src or (ing.identity or {}).get("price_source", ""))
+    ident = _pipeline_identity(ing, src)
     report = loop.run(panel, forward_from=ing.forward_from, now=now,     # per-factor：IC 监控 + 衰减
                       data_source=src, identity=ident or None)
     # Phase PM.4：组合账本（真实 AUM 的美元账本，多因子净持仓 + 容量）

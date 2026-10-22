@@ -7,10 +7,11 @@ AUM/方法、策略级门 verdict、风控快照、换手/无交易带，带**�
 这修正了架构错配（见 DEV_LESSONS §K 的延伸）：晋级/审批的对象从"单因子"升为"组合策略配置"——
 资金决策单位是策略，不是因子。
 
-状态机（策略级，比因子的 7 态简化）：
-    proposed → approved → active → retired
-                      ↘ rejected（终态）
-    active → retired（衰减/人工退役）
+状态机（策略级；运行状态与权限见 app/core/lifecycle/strategy_states.py）：
+    proposed → approved ─┬→ integration（工程联调）→ paper_running
+                         └→ paper_running（纸交易、收集证据）→ verified_active（过了预登记的验证设计）
+    proposed → rejected；任何运行状态 → retired；verified_active → paper_running（降级）
+    `active` 是 2026-10-22 之前的旧字样：不再能进入，旧行只能退役（未验证、没有规格）。
 """
 
 from __future__ import annotations
@@ -27,12 +28,25 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 _Base = declarative_base()
 
 _ALLOWED = {
-    "proposed": {"approved", "rejected"},
-    "approved": {"active", "retired"},
-    "active":   {"retired"},
-    "rejected": set(),
-    "retired":  set(),
+    "proposed":        {"approved", "rejected"},
+    "approved":        {"integration", "paper_running", "retired"},
+    "integration":     {"paper_running", "retired"},
+    "paper_running":   {"verified_active", "retired"},
+    "verified_active": {"paper_running", "retired"},
+    "active":          {"retired"},          # 旧字样（2026-10-22 之前）：只能退役
+    "rejected":        set(),
+    "retired":         set(),
 }
+
+
+def _label(status):
+    from app.core.lifecycle.strategy_states import label
+    return label(status)
+
+
+def _perm(status):
+    from app.core.lifecycle.strategy_states import permissions
+    return permissions(status)
 
 
 class StrategyConfigRecord(_Base):
@@ -131,10 +145,21 @@ class StrategyStore:
             stmt = stmt.order_by(StrategyConfigRecord.created_at.desc()).limit(limit)
             return list(s.scalars(stmt))
 
+    def latest_running(self) -> Optional[StrategyConfigRecord]:
+        """
+        正在运行（在模拟账户交易）的那份策略配置：integration / paper_running / verified_active 中最新的一份；
+        旧的 `active` 行也返回（让每日循环看见它并拒绝 —— 它没有规格），由调用方按 strategy_states 判权限。
+        """
+        from app.core.lifecycle.strategy_states import LEGACY_ACTIVE, RUNNING_STATES
+        with self._Session() as s:
+            stmt = (select(StrategyConfigRecord)
+                    .where(StrategyConfigRecord.status.in_(RUNNING_STATES + (LEGACY_ACTIVE,)))
+                    .order_by(StrategyConfigRecord.created_at.desc()).limit(1))
+            return s.scalars(stmt).first()
+
     def latest_active(self) -> Optional[StrategyConfigRecord]:
-        """最近一个 active（在交易的）策略配置；无则 None。"""
-        act = self.query(status="active", limit=1)
-        return act[0] if act else None
+        """兼容旧调用：同 latest_running（"active" 不再表示已验证，见 strategy_states）。"""
+        return self.latest_running()
 
     def update_status(self, sid: int, new_status: str) -> StrategyConfigRecord:
         with self._Session() as s:
@@ -193,6 +218,9 @@ class StrategyStore:
             "factors": json.loads(rec.factors or "[]"),
             "combo_weights": json.loads(rec.combo_weights or "{}"),
             "aum": rec.aum, "method": rec.method, "passed": rec.passed,
+            # 2026-10-22 用户核验 C6：状态的权限写明，前端不再从字样猜"是否已验证"
+            "status_label": _label(rec.status), "verified": _perm(rec.status)["verified"],
+            "permissions": _perm(rec.status),
             "verdict": json.loads(rec.verdict or "{}"),
             "risk_report": json.loads(rec.risk_report or "{}"),
             "turnover_ann": rec.turnover_ann, "no_trade_band": rec.no_trade_band,

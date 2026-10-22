@@ -55,7 +55,7 @@ class TestClockVersion:
         ds = _panel()
         days = ds["close"].index
         for d in days[-2:]:
-            world.loop().run_portfolio(_upto(ds, d), aum=10_000.0, now=_after_close(d))
+            world.loop().run_portfolio(_upto(ds, d), aum=10_000.0, data_source="yahoo", now=_after_close(d))
         rows = world.ev.strategy_forward_ic(sid)
         assert rows and {r.clock_version for r in rows} == {CLOCK_VERSION}
         from sqlalchemy import select
@@ -106,7 +106,7 @@ class TestReplayIsKeptButNotForward:
         monkeypatch.setattr(settings, "database_url", world.url)
         sid, _ = _propose(world)
         ds = _panel()
-        world.loop().run_portfolio(ds, aum=10_000.0, now=_after_close(ds["close"].index[-1]))
+        world.loop().run_portfolio(ds, aum=10_000.0, data_source="yahoo", now=_after_close(ds["close"].index[-1]))
         assert world.ev.strategy_forward_ic(sid) == [], "没有及时存档的那几天被算成了前向"
         rep = world.ev.strategy_replay_ic(sid)
         assert rep, "回放那几天的 IC 没有留下（研究价值丢了）"
@@ -118,9 +118,9 @@ class TestReplayIsKeptButNotForward:
         sid, h = _propose(world)
         ds = _panel()
         days = ds["close"].index
-        world.loop().run_portfolio(_upto(ds, days[-3]), aum=10_000.0, now=_after_close(days[-3]))
+        world.loop().run_portfolio(_upto(ds, days[-3]), aum=10_000.0, data_source="yahoo", now=_after_close(days[-3]))
         for d in days[-2:]:
-            world.loop().run_portfolio(_upto(ds, d), aum=10_000.0, now=_after_close(d))
+            world.loop().run_portfolio(_upto(ds, d), aum=10_000.0, data_source="yahoo", now=_after_close(d))
         fwd = world.ev.strategy_forward_ic(sid, h)
         assert [pd.Timestamp(r.date) for r in fwd] == list(days[-2:])
         assert {r.evidence_class for r in fwd} == {"forward"}

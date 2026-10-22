@@ -25,7 +25,7 @@ export interface TradingStatus {
   execution_mode?: string        // Phase 12：off | moomoo_paper
   gates: {
     experiment_mode:     boolean
-    enforce_active_gate: boolean
+    verify_requires_gate: boolean   // 2026-10-22 C6：→verified_active 永远要过验证门
     min_forward_days:    number
     min_ic_tstat:        number
     factor_gate_mode:    string
@@ -156,7 +156,10 @@ export interface FidelityReport {
 export interface StrategyConfigItem {
   id:            number
   name:          string
-  status:        string        // proposed | approved | active | retired | rejected
+  status:        string        // proposed | approved | integration | paper_running | verified_active | retired | rejected（active = 旧字样）
+  status_label?: string        // 后端给的中文状态（含是否已验证）
+  verified?:     boolean       // 只有 verified_active 为 true
+  permissions?:  { trades_simulate: boolean; forward_evidence: boolean; formal_days: boolean; verified: boolean }
   version:       number
   factors:       string[]
   combo_weights: Record<string, number>

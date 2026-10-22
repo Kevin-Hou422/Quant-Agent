@@ -209,6 +209,15 @@ class TrialLedger:
                 (TrialRunState.status == "incomplete")
                 | ((TrialRunState.status == "running") & (TrialRunState.started_at < cutoff)))).all())
 
+    def open_runs(self) -> List[TrialRunState]:
+        """
+        还没结案的运行：running（不论多久）+ incomplete。2026-10-22 用户核验 C5：正式资格只认**全部结案**的试验史 ——
+        进行中的运行、被杀的进程、结束标记写不进去的运行都在这里；STALE_AFTER 只用来把 running 标成"疑似僵尸"。
+        """
+        with self._Session() as s:
+            return list(s.scalars(select(TrialRunState).where(
+                TrialRunState.status.in_(("running", "incomplete")))).all())
+
     def resolve_run(self, run_id: str, extra_trials: int, actor: str, reason: str) -> int:
         """
         人工结案一次中断的运行：把**估计**漏记的尝试数补进全局累计（宁可估多），写明是谁、为什么。
@@ -315,18 +324,28 @@ class TrialLedgerUnavailable(RuntimeError):
     """试验台账写不进去：搜索不得开始。"""
 
 
-def trial_history_problem() -> str:
-    """门用：试验史是否完整。不完整 → 说明原因（门据此不给正式结论）；完整 → 空串。"""
+def trial_history_problem(now: Optional[datetime] = None) -> str:
+    """
+    门用：试验史是否完整。不完整 → 说明原因（门据此不给正式结论）；完整 → 空串。
+    2026-10-22 用户核验 C5：此前只把超过 6 小时的 running 算作不完整 —— 刚开始的、被杀的、结束标记写失败的
+    运行在 6 小时内都被当成完整史放行。现在任何未结案的运行都让正式结论等待（结束、或 resolve_run 结案）。
+    """
     try:
-        bad = TrialLedger().incomplete_runs()
+        led = TrialLedger()
+        open_ = led.open_runs()
+        stale = {r.run_id for r in led.incomplete_runs(now)}
     except Exception as exc:
         logger.error("[S.3] 读不到试验运行状态 → 按试验史不完整处理: %s", exc)
         return f"读不到试验运行状态（{exc}）"
-    if not bad:
+    if not open_:
         return ""
-    return (f"{len(bad)} 次搜索运行没有正常结束记账（{', '.join(r.run_id for r in bad[:3])}"
-            f"{' …' if len(bad) > 3 else ''}）—— 漏记的尝试数未知，DSR 的多重检验校正不完整；"
-            f"用 TrialLedger.resolve_run 补记并写明理由后再评估")
+    def _label(r):
+        if r.status == "incomplete":
+            return f"{r.run_id}（有漏记）"
+        return f"{r.run_id}（{'疑似僵尸' if r.run_id in stale else '进行中'}）"
+    return (f"{len(open_)} 次搜索运行没有结案（{', '.join(_label(r) for r in open_[:3])}"
+            f"{' …' if len(open_) > 3 else ''}）—— 试验总数还会变，DSR 的多重检验校正不完整；"
+            f"等它结束，或用 TrialLedger.resolve_run 补记并写明理由后再评估")
 
 
 # ---------------------------------------------------------------------------

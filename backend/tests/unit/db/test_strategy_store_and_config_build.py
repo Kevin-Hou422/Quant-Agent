@@ -33,7 +33,7 @@ def test_strategy_store_crud_and_lifecycle(tmp_path):
     assert rec.status == "proposed" and rec.aum == 10_000
     # proposed → approved → active → retired
     store.update_status(sid, "approved"); store.record_decision(sid, "approve", "proposed", "approved")
-    store.update_status(sid, "active")
+    store.update_status(sid, "paper_running")
     assert store.latest_active().id == sid
     store.update_status(sid, "retired")
     # 非法流转

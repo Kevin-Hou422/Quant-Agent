@@ -116,7 +116,7 @@ def world(tmp_path, monkeypatch):
         verdict=approved_verdict(dict(zip(ids, ("rank(ts_delta(close, 5))", "rank(-ts_delta(close, 20))"))),
                                  {i: 0.5 for i in ids}, AUM)))
     ss.update_status(sid, "approved")
-    ss.update_status(sid, "active")
+    ss.update_status(sid, "paper_running")
 
     def run_day(day, minutes_after_close=90):
         from app.tasks.daily_ingest import run_daily_pipeline

@@ -109,7 +109,7 @@ class TestSignalBeforeOutcome:
         ds = _panel()
         days = ds["close"].index
         for d in days[-4:]:
-            world.loop().run(_upto(ds, d), now=_after_close(d))
+            world.loop().run(_upto(ds, d), data_source="yahoo", now=_after_close(d))
         assert _fwd_dates(world.store, world.aid) == list(days[-3:])     # 第一天只存档，后三天结算
 
     def test_the_forward_ic_is_computed_from_the_archived_signal(self, world):
@@ -117,9 +117,9 @@ class TestSignalBeforeOutcome:
         ds = _panel()
         days = ds["close"].index
         a, b = days[-2], days[-1]
-        world.loop().run(_upto(ds, a), now=_after_close(a))
+        world.loop().run(_upto(ds, a), data_source="yahoo", now=_after_close(a))
         arch = world.ev.archived_before(f"alpha:{world.aid}", a, session_close_utc(b).replace(tzinfo=None))
-        world.loop().run(ds, now=_after_close(b))
+        world.loop().run(ds, data_source="yahoo", now=_after_close(b))
         (e,) = world.store.get_forward_ic(world.aid)
         ret = ds["close"].pct_change().loc[b]
         assert e.realized_ic == pytest.approx(_cs_spearman(arch["signal"].reindex(ret.index).to_numpy(float),
@@ -129,29 +129,29 @@ class TestSignalBeforeOutcome:
         """此前：一次补拉的 bar 全按 forward_from 标前向。那些天的信号当时从没产生过。"""
         ds = _panel()
         days = ds["close"].index
-        world.loop().run(ds, forward_from=str(days[-20].date()), now=_after_close(days[-1]))
+        world.loop().run(ds, forward_from=str(days[-20].date()), data_source="yahoo", now=_after_close(days[-1]))
         assert _fwd_dates(world.store, world.aid) == []
 
     def test_after_downtime_only_the_first_missed_day_is_forward(self, world):
         ds = _panel()
         days = ds["close"].index
-        world.loop().run(_upto(ds, days[-5]), now=_after_close(days[-5]))
-        world.loop().run(ds, now=_after_close(days[-1]))                  # 停了三天才跑
+        world.loop().run(_upto(ds, days[-5]), data_source="yahoo", now=_after_close(days[-5]))
+        world.loop().run(ds, data_source="yahoo", now=_after_close(days[-1]))                  # 停了三天才跑
         assert _fwd_dates(world.store, world.aid) == [days[-4]]
 
     def test_a_rerun_without_forward_from_keeps_the_evidence(self, world):
         """此前：落盘后计算失败、重跑时 forward_from=None → 证据丢标。"""
         ds = _panel()
         days = ds["close"].index
-        world.loop().run(_upto(ds, days[-2]), now=_after_close(days[-2]))
-        world.loop().run(ds, forward_from=None, now=_after_close(days[-1]))
+        world.loop().run(_upto(ds, days[-2]), data_source="yahoo", now=_after_close(days[-2]))
+        world.loop().run(ds, forward_from=None, data_source="yahoo", now=_after_close(days[-1]))
         assert _fwd_dates(world.store, world.aid) == [days[-1]]
 
     def test_a_signal_archived_after_the_outcome_closed_is_not_forward(self, world):
         ds = _panel()
         days = ds["close"].index
-        world.loop().run(_upto(ds, days[-2]), now=_after_close(days[-1]))  # 存档晚于下一天收盘
-        world.loop().run(ds, now=_after_close(days[-1], hours=3))
+        world.loop().run(_upto(ds, days[-2]), data_source="yahoo", now=_after_close(days[-1]))  # 存档晚于下一天收盘
+        world.loop().run(ds, data_source="yahoo", now=_after_close(days[-1], hours=3))
         assert _fwd_dates(world.store, world.aid) == []
 
     def test_the_portfolio_book_follows_the_same_rule(self, world):
@@ -159,10 +159,10 @@ class TestSignalBeforeOutcome:
         ds = _panel()
         days = ds["close"].index
         world.loop().run_portfolio(ds, aum=10_000.0, forward_from=str(days[-20].date()),
-                                   now=_after_close(days[-1]))
+                                   data_source="yahoo", now=_after_close(days[-1]))
         assert world.store.get_forward_ic(PORTFOLIO_BOOK_ID) == []
         nxt = _panel(T=61)                                              # 同一种子，多一天
-        world.loop().run_portfolio(nxt, aum=10_000.0, now=_after_close(nxt["close"].index[-1]))
+        world.loop().run_portfolio(nxt, aum=10_000.0, data_source="yahoo", now=_after_close(nxt["close"].index[-1]))
         assert _fwd_dates(world.store, PORTFOLIO_BOOK_ID) == [nxt["close"].index[-1]]
 
 
@@ -189,7 +189,7 @@ class TestStrategyVersionEvidence:
         ds = _panel()
         days = ds["close"].index
         for d in days[-3:]:
-            world.loop().run_portfolio(_upto(ds, d), aum=10_000.0, now=_after_close(d))
+            world.loop().run_portfolio(_upto(ds, d), aum=10_000.0, data_source="yahoo", now=_after_close(d))
         rows = world.ev.strategy_forward_ic(sid)
         assert [pd.Timestamp(r.date) for r in rows] == list(days[-2:])
         assert {r.spec_hash for r in rows} == {h}
@@ -203,7 +203,7 @@ class TestStrategyVersionEvidence:
         ds = _panel()
         days = ds["close"].index
         for d in days[-2:]:
-            world.loop().run_portfolio(_upto(ds, d), aum=10_000.0, now=_after_close(d))
+            world.loop().run_portfolio(_upto(ds, d), aum=10_000.0, data_source="yahoo", now=_after_close(d))
         ra, rb = world.ev.strategy_forward_ic(a), world.ev.strategy_forward_ic(b)
         assert len(ra) == len(rb) == 1 and ra[0].ic != rb[0].ic
 
@@ -223,5 +223,6 @@ class TestStrategyVersionEvidence:
                                     pd.Timestamp("2024-05-31"), _after_close(pd.Timestamp("2024-05-31")))
         r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True})
         assert r.status_code == 200, r.text
-        act = [d for d in ss.get_decisions(sid) if d.decision == "activate"][0]
-        assert "n=1 " in act.reason                                  # 此前这里会是 n=80
+        # 2026-10-22 C6：门在 /verify；它数到的只能是这份策略自己的 1 条（此前这里会是 book 0 的 80 条）
+        r = test_client.post(f"/api/strategies/{sid}/verify", json={})
+        assert r.status_code == 409 and "n=1）" in r.json()["detail"], r.text

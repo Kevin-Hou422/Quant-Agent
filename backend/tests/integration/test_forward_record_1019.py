@@ -99,7 +99,12 @@ def test_a_late_rerun_cannot_turn_a_formal_day_into_a_replay_or_overwrite_it(wor
     late = (session_open_utc(pd.Timestamp("2025-03-05")) - session_close_utc(D2)).total_seconds() / 60 + 30
     world["run_day"](D2, minutes_after_close=int(late))
     after = _day(sid, D2)
-    assert after == before, "事后补跑覆盖了正式那天的记录"
+    # 2026-10-22 C4：决策不可变；补跑的内容追加进修订链（不是覆盖，也不是悄悄丢掉）
+    assert after["decision"] == before["decision"] and after["formal"] is True, "事后补跑覆盖了正式那天的决策"
+    assert after["revisions"] == before["revisions"] + 1
+    from app.db.forward_record import ForwardRecordStore
+    late_rev = ForwardRecordStore().history(sid, D2)[-1]
+    assert late_rev["kind"] == "revision" and late_rev["payload"]["formal"] is False
 
 
 def test_a_replayed_day_is_never_formal(world):
@@ -112,4 +117,7 @@ def test_a_replayed_day_is_never_formal(world):
     late = (session_open_utc(D2) - session_close_utc(D1)).total_seconds() / 60 + 30
     world["run_day"](D1, minutes_after_close=int(late))
     rec = _day(sid, D1)
-    assert rec["formal"] is False and rec["formal_reason"] in ("not_run_in_decision_window", "execution_not_live")
+    assert rec["formal"] is False                                   # 当天的决策（首跑）不是正式
+    from app.db.forward_record import ForwardRecordStore
+    late = ForwardRecordStore().history(sid, D1)[-1]["payload"]     # 补跑那次进修订链，也不是正式
+    assert late["formal"] is False and late["formal_reason"] in ("not_run_in_decision_window", "execution_not_live")

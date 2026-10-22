@@ -120,7 +120,12 @@ def test_activate_records_tr4_gate_in_lineage(test_client, fresh_db):
     sid = ss.save(StrategyConfig(factors=["1"], combo_weights={"1": 1.0}, aum=10_000,
                                  passed=True, name="tr4"))
     r = test_client.post(f"/api/strategies/{sid}/approve", json={"activate": True, "reason": "go"})
-    assert r.status_code == 200 and r.json()["status"] == "active"
+    assert r.status_code == 200 and r.json()["status"] == "paper_running"
     det = test_client.get(f"/api/strategies/{sid}").json()
-    act = [d for d in det["decisions"] if d["decision"] == "activate"]
-    assert act and "TR.4 门" in act[0]["reason"]      # 门结论写进了谱系
+    act = [d for d in det["decisions"] if d["decision"] == "start_paper_running"]
+    # 2026-10-22 C6：开始纸交易不过门 —— 谱系里如实写"未验证"，不再写一个"门结论"让它看起来像验证过
+    assert act and "未验证" in act[0]["reason"] and "go" in act[0]["reason"]
+    # 验证门没过（没有预登记设计、没有证据）→ 409，谱系里不出现 verify
+    assert test_client.post(f"/api/strategies/{sid}/verify", json={}).status_code == 409
+    det = test_client.get(f"/api/strategies/{sid}").json()
+    assert not [d for d in det["decisions"] if d["decision"] == "verify"] and det["status"] == "paper_running"

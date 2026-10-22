@@ -63,6 +63,8 @@ class SignalArchive(_Base):
 #: replay = 没有及时存档（首跑、停机补拉、晚到归档、换源）→ 按当下重算的信号结算，**只供研究**，
 #: 不进 →ACTIVE 门。NULL = 2026-10-20 之前的行（那时只记 forward）。
 EVIDENCE_FORWARD, EVIDENCE_REPLAY = "forward", "replay"
+#: 工程联调期（strategy_states.integration）的前向证据：照样记，但不计入验证（2026-10-22 用户核验 C6）
+EVIDENCE_INTEGRATION = "integration"
 
 
 class StrategyEvidence(_Base):
@@ -234,7 +236,7 @@ class EvidenceStore:
     def record_strategy_ic(self, strategy_id: int, spec_hash: str, day, ic: float,
                            signal_asof, decision_ts: datetime, identity: Optional[dict] = None,
                            signal_digest: str = "", evidence_class: str = EVIDENCE_FORWARD) -> bool:
-        if evidence_class not in (EVIDENCE_FORWARD, EVIDENCE_REPLAY):
+        if evidence_class not in (EVIDENCE_FORWARD, EVIDENCE_REPLAY, EVIDENCE_INTEGRATION):
             raise ValueError(f"未知的证据类别 {evidence_class!r}")
         day = _as_date(day)
         with self._Session() as s:
@@ -325,10 +327,15 @@ class ForwardBook:
         if deadline is None or rec_at >= deadline:
             return None
         arch = self.store.archived_before(self.key, prev_day, deadline)
+        if arch is None:
+            return None
+        # 2026-10-22 用户核验 C2：正式前向要求**来源可验证**且前后一致 —— 本轮来源未知、存档时来源未知、
+        # 或两者不同，一律不当前向结算（调用方按回放处理）
         now_src = str(self.identity.get("price_source") or "")
-        if arch is not None and arch["price_source"] and now_src and arch["price_source"] != now_src:
-            logger.warning("[evidence] %s 在 %s 的存档信号来自 %s，本轮数据来自 %s → 不当前向结算",
-                           self.key, _as_date(prev_day), arch["price_source"], now_src)
+        verified = bool(self.identity.get("source_verified", bool(now_src)))
+        if not verified or not now_src or not arch["price_source"] or arch["price_source"] != now_src:
+            logger.warning("[evidence] %s 在 %s：存档来源 %r / 本轮来源 %r（已验证=%s）→ 不当前向结算",
+                           self.key, _as_date(prev_day), arch["price_source"], now_src, verified)
             return None
         return arch
 

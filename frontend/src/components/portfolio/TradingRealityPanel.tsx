@@ -177,8 +177,8 @@ export default function TradingRealityPanel() {
                 </div>
                 <Row k="实验模式" v={status.gates.experiment_mode ? '开（B/C 也放行收证据）' : '关（仅 A 级）'}
                      tone={status.gates.experiment_mode ? 'text-amber-300' : 'text-emerald-300'} />
-                <Row k="→ACTIVE 门" v={status.gates.enforce_active_gate ? '强制拦截' : '仅记录（不拦）'}
-                     tone={status.gates.enforce_active_gate ? 'text-emerald-300' : 'text-amber-300'}
+                <Row k="验证门（→已验证）" v={status.gates.verify_requires_gate ? '永远要过（没有开关）' : '异常：后端未声明'}
+                     tone={status.gates.verify_requires_gate ? 'text-emerald-300' : 'text-rose-300'}
                      hint="ic_history 尚未分离回放/前向（Phase 11）前，默认不拦" />
                 <Row k="→ACTIVE 阈值" v={`≥${status.gates.min_forward_days} 前向日 · IC t>${status.gates.min_ic_tstat}`} />
                 <Row k="因子入池门" v={status.gates.factor_gate_mode === 'leak' ? 'leak（低门槛滤泄漏）' : 'strict（因子级严门）'} />

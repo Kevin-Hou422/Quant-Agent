@@ -67,7 +67,7 @@ def _strategy(tmp_path, dsls, active=True):
                                                           1e6, settings=_settings(tmp_path))))
     if active:
         ss.update_status(sid, "approved")
-        ss.update_status(sid, "active")
+        ss.update_status(sid, "paper_running")
     return sid
 
 

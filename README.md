@@ -641,9 +641,11 @@ than convention.
   backtests in an unknown direction and magnitude. The decision on record is *not* to buy a
   delisting-inclusive source but to rely on forward paper trading, which is free of the bias by
   construction.
-- **No forward evidence yet.** The replay/forward split exists (`alpha_ic_history.is_forward`) and
-  the →ACTIVE gate consumes forward samples only, but the count is currently zero. The gate is
-  therefore not enforced by default (`TR_ENFORCE_ACTIVE_GATE=false`).
+- **No forward evidence yet.** Collecting evidence and being verified are two different strategy
+  states: `paper_running` trades the simulated account and accumulates forward evidence without any
+  evidence requirement; `verified_active` can only be reached through the pre-registered validation
+  gate on that strategy's own forward evidence — there is no setting that bypasses it
+  (`TR_ENFORCE_ACTIVE_GATE` no longer does anything). No strategy is verified today.
 - **Risk attribution covers 5 price-volume styles + sectors, plus `size` and `value` only when the
   dataset carries fundamentals.** Without them (the default), every attribution payload carries
   `styles_missing: ["size","value"]` with the reason — a "66% factor risk" figure must then not be
@@ -716,7 +718,7 @@ the file itself is the authority and documents *why* each default is what it is.
 | `S_FITNESS_MODE` / `S_CV_FOLDS` / `S_EMBARGO_DAYS` | `purged_cv` / `5` / `20` | GP fitness discipline |
 | `S_USE_CPCV` | `true` | PBO estimator (CSCV understates overfitting) |
 | `FACTOR_GATE_MODE` | `leak` | factor-level bar: leak filter only; the strict gate is at strategy level |
-| `TR_EXPERIMENT_MODE` / `TR_ENFORCE_ACTIVE_GATE` | `true` / `false` | admit graded B/C to paper; →ACTIVE gate records but does not block yet |
+| `TR_EXPERIMENT_MODE` | `true` | admit graded B/C proposals to `paper_running` (grades are shown as they are; a failed or unevaluated required gate is never grade A) |
 | `RISK_MAX_GROSS` / `RISK_MAX_NAME_WEIGHT` / `RISK_MAX_SECTOR_WEIGHT` | `1.0` / `0.10` / `0.30` | portfolio risk limits |
 | `RISK_TARGET_VOL_ANN` / `RISK_MAX_DRAWDOWN` / `RISK_HALT_ON_DRAWDOWN` | `0.0` / `0.20` / `false` | vol targeting (0 = off), drawdown breaker |
 | `RISK_ATTR_LOOKBACK` | `252` | risk-model estimation window (diagnostic only) |
@@ -724,9 +726,10 @@ the file itself is the authority and documents *why* each default is what it is.
 | `CALENDAR_ALLOW_HEURISTIC` | `false` | never guess trading days |
 | `ALLOW_INSECURE_BIND` | `false` | refuse to bind a non-loopback address (there is no auth layer) |
 
-> **No hard gate is enabled by default.** `pm_strategy_gate_block`, `risk_halt_on_drawdown` and
-> `tr_enforce_active_gate` are all `false` during the evidence-gathering phase: verdicts are recorded
-> but do not stop trading. This is a deliberate choice, pinned by a test so it cannot drift silently.
+> **Trading-time hard gates are off by default; verification is not.** `pm_strategy_gate_block` and
+> `risk_halt_on_drawdown` are `false` during the evidence-gathering phase: the daily strategy gate's
+> verdict is recorded but does not stop paper trading. This is a deliberate choice, pinned by a test.
+> Being *verified* (`verified_active`) always requires the pre-registered validation gate.
 
 ---
 

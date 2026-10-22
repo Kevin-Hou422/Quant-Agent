@@ -268,9 +268,9 @@ def test_active_strategy_config_filters_components(tmp_path, monkeypatch):
                                      verdict=approved_verdict({keep: "rank(ts_delta(log(close), 5))"},
                                                               {keep: 1.0}, 10_000.0)))
     sstore.update_status(sid, "approved")
-    sstore.update_status(sid, "active")
-    # 直接替换 latest_active，避免依赖 StrategyStore 的默认 db 路径
-    monkeypatch.setattr(StrategyStore, "latest_active", lambda self: sstore.get(sid))
+    sstore.update_status(sid, "paper_running")
+    # 直接替换 latest_running（每日循环取运行中策略的入口），避免依赖 StrategyStore 的默认 db 路径
+    monkeypatch.setattr(StrategyStore, "latest_running", lambda self: sstore.get(sid))
 
     out = loop.run_portfolio(_dataset(), aum=10_000.0)
     assert out.get("active_config") == sid, (
@@ -300,7 +300,7 @@ def test_baseline_book_skips_active_config_and_strategy_gate(tmp_path, monkeypat
                                      aum=10_000.0, passed=True, status="proposed",
                                      name="should-be-ignored"))
     sstore.update_status(sid, "approved")
-    sstore.update_status(sid, "active")
+    sstore.update_status(sid, "paper_running")
     monkeypatch.setattr(StrategyStore, "latest_active", lambda self: sstore.get(sid))
 
     loop, _ = _make_loop(tmp_path, dsls=(), tag="basegate")     # 无自研因子 → 基准回退

@@ -65,6 +65,6 @@ def test_trading_status_endpoint(test_client):
         assert k in d
     assert "opend_reachable" in d["moomoo"]
     # 门开关必须可见（让人一眼看出门是否在真拦）
-    for k in ("experiment_mode", "enforce_active_gate", "min_forward_days",
+    for k in ("experiment_mode", "verify_requires_gate", "min_forward_days",
               "min_ic_tstat", "factor_gate_mode"):
         assert k in d["gates"]

@@ -93,51 +93,38 @@ def build_strategy_config(
     contract = _sc.StrategyContract.freeze({k: (factor_dsl or {}).get(k) for k in signals}, combo, method,
                                            aum, band, limits)
 
-    # PM.S1 策略门：① 冻结规格本身（与每日门同一口径）；② 产出这份规格的**流程**的滚动前推 OOS。
-    # 冻结权重是在整个选择段上拟合的，①在同一段上的收益不是样本外 —— 所以两个都要过，并且如实标注口径。
-    verdict = {}
-    passed = False
+    # PM.S1 策略门：① 冻结规格本身（与每日门同一口径）；② 产出这份规格的**流程**的滚动前推 OOS；
+    # ③ 用到基本面字段时的来源 / 期间质量门（复审 §5.4）。三道都是**必须的门**。
+    # 2026-10-22 用户核验 C1：此前 verdict["passed"] 只装了 ①，② 失败只改了 cfg.passed，评级又按 verdict 判 ——
+    # 冻结规格过、流程 OOS 不过时 cfg 说没过、verdict 说过了还标 A 级。现在：各门原始结论放在 verdict["gates"]，
+    # verdict["passed"] = cfg.passed = 三道必须的门都**评估了且都过了**；评级在最终结论之后做。
+    gates: dict = {}
+    verdict: dict = {}
     try:
         gate = StrategyGate(aum=aum, method=method)
         sv = contract.evaluate(gate, signals, dataset, cost_params=cost_params)       # 第 2 步：验证
-        verdict = sv.to_dict(); passed = sv.passed
+        verdict = sv.to_dict()                       # 冻结规格的各项指标（sharpe / DSR / t …）留在顶层供展示
+        gates["frozen_spec"] = {"evaluated": True, **sv.to_dict(),
+                                "scope": "frozen_spec_on_selection_in_sample"}
         verdict["evidence_scope"] = "frozen_spec_on_selection_in_sample"
         verdict["evaluated_spec_hash"] = contract.hash
-        try:
-            wf = gate.evaluate(signals, dataset, cost_params=cost_params, no_trade_band=band)
-            verdict["procedure_oos"] = {"passed": wf.passed, "sharpe": wf.sharpe,
-                                        "deflated_sharpe": wf.deflated_sharpe, "t_stat": wf.t_stat,
-                                        "reasons": list(wf.reasons),
-                                        "scope": "walk_forward_refit_of_the_procedure"}
-            passed = bool(passed and wf.passed)
-            if not wf.passed:
-                verdict.setdefault("reasons", [])
-                verdict["reasons"] = list(verdict["reasons"]) + [f"流程的滚动前推 OOS 未过：{'; '.join(wf.reasons)}"]
-        except Exception as exc:
-            logger.error("[strategy_builder] 流程 OOS 评估失败（无证据）: %s", exc)
-            verdict["procedure_oos"] = {"evaluated": False, "error": str(exc)}
-            passed = False
-            degraded.append(f"procedure_oos_failed: {exc}")
     except Exception as exc:
-        # 策略门崩了 ≠ 策略门未过。前者是"没有证据"，后者是"证据不足"，
-        # 二者混为 passed=False 会让人以为门评过了。必须显式标注。
+        # 策略门崩了 ≠ 策略门未过。前者是"没有证据"，后者是"证据不足" —— 显式标注
         logger.error("[strategy_builder] PM.S1 策略门评估失败（无证据，非未过）: %s", exc)
+        gates["frozen_spec"] = {"evaluated": False, "passed": False, "error": str(exc)}
         verdict = {"gate_error": str(exc), "evaluated": False}
         degraded.append(f"strategy_gate_failed: {exc}")
-
-    # TR.4 第 4 步：进 PAPER 的 **A/B/C 分级**（实验模式下 B/C 也放行，但等级如实标注）。
-    # 存进 verdict JSON（免 schema 迁移），前端与审批据此看清"这份策略证据有多强"。
     try:
-        from app.core.lifecycle.promotion_gate import grade_paper_entry
-        allowed, gdetail = grade_paper_entry(verdict)
-        verdict["paper_grade"] = gdetail["grade"]
-        verdict["paper_entry"] = gdetail
-        if not allowed:
-            verdict["paper_entry_blocked"] = True      # 非实验模式且非 A 级
+        gate = StrategyGate(aum=aum, method=method)
+        wf = gate.evaluate(signals, dataset, cost_params=cost_params, no_trade_band=band)
+        gates["procedure_oos"] = {"evaluated": True, "passed": bool(wf.passed), "sharpe": wf.sharpe,
+                                  "deflated_sharpe": wf.deflated_sharpe, "t_stat": wf.t_stat,
+                                  "reasons": list(wf.reasons), "scope": "walk_forward_refit_of_the_procedure"}
     except Exception as exc:
-        logger.warning("[strategy_builder] TR.4 进 PAPER 分级失败: %s", exc)
-        verdict["paper_grade"] = "unknown"
-        degraded.append(f"paper_grading_failed: {exc}")
+        logger.error("[strategy_builder] 流程 OOS 评估失败（无证据）: %s", exc)
+        gates["procedure_oos"] = {"evaluated": False, "passed": False, "error": str(exc)}
+        degraded.append(f"procedure_oos_failed: {exc}")
+    verdict["procedure_oos"] = gates["procedure_oos"]               # 兼容旧读法
 
     # PM.5 风控快照 + PM.6 换手：第 3 步 —— 按冻结的合同生成目标（与每日循环同一函数、同一参数）。
     # 此前快照不做目标波动缩放、换手按未经风控的权重算，说的不是会去交易的那份。
@@ -154,14 +141,45 @@ def build_strategy_config(
         risk_report = {"risk_error": str(exc), "evaluated": False}
         degraded.append(f"risk_snapshot_failed: {exc}")
 
-    # 复审 2026-10-19 §5.4：用到基本面字段的策略，提案时就过来源 / 期间质量门（不过 → 不通过，并写明原因）
     from app.core.data_engine.fundamentals.quality import strategy_quality_problem
-    fq = strategy_quality_problem({k: (factor_dsl or {}).get(k) for k in signals}, prices.index[-1])
-    if fq:
-        verdict["fundamentals_quality"] = fq
-        verdict.setdefault("reasons", [])
-        verdict["reasons"] = list(verdict["reasons"]) + [f"基本面质量门未过：{fq}"]
-        passed = False
+    try:
+        fq = strategy_quality_problem({k: (factor_dsl or {}).get(k) for k in signals}, prices.index[-1])
+        gates["fundamentals_quality"] = {"evaluated": True, "passed": not fq, "detail": fq}
+    except Exception as exc:
+        logger.error("[strategy_builder] 基本面质量门评估失败（无证据）: %s", exc)
+        gates["fundamentals_quality"] = {"evaluated": False, "passed": False, "error": str(exc)}
+        degraded.append(f"fundamentals_quality_failed: {exc}")
+
+    # 最终结论：必须的门都评估了、都过了
+    passed = all(g.get("evaluated") and g.get("passed") for g in gates.values())
+    reasons = list(verdict.get("reasons", []))
+    gate_names = {"frozen_spec": "冻结规格门", "procedure_oos": "流程的滚动前推 OOS",
+                  "fundamentals_quality": "基本面质量门"}
+    for gname, g in gates.items():               # 注意：不能叫 name —— 那是本函数的参数（配置名）
+        if not g.get("evaluated"):
+            reasons.append(f"必须的门未评估：{gate_names.get(gname, gname)}（{g.get('error', '')}）")
+        elif not g.get("passed"):
+            why = g.get("detail") or "; ".join(g.get("reasons", []))
+            reasons.append(f"{gate_names.get(gname, gname)} 未过" + (f"：{why}" if why else ""))
+    verdict["gates"] = gates
+    verdict["passed"] = bool(passed)
+    verdict["reasons"] = reasons
+    if gates["fundamentals_quality"].get("detail"):
+        verdict["fundamentals_quality"] = gates["fundamentals_quality"]["detail"]
+
+    # TR.4 第 4 步：进 PAPER 的 A/B/C 分级 —— 按**最终**结论与各门是否评估（未评估的必须门不可能是 A）
+    try:
+        from app.core.lifecycle.promotion_gate import grade_paper_entry
+        allowed, gdetail = grade_paper_entry(verdict)
+        verdict["paper_grade"] = gdetail["grade"]
+        verdict["paper_entry"] = gdetail
+        if not allowed:
+            verdict["paper_entry_blocked"] = True
+    except Exception as exc:
+        logger.warning("[strategy_builder] TR.4 进 PAPER 分级失败: %s", exc)
+        verdict["paper_grade"] = "unknown"
+        verdict["paper_entry_blocked"] = True
+        degraded.append(f"paper_grading_failed: {exc}")
 
     if degraded:
         verdict["degraded"] = degraded

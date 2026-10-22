@@ -11,7 +11,8 @@ promotion_gate.py — 分级晋级门 + 阈值配置化 + 实验模式（Phase T
 ⚠️ 诚实的限制（已知缺口，待 Phase 11 修）
     目前 `alpha_ic_history` **没有区分"历史回放"与"真前向"**（首次运行会把整段历史逐日回放记进去）。
     因此本门的"前向天数"暂时是**全部已记录 IC 的天数**，**不是纯前向**。在 Phase 11 做完
-    回放/前向分离前，`→ACTIVE` 门只应作**参考**（默认 `tr_enforce_active_gate=False` 不阻断），
+    回放/前向分离前，`→ACTIVE` 门只应作**参考**（当时用 `tr_enforce_active_gate=False` 不阻断；2026-10-22 起该开关
+    已废弃：→verified_active 永远要过门，见 strategy_states），
     否则会把回放段当成前向证据——那正是这套门要防的事。
 """
 
@@ -71,10 +72,14 @@ def grade_paper_entry(strategy_verdict: dict,
     v = strategy_verdict or {}
     passed = bool(v.get("passed"))
     sharpe = float(v.get("sharpe") or 0.0)
+    # 2026-10-22 用户核验 C1：必须的门（verdict["gates"]）失败或未评估 → 不可能是 A；有未评估的 → 也不是 B
+    gates = v.get("gates") or {}
+    unevaluated = sorted(k for k, g in gates.items() if not g.get("evaluated"))
+    failed = sorted(k for k, g in gates.items() if g.get("evaluated") and not g.get("passed"))
 
-    if passed:
+    if passed and not unevaluated and not failed:
         grade = "A"
-    elif sharpe > 0:
+    elif not unevaluated and sharpe > 0:
         grade = "B"
     else:
         grade = "C"
@@ -82,7 +87,8 @@ def grade_paper_entry(strategy_verdict: dict,
     allowed = True if th.experiment_mode else (grade == "A" and sharpe >= th.paper_min_sharpe)
     return allowed, {
         "step": "paper_entry", "grade": grade, "allowed": allowed,
-        "gate_passed": passed, "sharpe": round(sharpe, 4),
+        "gate_passed": passed and not unevaluated and not failed, "sharpe": round(sharpe, 4),
+        "gates_unevaluated": unevaluated, "gates_failed": failed,
         "experiment_mode": th.experiment_mode,
         "note": "实验模式：未过严门也放行以收集前向证据（等级已标注）" if th.experiment_mode
                 else "非实验模式：仅 A 级可进 paper",

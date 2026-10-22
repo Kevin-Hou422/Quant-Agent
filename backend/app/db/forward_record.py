@@ -17,6 +17,16 @@ forward_record.py — 正式前向的启动记录与每日记录（复审 2026-1
     （不是事后补跑 / 回放）、④ 执行层真的在线并且没被阻断 时为真，否则写明原因。
   · 某项算不出来 → 值为 None，并在 `missing` 里写明为什么（不把"没算"写成 0）。
 
+2026-10-22 用户核验 C4："决策和信号应不可变；后续成交、费用、更正采用追加事件或完整修订链，不能无痕替换。
+启动资格必须比较完整 UTC 时间戳，不能只比较日期；启动前已经发生的收益不得计入正式成绩。"
+
+  · 一天的**决策**（第一条带目标的记录）写进 `forward_days` 后不再替换；同一决策日再跑（重跑、补跑、更正）
+    整份追加进 `forward_day_events`（kind = revision；决策之前那些没有目标的尝试 = attempt）—— `history()` 看完整链；
+  · 正式资格按**完整 UTC 时间戳**：决策时刻（targets_generated_at）必须晚于启动时刻；
+  · 当天实现的收益属于**前一个决策**（`outcome.of_decision`）；只有前一个决策本身是正式的，这笔收益才进
+    `formal_performance()` —— 启动前的决策产生的收益不算正式成绩；
+  · 策略状态不允许正式天数（工程联调等，见 strategy_states）→ 不正式。
+
 基准：缺省是**数据集等权宇宙**的收盘到收盘收益（`ew_universe`）。用哪个基准是待定事项 D16。
 """
 
@@ -75,6 +85,23 @@ class ForwardDay(_Base):
     __table_args__ = (UniqueConstraint("strategy_id", "decision_date", name="uq_forward_day"),)
 
 
+class ForwardDayEvent(_Base):
+    """决策日的修订链（追加，不改）：同日重跑 / 补跑 / 更正的完整内容。"""
+    __tablename__ = "forward_day_events"
+    id:            int      = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_id:   int      = Column(Integer, nullable=False, index=True)
+    decision_date: object   = Column(Date, nullable=False, index=True)
+    kind:          str      = Column(String(16), nullable=False)        # revision / attempt
+    recorded_at:   datetime = Column(DateTime, nullable=False)
+    payload:       str      = Column(Text, nullable=False, default="{}")
+
+
+#: 决策部分：一经写入不再替换（后续信息走修订链）
+DECISION_FIELDS = ("decision_date", "strategy_id", "spec_hash", "clock_version", "code_version", "data_identity",
+                   "signal_archived_at", "targets_generated_at", "expected_session", "target_weights",
+                   "target_shares")
+
+
 def environment_version() -> Dict[str, Any]:
     from importlib import metadata
     pkgs = {}
@@ -103,12 +130,25 @@ class ForwardRecordStore:
 
     # ------------------------------------------------------------------ 启动（人做）
     def start(self, strategy_id: int, spec_hash: str, actor: str, reason: str,
-              data_identity: Optional[dict] = None, started_at: Optional[datetime] = None) -> ForwardRun:
-        """启动正式前向。同一策略 + 规格第二次启动 → ValueError（启动时间唯一，不能重置后"重新开始"）。"""
+              data_identity: Optional[dict] = None, started_at: Optional[datetime] = None,
+              strategy_status: Optional[str] = None) -> ForwardRun:
+        """
+        启动正式前向。同一策略 + 规格第二次启动 → ValueError（启动时间唯一，不能重置后"重新开始"）。
+        策略的**当前状态**必须允许正式天数（paper_running / verified_active；2026-10-22 C6）—— 以库里的状态为准，
+        给了 strategy_status 也要与库里一致。
+        """
         if not actor or not reason:
             raise ValueError("启动正式前向必须写明操作人与原因")
         if not spec_hash:
             raise ValueError("没有规格哈希的策略不能启动正式前向")
+        from app.core.lifecycle.strategy_states import label, permissions
+        status = self._status_of(strategy_id)
+        if status is None:
+            status = strategy_status
+        elif strategy_status is not None and strategy_status != status:
+            raise ValueError(f"策略 #{strategy_id} 的状态是 {status}，不是 {strategy_status}")
+        if not permissions(status or "")["formal_days"]:
+            raise ValueError(f"策略 #{strategy_id} 的状态是 {label(status or '?')}，不能启动正式前向")
         from app.core.data_engine.input_identity import code_version
         row = ForwardRun(strategy_id=int(strategy_id), spec_hash=str(spec_hash),
                          started_at=_naive_utc(started_at or datetime.now(timezone.utc)),
@@ -124,41 +164,109 @@ class ForwardRecordStore:
                 raise ValueError(f"策略 #{strategy_id}（规格 {spec_hash[:12]}）已经启动过正式前向") from exc
             return row
 
+    def _status_of(self, strategy_id: int) -> Optional[str]:
+        try:
+            from app.db.strategy_store import StrategyStore
+            rec = StrategyStore(db_url=self._engine.url.render_as_string(hide_password=False)).get(int(strategy_id))
+        except Exception as exc:
+            logger.warning("[forward] 读不到策略 #%s 的状态: %s", strategy_id, exc)
+            return None
+        return None if rec is None else str(rec.status)
+
     def run_for(self, strategy_id: int, spec_hash: str) -> Optional[ForwardRun]:
         with self._Session() as s:
             return s.scalars(select(ForwardRun).where(ForwardRun.strategy_id == int(strategy_id),
                                                       ForwardRun.spec_hash == str(spec_hash))).first()
 
     # ------------------------------------------------------------------ 每日
-    def record_day(self, record: Dict[str, Any]) -> None:
+    def record_day(self, record: Dict[str, Any]) -> str:
+        """
+        写一天的记录。返回 "decision"（成为这一天的决策）/ "revision"（追加进修订链）。
+        已有带目标的决策 → 新内容只追加（kind=revision），决策本身不动（不论新的是否正式）；
+        已有的只是没有目标的尝试（被拦 / 没调仓）而这次有目标 → 旧的尝试移进修订链（kind=attempt），这次成为决策。
+        """
         day = pd.Timestamp(record["decision_date"]).date()
         sid = int(record["strategy_id"])
+        now = _naive_utc(datetime.now(timezone.utc))
+        blob = json.dumps(record, ensure_ascii=False, default=str, sort_keys=True)
         with self._Session() as s:
             row = s.scalars(select(ForwardDay).where(ForwardDay.strategy_id == sid,
                                                      ForwardDay.decision_date == day)).first()
-            if row is None:
+            if row is not None:
+                base = json.loads(row.payload)
+                if _has_decision(base) or not _has_decision(record):
+                    s.add(ForwardDayEvent(strategy_id=sid, decision_date=day, kind="revision",
+                                          recorded_at=now, payload=blob))
+                    s.commit()
+                    if _has_decision(base) and record.get("decision") != base.get("decision"):
+                        logger.info("[forward] 策略 #%s %s 的决策已定；本轮内容追加进修订链（%s）",
+                                    sid, day, record.get("formal_reason"))
+                    return "revision"
+                s.add(ForwardDayEvent(strategy_id=sid, decision_date=day, kind="attempt",
+                                      recorded_at=_naive_utc(row.recorded_at), payload=row.payload))
+            else:
                 row = ForwardDay(strategy_id=sid, decision_date=day)
                 s.add(row)
-            elif row.formal and not record.get("formal"):
-                # 事后补跑 / 回放不能把已经是正式的那一天改写成别的（"不得补记"的另一面：也不得覆盖）
-                logger.warning("[forward] 策略 #%s %s 已有正式记录；本轮（%s）不覆盖", sid, day,
-                               record.get("formal_reason"))
-                return
             row.spec_hash = str(record.get("spec_hash") or "")
             row.formal = int(bool(record.get("formal")))
             row.formal_reason = str(record.get("formal_reason") or "")[:128]
-            row.recorded_at = _naive_utc(datetime.now(timezone.utc))
-            row.payload = json.dumps(record, ensure_ascii=False, default=str, sort_keys=True)
+            row.recorded_at = now
+            row.payload = blob
             s.commit()
+            return "decision"
 
     def days(self, strategy_id: Optional[int] = None, formal_only: bool = False) -> List[Dict[str, Any]]:
+        """每个决策日的**决策记录**（不含修订；修订条数在 `revisions`）。"""
         with self._Session() as s:
             q = select(ForwardDay).order_by(ForwardDay.decision_date)
             if strategy_id is not None:
                 q = q.where(ForwardDay.strategy_id == int(strategy_id))
             if formal_only:
                 q = q.where(ForwardDay.formal == 1)
-            return [json.loads(r.payload) for r in s.scalars(q).all()]
+            rows = list(s.scalars(q).all())
+            counts: Dict[tuple, int] = {}
+            for e in s.scalars(select(ForwardDayEvent)).all():
+                k = (e.strategy_id, e.decision_date)
+                counts[k] = counts.get(k, 0) + 1
+        return [dict(json.loads(r.payload), revisions=counts.get((r.strategy_id, r.decision_date), 0))
+                for r in rows]
+
+    def history(self, strategy_id: int, decision_date) -> List[Dict[str, Any]]:
+        """一个决策日的完整链：[决策] + 修订 / 尝试（按记录时间）。"""
+        day = pd.Timestamp(decision_date).date()
+        with self._Session() as s:
+            row = s.scalars(select(ForwardDay).where(ForwardDay.strategy_id == int(strategy_id),
+                                                     ForwardDay.decision_date == day)).first()
+            evs = list(s.scalars(select(ForwardDayEvent).where(
+                ForwardDayEvent.strategy_id == int(strategy_id), ForwardDayEvent.decision_date == day)
+                .order_by(ForwardDayEvent.recorded_at, ForwardDayEvent.id)).all())
+        out = [] if row is None else [{"kind": "decision", "recorded_at": str(row.recorded_at),
+                                       "payload": json.loads(row.payload)}]
+        return out + [{"kind": e.kind, "recorded_at": str(e.recorded_at), "payload": json.loads(e.payload)}
+                      for e in evs]
+
+    def previous_decision(self, strategy_id: int, decision_date) -> Optional[Dict[str, Any]]:
+        """严格早于 decision_date 的最近一个决策记录（当天收益属于它）。"""
+        day = pd.Timestamp(decision_date).date()
+        with self._Session() as s:
+            row = s.scalars(select(ForwardDay).where(ForwardDay.strategy_id == int(strategy_id),
+                                                     ForwardDay.decision_date < day)
+                            .order_by(ForwardDay.decision_date.desc()).limit(1)).first()
+        return None if row is None else json.loads(row.payload)
+
+    def formal_performance(self, strategy_id: int) -> List[Dict[str, Any]]:
+        """
+        正式成绩：只收"前一个决策是正式的"那些天的实现收益（启动前的决策产生的收益不算）。
+        每条 = {decision_date: 产生收益的决策日, outcome_date: 收益实现日, net_return, excess_return, …}
+        """
+        out = []
+        for r in self.days(strategy_id):
+            o = r.get("outcome") or {}
+            if o.get("counts"):
+                out.append({"decision_date": o.get("of_decision"), "outcome_date": r["decision_date"],
+                            "net_return": r.get("net_return"), "excess_return": r.get("excess_return"),
+                            "costs": r.get("costs"), "drawdown": r.get("drawdown")})
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +294,8 @@ REQUIRED_FIELDS = (
 def build_daily_record(result: Dict[str, Any], *, strategy_id: int, spec_hash: str, decision_date,
                        now: datetime, dataset: Dict[str, pd.DataFrame], paper_history: List[Any],
                        exec_store=None, identity: Optional[dict] = None,
-                       forward_run: Optional[ForwardRun] = None) -> Dict[str, Any]:
+                       forward_run: Optional[ForwardRun] = None, strategy_status: Optional[str] = None,
+                       previous: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """把一轮 run_portfolio 的结果 + 执行库 + 组合账本组装成 §7.3 的每日记录。"""
     from app.core.data_engine.input_identity import code_version
     from app.core.data_engine.market_calendar import session_close_utc, session_open_utc, trading_days
@@ -350,13 +459,16 @@ def build_daily_record(result: Dict[str, Any], *, strategy_id: int, spec_hash: s
         anomalies.append({"kind": "post_band_violation", "detail": v})
     out["anomalies"] = anomalies
 
-    # ---- 正式与否
+    # ---- 正式与否（2026-10-22 C4 / C6：状态权限 + 完整 UTC 时间戳）
+    from app.core.lifecycle.strategy_states import permissions
     formal, why = True, "formal"
     close_t, open_next = session_close_utc(day), (session_open_utc(nxt[0]) if nxt else None)
-    if forward_run is None:
+    if strategy_status is not None and not permissions(strategy_status)["formal_days"]:
+        formal, why = False, ("integration" if strategy_status == "integration" else "state_not_formal")
+    elif forward_run is None:
         formal, why = False, "no_formal_start"
-    elif day.date() < pd.Timestamp(forward_run.started_at).date():
-        formal, why = False, "before_formal_start"
+    elif now_n <= _naive_utc(forward_run.started_at):
+        formal, why = False, "decided_before_formal_start"          # 比完整时间戳，不只比日期
     elif close_t is None or open_next is None or not (_naive_utc(close_t) <= now_n < _naive_utc(open_next)):
         formal, why = False, "not_run_in_decision_window"           # 事后补跑 / 回放 / 盘中
     elif not isinstance(ex, dict) or ex.get("blocked") or not ex.get("mode") or not rec:
@@ -365,7 +477,17 @@ def build_daily_record(result: Dict[str, Any], *, strategy_id: int, spec_hash: s
         formal, why = False, "no_spec_hash"
     out["formal"], out["formal_reason"] = formal, why
     out["missing"] = missing
+    # 决策部分（不可变）与结果归属
+    out["decision"] = {k: out.get(k) for k in DECISION_FIELDS}
+    out["outcome"] = {"of_decision": (previous or {}).get("decision_date"),
+                      "counts": bool((previous or {}).get("formal"))}
     return out
+
+
+def _has_decision(rec: Dict[str, Any]) -> bool:
+    """这条记录里有没有真正的决策（目标权重非空）。"""
+    tw = (rec.get("decision") or {}).get("target_weights") or rec.get("target_weights")
+    return bool(tw)
 
 
 def _f(v) -> Optional[float]:

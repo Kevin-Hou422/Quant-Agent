@@ -82,9 +82,17 @@ export const apiFetchStrategy = (sid: number) =>
 export const apiApproveStrategy = (sid: number, activate = false, reason = '') =>
   http.post<StrategyConfigItem>(`/strategies/${sid}/approve`, { activate, reason })
 
-// 外部审查 2026-10-18 F14：已批准（approved）的配置单独激活（→ACTIVE 门与批准时同一口径）
+// 2026-10-22 C6：approved / integration → paper_running（开始纸交易、收集证据；**不**代表已验证）
 export const apiActivateStrategy = (sid: number, reason = '') =>
   http.post<StrategyConfigItem>(`/strategies/${sid}/activate`, { reason })
+
+// approved → integration（工程联调：人工监督下交易，证据与正式天数都不计）
+export const apiStartIntegration = (sid: number, reason = '') =>
+  http.post<StrategyConfigItem>(`/strategies/${sid}/integration`, { reason })
+
+// paper_running → verified_active：必须过预登记的验证门（409 = 没过，状态不动）
+export const apiVerifyStrategy = (sid: number, reason = '') =>
+  http.post<StrategyConfigItem>(`/strategies/${sid}/verify`, { reason })
 
 export const apiRejectStrategy = (sid: number, reason = '') =>
   http.post<StrategyConfigItem>(`/strategies/${sid}/reject`, { reason })

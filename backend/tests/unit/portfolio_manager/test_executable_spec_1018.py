@@ -37,7 +37,7 @@ def _activate(spec=None, tamper=False, **cfg):
         if tamper:
             verdict["executable_spec"] = dict(spec, method="ic_weighted")
     base = dict(factors=["1"], combo_weights={"1": 1.0}, aum=1234.0, method="equal_weight",
-                no_trade_band=.123, status="active", verdict=verdict)
+                no_trade_band=.123, status="paper_running", verdict=verdict)   # 2026-10-22 C6：运行状态
     base.update(cfg)
     return StrategyStore().save(StrategyConfig(**base))
 
@@ -58,6 +58,16 @@ def test_the_review_r8_config_is_no_longer_traded(tmp_path, monkeypatch):
     out = loop.run_portfolio(ds)
     assert out["reason"] == "active_spec_missing" and calls == ["maintain:active_spec_missing"]
     assert seen == {}                                         # 连门都没跑：没有可评估的"被批准的那份"
+
+
+def test_a_legacy_active_row_is_not_traded_even_with_a_valid_spec(tmp_path, monkeypatch):
+    """2026-10-22 C6：旧字样 `active` 不代表任何权限 —— 带着合法规格也不交易，要重新提案后开始纸交易。"""
+    seen = {}
+    loop, ds, calls = _loop(tmp_path, monkeypatch, gate_block=False, evaluate=_ok_gate(seen))
+    _activate(_spec_for(loop), status="active")
+    out = loop.run_portfolio(ds)
+    assert out["reason"] == "state_not_tradable" and calls == ["maintain:state_not_tradable"]
+    assert seen == {}
 
 
 def test_with_a_matching_spec_the_approved_rule_is_what_runs(tmp_path, monkeypatch):

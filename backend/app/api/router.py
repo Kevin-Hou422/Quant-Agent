@@ -1546,49 +1546,42 @@ def strategy_get(sid: int, sstore=Depends(get_strategy_store)) -> dict:
 def strategy_approve(sid: int, req: StrategyDecisionRequest = StrategyDecisionRequest(),
                      sstore=Depends(get_strategy_store),
                      store: AlphaStore = Depends(get_store)) -> dict:
-    """批准一份策略配置 proposed→approved（可选 activate→active，成为在交易的策略）。"""
+    """
+    批准一份策略配置 proposed→approved；`activate=True` 时接着进入 **paper_running**（纸交易、收集前向证据）。
+    2026-10-22 用户核验 C6：开始收集证据**不需要**证据，也**不代表**已验证 —— 已验证是另一个状态
+    （`POST /strategies/{sid}/verify`，必须过预登记的验证门，没有开关可以绕过）。
+    """
     from app.db.strategy_store import StrategyStore, IllegalStrategyTransition
     rec = sstore.get(sid)
     if rec is None:
         raise HTTPException(status_code=404, detail=f"Strategy id={sid} 不存在")
     if str(rec.status) != "proposed":
         raise HTTPException(status_code=409, detail=f"仅 proposed 可批准，当前={rec.status}")
-    from app.config import settings
+    # 外部审查 2026-10-18 F14：批准 / 退役旧的 / 开始运行 / 谱系，**一个事务**
+    steps = [(sid, "approved", "approve", req.reason, req.actor)]
+    if req.activate:
+        steps += _start_steps(sstore, sid, req, "paper_running")
     try:
-        if req.activate:
-            # TR.4 第 5 步：→ACTIVE 是"逼近真钱"的最严门 —— 需 ≥N 交易日前向 realized IC 且 t>阈值。
-            # 【审计 F15】门**先于**任何状态变更判定：以前先改成 approved 再抛 409，
-            # 重试时 approve 又只接受 proposed，这份策略就卡死了。
-            # 外部审查 2026-10-18 F06：只用**这份策略（id + 规格哈希）自己**的前向证据 ——
-            # 每日循环从它被提出那天起就按它的规格存档信号、次日结算（见 _record_strategy_evidence）。
-            # 此前读 book 0 的组合 IC 并按"创建日期之后"筛，那些数来自当时在交易的别的配置。
-            ok, detail = _active_gate(rec, sid)
-            if not ok and getattr(settings, "tr_enforce_active_gate", False):
-                raise HTTPException(status_code=409,
-                                    detail=f"→ACTIVE 门未过：{'; '.join(detail.get('reasons', []))}")
-        # 外部审查 2026-10-18 F14：批准 / 退役旧的 / 激活新的 / 谱系，**一个事务**
-        steps = [(sid, "approved", "approve", req.reason, req.actor)]
-        if req.activate:
-            steps += _activation_steps(sstore, sid, req, ok, detail)
         sstore.apply_transitions(steps)
     except IllegalStrategyTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return StrategyStore.to_dict(sstore.get(sid))
 
 
-def _activation_steps(sstore, sid: int, req, ok: bool, detail: dict) -> list:
-    """同一时刻只交易一份策略：激活新版本时，旧的 active 一并退役（留谱系）。"""
+def _start_steps(sstore, sid: int, req, target: str) -> list:
+    """同一时刻只运行一份策略：开始运行新版本时，正在运行的旧版本一并退役（留谱系）。"""
+    from app.core.lifecycle.strategy_states import LEGACY_ACTIVE, RUNNING_STATES
     steps = [(o.id, "retired", "retire", f"被策略 #{sid} 取代", req.actor)
-             for o in sstore.query(status="active") if o.id != sid]
-    steps.append((sid, "active", "activate",
-                  (req.reason + f" | TR.4 门: {'过' if ok else '未过(仅记录)'} "
-                   f"n={detail.get('n_days')} t={detail.get('ic_tstat')}"), req.actor))
+             for st in RUNNING_STATES + (LEGACY_ACTIVE,) for o in sstore.query(status=st) if o.id != sid]
+    note = ("工程联调：在模拟账户交易，前向证据与正式天数都不计" if target == "integration"
+            else "开始纸交易、收集前向证据 —— **未验证**")
+    steps.append((sid, target, "start_" + target, f"{req.reason} | {note}".strip(" |"), req.actor))
     return steps
 
 
 def _active_gate(rec, sid: int):
     # 复审 2026-10-19 N05-d：按这份策略**预登记**的验证设计判（门槛取登记时的，不现读 settings），
-    # 只用登记之后、同一规格的 forward 证据（replay 不算，N03-b）
+    # 只用登记之后、同一规格的 forward 证据（replay / 联调期的不算）
     from app.core.lifecycle.validation_design import check_registered_activation
     from app.db.evidence_store import EvidenceStore
     spec_h = json.loads(rec.verdict or "{}").get("spec_hash", "")
@@ -1599,23 +1592,58 @@ def _active_gate(rec, sid: int):
 @router.post("/strategies/{sid}/activate", tags=["Strategy"])
 def strategy_activate(sid: int, req: StrategyDecisionRequest = StrategyDecisionRequest(),
                       sstore=Depends(get_strategy_store)) -> dict:
-    """
-    已批准（approved）的配置 → active（外部审查 2026-10-18 F14：此前"批准"之后没有独立的激活接口，
-    只能在批准时顺带激活）。→ACTIVE 门与 approve 时同一口径；旧的 active 一并退役，同一事务。
-    """
-    from app.config import settings
+    """approved / integration → **paper_running**（开始纸交易、收集证据；未验证）。正在运行的旧版本同一事务退役。"""
+    from app.db.strategy_store import StrategyStore, IllegalStrategyTransition
+    rec = sstore.get(sid)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"Strategy id={sid} 不存在")
+    if str(rec.status) not in ("approved", "integration"):
+        raise HTTPException(status_code=409, detail=f"仅 approved / integration 可开始纸交易，当前={rec.status}")
+    try:
+        sstore.apply_transitions(_start_steps(sstore, sid, req, "paper_running"))
+    except IllegalStrategyTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return StrategyStore.to_dict(sstore.get(sid))
+
+
+@router.post("/strategies/{sid}/integration", tags=["Strategy"])
+def strategy_integration(sid: int, req: StrategyDecisionRequest = StrategyDecisionRequest(),
+                         sstore=Depends(get_strategy_store)) -> dict:
+    """approved → **integration**（工程联调：人工监督下在模拟账户交易；前向证据与正式天数都不计）。"""
     from app.db.strategy_store import StrategyStore, IllegalStrategyTransition
     rec = sstore.get(sid)
     if rec is None:
         raise HTTPException(status_code=404, detail=f"Strategy id={sid} 不存在")
     if str(rec.status) != "approved":
-        raise HTTPException(status_code=409, detail=f"仅 approved 可激活，当前={rec.status}")
-    ok, detail = _active_gate(rec, sid)
-    if not ok and getattr(settings, "tr_enforce_active_gate", False):
-        raise HTTPException(status_code=409,
-                            detail=f"→ACTIVE 门未过：{'; '.join(detail.get('reasons', []))}")
+        raise HTTPException(status_code=409, detail=f"仅 approved 可进入联调，当前={rec.status}")
     try:
-        sstore.apply_transitions(_activation_steps(sstore, sid, req, ok, detail))
+        sstore.apply_transitions(_start_steps(sstore, sid, req, "integration"))
+    except IllegalStrategyTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return StrategyStore.to_dict(sstore.get(sid))
+
+
+@router.post("/strategies/{sid}/verify", tags=["Strategy"])
+def strategy_verify(sid: int, req: StrategyDecisionRequest = StrategyDecisionRequest(),
+                    sstore=Depends(get_strategy_store)) -> dict:
+    """
+    paper_running → **verified_active**：只能经验证门 —— 这份策略预登记的设计 + 同规格、登记之后的 forward 证据。
+    门没过 → 409，状态不动。**没有配置开关可以绕过**（2026-10-22 用户核验 C6；`tr_enforce_active_gate` 已不起作用）。
+    """
+    from app.db.strategy_store import StrategyStore, IllegalStrategyTransition
+    rec = sstore.get(sid)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"Strategy id={sid} 不存在")
+    if str(rec.status) != "paper_running":
+        raise HTTPException(status_code=409, detail=f"仅 paper_running 可申请验证，当前={rec.status}")
+    ok, detail = _active_gate(rec, sid)
+    if not ok:
+        raise HTTPException(status_code=409,
+                            detail=f"验证门未过：{'; '.join(detail.get('reasons', []))}（n={detail.get('n_days')}）")
+    try:
+        sstore.apply_transitions([(sid, "verified_active", "verify",
+                                   (req.reason + f" | 验证门过：n={detail.get('n_days')} "
+                                    f"t={detail.get('ic_tstat')}").strip(" |"), req.actor)])
     except IllegalStrategyTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return StrategyStore.to_dict(sstore.get(sid))
@@ -1684,7 +1712,8 @@ def trading_status() -> dict:
         "execution_mode": getattr(settings, "execution_mode", "off"),   # Phase 12：off | moomoo_paper
         "gates": {                       # TR.4 门开关——让人一眼看出门是否在真拦
             "experiment_mode":     bool(getattr(settings, "tr_experiment_mode", True)),
-            "enforce_active_gate": bool(getattr(settings, "tr_enforce_active_gate", False)),
+            # 2026-10-22 C6：→verified_active 永远要过验证门，没有开关
+            "verify_requires_gate": True,
             "min_forward_days":    int(getattr(settings, "tr_min_forward_days", 60)),
             "min_ic_tstat":        float(getattr(settings, "tr_min_ic_tstat", 2.0)),
             "factor_gate_mode":    getattr(settings, "factor_gate_mode", "leak"),
