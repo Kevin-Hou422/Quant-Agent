@@ -54,7 +54,7 @@ class TestCounting:
         u = ledger.record_use("ds", "2024-01-03..2025-01-02")
         assert u.uses == 1, f"两个不相交的窗口被并到一起数了（{u.uses}）"
 
-    def test_the_review_r1_scenario(self, ledger):
+    def test_overlapping_windows_count_as_reuse(self, ledger):
         from tests.conftest import _make_dataset
         from app.core.data_engine.data_partitioner import ThreeWayPartitioner
         ds = _make_dataset(n_days=1600, n_tickers=10)

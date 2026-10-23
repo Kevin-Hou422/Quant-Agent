@@ -1,23 +1,23 @@
 """
-d12_boundary_report.py — 研究边界与 Test 段曝光的**只读**报告（2026-10-22 用户决定 D12）
+research_boundary_report.py — 研究边界与 Test 段曝光的**只读**报告（2026-10-22 用户决定 D12）
 
 用户原话："同意先只读查询，不授权写边界。使用明确的活库路径和真正只读连接，不调用会建表或迁移的 Store 构造函数。
 列出已有边界、最早曝光日期、次数、股票池和实验身份，给出日期建议后由我确认。"
 
-只读的含义（本模块的硬约束，由 tests/integration/test_decisions_1022_batch3.py 检查）：
+只读的含义（本模块的硬约束，由 tests/integration/test_research_boundary_tools.py 检查）：
   · 只用标准库 sqlite3，URI `mode=ro&immutable=1` —— 不加锁、不建 -wal / -shm、不建表、不迁移；
     不 import app.db 的任何 Store（它们的构造函数会 create_all / 补列）
   · 库旁边有未合并的 -wal 文件时拒绝（immutable 读会漏掉其中已提交的数据）：请先停掉用库的进程
   · 读前读后比对文件哈希、修改时间和目录内容，有任何变化就报错
 
 用法：
-    python tools/research/d12_boundary_report.py --db C:\\QuantAgentData\\alphas.db \\
+    python tools/research/research_boundary_report.py --db C:\\QuantAgentData\\alphas.db \\
         --assume us_broad_large=2021-01-01 --assume us_tech_large=2020-01-01 [--out report.json]
 
 `--assume`：旧库里研究记录没有数据集与窗口，只有发生的时刻。报告**不把"没记录"当成"没看过"**：
 按给定的数据起点，推定研究发生那天之前的数据都已曝光（标 inferred）。起点以实际 `.env` 配置为准。
 
-登记边界不在本工具里做（写库要用户另行确认）：见 `tools/research/d12_register_boundary.py`。
+登记边界不在本工具里做（写库要用户另行确认）：见 `tools/research/register_research_boundary.py`。
 """
 
 from __future__ import annotations

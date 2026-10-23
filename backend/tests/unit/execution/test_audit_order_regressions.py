@@ -28,7 +28,7 @@ def check(orders, ctx, limits):
     """
     本文件测的是报价以外的下单门规则。外部审查 2026-10-18 F09（R5）之后，没有独立报价的新开仓
     一律被拦 —— 这里给每张单补一个与参考价一致的报价（用例自己设了 quotes 的不动）。
-    报价本身的规则见 test_claim_lock_quotes_1018.py。
+    报价本身的规则见 test_order_quotes.py。
     """
     import dataclasses
     from datetime import datetime, timezone

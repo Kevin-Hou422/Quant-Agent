@@ -28,7 +28,7 @@ import pandas as pd
 import pytest
 
 import app.core.portfolio_manager as PM
-from tests.unit.backtest_engine.c2_bars import with_prev_close_bars  # 时钟 c2：只有收盘价的面板配开 / 高 / 低
+from tests.unit.backtest_engine.prev_close_bars import with_prev_close_bars  # 时钟 c2：只有收盘价的面板配开 / 高 / 低
 from app.core.portfolio_manager.strategy_builder import (
     build_strategy_config,
     propose_from_paper_factors,
@@ -685,7 +685,7 @@ class TestProposeFromPaperFactors:
 
         时钟 c2（2026-10-22 D14）：信号延迟 = `clock.SIGNAL_DELAY`（0：T 收盘的信息用于 T 的决策）。
         防前视的那一格移到了引擎：T 的决策只在 T+1 按限价规则成交（见
-        `test_reference_ledger_1019.py::test_a_decision_is_never_traded_on_its_own_day`）。
+        `test_engines_match_share_cash_ledger.py::test_a_decision_is_never_traded_on_its_own_day`）。
         """
         from app.core.clock import SIGNAL_DELAY
         from app.core.portfolio_manager.executable_spec import signal_config

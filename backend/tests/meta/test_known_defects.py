@@ -791,7 +791,7 @@ class TestBacktestAndExecutionDefects:
         weights = pd.DataFrame([[0.5, -0.3, 0.2]] * T, index=idx, columns=cols)
         signal = pd.DataFrame(0.0, index=idx, columns=cols)
 
-        from tests.unit.backtest_engine.c2_bars import prev_close_bars
+        from tests.unit.backtest_engine.prev_close_bars import prev_close_bars
         bars = prev_close_bars(prices)                       # 时钟 c2：两套引擎用同一根 K 线
         eq_bt = BacktestEngine().run(weights, prices, volume, signal, ohlc=bars).equity_curve
         tmp = Path(_tf.mkdtemp(prefix="a6eng_"))

@@ -448,13 +448,13 @@ mutated = line[:m.start()] + re.sub(pat, rep, m.group(0), count=1) + line[m.end(
 
 1. **两份实现一致 ≠ 正确**（F10）。PaperBroker 与回测引擎 1e-9 对账，两边却都没做权重漂移。
    一致性测试只能证明"改一边会被发现"；正确性要用**独立的 oracle**（这里是现金 + 股数的手算账本）。
-   → `test_accounting_1018.py`
+   → `test_rebalance_accounting.py`
 2. **保护了标签，没保护证据**（F06）。"前向标记只升不降"让回放抹不掉标记，却能把数值从 0.1 改成 −0.9。
    要保护的是"这个数在结果发生前就定下来了"这件事本身：先存信号、后结算、写入后不可改、改写留痕。
-   → `test_forward_evidence_1018.py`
+   → `test_forward_evidence.py`
 3. **相对日期的"冻结"会滑动**（F04）。"最近两年"在数据每天增长时每天都是一个新窗口，配上按起止日期记账，
    每次都是"第一次使用"。冻结只能是持久化的绝对日期，使用次数按区间重叠算。
-   → `test_research_isolation_1018.py`
+   → `test_frozen_test_boundary.py`
 4. **只在一个入口加规矩，等于没加**（F03 / F05 / F07）。试验计数只在发现编排里记、隔离只在验证门里做、
    风控上限在三处各装配一次 —— 每多一个入口就多一条旁路。规矩要放在**所有入口共用的底层**
    （搜索底层记试验、`split_from_settings` 统一切研究窗口、`executable_spec` 唯一装配风控上限）。

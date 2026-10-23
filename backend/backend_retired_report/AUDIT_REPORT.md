@@ -2,7 +2,7 @@
 
 > **📌 归档注记（2026-07-17）：** 本报告是 2026-06-01 的基线快照，内容保持不变作历史参照。
 > 由其驱动的 DEV_ROADMAP Phase 0-5 已全部完成（综合评分 24%→82%），
-> 完结情况见 [`STAGE1_COMPLETION_REPORT.md`](STAGE1_COMPLETION_REPORT.md)，
+> 完结情况见 [`DEV_ROADMAP_COMPLETION_REPORT.md`](DEV_ROADMAP_COMPLETION_REPORT.md)，
 > 后续开发见 [`PAPER_TRADING_ROADMAP.md`](PAPER_TRADING_ROADMAP.md)。
 
 **审计日期：** 2026-06-01  

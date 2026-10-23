@@ -109,7 +109,7 @@ class TestConstraintHardening:
         """
         from app.core.backtest_engine.realistic_backtester import RealisticBacktester
         from app.core.alpha_engine.signal_processor import SimulationConfig
-        from tests.unit.backtest_engine.c2_bars import prev_close_bars
+        from tests.unit.backtest_engine.prev_close_bars import prev_close_bars
         ds = make_dataset(n_days=120, n_tickers=8)
         # 时钟 c2：上限约束的是**目标**。限价单没成交的名字会留着隔夜漂移后的权重（可能略高于上限，
         # 按 limit_not_reached 如实挂账 —— 那是设计，不是上限失效）。这里用"开盘 = 前收"的 K 线让每笔都成交，

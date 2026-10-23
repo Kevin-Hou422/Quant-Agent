@@ -152,10 +152,10 @@ FastAPI 鉴权、告警升级、合规与税务。这些**不在**当前范围�
   不再由第一次碰巧发生的调用写死。没登记之前研究按"临时切分"跑、不写库，验证门与策略提案的正式结论一律拒绝
   （"研究边界未登记"）。holdout 按数据集 + 区间重叠计次，实验名、股票池只记录、不进计次（改实验名不会刷新额度）。
   研究工作流默认不看 Test。登记步骤：
-  1. 只读查看：`python tools/research/d12_boundary_report.py --db <活库路径> --assume <数据集>=<数据起点> …`
+  1. 只读查看：`python tools/research/research_boundary_report.py --db <活库路径> --assume <数据集>=<数据起点> …`
      （sqlite3 只读、不加锁、不建表；库旁边有未合并的 -wal 时拒绝，先停掉用库的进程）；
   2. 从报告的建议里选定日期（clean = Test 里没有任何被研究看过的数据，conventional = 按惯例冻结两年但其中日期已曝光）；
-  3. 先备份活库（D2），再 `python tools/research/d12_register_boundary.py --db <活库> --dataset <名> --test-start <日期>
+  3. 先备份活库（D2），再 `python tools/research/register_research_boundary.py --db <活库> --dataset <名> --test-start <日期>
      --actor <你> --reason "<理由>"` 预演，确认后加 `--confirm` 才写。
 - **跨进程互斥**：PIT 追加、券商账户操作都有操作系统级文件锁；同一账户同一时刻只有一个进程在动。
   账户锁按**券商账户**（券商 / 证券公司 / 环境 / 账户 id）建在整台机器共用的目录 `ACCOUNT_LOCK_DIR`

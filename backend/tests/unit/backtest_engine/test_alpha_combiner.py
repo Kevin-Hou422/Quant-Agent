@@ -343,7 +343,7 @@ def _factor_returns(sig, ret):
 
 class TestMinVarianceWeights:
 
-    def test_the_review_r9_opposite_and_duplicate_factors_are_told_apart(self):
+    def test_opposite_and_duplicate_factors_are_told_apart(self):
         """
         审查的 R9：zscore 后截面均值恒为 0，此前 a、−a、a 拿到各 1/3 ——
         "相同"与"相反"的信息全丢了。按因子组合收益估协方差：a 与 −a 一多一空正好对冲，
@@ -400,11 +400,11 @@ class TestMinVarianceWeights:
 
     @pytest.mark.parametrize("n_factors,n_days,equal", [(2, 59, True), (2, 60, False),
                                                         (5, 74, True), (5, 75, False)])
-    def test_the_minimum_sample_follows_the_f12_study(self, n_factors, n_days, equal):
+    def test_the_minimum_sample_follows_the_min_variance_study(self, n_factors, n_days, equal):
         """
         复审 2026-10-19 F12：门槛 = max(15 × 因子数, 60) 个可用日（两侧都钉住）。
         此前是 max(2n, 20) —— `tools/research/min_variance_study.py` 的等波动设计里，8 个因子 20 天时
-        最小方差比等权差 10% 以上的概率是 86%；到 15 天 / 因子才降到 5% 以下（见 docs/F12_MIN_VARIANCE_STUDY.md）。
+        最小方差比等权差 10% 以上的概率是 86%；到 15 天 / 因子才降到 5% 以下（见 docs/MIN_VARIANCE_STUDY.md）。
         """
         mk, ret, rng = _mv_world(9, n_days=n_days)
         names = [f"f{i}" for i in range(n_factors)]

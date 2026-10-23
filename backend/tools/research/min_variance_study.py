@@ -11,7 +11,7 @@ T 不够长时，估出来的权重是噪声 —— 它的**真实**组合方差
   · 报告：ŵ 的真方差 / 等权真方差 的中位数与"比等权差"的概率，以及权重的抽样标准差。
 
 运行：python tools/research/min_variance_study.py [--reps 400] [--seed 7]
-结论写进 docs/F12_MIN_VARIANCE_STUDY.md；`MIN_VAR_MIN_DAYS_PER_FACTOR` 按它定。
+结论写进 docs/MIN_VARIANCE_STUDY.md；`MIN_VAR_MIN_DAYS_PER_FACTOR` 按它定。
 """
 
 from __future__ import annotations

@@ -11,7 +11,7 @@ discovery/discovery_engine.py + api/chat_router.py —— 定钉测试（变异�
   - （已移除）`TrialLedger().add(pop_size * n_generations + n_optuna_trials)`
     —— 外部审查 2026-10-18 F05：按配置估算的数不等于实际试过的数（工作流会放大种群），
        而且只有发现这一个入口在记。现在由 GP / Optuna 底层按实际评估数记，
-       见 tests/integration/test_research_isolation_1018.py。
+       见 tests/integration/test_trial_accounting.py。
   - `if auto_validate and save and aid is not None:` 的 `and`
     —— 放宽成 `or` 会在没存库（aid 为 None）时也去跑门并写状态
   - `return False, {...}` 里的两个 `False`

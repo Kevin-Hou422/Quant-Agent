@@ -94,3 +94,42 @@ def test_gate_t_threshold_blocks_low_significance():
     res = gate.evaluate("rank(ts_mean(returns,10))", ds, n_trials=1)
     assert res.passed is False
     assert any("t=" in r for r in res.reasons)
+
+
+# ---------------------------------------------------------------------------
+# IC 的 t 统计量考虑序列相关（Newey-West），门取两种 t 中较小者。
+# ---------------------------------------------------------------------------
+
+
+class TestHacTstat:
+
+    def test_positive_autocorrelation_shrinks_the_t_stat(self):
+        from app.core.lifecycle.promotion_gate import newey_west_tstat
+        rng = np.random.default_rng(0)
+        e = rng.normal(0, 0.05, 400)
+        x = np.empty(400)
+        x[0] = e[0]
+        for i in range(1, 400):
+            x[i] = 0.8 * x[i - 1] + e[i]
+        x = x + 0.01
+        t_iid = x.mean() / x.std(ddof=1) * np.sqrt(len(x))
+        assert newey_west_tstat(x) < 0.6 * t_iid
+
+    def test_iid_series_gets_about_the_same_t(self):
+        from app.core.lifecycle.promotion_gate import newey_west_tstat
+        x = np.random.default_rng(1).normal(0.01, 0.05, 2000)
+        t_iid = x.mean() / x.std(ddof=1) * np.sqrt(len(x))
+        assert newey_west_tstat(x) == pytest.approx(t_iid, rel=0.1)
+
+    def test_the_gate_uses_the_smaller_t(self):
+        from app.core.lifecycle.promotion_gate import PromotionThresholds, check_active_promotion
+        rng = np.random.default_rng(2)
+        x = np.empty(120)
+        x[0] = 0.0
+        for i in range(1, 120):
+            x[i] = 0.9 * x[i - 1] + rng.normal(0, 0.02)
+        x = x + 0.02
+        ok, d = check_active_promotion(list(x), PromotionThresholds(min_forward_days=60, min_ic_mean=0.0,
+                                                                    min_ic_tstat=2.0))
+        assert d["ic_tstat"] == min(d["ic_tstat_iid"], d["ic_tstat_hac"])
+        assert d["ic_tstat_hac"] < d["ic_tstat_iid"]

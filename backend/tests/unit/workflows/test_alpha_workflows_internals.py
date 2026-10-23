@@ -571,7 +571,7 @@ class TestCombinedIc:
         assert "sig_arr.shape[0] - 1" in src and "ret_arr.shape[0] - 1" in src, (
             "IC 循环上限不再为 t+1 留余量")
 
-    def test_returns_come_from_the_c2_open_pairing_not_the_returns_field(self, monkeypatch):
+    def test_returns_come_from_the_open_to_open_pairing_not_the_returns_field(self, monkeypatch):
         """
         时钟 c2（2026-10-22 D14）：组合 IC 与拟合用 `clock.paired_returns`（开盘到开盘），**不用**数据集里的
         `returns` 字段 —— 那是收盘到收盘（c1 的口径，含决策时还没法交易的隔夜收益）。

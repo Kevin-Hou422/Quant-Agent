@@ -27,6 +27,7 @@ from app.db.execution_store import (
 )
 from app.db.position_store import PositionStore
 from tests.unit.execution.moomoo_fake import FakeTradeContext, make_gateway
+import numpy as np
 
 D1, D2, D3 = date(2025, 3, 3), date(2025, 3, 4), date(2025, 3, 5)     # 周一至周三
 LIM = PreTradeLimits(max_name_weight=0.10, max_gross=1.0, max_participation_pct=0.10,
@@ -802,3 +803,17 @@ def test_recover_on_startup_reconciles_and_logs(tmp_path, monkeypatch):
     out2 = recover_on_startup(_down)
     assert out2 == {"ok": False, "error": "OpenD not running"}
     assert es.events()[0].kind == "startup_recovery_failed"
+
+
+# ---------------------------------------------------------------------------
+# 执行报告记录资金利用率（切片权益、已投入、计划买入）。
+# ---------------------------------------------------------------------------
+
+
+def test_the_execution_report_records_capital_utilisation(tmp_path):
+    e = _env(tmp_path)
+    rep = _cycle(e, D1)
+    cap = rep.capital
+    assert cap["slice_equity"] == 100_000.0 and cap["invested"] == 0.0
+    assert cap["planned_buy"] == pytest.approx(200 * 50.25 + 400 * 20.10 + 500 * 10.05)
+    assert cap["utilization_after_buys"] == pytest.approx(cap["planned_buy"] / 100_000.0, abs=1e-4)

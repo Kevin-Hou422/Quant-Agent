@@ -285,7 +285,7 @@ PROVEN_EQUIVALENT = {
     "app/core/workflows/alpha_workflows.py ×0 — `_try_add` 的三个 return（L335 False / L338 False / L342 True）":
         "两个调用点都是独立语句，返回值被丢弃；函数的全部作用通过闭包里的 "
         "`valid_nodes` / `valid_dsls` / `seen` 副作用完成。"
-        "见 test_alpha_workflows_round2.py::"
+        "见 test_alpha_workflows_seeding_and_combination.py::"
         "test_try_add_return_value_is_discarded_at_every_call_site。",
 }
 

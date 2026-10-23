@@ -179,7 +179,7 @@ API 层的守卫与默认值（并发闸、超时后的锁记账、请求模型�
 | 文件 | 用例 | 测什么 |
 |---|---:|---|
 | `test_api_router_guards.py` | 24 | 并发闸、超时/锁记账、请求校验与默认值（变异测试驱动） |
-| `test_api_router_round2.py` | 26 | 第二轮补强（变异测试驱动） |
+| `test_api_router_reports_and_gp_timeout.py` | 26 | 第二轮补强（变异测试驱动） |
 
 ## `tests/unit/backtest_engine/`
 
@@ -278,8 +278,8 @@ API 层的守卫与默认值（并发闸、超时后的锁记账、请求模型�
 | `test_gp_fitness_weights.py` | 26 | 适应度合成、量纲稳定性、变异权重的定钉测试（变异测试驱动） |
 | `test_gp_mutation_operators.py` | 75 | GP 变异/交叉算子的定钉测试（变异测试驱动） |
 | `test_population_evolver_internals.py` | 29 | 进化循环内部的定钉测试（变异测试驱动） |
-| `test_population_evolver_round2.py` | 16 | 第二轮补强（变异测试驱动） |
-| `test_population_evolver_round3.py` | 15 | 第三轮收尾（变异测试驱动） |
+| `test_population_evolver_evaluation_and_elitism.py` | 16 | 第二轮补强（变异测试驱动） |
+| `test_population_evolver_guards_and_loops.py` | 15 | 第三轮收尾（变异测试驱动） |
 
 ## `tests/unit/lifecycle/`
 
@@ -355,6 +355,6 @@ Workflow A/B 的内部 helper 与 held-out 隔离。
 | 文件 | 用例 | 测什么 |
 |---|---:|---|
 | `test_alpha_workflows_internals.py` | 42 | Workflow A/B 内部helper 的定钉测试（变异测试驱动） |
-| `test_alpha_workflows_round2.py` | 25 | 第二轮补强（变异测试驱动） |
-| `test_alpha_workflows_round3.py` | 10 | 第三轮收尾（变异测试驱动） |
+| `test_alpha_workflows_seeding_and_combination.py` | 25 | 第二轮补强（变异测试驱动） |
+| `test_alpha_workflows_guards_and_mutation_layer.py` | 10 | 第三轮收尾（变异测试驱动） |
 | `test_holdout_isolation.py` | 4 | Phase S.1+S.2 验收 |

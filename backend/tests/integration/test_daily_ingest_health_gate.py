@@ -11,6 +11,10 @@ import types
 import numpy as np
 import pandas as pd
 import pytest
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import patch
+from tests.conftest import _make_dataset
 
 
 def _make_ds(n=40, seed=1):
@@ -71,3 +75,48 @@ class TestHealthGate:
         out = di.run_daily_pipeline("us_tech_large", "2023-01-01", "2023-03-01")
         assert out["ingest_accepted"] is False
         assert "health_below_threshold" in out["reject_reason"]
+
+
+# ---------------------------------------------------------------------------
+# N04：健康门检查的是截断之后、真正被使用的面板；持仓标的单独检查
+# ---------------------------------------------------------------------------
+
+def _valid_ohlc(n_days=35, n=20):
+    ds = _make_dataset(n_days, n)
+    ds["high"] = pd.DataFrame(np.maximum(ds["open"], ds["close"]) * 1.01, index=ds["close"].index,
+                              columns=ds["close"].columns)
+    ds["low"] = pd.DataFrame(np.minimum(ds["open"], ds["close"]) * .99, index=ds["close"].index,
+                             columns=ds["close"].columns)
+    return ds
+
+
+# ---------------------------------------------------------------------------
+# 健康门检查的是截断之后、真正被交易使用的面板；持仓标的缺收盘价单独检查。
+# ---------------------------------------------------------------------------
+
+
+class TestHealthOnTheConsumedPanel:
+
+    def test_an_unclosed_complete_bar_no_longer_masks_a_broken_closed_day(self):
+        from app.tasks.daily_ingest import DailyIngest
+        ds = _valid_ohlc()
+        ds["close"].iloc[-2, :18] = np.nan                        # 最近一个已收盘日只剩 10% 有价
+        target = ds["close"].index[-2]
+        with patch("app.core.data_engine.dataset_registry.load_registry_dataset",
+                   return_value=SimpleNamespace(name="audit", data=ds, universe=list(ds["close"].columns))):
+            res = DailyIngest().ingest("audit", "2022-01-01", "2023-01-01", append_pit=False, upto=target)
+        assert res.accepted is False and "10%" in res.reject_reason
+
+    def test_a_held_name_without_a_close_rejects_the_day(self, fresh_db):
+        from app.core.execution.order_manager import LIVE_BOOK_ID
+        from app.db.position_store import DailyPnL, PositionStore
+        from app.tasks.daily_ingest import DailyIngest
+        ds = _valid_ohlc()
+        held = ds["close"].columns[0]
+        ds["close"].iloc[-1, 0] = np.nan                           # 95% 覆盖率：宇宙平均看着没问题
+        PositionStore().record_day(LIVE_BOOK_ID, "2022-01-03", {held: 0.05}, [],
+                                   DailyPnL(LIVE_BOOK_ID, "2022-01-03", 0., 0., 0., 1.))
+        with patch("app.core.data_engine.dataset_registry.load_registry_dataset",
+                   return_value=SimpleNamespace(name="audit", data=ds, universe=list(ds["close"].columns))):
+            res = DailyIngest().ingest("audit", "2022-01-01", "2023-01-01", append_pit=False)
+        assert res.accepted is False and f"持仓标的 ['{held}']" in res.reject_reason

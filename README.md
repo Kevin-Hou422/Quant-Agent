@@ -644,9 +644,9 @@ than convention.
   freeze, the response says so (`degraded: true`) instead of silently weakening.
 - **A real dataset's Test start is registered by a person** (decision D12). Nothing pins it as a
   side effect of the first call any more: until a date is registered
-  (`backend/tools/research/d12_register_boundary.py`, write-once, with actor and reason) research
+  (`backend/tools/research/register_research_boundary.py`, write-once, with actor and reason) research
   runs on a *provisional* split and formal verdicts — the validation gate and strategy proposals —
-  refuse. `backend/tools/research/d12_boundary_report.py` lists existing boundaries, earliest
+  refuse. `backend/tools/research/research_boundary_report.py` lists existing boundaries, earliest
   exposure, exposure counts, universes and experiments from the live database over a read-only,
   lock-free connection and suggests dates. Exposure counts are per dataset and overlapping window,
   so renaming the experiment does not refresh them.
@@ -810,7 +810,7 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
 | Risk attribution + structured covariance | ✅ Phase R.2 (part) |
 | moomoo paper execution: reconciliation/crash recovery, pre-trade gate, two-step kill switch, sim-vs-paper fidelity, live T3 providers, execution panel | ✅ Phase 12 + FE-12 (code; **not yet run against a live OpenD gateway**) |
 | External review 2026-10-18 (F01–F14): health-gate hard checks, re-fetch on re-adjustment, frozen Test boundaries + overlap-metered holdout, selection-only research paths, trial counting at the search layer, executable strategy spec, archived-signal forward evidence per strategy version, atomic order claims + account lock, independent quotes, weight drift, content-hashed cost cache, factor-return min-variance, SUE/8-K alignment, single-transaction approvals | ✅ (see the roadmap's fix log; the strategy approved before 2026-10-18 must be re-proposed — D13) |
-| Re-review 2026-10-19 (N01–N09, §5, §7.3): mid-batch kill switch, input identity on evidence, open-time archive deadline, health gate on the consumed panel, freeze-then-evaluate proposals, quote sessions, trial-run lifecycle, pre-trade-value costs + post-trade renormalisation (checked against a share + cash ledger), one research context, one strategy contract, spec v2, broker-account lock, formal-forward daily records | ✅ code (per-item status in `backend/docs/REVIEW_2026-10-19_TRACKER.md`; mutation review owed — D5) |
+| Re-review 2026-10-19 (N01–N09, §5, §7.3): mid-batch kill switch, input identity on evidence, open-time archive deadline, health gate on the consumed panel, freeze-then-evaluate proposals, quote sessions, trial-run lifecycle, pre-trade-value costs + post-trade renormalisation (checked against a share + cash ledger), one research context, one strategy contract, spec v2, broker-account lock, formal-forward daily records | ✅ code (per-item status in `backend/docs/RE_REVIEW_FIX_TRACKER.md`; mutation review owed — D5) |
 
 **Not built yet** — the honest list:
 
@@ -825,7 +825,7 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
   diagnostics are counted as trials without touching the frozen Test. Multi-class share counts stay
   NaN (D7). Press-release-level SUE is not added (D8); whether those numbers require a paid source has
   **not been verified**.
-- **Open** (per-item status in `backend/docs/DECISIONS_2026-10-22_TRACKER.md`): the Test start dates
+- **Open** (per-item status in `backend/docs/DECISION_IMPLEMENTATION_TRACKER.md`): the Test start dates
   for the live database — a read-only report with suggested dates is waiting for your confirmation
   (D12); re-proposal of the active strategy (D13); an alert channel (D15, alerts are log-only). Not
   built: an intraday breaker watchdog, a backup-restore drill, and the full corporate-action ledger

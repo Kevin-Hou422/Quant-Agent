@@ -424,7 +424,7 @@ class TestElitismAndGenerationBoundary:
 #
 # **那个结论是错的**：输出看不出来，**调用次数看得出来** ——
 # 多跑一轮就是多一次 `point_mutation` / `generate_random_alpha` 调用。
-# 见 test_population_evolver_round3.py::TestLoopIterationCounts，
+# 见 test_population_evolver_guards_and_loops.py::TestLoopIterationCounts，
 # 那里把 L637 与 L732 的三个点全部改成了杀死。
 #
 # 教训：**能杀就不要写等价证明**。"输出相同"只是没找到对的观察面，

@@ -522,7 +522,7 @@ class TestDefaultConfig:
     def test_the_default_signal_config_prevents_look_ahead(self, monkeypatch):
         """
         `SimulationConfig(delay=SIGNAL_DELAY, ...)` —— 与时钟一致。
-        时钟 c2：信号不再额外延迟（SIGNAL_DELAY=0），防前视在引擎 —— 见 test_reference_ledger_1019.py::test_a_decision_is_never_traded_on_its_own_day。
+        时钟 c2：信号不再额外延迟（SIGNAL_DELAY=0），防前视在引擎 —— 见 test_engines_match_share_cash_ledger.py::test_a_decision_is_never_traded_on_its_own_day。
         """
         from app.core.clock import SIGNAL_DELAY
         calls = _stub_backtester(monkeypatch, {70: (1.0, 0.5)})

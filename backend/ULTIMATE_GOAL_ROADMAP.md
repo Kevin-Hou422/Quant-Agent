@@ -58,7 +58,7 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（moomo
 | 实时粒度 | **日频收盘增量** | 收盘后拉当日 bar 追加进 PIT，前向积累；不做日内/tick |
 | 自主挖掘首版 | **先用价量统计** | 用 regime/截面离散度/因子家族滚动表现自主生成假设，现在就能做 |
 
-## 待你确定的事项（登记于 2026-10-14；2026-10-22 全部有了决定，执行进度见 `docs/DECISIONS_2026-10-22_TRACKER.md`）
+## 待你确定的事项（登记于 2026-10-14；2026-10-22 全部有了决定，执行进度见 `docs/DECISION_IMPLEMENTATION_TRACKER.md`）
 
 这些不是技术阻塞，是**需要你拍板**的事 —— 要么会动活数据 / 你的环境，要么是统计纪律上的取舍，要么要花
 小时级的机器时间。没定之前，受它影响的开发一律不做；不受影响的照常推进。
@@ -76,7 +76,7 @@ agent **自主从市场观察挖掘因子 → 配置持仓 → 在美股（moomo
 | D9 | Validate 段评估时要不要带预热历史 | 现在三段各自独立评估。窗口长于该段的因子在该段没有数字 —— 包括现役的 12 月动量（252 日窗口 vs 232 天的 Validate 段）。带预热 = 让 Validate 的信号用到 IS 末尾的价格（不是收益），与 embargo 的关系要想清楚 | **已定**：优先实现预热 —— 只用当时已知历史算特征、只评分 Validate 日期，拟合与标准化不读评分期未来信息；覆盖 252 日因子、嵌套窗口、跨界标签、初始持仓与历史不足 | 长窗口因子在 Validate 段的可评估性 |
 | D10 | 第一笔真实纸交易订单 | 代码与预检就绪，但**不是**"可以起调度器"：现役策略没有可执行规格（D13）、告警只有日志（D15）；时钟已统一为 c2（D14），c1 时期的证据不被继承。复审（2026-10-19）的验收清单：专用 SIMULATE 账户、最小数量、单实例，逐项保存受理 / 成交 / 撤单 / DAY 单跨 session / 超时与未知单 / 同日重跑与重启 / 提交中熔断与续平 / 数据规格报价异常 / 备份恢复的证据 | **已定**：人工监督、专用 SIMULATE 账户验收；先备脚本与证据模板（提交成交、DAY 跨 session、部分成交撤单、未知订单、重启去重、熔断续平、输入异常、恢复），连接 / 订单 / 时间由你安排 | Phase 12 的真实闭环验收；正式前向观察时钟的起点 |
 | D11 | 审计遗留项排不排 | F15 余项（按策略版本分账）、跨进程锁、复权价、前端竞态已在 2026-10-18 / 19 两轮修掉；剩下：API 鉴权、告警（D15）、静态宇宙、性能契约 | **已定**：首轮仅本机回环、不扩远程；保留真实监听参数与关键动作检查；远程前先做认证授权（CORS 不代替认证） | 无人值守运行（不阻塞人工联调） |
-| D12 | 活库各数据集的**冻结 Test 起点**定在哪天（2026-10-18 登记） | 冻结边界写进 `frozen_boundaries`，只写一次。2026-10-22 起只能由人登记（`tools/research/d12_register_boundary.py`），不再由第一次碰巧发生的调用写死；没登记时研究按临时切分跑、正式结论拒绝。活库只读报告（`tools/research/d12_boundary_report.py`，2026-10-23 跑过）：没有 `frozen_boundaries` 表、`holdout_usages` 为空；2026-10-11 有研究活动（10 条因子、累计试验 258、一次策略门）而当时没有边界、也没记数据集与窗口 → 按数据起点推定那天之前的数据都已曝光 | **已定**：先**只读**查询活库（明确路径、真正只读连接、不调用会建表 / 迁移的构造函数），列出边界 / 最早曝光 / 次数 / 股票池 / 实验身份并给日期建议，**由你确认后再写**；正式入口不再依赖首次调用偶然冻结；改实验名不刷新重叠数据的曝光额度 | 活库上第一次研究调用会把它定下来（在你登记之前） |
+| D12 | 活库各数据集的**冻结 Test 起点**定在哪天（2026-10-18 登记） | 冻结边界写进 `frozen_boundaries`，只写一次。2026-10-22 起只能由人登记（`tools/research/register_research_boundary.py`），不再由第一次碰巧发生的调用写死；没登记时研究按临时切分跑、正式结论拒绝。活库只读报告（`tools/research/research_boundary_report.py`，2026-10-23 跑过）：没有 `frozen_boundaries` 表、`holdout_usages` 为空；2026-10-11 有研究活动（10 条因子、累计试验 258、一次策略门）而当时没有边界、也没记数据集与窗口 → 按数据起点推定那天之前的数据都已曝光 | **已定**：先**只读**查询活库（明确路径、真正只读连接、不调用会建表 / 迁移的构造函数），列出边界 / 最早曝光 / 次数 / 股票池 / 实验身份并给日期建议，**由你确认后再写**；正式入口不再依赖首次调用偶然冻结；改实验名不刷新重叠数据的曝光额度 | 活库上第一次研究调用会把它定下来（在你登记之前） |
 | D13 | 现役策略要**重新提案并审批**（2026-10-18 登记） | 外部审查 F07 修复后，每日循环只按带"可执行规格"的 active 配置调仓：成分、冻结权重、合成方法、无交易带照规格执行；AUM、风控上限、信号参数、券商与做空口径、数据集与价格源、各成分表达式与运行时核对，变了就不调仓。2026-10-18 之前批准的配置没有规格 → **每日循环不会按它调仓**，上线预检第 3 项也会报红。我没有动活库 | **已定**：重提案，但先修正确性、D14 与资格状态；先隔离预演，再由你批准活环境操作；不补 hash、不继承旧时钟证据、不先激活旧时钟再重做 | 活库上的模拟账本与券商执行（D10 的第一笔订单之前必须先做） |
 | D14 | 信号 / 成交 / IC 的时钟统一成哪一种（2026-10-18 登记） | 外部审查 F14：每日循环在 T 日收盘后用的是 T−1 日的原始信号（`delay=1` 取最后一行），订单计划 T+1 成交；因子监控算 `signal[T−1]` 对 T 日收益的 IC；内部模拟按 T 日收盘成交。三条序列的持有区间不同。可选：(a) 用 T 日信息、T+1 开盘成交（信号去掉多出的一天延迟，IC 改为 `signal[T]` 对 T+1 开盘到收盘）；(b) 保持额外一天延迟，但三处都按同一口径重写 | **已定 (a)**：T 收盘信息完成并过健康门后冻结信号与目标，T+1 按明确交易规则执行，换时钟版本；信号 / 回测 / 内部模拟 / IC / 归档 / 基准 / 调度同步改；计划开盘执行 ≠ 必按开盘价成交；预测 IC 与实际持仓收益分开记；旧历史保留旧版本、先隔离重算 | 前向 IC、模拟账本与券商成交三者能否直接对比 |
 | D15 | 告警发到哪里（2026-10-18 登记） | 外部审查 F14：现在只有日志。需要一个你会看的渠道（邮件 / 企业微信 / Telegram / 桌面通知），以及哪些事件要推（摄取拒绝、规格不一致不调仓、对账差异、熔断、证据改写尝试、调度任务失败） | **已定**：首版桌面通知 + 持久化事件文件；分类、严重度、去重、重试、送达状态；区分正常无订单与异常跳过；桌面通知须现场确认可见，文件落盘 ≠ 通知成功 | 无人值守运行（D10 之后） |
@@ -380,7 +380,7 @@ S 补"数字可信"轴。（S.4 已搁置，S.1/S.2/S.3 为本层实质内容，
   *注：首次交付时第 4 步只写了库未接线，违反 DEV_LESSONS §K，已补*；
   第 5 步：2026-10-22 起"开始收集证据"与"已验证"分成两个状态 —— `approve?activate` / `/activate` 只进
   `paper_running`（不过门、不算验证），`POST /strategies/{id}/verify` 才进 `verified_active`，且永远要过预登记的验证门
-  （`tr_enforce_active_gate` 已废弃、不起作用）。测试 `test_phase_tr4_promotion.py`(7)、`test_decisions_1022_batch1.py`。
+  （`tr_enforce_active_gate` 已废弃、不起作用）。测试 `test_phase_tr4_promotion.py`(7)、`test_strategy_state_permissions.py`。
 - **依赖**：TR.3 落地后，PM 的成本/容量、PaperBroker 都吃 TradingContext 的真实估计；TR.2 是 Phase 12
   执行的前置（同源）。
 
@@ -503,7 +503,7 @@ SUE 的 IC 为正但扣成本后是负的，毛利率最好也只是 IC 0.005。
 |---|---|---|
 | 上线预检认识基本面 | 新增第 16 项 `fundamentals`。此前现役策略若用到 `earnings_yield` 而开关没开，预检照样全绿，到了每日管线里因子才因"字段不存在"报错、当天不调仓。现在：策略用到基本面字段时，开关没开 / 没配 `EDGAR_USER_AGENT` / 本地未过期事实不足一半宇宙 → **阻断**；策略用不到时只提示。只读配置和本地事实，不向 SEC 发请求 | `execution/golive.py` |
 | 历史异常短的票被点名 | 事实的最早披露日比面板起点晚一年以上（新上市，或像 XOM 那样重组换了申报主体）→ 记入加载报告的 `short_history` 并告警。末日覆盖率看不出这件事（XOM 当时就是覆盖率正常、前五年整列为空） | `fundamentals/panels.py`、`service.py` |
-| 每日管线入口的测试 | 从 `run_daily_pipeline`（调度任务调的入口）验证：开启时两个交易循环拿到的面板都带基本面字段；关着只有价格；基本面挂不上时管线照常跑完 | `tests/integration/test_fundamentals_e2e.py` |
+| 每日管线入口的测试 | 从 `run_daily_pipeline`（调度任务调的入口）验证：开启时两个交易循环拿到的面板都带基本面字段；关着只有价格；基本面挂不上时管线照常跑完 | `tests/integration/test_fundamentals_end_to_end.py` |
 | FE-10 后半 | 待批准队列里，候选因子用到基本面字段时列出字段名并附可见规则（`/api/alphas/pending` 多了 `sparse_fields` / `visibility_rule`，由解析树得出，不是找子串）。库里有解析不了的表达式时队列照常打开 | `api/router.py`、`alpha_engine/fields.py`、`frontend/.../ApprovalQueue.tsx` |
 
 另外核实了一件事（写进了 D2）：IC 错位只在回测报告那条路上。每日监控的 IC（`alpha_ic_history`，→ACTIVE 门的证据）
@@ -537,7 +537,7 @@ SUE 的 IC 为正但扣成本后是负的，毛利率最好也只是 IC 0.005。
 ### 复审 2026-10-19（`review-v6/audit-review/复审报告_2026-10-19.md`）
 
 复审对首轮 14 组的判定：**关闭** F02、F04、F08、F11、F12；**部分修复** 其余 9 组。新发现 N01–N09 全部有复审独立脚本的复现，
-本轮逐条修复，回归在 `tests/integration/test_review_1019.py`（由复审脚本的 residual_* 场景改写成断言修复后行为）。
+本轮逐条修复，回归按主题分在 `tests/integration/` 与 `tests/unit/`（由复审脚本的 residual_* 场景改写成断言修复后行为；逐条出处见 `docs/RE_REVIEW_FIX_TRACKER.md`）。
 
 | # | 问题 | 修复 | 位置 |
 |---|---|---|---|
@@ -548,7 +548,7 @@ SUE 的 IC 为正但扣成本后是负的，毛利率最好也只是 IC 0.005。
 | N05 | 提案的门评估的不是随后保存的冻结规格；门与日循环风险路径不同构 | 提案先冻结权重与带、再让门评估**这份规格**；另跑一次流程的滚动前推 OOS（`procedure_oos`），两个都过才算过，并标 `evidence_scope=frozen_spec_on_selection_in_sample`；波动估计与带后硬约束投影抽成共用函数，门与日循环都调它 | `strategy_builder.py`、`strategy_gate.py`、`executable_spec.py`、`daily_trading_loop.py` |
 | N06 | 报价无时间仍可买；已有持仓无独立报价可加仓 | 加风险的单（新开、加仓、反手）必须有有限正价 + 报价时刻 + 不在未来 + 与参考价对得上，且报价时段合格：最近一个已收盘交易日收盘前 30 分钟内 / 盘后 / 之后交易日的盘前或盘中（按交易所时区判断）；更早的盘中、当天盘前、非交易日时间戳拒绝。减仓 / 平仓不需要报价（保守通道） | `pretrade_gate.py` |
 | N07 | 试验写失败 / 进程被杀后门仍按残缺历史给结论 | 搜索开始前登记运行（登记不进去就不搜）、逐代 / 逐 trial 记账、结束置 done / aborted；停在 running 超过 6 小时 = 试验史不完整 → 验证门与策略门不给正式结论，直到 `resolve_run` 补记并写明理由；去掉了一次性的 `record_trials` | `trial_ledger.py`、`population_evolver.py`、`alpha_optimizer.py`、两个门 |
-| N08 | 漂移修好后费用仍乘昨日权益 | 成交额 / 成本 / ADV 上限都按**调仓前市值**换算美元，当天净收益按期初权益归一；回测把撮合并进逐日净值循环。**N08-b**：用独立的股数 + 现金参考账本验算，查出两套引擎一起偏（成交后权重没按成交后净值归一，每天约 费用率 × 收益率），已修；两套都对到 rel 1e-9 | `paper_broker.py`、`backtest_engine.py`、`test_reference_ledger_1019.py` |
+| N08 | 漂移修好后费用仍乘昨日权益 | 成交额 / 成本 / ADV 上限都按**调仓前市值**换算美元，当天净收益按期初权益归一；回测把撮合并进逐日净值循环。**N08-b**：用独立的股数 + 现金参考账本验算，查出两套引擎一起偏（成交后权重没按成交后净值归一，每天约 费用率 × 收益率），已修；两套都对到 rel 1e-9 | `paper_broker.py`、`backtest_engine.py`、`test_engines_match_share_cash_ledger.py` |
 | N09 | CLI GP 绕过冻结边界；工作流接口的 PnL 切分压在冻结段上 | **N09-c**：研究窗口只有一种切法 `research_context.open_research`，CLI / chat / 工作流 / 发现 / API / 验证门 / 提案都取同一个上下文（dataset / universe / experiment / boundary），GP / Optuna 的运行记录带着它、拿到冻结段日期就不开始。查出 chat 指定数据集跑 GP 时按全量 70/30 切（OOS 含 474 个冻结日期），已修。配置开关 / 验证门的 three_way=False 关不掉已冻结的边界 | `research_context.py`、`main.py`、`router.py`、`_tools.py`、`alpha_workflows.py`、`discovery_engine.py`、`validation_gate.py` |
 | N05-e | 同一个策略在提案 / 门 / 每日循环 / 证据四处重新装配 | `strategy_contract.StrategyContract`：冻结 → 验证 → 生成；唯一的目标生成函数 `generate_targets`。查出两个分叉并修：每日循环的合成账本用默认成本参数（门用 grounded，容量绑定时验证的权重≠交易的权重）；`risk_vol_lookback` 不在规格里 | `strategy_contract.py`、`strategy_builder.py`、`strategy_gate.py`、`daily_trading_loop.py` |
 | §5.2 / §5.3 | 规格哈希不覆盖股票池 / 执行账户 / 报价规则 / 提交时段；锁依附数据目录 | 规格 v2：universe（标的哈希）、execution（账户、限价带、日亏、报价规则）、submission（调度时刻、时区、DAY、盘外）、risk_vol_lookback；代码版本记在 `approved_code_version`（不进哈希）。账户锁按券商账户建在整台机器共用的目录（`ACCOUNT_LOCK_DIR`，缺省 %PROGRAMDATA%\QuantAgent），执行库绑定第一次用的账户、换了就拒绝 | `executable_spec.py`、`order_manager.py`、`config.py` |
@@ -558,9 +558,9 @@ SUE 的 IC 为正但扣成本后是负的，毛利率最好也只是 IC 0.005。
 | N03-b | 补拉 / 回放 / 晚到的那几天直接丢掉 | 策略证据分 forward / replay：没及时存档的那几天记 replay（只供研究），→ACTIVE 只读 forward | `evidence_store.py`、`daily_trading_loop.py` |
 | N05-d | →ACTIVE 现读 settings 门槛、不分登记前后 | 提案时登记验证设计（门槛 / 口径 / 时钟 / 登记时刻，带哈希）；→ACTIVE 按登记的设计、只用登记之后的 forward 证据；设计缺失 / 被改 → 不通过 | `validation_design.py`、`strategy_builder.py`、`router.py` |
 | F13 / §5.4 / D8 | 基本面：SUE 按时间先后屏蔽、股本不逐字段过期、小比例送股只告警、没有质量门 | SUE 与 8-K 按盈利期间配对；股本按自己的期末日过期；估计股本进报告；疑似送股估值字段异常隔离；用到基本面字段的策略过来源 / 期间质量门（提案不过 / 不调仓）。95 只真实 EDGAR 数据只读冒烟：配对与之后实际申报的季 1988 条一致，余下 25 条是申报之后的公告（配到已申报那季正确） | `fundamentals/panels.py`、`prices.py`、`store.py`、`service.py`、`quality.py` |
-| F12 | min_variance 的协方差估计误差没评估过 | 蒙特卡洛评估（`docs/F12_MIN_VARIANCE_STUDY.md`）：最少样本 max(2n, 20) → max(15n, 60)；协方差非平稳时无可靠优势 → 只能由策略门的流程滚动前推 OOS 判断，保持非缺省 | `alpha_combiner.py`、`tools/research/min_variance_study.py` |
+| F12 | min_variance 的协方差估计误差没评估过 | 蒙特卡洛评估（`docs/MIN_VARIANCE_STUDY.md`）：最少样本 max(2n, 20) → max(15n, 60)；协方差非平稳时无可靠优势 → 只能由策略门的流程滚动前推 OOS 判断，保持非缺省 | `alpha_combiner.py`、`tools/research/min_variance_study.py` |
 复审其余意见的处理：路线图文首状态、D10、D11、D12、D13 按复审口径改写（不再追加互相矛盾的脚注）；README 的统计表述收敛。
-逐条追踪（报告每句"修复："一行、带证据）见 `docs/REVIEW_2026-10-19_TRACKER.md`，状态以它为准。
+逐条追踪（报告每句"修复："一行、带证据）见 `docs/RE_REVIEW_FIX_TRACKER.md`，状态以它为准。
 §8 审查方那个无 traceback 的 F：从现有产物无法定位；排查时查出并修了一个我们自己引入的周末 / 假日才红的用例（真实时钟）。
 **仍未做**：D15 告警渠道、盘中熔断巡检、备份恢复演练、真 OpenD 人工验收（D10）、
 正式前向的启动（D13 之后由人做）、活库边界日期（D12：只读报告已出、等你确认）、新增 / 改动模块的逐点变异复核（D5）、
@@ -826,7 +826,7 @@ AST 扫描全部 `tests/`，按"这个断言可能失败吗"分类，查出 **90
 >
 > 同批修正：`.env.forward.example` 按 TR.2 改为 `PRICE_SOURCE=moomoo` + `us_broad_large`（上一版照抄了
 > 代码默认值）。测试：16 条审计复现全部改写为正确行为回归（`test_audit_order_regressions.py`、
-> `test_audit_portfolio_regressions.py` 等），新增**多日端到端** `integration/test_forward_daily_e2e.py`
+> `test_audit_portfolio_regressions.py` 等），新增**多日端到端** `integration/test_forward_daily_end_to_end.py`
 > （yfinance 契约替身：end 排他 + 数据延迟发布；券商悲观替身：异步撤单 + 新单延迟可见）。
 > **仍未做**：真 OpenD 上的完整交易日闭环；按策略版本分账（F15 余项）；审计"设计与运营问题"
 > 7 条（复权口径、鉴权、跨进程锁、外部告警、静态 universe、前端竞态、性能合同）未在本批处理。

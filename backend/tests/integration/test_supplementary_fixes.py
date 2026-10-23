@@ -23,7 +23,7 @@ import pytest
 # S1 — _tdays 预期行为固化（报告不属实：无节假日 B 历的真实年频率就是 ~261）
 # ===========================================================================
 
-class TestS1TdaysIntendedBehavior:
+class TestTdaysIntendedBehavior:
 
     @staticmethod
     def _pa(idx):
@@ -62,7 +62,7 @@ class TestS1TdaysIntendedBehavior:
 # S2 — CS→CS 嵌套（属实已修）
 # ===========================================================================
 
-class TestS2CsNesting:
+class TestCrossSectionalNesting:
 
     @pytest.fixture
     def parser(self):
@@ -111,7 +111,7 @@ class TestS2CsNesting:
 # S4 — 中文假设匹配（属实已修）
 # ===========================================================================
 
-class TestS4ChineseHypothesis:
+class TestChineseHypothesis:
 
     @staticmethod
     def _family_of(text: str):
@@ -150,7 +150,7 @@ class TestS4ChineseHypothesis:
 # S5 — 量纲稳定性结构惩罚（属实已修）
 # ===========================================================================
 
-class TestS5ScalePenalty:
+class TestScalePenalty:
 
     @staticmethod
     def _penalty(dsl: str) -> float:
@@ -184,7 +184,7 @@ class TestS5ScalePenalty:
 # S8 — (N,) groups 通过数据验证（属实已修）
 # ===========================================================================
 
-class TestS8AuxGroupValidation:
+class TestAuxGroupValidation:
 
     def test_1d_groups_accepted(self, make_dataset):
         from app.core.backtest_engine.realistic_backtester import (

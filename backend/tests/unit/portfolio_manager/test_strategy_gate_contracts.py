@@ -33,6 +33,8 @@ from app.core.portfolio_manager.strategy_gate import (
     resolve_band,
     resolve_cost_params,
 )
+from tests.unit.backtest_engine.prev_close_bars import prev_close_bars  # 时钟 c2：只有收盘价的用例配这根 K 线（见模块说明）
+from app.core.backtest_engine.transaction_cost import CostParams, drift_weights
 
 IDX = pd.bdate_range("2023-01-02", periods=200)
 
@@ -942,3 +944,40 @@ class TestCostCacheKeyCoversItsInputs:
         sg.resolve_cost_params(a, 1_000_000.0)
         assert len(sg._DERIVE_CACHE) == n_after_first, (
             "同一个数据集第二次调用又写了一条新缓存 —— 键里混进了不稳定的东西")
+
+
+# ---------------------------------------------------------------------------
+# 成本缓存键覆盖面板内部数据与券商口径字段；策略门结论写明 PBO 的范围。
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# F11
+# ---------------------------------------------------------------------------
+
+def test_an_interior_data_change_changes_the_key():
+    import app.core.portfolio_manager.strategy_gate as sg
+    from tests.conftest import _make_dataset
+    orig = _make_dataset(n_days=80, n_tickers=10)
+    changed = {k: v.copy() for k, v in orig.items()}
+    changed["high"].iloc[1:-1] = changed["close"].iloc[1:-1] * 1.2
+    assert sg._cache_key("cost", orig, 1e4) != sg._cache_key("cost", changed, 1e4)
+    assert sg._cache_key("cost", orig, 1e4) == sg._cache_key("cost", {k: v.copy() for k, v in orig.items()}, 1e4)
+
+
+@pytest.mark.parametrize("field,value", [("trading_broker", "ibkr_us"), ("trading_account_type", "cash"),
+                                         ("trading_allow_short", True)])
+def test_the_key_follows_the_broker_fields_the_derivation_reads(monkeypatch, field, value):
+    import app.core.portfolio_manager.strategy_gate as sg
+    from app.config import settings
+    from tests.conftest import _make_dataset
+    ds = _make_dataset(n_days=40, n_tickers=5)
+    before = sg._cache_key("cost", ds, 1e4)
+    monkeypatch.setattr(settings, field, value)
+    assert sg._cache_key("cost", ds, 1e4) != before
+
+
+def test_the_strategy_verdict_states_the_pbo_scope():
+    from app.core.portfolio_manager.strategy_gate import StrategyValidationResult
+    assert StrategyValidationResult(passed=False, n_factors=1).to_dict()["pbo_scope"] == \
+        "selected_factor_returns_only"

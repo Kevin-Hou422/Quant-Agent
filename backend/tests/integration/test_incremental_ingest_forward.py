@@ -74,7 +74,7 @@ def test_ingest_incremental_backfill_then_increment(tmp_path, monkeypatch):
 
     # 用可控的"当前面板"替代 registry 加载：ingest() 返回给定**闭区间**窗口的切片。
     # 这里测的是 ingest_incremental 的游标逻辑；provider 的真实区间语义（yfinance 的 end
-    # 是排他的）由 test_forward_daily_e2e.py 用契约替身覆盖 —— 本替身不冒充 Yahoo。
+    # 是排他的）由 test_forward_daily_end_to_end.py 用契约替身覆盖 —— 本替身不冒充 Yahoo。
     def fake_ingest(self, name, start, end, append_pit=True, as_of=None, upto=None,
                     pit_required=False):
         from app.tasks.daily_ingest import IngestResult

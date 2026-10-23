@@ -179,7 +179,7 @@
    "tests": [
     "tests/integration/test_api_uncovered_routes.py",
     "tests/unit/api/test_api_router_guards.py",
-    "tests/unit/api/test_api_router_round2.py"
+    "tests/unit/api/test_api_router_reports_and_gp_timeout.py"
    ],
    "source": "progress_c_final.json",
    "all_runs": [
@@ -857,8 +857,8 @@
     "tests/integration/test_alpha_discovery.py",
     "tests/unit/gp_engine/test_gp_evolution_full.py",
     "tests/unit/gp_engine/test_population_evolver_internals.py",
-    "tests/unit/gp_engine/test_population_evolver_round2.py",
-    "tests/unit/gp_engine/test_population_evolver_round3.py"
+    "tests/unit/gp_engine/test_population_evolver_evaluation_and_elitism.py",
+    "tests/unit/gp_engine/test_population_evolver_guards_and_loops.py"
    ],
    "source": "progress_c_pe_final.json",
    "all_runs": [
@@ -1110,8 +1110,8 @@
    "tests": [
     "tests/integration/test_supplementary_fixes.py",
     "tests/unit/workflows/test_alpha_workflows_internals.py",
-    "tests/unit/workflows/test_alpha_workflows_round2.py",
-    "tests/unit/workflows/test_alpha_workflows_round3.py"
+    "tests/unit/workflows/test_alpha_workflows_seeding_and_combination.py",
+    "tests/unit/workflows/test_alpha_workflows_guards_and_mutation_layer.py"
    ],
    "source": "progress_c_rerun_8.json",
    "all_runs": [
@@ -1946,7 +1946,7 @@
     "from": 2727,
     "to": 2794,
     "why": "用户 2026-10-22 核验的 6 个问题：C1 提案最终结论 / 评级一致（gates）、C2 来源不可验证时证据隔离、C4 正式日报决策不可变 + 修订链 + 按完整时间戳启动 + 结果归属前一决策、C5 未结案运行一律阻断正式资格、C6 integration / paper_running / verified_active 三态与权限（strategy_states）。",
-    "how_it_was_handled": "未做逐点变异复核；用户已同意按关键路径分批做（D5），本批模块在其列（规格与结论、证据、研究计数）。每条要求都有先写、先失败的验收用例：tests/integration/test_decisions_1022_batch1.py、test_decisions_1022_c4.py。",
+    "how_it_was_handled": "未做逐点变异复核；用户已同意按关键路径分批做（D5），本批模块在其列（规格与结论、证据、研究计数）。每条要求都有先写、先失败的验收用例：tests/integration/test_strategy_proposal_verdict.py、test_evidence_input_identity.py、test_trial_history_completeness.py、test_strategy_state_permissions.py、test_formal_forward_daily_record.py。",
     "owed": "这 67 个点欠逐点复核。 新进入范围的模块：['app/core/lifecycle/strategy_states.py']。"
    },
    {
@@ -1954,7 +1954,7 @@
     "from": 2794,
     "to": 2922,
     "why": "2026-10-22 用户决定批 2（D14 (a) 时钟 c2 + C3 标签 / 归档截止 + D9 Validate 预热）：时钟模块 clock.py（标签 / 归档截止 / 限价成交规则）、两套引擎改 T+1 限价撮合、每日循环 c2 结算、研究侧标签与合成器配对收益、Validate 预热、评估器 IC 标签、因子 IC 按时钟隔离。",
-    "how_it_was_handled": "**未做逐点变异复核**（D5 已定：关键路径分批复核，时钟在清单里，排在批 5）。每条决定按原话写了验收用例（tests/integration/test_decisions_1022_batch2.py），c2 成交与估值另有独立份额 + 现金账本对照（test_reference_ledger_1019.py）。",
+    "how_it_was_handled": "**未做逐点变异复核**（D5 已定：关键路径分批复核，时钟在清单里，排在批 5）。每条决定按原话写了验收用例（tests/integration/test_trading_clock.py、test_validation_warmup.py、test_walk_forward_composite_fit.py、test_paper_broker_limit_fills.py），c2 成交与估值另有独立份额 + 现金账本对照（test_engines_match_share_cash_ledger.py）。",
     "owed": "这 128 个点欠逐点复核。 新进入范围的模块：['app/core/clock.py']。"
    },
    {
@@ -1962,7 +1962,7 @@
     "from": 2922,
     "to": 3050,
     "why": "2026-10-22 用户决定批 3（D12 研究边界登记、D16 基准、D1 基本面不晋级、D7、N05-c 预检、第 18 条未知公司行动隔离）：研究边界登记（BoundaryStore.register / 临时切分 / 正式结论的边界门）、holdout 曝光记实验与股票池、等权宇宙基准规则、未知公司行动识别 / 隔离 / 不加风险 / 对账标注、基本面不晋级与预登记诊断、目标波动预检。",
-    "how_it_was_handled": "**未做逐点变异复核**（D5 已定：关键路径分批复核，排在批 5）。每条决定按原话写了验收用例（tests/integration/test_decisions_1022_batch3.py），关键接线另做了变异验证（收缩接到券商目标、缺股本回填）。",
+    "how_it_was_handled": "**未做逐点变异复核**（D5 已定：关键路径分批复核，排在批 5）。每条决定按原话写了验收用例（tests/integration/test_frozen_test_boundary.py、test_research_boundary_tools.py、test_equal_weight_benchmark.py、test_corporate_action_quarantine.py、test_multi_class_share_counts.py、test_fundamentals_promotion_policy.py、test_target_vol_preflight.py），关键接线另做了变异验证（收缩接到券商目标、缺股本回填）。",
     "owed": "这 128 个点欠逐点复核。 新进入范围的模块：['app/core/benchmark.py', 'app/core/data_engine/corporate_actions.py', 'app/core/lifecycle/fundamentals_policy.py', 'app/db/corporate_actions.py']。"
    }
   ]

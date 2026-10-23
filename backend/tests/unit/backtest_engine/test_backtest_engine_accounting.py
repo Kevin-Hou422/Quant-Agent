@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tests.unit.backtest_engine.c2_bars import prev_close_bars  # 时钟 c2：只有收盘价的用例配这根 K 线（见模块说明）
+from tests.unit.backtest_engine.prev_close_bars import prev_close_bars  # 时钟 c2：只有收盘价的用例配这根 K 线（见模块说明）
 from app.core.backtest_engine.backtest_engine import BacktestEngine
 from app.core.backtest_engine.transaction_cost import CostParams
 

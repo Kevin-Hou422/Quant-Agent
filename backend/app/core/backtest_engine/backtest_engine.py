@@ -162,7 +162,7 @@ class BacktestEngine:
         # 今天成不了的量不会凭空消失，也不会被摊给别人，而是留到以后接着成交）。
         #
         # 用户决定 #4：接受由此产生的历史回测收益变化，前后对比见
-        # docs/A6_ENGINE_UNIFICATION.md。
+        # docs/ENGINE_UNIFICATION.md。
         tgt_arr = weights.to_numpy(dtype=float)
 
         # F10：每天先把昨仓按今日价格漂移成**调仓前权重**，再撮合到目标；成交差额 = 目标 − 漂移后。

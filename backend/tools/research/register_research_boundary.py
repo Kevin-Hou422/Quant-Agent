@@ -1,11 +1,11 @@
 """
-d12_register_boundary.py — 登记一个数据集的冻结 Test 起点（2026-10-22 D12：日期建议后由用户确认）
+register_research_boundary.py — 登记一个数据集的冻结 Test 起点（2026-10-22 D12：日期建议后由用户确认）
 
 缺省是**预演**：只读查一遍、打印将要写什么，不碰库（不建表、不补列）。加 `--confirm` 才写，
 写的是 `frozen_boundaries` 的一行（操作人 + 理由，只写一次；已有登记 / 已冻结在别的日期 → 拒绝）。
 写活库前请先备份（D2）。
 
-    python tools/research/d12_register_boundary.py --db C:\\QuantAgentData\\alphas.db \\
+    python tools/research/register_research_boundary.py --db C:\\QuantAgentData\\alphas.db \\
         --dataset us_tech_large --test-start 2026-10-12 --actor <你> --reason "<为什么选这一天>" [--confirm]
 """
 
@@ -21,7 +21,7 @@ import pandas as pd
 
 def plan(db: Path, dataset: str, test_start: str) -> dict:
     """预演：只读看现状，返回将要发生什么。"""
-    from tools.research.d12_boundary_report import _connect_readonly, _columns, _tables
+    from tools.research.research_boundary_report import _connect_readonly, _columns, _tables
     con = _connect_readonly(db)
     try:
         existing = None

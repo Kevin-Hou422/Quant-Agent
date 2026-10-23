@@ -1360,7 +1360,7 @@ class TestLessonX_EquivalenceProofsAreMechanical:
         for path, proofs, _funcs in self._proof_files():
             for key, why in proofs.items():
                 for name in re.findall(r"\b(test_[a-z0-9_]+)", why):
-                    # 形如 test_alpha_workflows_round2 的是**文件名**引用，跳过
+                    # 形如 test_alpha_workflows_seeding_and_combination 的是**文件名**引用，跳过
                     if (TESTS / "unit").rglob(f"{name}.py") and name.startswith(
                             "test_") and (name in known or
                                           any(TESTS.rglob(f"{name}.py"))):

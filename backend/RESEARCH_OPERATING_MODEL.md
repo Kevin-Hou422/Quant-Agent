@@ -213,7 +213,7 @@ Paper 验证期        ：引入红队审计（可以是独立 prompt 的 LLM �
 
 - 实施进度与验收标准 → `ULTIMATE_GOAL_ROADMAP.md`（活跃路线图，Phase 9–14 + R）；
   已完成的 Phase 6–8 计划已归档于 `backend_retired_report/PAPER_TRADING_ROADMAP.md`
-- 历史完结记录 → `backend_retired_report/`（DEV_ROADMAP / STAGE1_COMPLETION_REPORT / AUDIT_REPORT）
+- 历史完结记录 → `backend_retired_report/`（DEV_ROADMAP / DEV_ROADMAP_COMPLETION_REPORT / AUDIT_REPORT）
 - 运营规则（PAPER→ACTIVE 门槛等）→ `OPERATIONS.md`（Phase 8.3，已落地）
 - 本文档回答"为什么这样做"；上述文档回答"做什么、做到没有"
 

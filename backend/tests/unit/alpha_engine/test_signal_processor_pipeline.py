@@ -113,7 +113,7 @@ class TestConfigValidation:
         """
         from app.core.clock import SIGNAL_DELAY
         d = SimulationConfig()
-        # 时钟 c2：信号不再额外延迟（SIGNAL_DELAY=0），防前视在引擎 —— 见 test_reference_ledger_1019.py::test_a_decision_is_never_traded_on_its_own_day
+        # 时钟 c2：信号不再额外延迟（SIGNAL_DELAY=0），防前视在引擎 —— 见 test_engines_match_share_cash_ledger.py::test_a_decision_is_never_traded_on_its_own_day
         assert d.delay == SIGNAL_DELAY == 0, "默认信号延迟与时钟 c2 不一致"
         assert d.market_neutral is True, "默认不再做市场中性"
         assert d.neutralize_groups is None, "默认带上了分组，中性化会被误开"
