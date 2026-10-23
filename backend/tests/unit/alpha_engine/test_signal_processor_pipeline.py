@@ -111,8 +111,10 @@ class TestConfigValidation:
         净敞口凭空出现；`neutralize_groups` 的默认 None 改掉会让中性化步骤
         默认开启并拿到一个假分组。
         """
+        from app.core.clock import SIGNAL_DELAY
         d = SimulationConfig()
-        assert d.delay == 1, "默认执行延迟不再是 T+1 —— 前视泄漏的默认防线没了"
+        # 时钟 c2：信号不再额外延迟（SIGNAL_DELAY=0），防前视在引擎 —— 见 test_reference_ledger_1019.py::test_a_decision_is_never_traded_on_its_own_day
+        assert d.delay == SIGNAL_DELAY == 0, "默认信号延迟与时钟 c2 不一致"
         assert d.market_neutral is True, "默认不再做市场中性"
         assert d.neutralize_groups is None, "默认带上了分组，中性化会被误开"
         assert d.truncation_min_q == 0.05 and d.truncation_max_q == 0.95

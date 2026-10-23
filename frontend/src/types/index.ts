@@ -303,9 +303,12 @@ export interface PaperPnLData {
 /** Phase 5 (FE-5.2): GET /api/alphas/{id}/ic_history */
 export interface ICHistoryData {
   alpha_id: number
-  points:   Array<{ date: string; realized_ic: number; realized_return: number }>
+  /** 每个点带时钟版本（2026-10-22 D14）；旧行没有版本 = c1 */
+  points:   Array<{ date: string; realized_ic: number; realized_return: number; clock_version?: string }>
+  /** 滚动统计只用这个时钟的点 */
   rolling_mean_ic: number | null
   rolling_ic_ir:   number | null
+  current_clock?:  string
 }
 
 /** Phase 5 (FE-5.3): GET /api/scheduler/status */

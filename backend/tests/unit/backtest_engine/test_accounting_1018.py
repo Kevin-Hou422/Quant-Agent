@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from tests.unit.backtest_engine.c2_bars import prev_close_bars  # 时钟 c2：只有收盘价的用例配这根 K 线（见模块说明）
 from app.core.backtest_engine.transaction_cost import CostParams, drift_weights
 
 
@@ -63,12 +64,16 @@ def _oracle_trades(close, weights, capital):
 def test_the_backtest_engine_trades_what_a_share_ledger_would_trade():
     from app.core.backtest_engine.backtest_engine import BacktestEngine
     idx, close, weights, vol = _panel()
-    res = BacktestEngine(cost_params=_no_cost(), initial_capital=1e6).run(weights, close, vol, weights)
+    res = BacktestEngine(cost_params=_no_cost(), initial_capital=1e6).run(weights, close, vol, weights,
+                                                                         ohlc=prev_close_bars(close))
     oracle = _oracle_trades(close, weights, 1e6)
     assert oracle[1] == pytest.approx(2 * (0.55 / 1.05 - 0.5), abs=1e-12)   # 第二天：漂移后调回 50/50
     got = np.asarray(res.turnover, dtype=float) * 2.0               # 单边换手 × 2 = 成交名义额 / 权益
-    assert got[1] == pytest.approx(oracle[1], abs=1e-9), "回测把调回 50/50 当成了零成交（权重没漂移）"
-    assert got[2] == pytest.approx(oracle[2], abs=1e-9)                    # 价格不动的一天：零成交
+    # 时钟 c2：第 t 天的决策在 t+1 开盘执行；这根 K 线的开盘 = 前收，成交价与 oracle 在 t 收盘成交相同，
+    # 所以 回测第 t+1 天的成交 == oracle 第 t 天的成交
+    assert got[0] == pytest.approx(0.0, abs=1e-12), "决策当天就成交了"
+    assert got[1] == pytest.approx(oracle[0], abs=1e-9)
+    assert got[2] == pytest.approx(oracle[1], abs=1e-9), "回测把调回 50/50 当成了零成交（权重没漂移）"
 
 
 def test_the_paper_broker_trades_from_the_drifted_weights(tmp_path):
@@ -79,11 +84,13 @@ def test_the_paper_broker_trades_from_the_drifted_weights(tmp_path):
                      cost_params=_no_cost(), initial_capital=1e6)
     adv = pd.Series(1e15, index=close.columns)
     dv = pd.Series(0.02, index=close.columns)
-    br.step(1, idx[0], target_w=weights.iloc[0], prices_t=close.iloc[0], prices_prev=close.iloc[0],
-            adv_usd=adv, daily_vol=dv, tdays_per_year=252)
-    br.step(1, idx[1], target_w=weights.iloc[1], prices_t=close.iloc[1], prices_prev=close.iloc[0],
-            adv_usd=adv, daily_vol=dv, tdays_per_year=252)
-    traded = sum(abs(f.traded_weight) for f in br.store.fills_on(1, idx[1]))
+    bars = prev_close_bars(close)
+    # 时钟 c2：第 t 天开盘撮合第 t−1 天收盘冻结的目标；第 0 天只决策
+    for t in range(3):
+        br.step(1, idx[t], target_w=weights.iloc[t - 1] if t > 0 else None, prices_t=close.iloc[t],
+                prices_prev=close.iloc[max(t - 1, 0)], adv_usd=adv, daily_vol=dv, tdays_per_year=252,
+                open_t=bars["open"].iloc[t], high_t=bars["high"].iloc[t], low_t=bars["low"].iloc[t])
+    traded = sum(abs(f.traded_weight) for f in br.store.fills_on(1, idx[2]))
     assert traded == pytest.approx(_oracle_trades(close, weights, 1e6)[1], abs=1e-9)
 
 
@@ -98,9 +105,9 @@ def test_paper_broker_and_backtest_still_agree_after_the_fix(tmp_path):
     close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.02, (40, 4)), 0), idx, cols)
     w = pd.DataFrame(rng.dirichlet(np.ones(4), 40) * 0.9, idx, cols)
     vol = pd.DataFrame(1e9, idx, cols)
-    bt = BacktestEngine(initial_capital=1e6).run(w, close, vol, w)
+    bt = BacktestEngine(initial_capital=1e6).run(w, close, vol, w, ohlc=prev_close_bars(close))
     br = PaperBroker(store=PositionStore(f"sqlite:///{(tmp_path / 'p.db').as_posix()}"), initial_capital=1e6)
-    eq = br.replay(1, w, close, vol)
+    eq = br.replay(1, w, close, vol, ohlc=prev_close_bars(close))
     assert np.asarray(eq, dtype=float) == pytest.approx(np.asarray(bt.equity_curve, dtype=float), rel=1e-9)
 
 

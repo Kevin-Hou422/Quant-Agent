@@ -521,13 +521,14 @@ class TestDefaultConfig:
 
     def test_the_default_signal_config_prevents_look_ahead(self, monkeypatch):
         """
-        `SimulationConfig(delay=1, ...)` —— `delay=0` 就是用当天信号
-        交易当天收盘，跨市场稳健性的结论全部作废。
+        `SimulationConfig(delay=SIGNAL_DELAY, ...)` —— 与时钟一致。
+        时钟 c2：信号不再额外延迟（SIGNAL_DELAY=0），防前视在引擎 —— 见 test_reference_ledger_1019.py::test_a_decision_is_never_traded_on_its_own_day。
         """
+        from app.core.clock import SIGNAL_DELAY
         calls = _stub_backtester(monkeypatch, {70: (1.0, 0.5)})
         MultiDatasetBacktester().run("rank(close)", {"us": _panel()})
         cfg = calls[0]["config"]
-        assert cfg.delay == 1, f"delay={cfg.delay} —— 不是 1 就有前视风险"
+        assert cfg.delay == SIGNAL_DELAY == 0, f"delay={cfg.delay} —— 与时钟 c2 不一致"
         assert cfg.decay_window == 0
         assert cfg.truncation_min_q == 0.05
         assert cfg.truncation_max_q == 0.95

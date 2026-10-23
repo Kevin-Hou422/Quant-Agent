@@ -121,12 +121,11 @@ def _as_date(d) -> _date:
 
 def session_deadline(d) -> Optional[datetime]:
     """
-    结算 d 这一天的结果时，信号最晚的存档时刻 = **d 的开盘**（UTC，naive）。
+    d 的开盘（UTC，naive）：标签从 d 开盘起算的那份信号，最晚的存档时刻。
 
-    复审 2026-10-19 N03：此前截止是 d 的收盘 —— 收盘前 1 分钟才存档的信号也算"前向"，可那一天的
-    大部分收益已经发生了。被评分的收益是前一个收盘 → d 收盘；信号只能在前一个收盘之后才算得出来，
-    所以最严、又做得到的截止是 d 开盘之前：开盘前存档的信号还来得及在 d 当天交易。
-    （前一个收盘到 d 开盘之间的隔夜跳空仍在被评分窗口里 —— 标签口径是 D14 要统一的事。）
+    时钟 c2（2026-10-22 D14 (a) + C3，见 app/core/clock.py）：信号日 T 的标签 = 开盘(T+1) → 开盘(T+2)，
+    归档截止 = 开盘(T+1) = 标签起点 —— 调用方传 d = T+1。存档时标签里的收益一笔都还没发生
+    （c1 时被评分的是前收盘 → 今收盘，开盘前存档也挡不住已发生的隔夜跳空；c2 起标签不含它）。
     算不出来（日历不可用 / 非交易日）→ None → 不认前向（保守）。
     """
     try:
@@ -226,7 +225,7 @@ class EvidenceStore:
         return {a: r for a, r in rows}
 
     def forward_signal(self, book_key: str, prev_day, day) -> Optional[dict]:
-        """结算 `day` 的结果时可用的前向信号：前一根 bar 的存档，且存于 `day` 收盘之前。"""
+        """信号日 `prev_day` 的前向存档：存于 `day`（= 标签起点那一天，T+1）开盘之前（时钟 c2）。"""
         return self.archived_before(book_key, prev_day, session_deadline(day))
 
     def book(self, book_key: str) -> "ForwardBook":
@@ -319,7 +318,10 @@ class ForwardBook:
             self._idx = {}
 
     def signal_for(self, prev_day, day) -> Optional[dict]:
-        """结算 `day` 时可用的前向信号（前一根 bar 的存档、存于 `day` 收盘前），没有 → None。"""
+        """
+        信号日 `prev_day`（T）的前向存档，没有 → None。`day` = 标签起点那一天（T+1）：存档必须早于它的开盘
+        （= clock.archive_deadline(T)）。时钟 c2 的调用方在 t 结算 T = dates[t−2]，传 (dates[t−2], dates[t−1])。
+        """
         rec_at = self._idx.get(_as_date(prev_day))
         if rec_at is None:
             return None

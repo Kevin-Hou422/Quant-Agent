@@ -70,6 +70,11 @@ def _data_source_label(dataset_name: str) -> str:
     return f"real:{dataset_name}" if dataset_name else "synthetic"
 
 
+def _clock_delay() -> int:
+    from app.core.clock import SIGNAL_DELAY
+    return SIGNAL_DELAY
+
+
 def _resolve_dataset(
     dataset_name:  str,
     dataset_start: str,
@@ -332,7 +337,7 @@ class BacktestResponse(BaseModel):
 
 
 class SimulationConfigSchema(BaseModel):
-    delay:            int   = Field(1,    ge=0, le=20)
+    delay:            int   = Field(0,    ge=0, le=20)   # 时钟 c2：信号不额外延迟（T+1 执行由引擎负责）
     decay_window:     int   = Field(0,    ge=0, le=60)
     truncation_min_q: float = Field(0.05, ge=0.0, le=0.5)
     truncation_max_q: float = Field(0.95, ge=0.5, le=1.0)
@@ -645,9 +650,9 @@ def backtest_run(req: BacktestRequest) -> BacktestResponse:
         NeutralizationLayer.market_neutral(weights)
         result = BacktestEngine().run(
             weights=weights, prices=panel["close"],
-            volume=panel["volume"], signal=signal,
+            volume=panel["volume"], signal=signal, ohlc=panel,     # 时钟 c2
         )
-        return RiskReport.from_result(result, prices=panel["close"]).to_dict()
+        return RiskReport.from_result(result, prices=panel.get("open")).to_dict()   # 时钟 c2：标签用开盘价
 
     # 2-5. 信号 → 权重 → 回测 → RiskReport
     try:
@@ -677,7 +682,7 @@ class WalkForwardRequest(BaseModel):
     n_splits:      int   = Field(5, ge=2, le=10, description="Walk-Forward 折数")
     embargo_days:  int   = Field(20, ge=0, le=60, description="IS/OOS 间隔天数")
     portfolio_mode: str  = Field("long_short")
-    delay:         int   = Field(1, ge=0, le=10)
+    delay:         int   = Field(0, ge=0, le=10)   # 时钟 c2
     # B-2：这三个字段此前**不存在**，而端点内部写死 20/120/42 —— 调用方传了也被静默忽略。
     # B-1：写死的 n_days=120 恰好等于 WalkForwardBacktester.min_train_days=120，
     #      导致合成路径在**所有**合法参数组合下都无法成功（实测 12/12 全部 ValueError→500）。
@@ -1081,6 +1086,7 @@ class ICHistoryPoint(BaseModel):
     date:            str
     realized_ic:     float
     realized_return: float
+    clock_version:   str = "c1"     # 2026-10-22 D14：c1 的 IC 是另一种标签，展示时分开
 
 
 class ICHistoryResponse(BaseModel):
@@ -1088,6 +1094,7 @@ class ICHistoryResponse(BaseModel):
     points:   List[ICHistoryPoint]
     rolling_mean_ic: Optional[float]
     rolling_ic_ir:   Optional[float]
+    current_clock:   str = ""        # 滚动统计只用这个时钟的点（前端按它把新旧时钟分两条线）
 
 
 class StatusPatchRequest(BaseModel):
@@ -1152,9 +1159,11 @@ def alpha_ic_history(
     if store.get_by_id(alpha_id) is None:
         raise HTTPException(status_code=404, detail=f"Alpha id={alpha_id} 不存在")
 
-    hist = store.get_ic_history(alpha_id, limit=limit)
+    hist = store.get_ic_history(alpha_id, limit=limit, all_clocks=True)   # 展示全部（每行带时钟版本）
     monitor = AlphaMonitor(store)
-    ics  = [h.realized_ic for h in hist]
+    from app.core.data_engine.input_identity import clock_version
+    cur = clock_version()
+    ics  = [h.realized_ic for h in hist if (h.clock_version or "c1") == cur]   # 滚动统计只用当前时钟
     roll = ics[-monitor.rolling_window:]
     return ICHistoryResponse(
         alpha_id = alpha_id,
@@ -1163,11 +1172,13 @@ def alpha_ic_history(
                 date            = str(h.date),
                 realized_ic     = h.realized_ic,
                 realized_return = h.realized_return,
+                clock_version   = h.clock_version or "c1",
             )
             for h in hist
         ],
         rolling_mean_ic = _nan_to_none(float(np.mean(roll))) if roll else None,
         rolling_ic_ir   = _nan_to_none(monitor._ic_ir(roll)),
+        current_clock   = cur,
     )
 
 
@@ -2339,10 +2350,11 @@ def _run_evaluate(
 
     evaluator = AlphaEvaluator()
 
-    is_prices = is_data.get("close")
+    # 时钟 c2：评估器的 IC 标签用开盘价（开盘(T+1) → 开盘(T+2)）
+    is_prices = is_data.get("open")
     is_signal = result.processed_signal
 
-    oos_prices = oos_data.get("close") if oos_data else None
+    oos_prices = oos_data.get("open") if oos_data else None
     oos_signal: Optional[Any] = None
     if result.oos_result is not None and oos_prices is not None:
         # OOS 段信号：通过重新运行 SignalProcessor 得到
@@ -2662,14 +2674,14 @@ def _add_workflow_pnl(
     try:
         if best_config:
             cfg = SimulationConfig(
-                delay            = best_config.get("delay", 1),
+                delay            = best_config.get("delay", _clock_delay()),
                 decay_window     = best_config.get("decay_window", 0),
                 truncation_min_q = best_config.get("truncation_min_q", 0.05),
                 truncation_max_q = best_config.get("truncation_max_q", 0.95),
                 portfolio_mode   = best_config.get("portfolio_mode", "long_short"),
             )
         else:
-            cfg = SimulationConfig(delay=1, decay_window=0,
+            cfg = SimulationConfig(delay=_clock_delay(), decay_window=0,
                                    truncation_min_q=0.05, truncation_max_q=0.95)
 
         bt     = RealisticBacktester(config=cfg)
@@ -2732,7 +2744,7 @@ def _add_workflow_pnl(
 
         # IC Decay — run AlphaEvaluator on IS signal + prices
         try:
-            is_prices = is_data.get("close")
+            is_prices = is_data.get("open")        # 时钟 c2：标签用开盘价
             is_signal = result.processed_signal
             if is_prices is not None and is_signal is not None:
                 evaluator = AlphaEvaluator()

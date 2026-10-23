@@ -409,8 +409,9 @@ class TestNeutralizeGating:
 
     def test_params_to_config_defaults_match_simulation_defaults(self):
         o = _opt(300)
+        from app.core.clock import SIGNAL_DELAY
         cfg = o._params_to_config({})
-        assert (cfg.delay, cfg.decay_window) == (1, 0)
+        assert (cfg.delay, cfg.decay_window) == (SIGNAL_DELAY, 0) == (0, 0)   # 时钟 c2
         assert (cfg.truncation_min_q, cfg.truncation_max_q) == (0.05, 0.95)
         assert cfg.portfolio_mode == "long_short"
 

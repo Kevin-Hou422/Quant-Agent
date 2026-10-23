@@ -22,6 +22,7 @@ Usage::
 
 from __future__ import annotations
 
+from app.core.clock import SIGNAL_DELAY
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -300,7 +301,7 @@ class MultiDatasetBacktester:
             return self._config
         from app.core.alpha_engine.signal_processor import SimulationConfig
         return SimulationConfig(
-            delay            = 1,
+            delay            = SIGNAL_DELAY,   # 时钟 c2（app/core/clock.py）
             decay_window     = 0,
             truncation_min_q = 0.05,
             truncation_max_q = 0.95,

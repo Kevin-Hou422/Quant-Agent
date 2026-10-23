@@ -285,8 +285,8 @@ def plot_backtest(result, prices, **kwargs):
 
     曲线取自 `result.equity_curve` 等**真实回测输出**，逐点即回测净值，非装饰性动画
     （见 test_phase_visualizer 的逐点匹配断言）。用法：
-        result = BacktestEngine().run(weights, prices, volume, signal)
-        fig = plot_backtest(result, prices); fig.show()
+        result = BacktestEngine().run(weights, prices, volume, signal, ohlc=dataset)   # 时钟 c2
+        fig = plot_backtest(result, dataset["open"]); fig.show()   # 标签价格 = 开盘价（时钟 c2）
     """
     from .risk_report import RiskReport
     report = RiskReport.from_result(result, prices, **kwargs)

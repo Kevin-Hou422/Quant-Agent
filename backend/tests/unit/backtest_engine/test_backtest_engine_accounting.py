@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from tests.unit.backtest_engine.c2_bars import prev_close_bars  # 时钟 c2：只有收盘价的用例配这根 K 线（见模块说明）
 from app.core.backtest_engine.backtest_engine import BacktestEngine
 from app.core.backtest_engine.transaction_cost import CostParams
 
@@ -45,7 +46,7 @@ def _frames(prices: list[list[float]], weights: list[list[float]],
 def _run(prices, weights, params: CostParams = FREE, capital: float = 1_000_000.0):
     w, px, vol = _frames(prices, weights)
     eng = BacktestEngine(cost_params=params, initial_capital=capital)
-    return eng.run(w, px, vol, w)
+    return eng.run(w, px, vol, w, ohlc=prev_close_bars(px))
 
 
 # ===========================================================================
@@ -127,25 +128,26 @@ class TestBorrowCost:
     def test_short_exposure_is_the_borrow_base(self):
         """
         `short_exp = np.sum(np.maximum(-prev_w, 0.0))` —— 只对**昨仓空头**计费。
-        构造：昨仓 A +0.6 / B −0.4，价格不动 → 净收益 = −借券费。
-        年化 365bps、动态 tdays = 2/(1/365.25) —— 直接拿 cost_bps 与手算比。
+        时钟 c2：第 0 日的决策第 1 日开盘才成交，所以第 1 日没有昨仓（不收借券费），
+        第 2 日才有过夜的空头 0.4。价格不动 → 第 2 日净收益 = −借券费。
         """
         params = CostParams(fixed_bps=0.0, min_ticket_fee=0.0, spread_bps=0.0,
                             impact_coef=0.0, short_borrow_annual_bps=365.0)
-        res = _run([[100.0, 100.0], [100.0, 100.0]],
-                   [[0.6, -0.4], [0.6, -0.4]], params=params)
-        # 第 1 日：昨仓空头敞口 0.4
-        assert res.gross_returns.iloc[1] == pytest.approx(0.0, abs=1e-12)
-        assert res.net_returns.iloc[1] < 0.0, "持有空头却没有借券成本"
-        assert res.daily_cost_bps.iloc[1] == pytest.approx(
-            -res.net_returns.iloc[1] * 10_000, abs=1e-9)
+        res = _run([[100.0, 100.0]] * 3,
+                   [[0.6, -0.4]] * 3, params=params)
+        assert res.net_returns.iloc[1] == pytest.approx(0.0, abs=1e-12), "还没有过夜空头就收了借券费"
+        # 第 2 日：昨仓空头敞口 0.4
+        assert res.gross_returns.iloc[2] == pytest.approx(0.0, abs=1e-12)
+        assert res.net_returns.iloc[2] < 0.0, "持有空头却没有借券成本"
+        assert res.daily_cost_bps.iloc[2] == pytest.approx(
+            -res.net_returns.iloc[2] * 10_000, abs=1e-9)
 
     def test_long_only_book_pays_no_borrow(self):
         params = CostParams(fixed_bps=0.0, min_ticket_fee=0.0, spread_bps=0.0,
                             impact_coef=0.0, short_borrow_annual_bps=365.0)
-        res = _run([[100.0, 100.0], [100.0, 100.0]],
-                   [[0.6, 0.4], [0.6, 0.4]], params=params)
-        assert res.net_returns.iloc[1] == pytest.approx(0.0, abs=1e-12), (
+        res = _run([[100.0, 100.0]] * 3,
+                   [[0.6, 0.4]] * 3, params=params)
+        assert res.net_returns.iloc[2] == pytest.approx(0.0, abs=1e-12), (
             "纯多头账本被收了借券费 —— 空头敞口的截取方向疑似反了")
 
 
@@ -161,25 +163,27 @@ class TestTurnover:
         换手恒为 0，成本模型的输入直接归零。
 
         构造：从 [+0.5, −0.5] 换到 [−0.5, +0.5]，Σ|Δw| = 2 → 单边换手 1.0，
-        而代数和恰好是 0。
+        而代数和恰好是 0。时钟 c2：第 1 日的翻仓决策在第 2 日执行。
         """
-        res = _run([[100.0, 100.0], [100.0, 100.0]],
-                   [[0.5, -0.5], [-0.5, 0.5]])
-        assert res.turnover.iloc[1] == pytest.approx(1.0, abs=1e-12), (
+        res = _run([[100.0, 100.0]] * 3,
+                   [[0.5, -0.5], [-0.5, 0.5], [-0.5, 0.5]])
+        assert res.turnover.iloc[2] == pytest.approx(1.0, abs=1e-12), (
             "一买一卖的换手被抵消成 0 —— 绝对值疑似被删掉")
 
-    def test_first_day_turnover_is_the_initial_build(self):
-        res = _run([[100.0, 100.0], [100.0, 100.0]],
-                   [[0.6, -0.4], [0.6, -0.4]])
-        assert res.turnover.iloc[0] == pytest.approx(0.5, abs=1e-12)
-        assert res.turnover.iloc[1] == pytest.approx(0.0, abs=1e-12)
+    def test_first_execution_day_turnover_is_the_initial_build(self):
+        """时钟 c2：第 0 日只决策（换手 0），第 1 日开盘建仓（0.5），之后不动仓（0）。"""
+        res = _run([[100.0, 100.0]] * 3,
+                   [[0.6, -0.4]] * 3)
+        assert res.turnover.iloc[0] == pytest.approx(0.0, abs=1e-12), "决策当天就成交了"
+        assert res.turnover.iloc[1] == pytest.approx(0.5, abs=1e-12)
+        assert res.turnover.iloc[2] == pytest.approx(0.0, abs=1e-12)
 
     def test_delta_is_new_minus_old(self):
         """`delta_w = adj_weights - prev_w`。写成 `+` 时不动仓也会产生换手。"""
-        res = _run([[100.0] * 2] * 3, [[0.5, 0.5], [0.5, 0.5], [0.5, 0.5]])
-        assert res.turnover.iloc[1] == pytest.approx(0.0, abs=1e-12), (
+        res = _run([[100.0] * 2] * 4, [[0.5, 0.5]] * 4)        # 第 1 日建仓，之后持仓不变
+        assert res.turnover.iloc[2] == pytest.approx(0.0, abs=1e-12), (
             "持仓完全不变却算出了换手 —— Δw 疑似写成了加法")
-        assert res.turnover.iloc[2] == pytest.approx(0.0, abs=1e-12)
+        assert res.turnover.iloc[3] == pytest.approx(0.0, abs=1e-12)
 
 
 # ===========================================================================
@@ -195,18 +199,20 @@ class TestNetAndEquity:
 
         ⚠️ 被测那一天必须**真的有换手**：持仓不变时 cost_ret 恰好为 0，
         `gross - 0` 与 `gross + 0` 完全一样，第一个减号测不出来
-        （第一版就是这样，变异测试证实它存活）。这里第 1 日把仓位翻转。
+        （第一版就是这样，变异测试证实它存活）。时钟 c2：第 1 日决策翻仓、第 2 日开盘执行，
+        第 2 日既有换手、又有借券（过夜空头）、又有涨跌。
         """
         params = CostParams(fixed_bps=10.0, min_ticket_fee=0.0, spread_bps=4.0,
                             impact_coef=0.0, short_borrow_annual_bps=365.0)
-        res = _run([[100.0, 100.0], [110.0, 100.0]],
-                   [[0.6, -0.4], [-0.4, 0.6]], params=params)   # 第 1 日大幅调仓
-        assert res.turnover.iloc[1] > 0.5, "构造前提：第 1 日必须有明显换手"
-        assert res.net_returns.iloc[1] < res.gross_returns.iloc[1], (
+        res = _run([[100.0, 100.0], [100.0, 100.0], [110.0, 100.0]],
+                   [[0.6, -0.4], [-0.4, 0.6], [-0.4, 0.6]], params=params)   # 第 2 日执行大幅调仓
+        assert res.turnover.iloc[2] > 0.5, "构造前提：第 2 日必须有明显换手"
+        assert res.gross_returns.iloc[2] != 0.0, "构造前提：第 2 日要有涨跌"
+        assert res.net_returns.iloc[2] < res.gross_returns.iloc[2], (
             "净收益高于毛收益 —— 成本项疑似被当成了收益")
-        implied_cost = res.gross_returns.iloc[1] - res.net_returns.iloc[1]
+        implied_cost = res.gross_returns.iloc[2] - res.net_returns.iloc[2]
         assert implied_cost > 0
-        assert res.daily_cost_bps.iloc[1] == pytest.approx(implied_cost * 10_000, abs=1e-6)
+        assert res.daily_cost_bps.iloc[2] == pytest.approx(implied_cost * 10_000, abs=1e-6)
 
     def test_cost_bps_scale_is_ten_thousand(self):
         """`(cost + borrow) * 10_000`。写成 `/` 会让成本口径小 1e8 倍。"""
@@ -214,8 +220,9 @@ class TestNetAndEquity:
                             impact_coef=0.0, short_borrow_annual_bps=0.0)
         res = _run([[100.0, 100.0], [100.0, 100.0]],
                    [[0.6, -0.4], [0.6, -0.4]], params=params)
-        assert res.daily_cost_bps.iloc[0] > 1.0, (
-            f"首日建仓的成本只有 {res.daily_cost_bps.iloc[0]:.8f} bps —— 量纲疑似写反")
+        # 时钟 c2：建仓在第 1 日开盘执行，成本记在第 1 日
+        assert res.daily_cost_bps.iloc[1] > 1.0, (
+            f"建仓的成本只有 {res.daily_cost_bps.iloc[1]:.8f} bps —— 量纲疑似写反")
 
     def test_equity_compounds_multiplicatively(self):
         """

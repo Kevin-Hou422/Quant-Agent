@@ -26,6 +26,7 @@ alpha_optimizer.py — Optuna 驱动的超参数优化引擎
 
 from __future__ import annotations
 
+from app.core.clock import SIGNAL_DELAY
 import logging
 import warnings
 from dataclasses import dataclass, field
@@ -333,7 +334,7 @@ class AlphaOptimizer:
             neutralize_groups = self._space.neutralize_groups
 
         return SimulationConfig(
-            delay             = params.get("delay", 1),
+            delay             = params.get("delay", SIGNAL_DELAY),
             decay_window      = params.get("decay", 0),
             truncation_min_q  = params.get("trunc_min", 0.05),
             truncation_max_q  = params.get("trunc_max", 0.95),

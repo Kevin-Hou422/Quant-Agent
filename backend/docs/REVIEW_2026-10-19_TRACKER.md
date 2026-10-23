@@ -58,7 +58,7 @@
 
 | # | 内容 | 状态 |
 |---|---|---|
-| 5.1 | D14 未统一前，历史结果应分版本标识 | ✅ | 唯一来源 `input_identity.CLOCK_VERSION`（现为 c1，口径写在 `CLOCK_VERSIONS`）。带时钟的：研究指标（`alpha_records`）、因子 IC（`alpha_ic_history`）、信号存档、策略证据、规格（`clock` 键 → 时钟一变规格哈希就变，旧证据不被继承）、提案 verdict、验证门结论、§7.3 每日记录、预登记设计。旧行 NULL = c1（那之前只有过这一种）。先失败。`tests/integration/test_evidence_versions_1019.py` |
+| 5.1 | D14 未统一前，历史结果应分版本标识 | ✅ | 唯一来源 `input_identity.CLOCK_VERSION`（当时为 c1；2026-10-22 D14 起为 c2，口径写在 `CLOCK_VERSIONS`）。带时钟的：研究指标（`alpha_records`）、因子 IC（`alpha_ic_history`）、信号存档、策略证据、规格（`clock` 键 → 时钟一变规格哈希就变，旧证据不被继承）、提案 verdict、验证门结论、§7.3 每日记录、预登记设计。旧行 NULL = c1（那之前只有过这一种）。先失败。`tests/integration/test_evidence_versions_1019.py` |
 | 5.2 | 规格哈希覆盖有效股票池 / 数据 vintage / 代码版本 / 执行账户 / 报价规则 / 提交时段 | ✅ | 规格 v2 加了 universe（登记标的列表哈希）、execution（账户、限价带、价格偏差、日亏、报价年龄与收盘窗口）、submission（调度时刻、时区、DAY、盘外成交）；调度时刻与订单有效期改成具名常量，规格读的就是代码实际用的值。**数据 vintage 不进规格**（每天都变，进了就天天不一致），记在证据行；**代码版本**记在提案 verdict 的 `approved_code_version` 与每条证据行，不当作不一致（否则每次部署都要重新审批）；`TestSpecCoverage`（9 条，先看它失败） |
 | 5.3 | 锁按账户 id 建锁域；首轮专用账户、单部署、固定路径并**校验账户身份** | ✅ | 锁名 = 券商 / 证券公司 / 环境 / 解析出的账户 id，放在整台机器共用的目录（`ACCOUNT_LOCK_DIR`，默认 %PROGRAMDATA%\QuantAgent）；拿不到账户 id 不交易；执行库第一次使用时绑定账户，之后连到别的账户 → 拒绝（`moomoo_trd_acc_id=0` 自动取到另一个模拟账户的情形）；`TestAccountLockDomain` |
 | 5.4 | 基本面来源 / 期间质量门 | ✅ | `fundamentals/quality.py`：策略表达式用到基本面字段时，这份面板末日的质量报告（`attach_fundamentals` 每次落盘）必须过门 —— 各字段末日覆盖率 ≥ `FUND_MIN_COVERAGE`（0.8）、估值字段用估计股本的标的占比 ≤ `FUND_MAX_ESTIMATED_SHARES`（0.1）；报告缺失 / 不是这份面板的 → 不过。提案不过 → `passed=False` + 原因；每日循环 active 策略不过 → 不调仓（`fundamentals_quality`）。按真实冒烟的数，现在的 gross_margin（58%）会被拦。`tests/unit/data_engine/test_fundamentals_review_1019.py` |

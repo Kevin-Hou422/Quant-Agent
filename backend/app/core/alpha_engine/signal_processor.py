@@ -14,6 +14,8 @@ signal_processor.py — 策略级信号处理管道
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+from app.core.clock import SIGNAL_DELAY as _SIGNAL_DELAY
 from typing import Optional, Literal
 
 import numpy as np
@@ -31,7 +33,7 @@ class SimulationConfig:
 
     Parameters
     ----------
-    delay             : 执行延迟（天）。1 = T 日信号、T+1 日执行（默认）。
+    delay             : 信号额外延迟（天）。缺省 = 时钟的 SIGNAL_DELAY（c2 为 0；T+1 执行由引擎负责）。
     decay_window      : ts_decay_linear 平滑窗口。0 = 不衰减。
     truncation_min_q  : 截断下分位数（0~1）。None = 不截断。
     truncation_max_q  : 截断上分位数（0~1）。None = 不截断。
@@ -40,7 +42,9 @@ class SimulationConfig:
     top_pct           : decile 模式下多头/空头各取前 top_pct 比例（默认 0.10）。
     market_neutral    : 是否在组合构建后施加市场中性约束（默认 True）。
     """
-    delay:             int                    = 1
+    #: 缺省取时钟（c2 = 0：T 收盘的信息用于 T 的决策，T+1 执行由引擎负责；见 app/core/clock.py）。
+    #: >0 = 研究里额外再延迟几天（Optuna 的搜索维度），不是时钟本身
+    delay:             int                    = _SIGNAL_DELAY
     decay_window:      int                    = 0
     truncation_min_q:  Optional[float]        = 0.05
     truncation_max_q:  Optional[float]        = 0.95

@@ -1160,8 +1160,9 @@ class TestLessonV_NoMutationResidueInRepo:
             ("app/core/portfolio_manager/strategy_contract.py",
              "gated = gated * 0.0",
              "熔断清仓是乘 0，写成除 0 会产生 inf/NaN 权重"),
+            # 时钟 c2（2026-10-22 D14）：每日循环的撮合参数收进 `_step_args`（前一天的价 / ADV / 波动 / 目标）
             ("app/tasks/daily_trading_loop.py",
-             "prices_prev=prices_f.iloc[t - 1] if t > 0 else",
+             "prev = t - 1 if t > 0 else t",
              "第 0 天必须取当日自身；`t >= 0` 会取末行价 → 前视"),
             # 复审 2026-10-19 N08：期初权益与调仓前市值分开算，乘法换到了这一行
             ("app/core/execution/paper_broker.py",

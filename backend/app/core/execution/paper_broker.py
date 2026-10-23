@@ -45,8 +45,12 @@ class PaperBroker:
         cost_params:     Optional[CostParams] = None,
         initial_capital: float = 1_000_000.0,
         max_net:         Optional[float] = None,
+        limit_band_bps:  Optional[float] = None,
     ) -> None:
+        from app.core.clock import default_band
         self.store           = store or PositionStore()
+        #: T+1 限价单的限价带（小数）。缺省 = settings.exec_limit_band_bps（与券商下单同一参数；时钟 c2）
+        self.band            = default_band() if limit_band_bps is None else float(limit_band_bps) * 1e-4
         self.params          = cost_params or CostParams()
         self.initial_capital = initial_capital
         # 部分成交会破坏对冲比例 → 成交后净敞口要回查（用户决策 #2）。
@@ -63,43 +67,50 @@ class PaperBroker:
         self,
         alpha_id:       int,
         date,
-        target_w:       pd.Series,      # (N,) 今日目标权重（索引=ticker）
-        prices_t:       pd.Series,      # (N,) 今日成交/估值价
-        prices_prev:    pd.Series,      # (N,) 昨日价
-        adv_usd:        pd.Series,      # (N,) 今日 20日 ADV（USD）
-        daily_vol:      pd.Series,      # (N,) 今日日波动率
+        target_w:       Optional[pd.Series],   # (N,) **昨天收盘**冻结的目标（None = 今天不交易）
+        prices_t:       pd.Series,      # (N,) 今日收盘价（估值）
+        prices_prev:    pd.Series,      # (N,) 昨日收盘价（限价单参考价、隔夜收益的起点）
+        adv_usd:        pd.Series,      # (N,) **截至昨天**的 20 日 ADV（USD）—— 开盘时当天的量还不知道
+        daily_vol:      pd.Series,      # (N,) 截至昨天的日波动率
+        *,
+        open_t:         pd.Series,      # (N,) 今日开盘价
+        high_t:         pd.Series,      # (N,) 今日最高价
+        low_t:          pd.Series,      # (N,) 今日最低价
         tdays_per_year: float = 252.0,
     ) -> DailyPnL:
         """
-        执行 alpha 在 date 的单日模拟成交并原子持久化（幂等：同日重跑覆盖）。
+        执行 alpha 在 date 的单日模拟成交并原子持久化（幂等：同日重跑覆盖）。时钟 c2（app/core/clock.py）：
+
+          1) 旧仓吃隔夜收益（昨收 → 今开）
+          2) 开盘撮合**昨天收盘**冻结的目标：DAY 限价单，参考价 = 昨收、限价带 = exec_limit_band_bps；
+             开盘在限价内 → 开盘价；否则当日触及限价 → 限价；否则不成交（未成交原因 limit_not_reached）
+          3) 费用按成交价的成交额；成交价相对开盘价的差额记为执行成本
+          4) 新仓吃盘中收益（今开 → 今收），收盘估值
+
+        开 / 高 / 低价是**必填**的：没有它们就不能按规则成交，也不能悄悄假设"按开盘价成交"。
         昨仓与净值从 PositionStore 读取（崩溃恢复安全）。
         """
+        from app.core.backtest_engine.transaction_cost import drift_weights
+        from app.core.clock import limit_fill_prices
         # 幂等/续跑：状态取**严格早于 date** 的最近一日（非全局最近），
         # 使重跑第 t 日基于 t-1 状态，全量重放逐位可复现。
         equity, prev_pos = self.store.state_before(alpha_id, date)
 
-        # 【缺陷 N-5，2026-09-20 修】原来是 `tickers = list(target_w.index)` ——
-        # 用**今日目标**的资产集合去截断昨仓。目标集合一缩小：
-        #   · 不在新目标里的旧持仓**不参与估值** → 当天的收益凭空消失
-        #   · 也**不产生平仓成交** → 仓位就这么没了，账本上查不到
-        # 外部审计实测：A/B 各半仓，次日目标只留 B 且 A 涨 10%，
-        # gross_ret 报 0（应为 +5%），成交记录里没有 A 的平仓。
-        #
-        # 正确口径是**昨仓与新目标的并集**：昨仓里的名字即使不在今日目标里，
-        # 也要估值（它今天确实还持有着）并按"目标 0"去平仓。
+        # 【缺陷 N-5】资产集合 = **昨仓与新目标的并集**：不在新目标里的旧持仓也要估值、并按"目标 0"去平仓
         held = [tk for tk, w in prev_pos.items() if abs(float(w)) > 1e-12]
-        tickers = list(target_w.index) + [tk for tk in held if tk not in target_w.index]
+        tgt_names = list(target_w.index) if target_w is not None else []
+        tickers = tgt_names + [tk for tk in held if tk not in tgt_names]
 
         prev_w = np.array([prev_pos.get(tk, 0.0) for tk in tickers], dtype=float)
-        tgt    = target_w.reindex(tickers).fillna(0.0).to_numpy(dtype=float)
         p_t    = prices_t.reindex(tickers).to_numpy(dtype=float)
         p_prev = prices_prev.reindex(tickers).to_numpy(dtype=float)
+        o_raw  = open_t.reindex(tickers).to_numpy(dtype=float)
+        h_raw  = high_t.reindex(tickers).to_numpy(dtype=float)
+        l_raw  = low_t.reindex(tickers).to_numpy(dtype=float)
         adv    = np.nan_to_num(adv_usd.reindex(tickers).to_numpy(dtype=float), nan=0.0)
         vol    = np.nan_to_num(daily_vol.reindex(tickers).to_numpy(dtype=float), nan=0.02)
 
-        # 旧持仓今天可能拿不到行情（标的退出了数据集）。`reindex` 给 NaN，
-        # 而 `nansum` 会把它**当成 0** —— 收益悄悄丢掉、还看不出发生过。
-        # 这里显式处理：没有行情就**不估值变动、也不交易**（上限置 0），并留痕。
+        # 旧持仓今天可能拿不到行情（标的退出了数据集）：不估值变动、也不交易（上限置 0），并留痕
         stale = ~np.isfinite(p_t) | ~np.isfinite(p_prev)
         if np.any(stale & (np.abs(prev_w) > 1e-12)):
             logger.warning(
@@ -108,98 +119,84 @@ class PaperBroker:
                 alpha_id, date, [tickers[i] for i in np.flatnonzero(stale)
                                  if abs(prev_w[i]) > 1e-12])
 
-        # 1) 持有昨仓度过今日：毛收益
+        # 1) 隔夜：缺开盘价 → 开盘 = 昨收（没有隔夜收益；下面的限价规则也判不成交）
+        o_eff = np.where(np.isfinite(o_raw) & (o_raw > 0), o_raw, p_prev)
         with np.errstate(divide="ignore", invalid="ignore"):
-            price_chg = np.where(p_prev == 0, 0.0, (p_t - p_prev) / p_prev)
-        price_chg = np.where(stale, 0.0, price_chg)
-        gross_ret = float(np.nansum(prev_w * price_chg))
+            on_chg = np.where(~stale & (p_prev > 0), o_eff / p_prev - 1.0, 0.0)
+            in_chg = np.where(~stale & (o_eff > 0), p_t / o_eff - 1.0, 0.0)
+        on_chg = np.nan_to_num(on_chg, nan=0.0)
+        in_chg = np.nan_to_num(in_chg, nan=0.0)
+        gross_on = float(np.nansum(prev_w * on_chg))
 
-        # 2) 借券成本（昨仓空头）
+        # 2) 借券成本（昨仓空头，按昨收市值）
         daily_borrow = self.params.short_borrow_annual_bps * 1e-4 / max(tdays_per_year, 1.0)
         borrow_ret = float(np.sum(np.maximum(-prev_w, 0.0)) * daily_borrow)
 
-        # 3) 撮合：按**单日可成交量**部分成交，不做任何再分配
-        #
-        # 【缺陷 A-6，2026-09-18/19 两步修完】
-        #
-        # 旧实现是 `project_to_capped_l1(tgt, adv_cap_pct×ADV/capital, target=1.0)`，
-        # 两处都错：
-        #   ① `target=1.0` 写死 —— 上游每一个降敞口的决定（波动率目标、max_gross、
-        #      无交易带）在这一步被抹掉。实测日循环的**目标持仓**总敞口 0.27–0.30
-        #      被放大到 0.90–1.00（3.33×），**成交名义额** 1.54×。
-        #   ② 用 water-filling 裁剪**目标持仓**来冒充成交：A 被 ADV 削掉后，
-        #      亏空被摊给 B —— [0.9, -0.1] 落账 [0.01, -0.99]，
-        #      10% 的对冲腿变成 99% 的方向性空头。
-        #
-        # 现在：执行层**只按交易差额撮合**（prev → target 的 Δ），
-        # 一个标的受限不得扩大另一个标的的目标；未成交量如实记账。
-        # 需要再分配时，必须由组合构建层产出新目标并重新过风控（用户决策 #1）。
-        #
-        # `adv_cap_pct`（持仓容量）与 `max_participation_pct`（单日成交量）
-        # 已拆成两个参数 —— 前者属于构建层，后者才是这里该用的（用户决策 #3）。
-        # 复审 2026-10-19 N08：三个量分开 —— 期初权益 v_prev（昨收）、调仓前市值 v_pre（昨仓按今日价）、
-        # 调仓后净值。漂移后的权重是相对 v_pre 的，所以权重 → 美元（成交额、成本、ADV 上限）都乘 v_pre；
-        # 当天的净收益按期初权益 v_prev 归一。此前一律乘 v_prev：A 涨 10% 后调回 50/50，
-        # 成交 500 美元被记成 476，100 bps 的费用记成 4.76 而不是 5。
+        # 3) 开盘撮合：从**漂移到开盘**的权重出发（F10），按单日可成交量部分成交、不做任何再分配（A-6）；
+        #    三个量分开（N08）：期初权益 v_prev（昨收）、开盘市值 v_open、收盘后净值
         v_prev = equity * self.initial_capital
-        v_pre = v_prev * (1.0 + gross_ret)
-        if v_pre > 0:
-            cap_trade_w = adv * self.params.max_participation_pct / v_pre
+        v_open = v_prev * (1.0 + gross_on)
+        pre_w = drift_weights(prev_w, on_chg)
+        tgt = (target_w.reindex(tickers).fillna(0.0).to_numpy(dtype=float) if target_w is not None
+               else pre_w.copy())
+        if v_open > 0:
+            cap_trade_w = adv * self.params.max_participation_pct / v_open
         else:
             cap_trade_w = np.full_like(adv, np.inf)
-        # 没有行情的名字今天**不能交易** —— 成交量上限置 0，
-        # 于是它的减仓/平仓会以"未成交"的身份出现在账本里（用户决策 #2）。
         cap_trade_w = np.where(stale, 0.0, cap_trade_w)
-
-        # F10：从**漂移后的调仓前权重**出发撮合，而不是昨收的权重（价格动过、权益变过）
-        from app.core.backtest_engine.transaction_cost import drift_weights
-        pre_w = drift_weights(prev_w, price_chg)
+        px = limit_fill_prices(np.sign(tgt - pre_w), p_prev, o_raw, h_raw, l_raw, self.band)
+        limit_blocked = ~np.isfinite(px) & (np.abs(tgt - pre_w) > 1e-12) & ~stale
+        cap_trade_w = np.where(np.isfinite(px), cap_trade_w, 0.0)
         fr = simulate_partial_fills(pre_w, tgt, cap_trade_w, max_net=self.max_net)
         filled, delta = fr.filled_w, fr.filled_d
+        exec_px = np.where(np.isfinite(px), px, o_eff)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            px_ratio = np.where(o_eff > 0, exec_px / o_eff, 1.0)
 
-        # 4) 调仓成本 —— 基于**实际成交量**，不是想要的量
+        # 4) 成本：按**成交价**的成交额；成交价相对开盘价的差额是执行成本（买高 / 卖低为正）
         cost_w, _cost_usd_total, _ = self._tc.compute(
-            date=date, delta_w=delta, prices=p_t, adv_usd=adv, daily_vol=vol,
-            portfolio_val=max(v_pre, 0.0), tickers=tickers,
+            date=date, delta_w=delta * px_ratio, prices=exec_px, adv_usd=adv, daily_vol=vol,
+            portfolio_val=max(v_open, 0.0), tickers=tickers,
         )
-        cost_ret = float(_cost_usd_total) / v_prev if v_prev > 0 else 0.0
+        exec_cost = float(np.nansum(delta * (px_ratio - 1.0))) * max(v_open, 0.0)
 
-        # 5) 净收益 + 净值
-        net_ret   = gross_ret - cost_ret - borrow_ret
+        # 5) 盘中 + 收盘净值
+        close_val = v_open * (1.0 + float(np.nansum(filled * in_chg)))
+        new_val = close_val - float(_cost_usd_total) - exec_cost - borrow_ret * v_prev
+        gross_ret = close_val / v_prev - 1.0 if v_prev > 0 else 0.0
+        cost_ret = (float(_cost_usd_total) + exec_cost) / v_prev if v_prev > 0 else 0.0
+        net_ret = new_val / v_prev - 1.0 if v_prev > 0 else 0.0
         equity_new = equity * (1.0 + net_ret)
 
-        # 6) 组装 fills（仅有交易的名）+ 新持仓
+        # 6) 成交记录（成交那一刻的权重，相对开盘市值）+ 收盘持仓（相对收盘净值）
         fills: List[dict] = []
-        # 逐名成本（USD）——按 |delta| 占比分摊 total（TransactionCostEngine 已逐名，
-        # 这里用 cost_w×组合市值近似逐名 USD，仅供审计展示）
-        pv = max(v_pre, 0.0)
+        pv = max(v_open, 0.0)
         for i, tk in enumerate(tickers):
-            if abs(delta[i]) < 1e-12 and abs(filled[i]) < 1e-12:
+            # 没交易、没持仓、也没有未成交的意图 → 跳过；一笔**完全没成交**的订单（c2 限价没碰到）必须留记录
+            if abs(delta[i]) < 1e-12 and abs(filled[i]) < 1e-12 and abs(float(fr.unfilled_d[i])) <= 1e-12:
                 continue
-            # 未成交的原因必须分得开（用户决策 #2）：
-            #   · participation —— 这一名自己的成交量打满了上限
-            #   · net_exposure  —— 这一名本身没打满，是**整组新增订单**被缩减/暂缓，
-            #                      因为部分成交会把净敞口推出限额（留下未授权的方向性头寸）
-            # 旧实现一律写 "adv_cap"，而且判据是 `|filled| < |target|`
-            # —— 那是**持仓**口径，与"这笔单成交了多少"无关。
+            # 未成交的原因分得开（用户决策 #2）：limit_not_reached（限价没碰到）/ participation（成交量打满）/
+            # net_exposure_*（整组新增订单被缩减 / 暂缓，否则部分成交会把净敞口推出限额）
             unfilled = float(fr.unfilled_d[i])
             if abs(unfilled) <= 1e-12:
                 reject = ""
+            elif limit_blocked[i]:
+                reject = "limit_not_reached"
             elif abs(delta[i]) >= abs(cap_trade_w[i]) - 1e-12:
                 reject = "participation"
             else:
                 reject = "net_exposure_defer" if fr.deferred else "net_exposure_scaled"
             fills.append({
                 "ticker": tk, "target_weight": float(tgt[i]),
-                "filled_weight": float(filled[i]), "fill_price": float(p_t[i]),
+                "filled_weight": float(filled[i]), "fill_price": float(exec_px[i]),
                 "cost_usd": float(cost_w[i] * pv), "reject_reason": reject,
                 "traded_weight": float(delta[i]), "unfilled_weight": unfilled,
             })
-        # 复审 2026-10-19 N08-b（股数 + 现金参考账本查出）：费用与借券从现金里扣，持仓市值不变、净值变小 ——
-        # 成交后的权重要按**成交后净值**重新归一（w · 调仓前市值 / 成交后净值）。此前直接存成交时的权重，
-        # 第二天的毛收益就按略小的仓位算（每天约 费用率 × 收益率 的偏差，两套引擎一起偏，对账看不出来）。
-        v_post = equity_new * self.initial_capital
-        post = filled * (v_pre / v_post) if v_post > 0 and v_pre > 0 else filled
+        # 收盘持仓：成交后的股数按今收估值，费用 / 借券从现金扣 → 相对**收盘净值**重新归一（复审 N08-b）
+        if new_val > 0 and v_open > 0:
+            post = filled * (1.0 + in_chg) * v_open / new_val
+        else:
+            post = filled
         positions = {tk: float(post[i]) for i, tk in enumerate(tickers) if abs(post[i]) > 1e-12}
 
         pnl = DailyPnL(
@@ -217,19 +214,23 @@ class PaperBroker:
     def replay(
         self,
         alpha_id:   int,
-        weights_df: pd.DataFrame,   # (T×N) 每日目标权重
+        weights_df: pd.DataFrame,   # (T×N) 第 T 行 = T 收盘冻结的目标
         prices_df:  pd.DataFrame,   # (T×N) 收盘价
         volume_df:  pd.DataFrame,   # (T×N) 成交量
+        ohlc:       Optional[dict] = None,   # {"open","high","low"}（时钟 c2 必需）
     ) -> pd.Series:
         """
-        从头逐日回放（按 BacktestEngine 口径算 adv/vol），返回净值 Series。
+        从头逐日回放（按 BacktestEngine 口径算 adv/vol），返回净值 Series。第一天只决策、不成交。
         用于：① 对账 RealisticBacktester；② 新因子入 PAPER 时的历史补跑。
         """
+        from app.core.clock import require_ohlc
         dates   = weights_df.index
         tickers = list(weights_df.columns)
         prices  = prices_df.reindex(index=dates, columns=tickers).ffill(limit=5).fillna(0.0)
         volume  = volume_df.reindex(index=dates, columns=tickers).ffill(limit=5).fillna(0.0)
         weights = weights_df.reindex(index=dates, columns=tickers).fillna(0.0)
+        require_ohlc(ohlc, dates, tickers)
+        bars = {k: ohlc[k].reindex(index=dates, columns=tickers) for k in ("open", "high", "low")}
 
         adv_df = self._liq.compute_adv(volume, prices)
         vol_df = prices.pct_change().rolling(20, min_periods=2).std().fillna(0.02)
@@ -242,11 +243,13 @@ class PaperBroker:
 
         equity_curve = []
         for t in range(len(dates)):
-            prev_prices = prices.iloc[t - 1] if t > 0 else prices.iloc[t]
+            prev = t - 1 if t > 0 else t
             pnl = self.step(
                 alpha_id, dates[t],
-                target_w=weights.iloc[t], prices_t=prices.iloc[t], prices_prev=prev_prices,
-                adv_usd=adv_df.iloc[t], daily_vol=vol_df.iloc[t], tdays_per_year=tdays,
+                target_w=weights.iloc[t - 1] if t > 0 else None, prices_t=prices.iloc[t],
+                prices_prev=prices.iloc[prev], adv_usd=adv_df.iloc[prev], daily_vol=vol_df.iloc[prev],
+                open_t=bars["open"].iloc[t], high_t=bars["high"].iloc[t], low_t=bars["low"].iloc[t],
+                tdays_per_year=tdays,
             )
             equity_curve.append(pnl.equity)
         return pd.Series(equity_curve, index=dates, name="paper_equity")

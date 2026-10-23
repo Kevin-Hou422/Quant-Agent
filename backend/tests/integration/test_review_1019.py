@@ -179,7 +179,7 @@ class TestEvidenceIdentity:
         from tests.integration.test_forward_evidence_1018 import _after_close, _panel, _upto
         spec, sid, ev, loop = self._setup(fresh_db)
         ds = _panel()
-        a, b = ds["close"].index[-2:]
+        a, b = ds["close"].index[-3], ds["close"].index[-1]          # 时钟 c2：信号日 a 在 a+2 结算
         loop._record_strategy_evidence(_upto(ds, a), _after_close(a))
         monkeypatch.setattr(settings, "price_source", "moomoo")
         out = loop._record_strategy_evidence(ds, _after_close(b))
@@ -193,7 +193,7 @@ class TestEvidenceIdentity:
         from tests.integration.test_forward_evidence_1018 import _after_close, _panel, _upto
         spec, sid, ev, loop = self._setup(fresh_db)
         ds = _panel()
-        a, b = ds["close"].index[-2:]
+        a, b = ds["close"].index[-3], ds["close"].index[-1]          # 时钟 c2：信号日 a 在 a+2 结算
         loop._record_strategy_evidence(_upto(ds, a), _after_close(a), data_source="yahoo")
         loop._record_strategy_evidence(ds, _after_close(b), data_source="moomoo")   # settings 仍是 yahoo
         assert ev.strategy_forward_ic(sid, spec_hash(spec)) == []
@@ -397,9 +397,11 @@ def test_the_rebalance_fee_uses_the_pre_trade_value(tmp_path):
     ps.record_day(1, "2026-01-05", {"AAA": .5, "BBB": .5}, [], DailyPnL(1, "2026-01-05", 0., 0., 0., 1.))
     broker = PaperBroker(ps, CostParams(fixed_bps=100, min_ticket_fee=0, spread_bps=0, impact_coef=0,
                                         short_borrow_annual_bps=0), 10000)
-    pnl = broker.step(1, "2026-01-06", pd.Series({"AAA": .5, "BBB": .5}), pd.Series({"AAA": 110., "BBB": 100.}),
+    # 时钟 c2：开 = 高 = 低 = 今收 —— 漂移发生在隔夜，开盘按目标调回 50/50（卖 A 买 B 都在限价带内）
+    bar = pd.Series({"AAA": 110., "BBB": 100.})
+    pnl = broker.step(1, "2026-01-06", pd.Series({"AAA": .5, "BBB": .5}), bar,
                       pd.Series({"AAA": 100., "BBB": 100.}), pd.Series({"AAA": 1e9, "BBB": 1e9}),
-                      pd.Series({"AAA": .02, "BBB": .02}))
+                      pd.Series({"AAA": .02, "BBB": .02}), open_t=bar, high_t=bar, low_t=bar)
     fee_usd = pnl.cost_bps / 1e4 * 10000                               # cost 按期初权益 10,000 归一
     assert fee_usd == pytest.approx(5.0)                                # 成交 500 美元 × 100 bps
     assert pnl.equity == pytest.approx((10500 - 5) / 10000)
@@ -408,16 +410,20 @@ def test_the_rebalance_fee_uses_the_pre_trade_value(tmp_path):
 def test_the_backtest_engine_charges_the_same_fee(tmp_path):
     from app.core.backtest_engine.backtest_engine import BacktestEngine
     from app.core.backtest_engine.transaction_cost import CostParams
-    idx = pd.bdate_range("2026-01-05", periods=2)
-    close = pd.DataFrame({"AAA": [100., 110.], "BBB": [100., 100.]}, index=idx)
+    from tests.unit.backtest_engine.c2_bars import prev_close_bars
+    idx = pd.bdate_range("2026-01-05", periods=3)
+    close = pd.DataFrame({"AAA": [100., 110., 110.], "BBB": [100., 100., 100.]}, index=idx)
     w = pd.DataFrame(.5, index=idx, columns=close.columns)
     res = BacktestEngine(cost_params=CostParams(fixed_bps=100, min_ticket_fee=0, spread_bps=0, impact_coef=0,
                                                 short_borrow_annual_bps=0),
-                         initial_capital=10000).run(w, close, pd.DataFrame(1e12, index=idx, columns=close.columns), w)
-    # 股数 + 现金账本：第一天买入 10,000 × 100 bps = 100，费用从**现金**扣 → 两腿市值各 5,000、现金 -100、
-    # 净值 9,900；第二天 A 涨到 5,500，调仓前市值 10,400，目标各 5,200 → 卖 A 300、买 B 200，
-    # 共 500 × 100 bps = 5.00。（此前这里写 4.95 = 把第一天的费用摊进了持仓，正是 N08-b 的那个偏差）
-    day2_cost = (res.gross_returns.iloc[1] - res.net_returns.iloc[1]) * res.equity_curve.iloc[0] * 10000
+                         initial_capital=10000).run(w, close, pd.DataFrame(1e12, index=idx, columns=close.columns), w,
+                                                    ohlc=prev_close_bars(close))
+    # 时钟 c2（开盘 = 前收）：第 0 天的决策第 1 天开盘按 100 成交 —— 买入 10,000 × 100 bps = 100，费用从**现金**扣
+    # → 两腿市值各 5,000、现金 -100；盘中 A 涨到 5,500，净值 10,400。第 2 天开盘（= 110）调仓前市值 10,400，
+    # 目标各 5,200 → 卖 A 300、买 B 200，共 500 × 100 bps = 5.00。（此前这里写 4.95 = 把建仓费用摊进了持仓，
+    # 正是 N08-b 的那个偏差）
+    day2_cost = (res.gross_returns.iloc[2] - res.net_returns.iloc[2]) * res.equity_curve.iloc[1] * 10000
+    assert res.equity_curve.iloc[1] == pytest.approx(1.04)
     assert day2_cost == pytest.approx(5.00)
 
 
@@ -564,7 +570,7 @@ class TestInputIdentity:
         from tests.integration.test_forward_evidence_1018 import _after_close, _panel, _upto
         spec, sid, ev, loop = TestEvidenceIdentity()._setup(fresh_db)
         ds = _panel()
-        a, b = ds["close"].index[-2:]
+        a, b = ds["close"].index[-3], ds["close"].index[-1]          # 时钟 c2：信号日 a 在 a+2 结算
         loop._record_strategy_evidence(_upto(ds, a), _after_close(a), data_source="yahoo")
         loop._record_strategy_evidence(ds, _after_close(b), data_source="yahoo")
         (row,) = ev.strategy_forward_ic(sid, spec_hash(spec))
@@ -577,7 +583,8 @@ class TestInputIdentity:
         from tests.integration.test_forward_evidence_1018 import _after_close, _fwd_dates, _panel, _upto, world
         w = world.__wrapped__(tmp_path)
         ds = _panel()
-        a, b = ds["close"].index[-2:]
+        # 时钟 c2：信号日 a 在 a+2 结算 —— 只隔一天的话无论来源如何都不会有前向，本用例就空转了
+        a, b = ds["close"].index[-3], ds["close"].index[-1]
         w.loop().run(_upto(ds, a), now=_after_close(a), data_source="yahoo")
         w.loop().run(ds, now=_after_close(b), data_source="moomoo")
         assert _fwd_dates(w.store, w.aid) == []

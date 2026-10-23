@@ -206,10 +206,10 @@ def test_the_strategy_gate_evaluates_frozen_weights_without_refitting(monkeypatc
     seen = {}
     real = PortfolioManager.build_book
 
-    def spy(self, signals, prices, volume, fixed_combo_weights=None, walk_forward_folds=None):
+    def spy(self, signals, prices, volume, fixed_combo_weights=None, walk_forward_folds=None, returns=None):
         seen.update(fixed=fixed_combo_weights, wf=walk_forward_folds)
         return real(self, signals, prices, volume, fixed_combo_weights=fixed_combo_weights,
-                    walk_forward_folds=walk_forward_folds)
+                    walk_forward_folds=walk_forward_folds, returns=returns)
     monkeypatch.setattr(PortfolioManager, "build_book", spy)
     ds = _make_dataset(n_days=120, n_tickers=8)
     sigs = {"a": ds["close"].rank(axis=1), "b": -ds["close"].pct_change(5).rank(axis=1)}

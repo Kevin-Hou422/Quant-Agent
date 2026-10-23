@@ -54,7 +54,7 @@ class TestClockVersion:
         sid, _ = _propose(world)
         ds = _panel()
         days = ds["close"].index
-        for d in days[-2:]:
+        for d in days[-3:]:                                         # 时钟 c2：信号日 T 在 T+2 结算
             world.loop().run_portfolio(_upto(ds, d), aum=10_000.0, data_source="yahoo", now=_after_close(d))
         rows = world.ev.strategy_forward_ic(sid)
         assert rows and {r.clock_version for r in rows} == {CLOCK_VERSION}
@@ -118,10 +118,11 @@ class TestReplayIsKeptButNotForward:
         sid, h = _propose(world)
         ds = _panel()
         days = ds["close"].index
-        world.loop().run_portfolio(_upto(ds, days[-3]), aum=10_000.0, data_source="yahoo", now=_after_close(days[-3]))
-        for d in days[-2:]:
+        world.loop().run_portfolio(_upto(ds, days[-4]), aum=10_000.0, data_source="yahoo", now=_after_close(days[-4]))
+        for d in days[-3:]:
             world.loop().run_portfolio(_upto(ds, d), aum=10_000.0, data_source="yahoo", now=_after_close(d))
         fwd = world.ev.strategy_forward_ic(sid, h)
+        # 时钟 c2：days[-2] 结算 days[-4] 的信号，days[-1] 结算 days[-3] 的（都在标签起点之前存档）
         assert [pd.Timestamp(r.date) for r in fwd] == list(days[-2:])
         assert {r.evidence_class for r in fwd} == {"forward"}
         assert world.ev.strategy_replay_ic(sid), "首跑那天之前的回放行没有留下"

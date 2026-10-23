@@ -57,6 +57,24 @@ class PortfolioResult:
         return out
 
 
+#: 合成权重要用收益拟合的方法（equal_weight 不看收益）
+FIT_METHODS = ("ic_weighted", "min_variance")
+
+
+def needs_returns(method: str, n_factors: int, fixed: bool = False) -> bool:
+    """这次合成要不要配对收益：有冻结权重 / 单因子 / 等权都不拟合。"""
+    return (not fixed) and n_factors > 1 and method in FIT_METHODS
+
+
+def _paired(returns: Optional[pd.DataFrame], method: str = "ic_weighted") -> Optional[pd.DataFrame]:
+    """拟合合成权重要的配对收益：必须由调用方按时钟 c2 给（app.core.clock.paired_returns）。"""
+    if method not in FIT_METHODS:
+        return returns
+    if returns is None:
+        raise ValueError("拟合合成权重需要配对收益（时钟 c2：clock.paired_returns(dataset)）；没有传入")
+    return returns
+
+
 class PortfolioManager:
     """
     Parameters
@@ -98,7 +116,8 @@ class PortfolioManager:
     # ------------------------------------------------------------------ PM.1
     def combined_weights(self, factor_signals: Dict[str, pd.DataFrame],
                          prices: pd.DataFrame,
-                         fixed_combo_weights: Optional[Dict[str, float]] = None):
+                         fixed_combo_weights: Optional[Dict[str, float]] = None,
+                         returns: Optional[pd.DataFrame] = None):
         """
         合成多因子信号 → 净持仓权重面板 (T×N) + 因子组合权重。
 
@@ -117,8 +136,10 @@ class PortfolioManager:
             if missing:
                 raise ValueError(f"冻结的组合权重缺少因子 {missing}")
             combo_w = {k: float(fixed_combo_weights[k]) for k in factor_signals}
+        elif len(factor_signals) == 1:
+            combo_w = {k: 1.0 for k in factor_signals}                  # 单因子：没有可拟合的组合权重
         else:
-            combo_w = combiner.optimize_weights(factor_signals, returns=prices.pct_change(),
+            combo_w = combiner.optimize_weights(factor_signals, returns=_paired(returns, self.method),
                                                 method=self.method)
         composite = combiner.combine(factor_signals, weights=combo_w)      # 合成信号（含跨因子净化）
         # 净持仓：多空 L1≈1；long_only 时 Σw≈1（满仓做多，不留一半闲置现金）
@@ -150,7 +171,7 @@ class PortfolioManager:
         return pd.DataFrame(capped, index=weights.index, columns=cols)
 
     def walk_forward_composite(self, factor_signals: Dict[str, pd.DataFrame],
-                               prices: pd.DataFrame, n_folds: int):
+                               prices: pd.DataFrame, n_folds: int, returns: Optional[pd.DataFrame] = None):
         """
         **滚动前推**合成（审计 F10）：日期切成 n_folds 段，第 k 段的组合权重只用第 k 段
         **开始之前**的数据拟合；第 1 段没有历史 → 等权（不拟合，因而也是样本外）。
@@ -167,7 +188,7 @@ class PortfolioManager:
         idx = next(iter(factor_signals.values())).index
         bounds = np.array_split(np.arange(len(idx)), max(1, int(n_folds)))
         combiner = AlphaCombiner()
-        returns = prices.pct_change()
+        returns = _paired(returns, self.method)
         pieces, combo_w = [], {}
         for k, pos in enumerate(bounds):
             if len(pos) == 0:
@@ -177,8 +198,10 @@ class PortfolioManager:
                 combo_w = {f: 1.0 / len(factor_signals) for f in factor_signals}
             else:
                 hist = {f: s.loc[s.index < start] for f, s in factor_signals.items()}
+                # returns 最后一行 = 开盘(start−1)→开盘(start)：start 收盘决策时已经实现（时钟 c2）
                 combo_w = combiner.optimize_weights(
-                    hist, returns=returns.loc[returns.index < start], method=self.method)
+                    hist, returns=None if returns is None else returns.loc[returns.index < start],
+                    method=self.method)
             seg = {f: s.loc[(s.index >= start) & (s.index <= end)] for f, s in factor_signals.items()}
             pieces.append(combiner.combine(seg, weights=combo_w))
         composite = pd.concat(pieces).sort_index()
@@ -190,17 +213,20 @@ class PortfolioManager:
     def build_book(self, factor_signals: Dict[str, pd.DataFrame],
                    prices: pd.DataFrame, volume: pd.DataFrame,
                    fixed_combo_weights: Optional[Dict[str, float]] = None,
-                   walk_forward_folds: Optional[int] = None) -> PortfolioResult:
+                   walk_forward_folds: Optional[int] = None,
+                   returns: Optional[pd.DataFrame] = None) -> PortfolioResult:
         """
         PM.1→PM.2→(PM.3 view)：产出一个真实 AUM 下、容量约束后的组合账本。
         walk_forward_folds : 给了就按滚动前推合成（验证用，见 walk_forward_composite）。
+        returns            : 拟合合成权重用的配对收益（时钟 c2：`app.core.clock.paired_returns(dataset)`）。
+                             需要拟合（没有冻结权重）却没给 → ValueError —— 不拿收盘价悄悄凑。
         """
         if walk_forward_folds and fixed_combo_weights is None and len(factor_signals) > 1:
             weights, combo_w, composite = self.walk_forward_composite(
-                factor_signals, prices, walk_forward_folds)
+                factor_signals, prices, walk_forward_folds, returns=returns)
         else:
             weights, combo_w, composite = self.combined_weights(factor_signals, prices,
-                                                                fixed_combo_weights)
+                                                                fixed_combo_weights, returns=returns)
         capped = self.apply_capacity(weights, prices, volume)
         logger.info(
             "[portfolio_manager] AUM=%.0f | 因子=%d | 末日 gross=%.3f net=%.3f",

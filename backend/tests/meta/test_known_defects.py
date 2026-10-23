@@ -791,10 +791,12 @@ class TestBacktestAndExecutionDefects:
         weights = pd.DataFrame([[0.5, -0.3, 0.2]] * T, index=idx, columns=cols)
         signal = pd.DataFrame(0.0, index=idx, columns=cols)
 
-        eq_bt = BacktestEngine().run(weights, prices, volume, signal).equity_curve
+        from tests.unit.backtest_engine.c2_bars import prev_close_bars
+        bars = prev_close_bars(prices)                       # 时钟 c2：两套引擎用同一根 K 线
+        eq_bt = BacktestEngine().run(weights, prices, volume, signal, ohlc=bars).equity_curve
         tmp = Path(_tf.mkdtemp(prefix="a6eng_"))
         pb = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp/'e.db'}"))
-        eq_pb = pb.replay(1, weights, prices, volume)
+        eq_pb = pb.replay(1, weights, prices, volume, ohlc=bars)
 
         gap = float(np.max(np.abs(eq_bt.to_numpy() - eq_pb.to_numpy())))
         assert gap < 1e-9, (

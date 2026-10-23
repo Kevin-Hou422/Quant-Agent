@@ -82,7 +82,8 @@ def test_the_daily_loop_regates_after_the_band(tmp_path, monkeypatch):
     real_step = PaperBroker.step
 
     def spy(self, book, d, target_w, *a, **k):
-        traded.append(float(target_w.abs().sum()))
+        if target_w is not None:                       # 时钟 c2：第一天只决策、不成交（target_w=None）
+            traded.append(float(target_w.abs().sum()))
         return real_step(self, book, d, target_w, *a, **k)
     monkeypatch.setattr(PaperBroker, "step", spy)
 
@@ -198,18 +199,22 @@ def _signals(n=100, seed=0):
 
 
 def test_walk_forward_fold_weights_never_see_their_own_fold():
+    """
+    时钟 c2：px 当作开盘价，拟合用 `paired_returns`（第 t 行 = 开盘(t) → 开盘(t+1)）。第 3 段在 start3 收盘
+    决策，那时开盘(start3) 已知；**之后**的开盘价怎么变，前 3 段的合成信号都必须完全不变。
+    """
+    from app.core.clock import paired_returns
     from app.core.portfolio_manager.manager import PortfolioManager
     sig, px = _signals()
     pm = PortfolioManager(aum=1e6, method="ic_weighted", long_only=True)
-    _, _, comp = pm.walk_forward_composite(sig, px, n_folds=5)
-    # 改动第 3 段起点之后的价格（因而改动那之后的收益）：前 3 段的合成信号必须完全不变
+    _, _, comp = pm.walk_forward_composite(sig, px, n_folds=5, returns=paired_returns({"open": px}))
     start3 = sig["a"].index[np.array_split(np.arange(100), 5)[2][0]]
     px2 = px.copy()
-    late = px2.index >= start3
+    late = px2.index > start3
     # 逐股票随机扰动（同一乘数施加给所有股票不改横截面排序，IC 也就不变 —— 那样测不出东西）
     shock = np.cumprod(1 + np.random.default_rng(99).normal(0, .05, (late.sum(), 10)), 0)
     px2.loc[late] = px2.loc[late].to_numpy() * shock
-    _, _, comp2 = pm.walk_forward_composite(sig, px2, n_folds=5)
+    _, _, comp2 = pm.walk_forward_composite(sig, px2, n_folds=5, returns=paired_returns({"open": px2}))
     end3 = sig["a"].index[np.array_split(np.arange(100), 5)[2][-1]]
     pd.testing.assert_frame_equal(comp.loc[:end3], comp2.loc[:end3])
     assert not comp.loc[end3:].iloc[1:].equals(comp2.loc[end3:].iloc[1:]), "用例失去判别力"
@@ -218,8 +223,10 @@ def test_walk_forward_fold_weights_never_see_their_own_fold():
 def test_first_fold_is_equal_weight():
     from app.core.backtest_engine.alpha_combiner import AlphaCombiner
     from app.core.portfolio_manager.manager import PortfolioManager
+    from app.core.clock import paired_returns
     sig, px = _signals()
-    _, _, comp = PortfolioManager(aum=1e6, long_only=True).walk_forward_composite(sig, px, 5)
+    _, _, comp = PortfolioManager(aum=1e6, long_only=True).walk_forward_composite(
+        sig, px, 5, returns=paired_returns({"open": px}))
     first = sig["a"].index[:20]
     eq = AlphaCombiner().combine({k: v.loc[first] for k, v in sig.items()},
                                  weights={"a": .5, "b": .5})
@@ -332,8 +339,10 @@ def test_per_factor_ic_carries_the_forward_flag(tmp_path):
         check_decay=lambda *a: None)
     store = SimpleNamespace(query=lambda **k: [SimpleNamespace(id=7, status="paper",
                                                                dsl="rank(close)")])
-    # 外部审查 2026-10-18 F06：前向由**信号存档**决定，不再由 forward_from 决定 ——
-    # 前一天跑过（存了信号）、今天再跑，只有今天这一天是前向。
+    # 外部审查 2026-10-18 F06：前向由**信号存档**决定，不再由 forward_from 决定。
+    # 时钟 c2（C3）：信号日 T 的标签 = 开盘(T+1) → 开盘(T+2)，在 T+2 结算；存档必须早于开盘(T+1)。
+    # d1 收盘后跑一次（存下 d1 的信号）→ d2 收盘后再跑（结算 d0：d0 的信号在开盘(d1) 之后才存，回放）
+    # → d3 收盘后再跑（结算 d1：存档早于开盘(d2)，前向）。
     from datetime import timedelta
     from app.core.data_engine.market_calendar import session_close_utc
     from app.db.evidence_store import EvidenceStore
@@ -341,12 +350,16 @@ def test_per_factor_ic_carries_the_forward_flag(tmp_path):
     mk = lambda: DailyTradingLoop(store=store, monitor=monitor, evidence_store=ev,  # noqa: E731
                                   broker=PaperBroker(store=PositionStore(f"sqlite:///{tmp_path / 'p.db'}")))
     ds = _make_dataset(n_days=30, n_tickers=8)
-    d1, d2 = ds["close"].index[-2], ds["close"].index[-1]
+    d1, d2, d3 = ds["close"].index[-3], ds["close"].index[-2], ds["close"].index[-1]
     mk().run({k: v.loc[:d1] for k, v in ds.items()}, data_source="yahoo", now=session_close_utc(d1) + timedelta(hours=2))
     assert seen and not any(f for _, f in seen)               # 第一次跑：全是回放
     seen.clear()
-    mk().run(ds, forward_from=str(ds["close"].index[5].date()), data_source="yahoo", now=session_close_utc(d2) + timedelta(hours=2))
-    assert seen == [(d2, True)]
+    mk().run({k: v.loc[:d2] for k, v in ds.items()}, data_source="yahoo",
+             now=session_close_utc(d2) + timedelta(hours=2))
+    assert seen == [(d2, False)], "d0 的信号在它的标签起点之后才存档，不能算前向"
+    seen.clear()
+    mk().run(ds, forward_from=str(ds["close"].index[5].date()), data_source="yahoo", now=session_close_utc(d3) + timedelta(hours=2))
+    assert seen == [(d3, True)]
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +404,9 @@ def test_walk_forward_fits_only_on_data_before_each_fold(monkeypatch):
         seen.append((max(s.index.max() for s in signals.values()), returns.index.max()))
         return real(self, signals, returns=returns, method=method, **k)
     monkeypatch.setattr(AlphaCombiner, "optimize_weights", spy)
-    PortfolioManager(aum=1e6, long_only=True).walk_forward_composite(sig, px, n_folds=5)
+    from app.core.clock import paired_returns
+    PortfolioManager(aum=1e6, long_only=True).walk_forward_composite(
+        sig, px, n_folds=5, returns=paired_returns({"open": px}))
     starts = [sig["a"].index[p[0]] for p in np.array_split(np.arange(100), 5)][1:]
     assert len(seen) == 4, "第 1 段不该拟合（等权），其余 4 段各拟合一次"
     for (sig_max, ret_max), start in zip(seen, starts):

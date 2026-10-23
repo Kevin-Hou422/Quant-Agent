@@ -25,6 +25,7 @@ STRICT RULES (enforced):
 """
 from __future__ import annotations
 
+from app.core.clock import SIGNAL_DELAY
 import logging
 from ..gp_engine import _rng  # R-N1：可绑定共享随机源
 from dataclasses import dataclass, field
@@ -213,7 +214,7 @@ def _quick_metrics(
     from ..gp_engine.fitness import compute_fitness
 
     default_cfg = SimulationConfig(
-        delay            = 1,
+        delay            = SIGNAL_DELAY,   # 时钟 c2（app/core/clock.py）
         decay_window     = 0,
         truncation_min_q = 0.05,
         truncation_max_q = 0.95,
@@ -643,10 +644,9 @@ def _combine_pool_alphas(
         executor  = Executor(validate=False)
 
         def _returns_of(data: dict):
-            ret = data.get("returns")
-            if ret is None and "close" in data:
-                ret = data["close"].pct_change().fillna(0.0)
-            return ret
+            # 时钟 c2：信号 t 配 开盘(t+1)→开盘(t+2)（app/core/clock.py）。此前用收盘到收盘的 returns 字段
+            from ..clock import paired_returns
+            return paired_returns(data)
 
         returns = _returns_of(oos_data)
 
@@ -695,8 +695,7 @@ def _combine_pool_alphas(
             T = min(sig_arr.shape[0] - 1, ret_arr.shape[0] - 1)
             ics: list[float] = []
             for t in range(T):
-                # ret_arr[t+1] = t→t+1 forward return; ret_arr[t] would be the
-                # same-day (t-1→t) return, i.e. contemporaneous (lookahead) IC
+                # ret_arr[t+1] = 信号 t 的标签：开盘(t+1)→开盘(t+2)（时钟 c2，见 clock.paired_returns）
                 s, r = sig_arr[t], ret_arr[t + 1]
                 mask = ~(np.isnan(s) | np.isnan(r))
                 if mask.sum() < 5:

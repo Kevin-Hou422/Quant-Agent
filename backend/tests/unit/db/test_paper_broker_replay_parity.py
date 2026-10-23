@@ -24,6 +24,18 @@ def _market(T=40, N=6, seed=7):
     return prices, volume, signal
 
 
+def _bars(prices, seed=11):
+    """
+    时钟 c2 的开 / 高 / 低：开盘相对前收有跳空（σ≈0.8%，常超出 50bp 限价带），高低包住开收再外扩 ——
+    限价规则的三个分支（开盘价 / 限价 / 不成交）都会出现，对账比较的是真实 c2 规则下的两套账本。
+    """
+    rng = np.random.default_rng(seed)
+    prev = prices.shift(1).fillna(prices)
+    o = prev * (1 + rng.normal(0, 0.008, prices.shape))
+    amp = np.abs(rng.normal(0, 0.004, prices.shape))
+    return {"open": o, "high": np.maximum(o, prices) * (1 + amp), "low": np.minimum(o, prices) * (1 - amp)}
+
+
 class TestPaperBrokerReconciliation:
 
     def test_replay_matches_backtest_engine(self):
@@ -35,9 +47,10 @@ class TestPaperBrokerReconciliation:
         prices, volume, signal = _market()
         weights = SignalWeightedPortfolio(clip_z=3.0).construct(signal)
 
-        eq_bt = BacktestEngine().run(weights, prices, volume, signal).equity_curve
+        bars = _bars(prices)
+        eq_bt = BacktestEngine().run(weights, prices, volume, signal, ohlc=bars).equity_curve
         pb = PaperBroker(store=PositionStore(db_url="sqlite:///:memory:"))
-        eq_pb = pb.replay(1, weights, prices, volume)
+        eq_pb = pb.replay(1, weights, prices, volume, ohlc=bars)
 
         # 逐位一致（机器精度）—— PaperBroker 复用同一成本/流动性模型
         assert np.max(np.abs(eq_bt.values - eq_pb.values)) < 1e-9
@@ -130,9 +143,9 @@ class TestIdempotencyAndRecovery:
 
     def test_rerun_is_idempotent(self, setup):
         pb, store, weights, prices, volume = setup
-        eq1 = pb.replay(1, weights, prices, volume)
+        eq1 = pb.replay(1, weights, prices, volume, ohlc=_bars(prices))
         # 完整重跑一遍（模拟崩溃后从头补跑）
-        eq2 = pb.replay(1, weights, prices, volume)
+        eq2 = pb.replay(1, weights, prices, volume, ohlc=_bars(prices))
         assert np.allclose(eq1.values, eq2.values, atol=1e-12)
         # PnL 表每天只有一条（幂等，非追加）
         hist = store.pnl_history(1)
@@ -158,12 +171,13 @@ class TestIdempotencyAndRecovery:
         cal_years = max((weights.index[-1] - weights.index[0]).days / 365.25, 1/365.25)
         tdays = len(weights) / cal_years
 
+        from app.tasks.daily_trading_loop import _step_args
+        bars = _bars(prices)
+
         def _step_range(broker, lo, hi):
+            # 与每日循环同一口径（时钟 c2）：第 t 天开盘撮合第 t−1 天的目标，ADV / 波动用截至 t−1 的
             for t in range(lo, hi):
-                broker.step(1, weights.index[t], target_w=weights.iloc[t],
-                            prices_t=prices_f.iloc[t],
-                            prices_prev=prices_f.iloc[t-1] if t > 0 else prices_f.iloc[t],
-                            adv_usd=adv_df.iloc[t], daily_vol=vol_df.iloc[t],
+                broker.step(1, weights.index[t], **_step_args(weights, prices_f, adv_df, vol_df, bars, t),
                             tdays_per_year=tdays)
 
         T = len(weights); mid = T // 2
@@ -180,7 +194,7 @@ class TestIdempotencyAndRecovery:
 
     def test_get_positions_and_equity(self, setup):
         pb, store, weights, prices, volume = setup
-        pb.replay(1, weights, prices, volume)
+        pb.replay(1, weights, prices, volume, ohlc=_bars(prices))
         pos = pb.get_positions(1)
         assert isinstance(pos, pd.Series) and len(pos) > 0
         assert pb.latest_equity(1) > 0

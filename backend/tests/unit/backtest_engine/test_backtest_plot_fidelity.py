@@ -11,6 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from tests.unit.backtest_engine.c2_bars import prev_close_bars  # 时钟 c2：只有收盘价的用例配这根 K 线（见模块说明）
 from app.core.backtest_engine.backtest_engine import BacktestEngine
 from app.core.backtest_engine import plot_backtest
 
@@ -24,7 +25,7 @@ def _real_backtest(seed=0, T=250, N=8):
     sig = close.pct_change().rank(axis=1)
     w = sig.sub(sig.mean(1), axis=0)
     w = w.div(w.abs().sum(1), axis=0).fillna(0.0)
-    return BacktestEngine().run(w, close, vol, sig), close
+    return BacktestEngine().run(w, close, vol, sig, ohlc=prev_close_bars(close)), close
 
 
 def test_backtest_curve_matches_real_equity_not_fake():

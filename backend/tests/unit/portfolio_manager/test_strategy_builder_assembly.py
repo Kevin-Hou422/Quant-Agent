@@ -28,6 +28,7 @@ import pandas as pd
 import pytest
 
 import app.core.portfolio_manager as PM
+from tests.unit.backtest_engine.c2_bars import with_prev_close_bars  # 时钟 c2：只有收盘价的面板配开 / 高 / 低
 from app.core.portfolio_manager.strategy_builder import (
     build_strategy_config,
     propose_from_paper_factors,
@@ -41,7 +42,7 @@ def _panel(with_volume=True, with_sector=False) -> dict:
     rng = np.random.default_rng(4)
     close = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.01, (60, 3)), axis=0),
                          index=IDX, columns=COLS)
-    ds = {"close": close}
+    ds = with_prev_close_bars({"close": close})          # 时钟 c2：合成器拟合用开盘到开盘的配对收益
     if with_volume:
         ds["volume"] = pd.DataFrame(1e6, index=IDX, columns=COLS)
     if with_sector:
@@ -675,18 +676,20 @@ class TestProposeFromPaperFactors:
 
     def test_the_signal_config_matches_the_run_portfolio_caliber(self, alpha_wiring):
         """
-        `SimulationConfig(delay=1, decay_window=0, truncation_min_q=0.05,
-                          truncation_max_q=0.95)`
+        信号参数必须与 `run_portfolio` / 规格同口径（`executable_spec.signal_config()`），否则审批时
+        看到的信号与实际交易的信号不是同一个。
 
-        `delay=1` 是**防前视**的那一格 —— 改成 0 意味着用当天信号
-        交易当天收盘，整份策略的回测结论全部作废。
-        另外三项必须与 `run_portfolio` 同口径，否则审批时看到的
-        信号与实际交易的信号不是同一个。
+        时钟 c2（2026-10-22 D14）：信号延迟 = `clock.SIGNAL_DELAY`（0：T 收盘的信息用于 T 的决策）。
+        防前视的那一格移到了引擎：T 的决策只在 T+1 按限价规则成交（见
+        `test_reference_ledger_1019.py::test_a_decision_is_never_traded_on_its_own_day`）。
         """
+        from app.core.clock import SIGNAL_DELAY
+        from app.core.portfolio_manager.executable_spec import signal_config
         store = _Store([_Rec(1, "paper")])
         propose_from_paper_factors(store, _panel(), aum=1e5)
         cfg = alpha_wiring.seen["cfg"][0]
-        assert cfg.delay == 1, f"delay={cfg.delay} —— 不是 1 就有前视风险"
+        assert cfg.delay == SIGNAL_DELAY == 0, f"delay={cfg.delay} —— 与时钟 c2 不一致"
+        assert cfg == signal_config(), "提案用的信号参数与规格 / 每日循环不是同一份"
         assert cfg.decay_window == 0
         assert cfg.truncation_min_q == 0.05
         assert cfg.truncation_max_q == 0.95

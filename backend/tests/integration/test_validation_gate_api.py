@@ -80,9 +80,18 @@ def test_noise_fails():
 
 
 def test_high_dsr_threshold_blocks():
-    # 即便信号强，DSR 阈值抬到 0.999 也应拦下（原因含 DSR）
-    gate = ValidationGate(n_splits=3, embargo_days=5, dsr_threshold=0.999)
-    res = gate.evaluate(_MOMENTUM, _signal_dataset(), n_trials=200)
+    """
+    即便信号强，DSR 阈值高于它实际达到的 DSR 也应拦下（原因含 DSR）。
+    阈值取"这条信号实际 DSR 与 1 的中点"，不写死 0.999 —— 时钟 c2 去掉了多出的一天延迟后，这条合成动量
+    在 200 次试验下的 DSR 已是 0.9999988，写死的阈值会随数据口径失去判别力。
+    """
+    ds = _signal_dataset()
+    base = ValidationGate(n_splits=3, embargo_days=5, dsr_threshold=0.0, min_tstat=0.0).evaluate(
+        _MOMENTUM, ds, n_trials=200)
+    assert base.passed is True, base.reasons                      # 前提：不看 DSR 时它能过
+    thr = base.deflated_sharpe + (1.0 - base.deflated_sharpe) / 2.0
+    assert base.deflated_sharpe < thr < 1.0
+    res = ValidationGate(n_splits=3, embargo_days=5, dsr_threshold=thr).evaluate(_MOMENTUM, ds, n_trials=200)
     assert res.passed is False
     assert any("DSR" in r for r in res.reasons)
 

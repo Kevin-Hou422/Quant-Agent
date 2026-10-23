@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from tests.unit.backtest_engine.c2_bars import prev_close_bars  # 时钟 c2：只有收盘价的用例配这根 K 线（见模块说明）
 from app.core.backtest_engine import (
     DecilePortfolio,
     SignalWeightedPortfolio,
@@ -79,7 +80,7 @@ def backtest_result(signal_df, prices_df, volume_df, default_cost):
 
     engine = BacktestEngine(cost_params=default_cost, initial_capital=1_000_000)
     return engine.run(weights=weights, prices=prices_df,
-                      volume=volume_df, signal=signal_df)
+                      volume=volume_df, signal=signal_df, ohlc=prev_close_bars(prices_df))
 
 
 # ===========================================================================

@@ -125,12 +125,12 @@ def test_run_portfolio_marks_forward_from(tmp_path):
     from app.db.evidence_store import EvidenceStore
     ev = EvidenceStore(f"sqlite:///{tmp_path/'e.db'}")
     days = [d for d in idx if session_close_utc(d) is not None]
-    first = {k: v.loc[:days[-3]] for k, v in ds.items()}
+    first = {k: v.loc[:days[-4]] for k, v in ds.items()}               # 时钟 c2：T 在 T+2 结算
     DailyTradingLoop(store=store, broker=broker, evidence_store=ev).run_portfolio(
         first, aum=10_000.0, forward_from=idx[-20].date(), data_source="yahoo",
-        now=session_close_utc(days[-3]) + timedelta(hours=2))
+        now=session_close_utc(days[-4]) + timedelta(hours=2))
     assert store.get_forward_ic(PORTFOLIO_BOOK_ID) == []
-    for d in days[-2:]:
+    for d in days[-3:]:
         DailyTradingLoop(store=store, broker=broker, evidence_store=ev).run_portfolio(
             {k: v.loc[:d] for k, v in ds.items()}, aum=10_000.0, data_source="yahoo",
             now=session_close_utc(d) + timedelta(hours=2))

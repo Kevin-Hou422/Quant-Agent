@@ -49,10 +49,10 @@ def leak_filter(dsl: str, dataset: WidePanel,
         volume = dataset.get("volume")
         if volume is None:
             volume = pd.DataFrame(1e6, index=prices.index, columns=prices.columns)
-        cfg = SimulationConfig(delay=1, decay_window=0, truncation_min_q=0.05, truncation_max_q=0.95)
-        proc = SignalProcessor(cfg).process(raw)
+        from app.core.portfolio_manager.executable_spec import signal_config
+        proc = SignalProcessor(signal_config()).process(raw)          # 与规格同一份信号参数（时钟 c2）
         w = SignalWeightedPortfolio(clip_z=3.0).construct(proc)
-        rets = pd.Series(BacktestEngine().run(w, prices, volume, proc).net_returns).dropna()
+        rets = pd.Series(BacktestEngine().run(w, prices, volume, proc, ohlc=dataset).net_returns).dropna()
         if len(rets) >= 20:
             mu, sd = float(rets.mean()), float(rets.std(ddof=1))
             sharpe = (mu / sd) * np.sqrt(252.0) if sd > 1e-12 else 0.0

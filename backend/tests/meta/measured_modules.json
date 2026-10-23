@@ -1370,7 +1370,7 @@
    "proof_entries_min": 97,
    "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
    "refuted_entries_min": 2,
-   "unmeasured_points_max": 2794
+   "unmeasured_points_max": 2922
   },
   "refuted_by_counterexample": {
    "count": 2,
@@ -1398,9 +1398,9 @@
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
   "measured_points": 1982,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-  "current_plan_points": 4776,
+  "current_plan_points": 4904,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-  "unmeasured_points": 2794,
+  "unmeasured_points": 2922,
   "newly_in_scope_modules": [
    "app/core/risk_engine/factor_model.py",
    "app/core/execution/broker_gateway.py",
@@ -1428,7 +1428,8 @@
    "app/db/forward_record.py",
    "app/core/data_engine/fundamentals/quality.py",
    "app/core/lifecycle/validation_design.py",
-   "app/core/lifecycle/strategy_states.py"
+   "app/core/lifecycle/strategy_states.py",
+   "app/core/clock.py"
   ],
   "per_module_delta": {
    "app/agent/_agent.py": {
@@ -1943,6 +1944,14 @@
     "why": "用户 2026-10-22 核验的 6 个问题：C1 提案最终结论 / 评级一致（gates）、C2 来源不可验证时证据隔离、C4 正式日报决策不可变 + 修订链 + 按完整时间戳启动 + 结果归属前一决策、C5 未结案运行一律阻断正式资格、C6 integration / paper_running / verified_active 三态与权限（strategy_states）。",
     "how_it_was_handled": "未做逐点变异复核；用户已同意按关键路径分批做（D5），本批模块在其列（规格与结论、证据、研究计数）。每条要求都有先写、先失败的验收用例：tests/integration/test_decisions_1022_batch1.py、test_decisions_1022_c4.py。",
     "owed": "这 67 个点欠逐点复核。 新进入范围的模块：['app/core/lifecycle/strategy_states.py']。"
+   },
+   {
+    "date": "2026-10-22 (用户决定批 2：时钟与预热)",
+    "from": 2794,
+    "to": 2922,
+    "why": "2026-10-22 用户决定批 2（D14 (a) 时钟 c2 + C3 标签 / 归档截止 + D9 Validate 预热）：时钟模块 clock.py（标签 / 归档截止 / 限价成交规则）、两套引擎改 T+1 限价撮合、每日循环 c2 结算、研究侧标签与合成器配对收益、Validate 预热、评估器 IC 标签、因子 IC 按时钟隔离。",
+    "how_it_was_handled": "**未做逐点变异复核**（D5 已定：关键路径分批复核，时钟在清单里，排在批 5）。每条决定按原话写了验收用例（tests/integration/test_decisions_1022_batch2.py），c2 成交与估值另有独立份额 + 现金账本对照（test_reference_ledger_1019.py）。",
+    "owed": "这 128 个点欠逐点复核。 新进入范围的模块：['app/core/clock.py']。"
    }
   ]
  },

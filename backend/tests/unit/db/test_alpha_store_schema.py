@@ -157,7 +157,8 @@ class TestForwardFlag:
         with store._Session() as s:
             s.add(AlphaICRecord(alpha_id=aid, date=_d(2024, 1, 8), realized_ic=0.02))
             s.commit()
-        rows = store.get_ic_history(aid)
+        # 没写时钟版本的行读作 c1（版本化之前的口径）—— 当前时钟的默认读法不返回它，这里看全部时钟
+        rows = store.get_ic_history(aid, all_clocks=True)
         assert len(rows) == 1
         assert rows[0].is_forward is False, "未指定时的列默认值不是 False"
         assert store.get_forward_ic(aid) == []

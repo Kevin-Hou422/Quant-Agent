@@ -10,6 +10,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from tests.unit.backtest_engine.c2_bars import prev_close_bars  # 时钟 c2：只有收盘价的用例配这根 K 线（见模块说明）
+
 
 # ---------------------------------------------------------------------------
 # 帮助函数
@@ -43,7 +45,7 @@ def _run_backtest(signal, close, volume):
     # 注意：run 的签名是 (weights, prices, volume, signal)。原实现写成
     # run(signal, close, volume) —— 少一个必填参数，**每次都抛 TypeError**，
     # 而所有调用方都用 `except Exception: pass` 吞掉了，导致本文件长期在空跑。
-    return engine.run(weights, close, volume, signal)
+    return engine.run(weights, close, volume, signal, ohlc=prev_close_bars(close))
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +128,8 @@ class TestZeroInitialCapital:
         weights = pd.DataFrame([[0.6, -0.4]] * T, index=idx, columns=cols)
         signal = pd.DataFrame(0.0, index=idx, columns=cols)
 
-        res = BacktestEngine(initial_capital=0.0).run(weights, prices, volume, signal)
+        res = BacktestEngine(initial_capital=0.0).run(weights, prices, volume, signal,
+                                                      ohlc=prev_close_bars(prices))
         pos = res.positions.to_numpy(dtype=float)
 
         assert not np.isnan(pos).any(), (
@@ -255,7 +258,7 @@ class TestPriceDropToZero:
 
         from app.core.backtest_engine.portfolio_constructor import SignalWeightedPortfolio
         weights = SignalWeightedPortfolio().construct(signal)
-        result = engine.run(weights, crash_close, volume, signal)
+        result = engine.run(weights, crash_close, volume, signal, ohlc=prev_close_bars(crash_close))
         assert result is not None, "价格骤降导致回测返回 None"
         eq = np.asarray(result.equity_curve, dtype=float)
         assert np.isfinite(eq).all(), "价格骤降产出 inf/NaN 净值"

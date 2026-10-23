@@ -147,7 +147,7 @@ class RiskReport:
         Parameters
         ----------
         result            : BacktestResult
-        prices            : 资产价格矩阵（传入后 IC 和 Decile 分析精确计算）
+        prices            : **开盘价**矩阵（时钟 c2 的预测标签：开盘(T+1) → 开盘(T+2)；传入后 IC 和 Decile 精确计算）
         rf                : 无风险日收益率（优先使用 rf_annual）
         rf_annual         : 年化无风险利率（如 0.05 = 5%），推荐使用此参数
         rolling_ic_window : 仅用于 rolling_ic 序列的平滑窗口（不影响 mean_ic/ic_ir）

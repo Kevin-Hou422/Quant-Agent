@@ -14,7 +14,7 @@ strategy_contract.py — 一份策略的显式三步合同（复审 2026-10-19 N
     2. 验证   contract.verify(factor_dsl_now, aum_now, settings)     # 运行时与规格的差异
               contract.evaluate(gate, signals, dataset, cost_params) # 门评估的就是这份
     3. 生成   contract.signals(dataset)                              # 规格里的表达式 + 规格里的信号参数
-              contract.composite(signals, prices)                    # 证据用的合成信号
+              contract.composite(signals, dataset)                   # 证据用的合成信号
               contract.targets(signals, dataset, cost_params, halt)  # 目标权重（门回测 / 模拟账本 / 券商）
 
 没有批准配置的探索路径（PAPER 因子、提案的流程 OOS）用同一个 `generate_targets`，只是参数不来自规格。
@@ -71,9 +71,13 @@ def generate_targets(signals: Signals, dataset: WidePanel, *, aum: float, method
     if volume is None:
         volume = pd.DataFrame(1e6, index=prices.index, columns=prices.columns)
     notes: List[str] = []
+    from app.core.clock import paired_returns
+    from app.core.portfolio_manager.manager import needs_returns
+    needs_fit = needs_returns(method, len(signals), fixed=fixed_combo_weights is not None)
     book = PortfolioManager(aum=aum, method=method, cost_params=cost_params).build_book(
         signals, prices, volume, walk_forward_folds=walk_forward_folds,
-        fixed_combo_weights=fixed_combo_weights)
+        fixed_combo_weights=fixed_combo_weights,
+        returns=paired_returns(dataset) if needs_fit else None)
     raw = book.weights
     if not risk:
         return StrategyTargets(weights=raw, gated=raw, raw=raw, composite=book.composite,
@@ -181,10 +185,14 @@ class StrategyContract:
         return {f: SignalProcessor(cfg).process(Executor(validate=False).run_expr(dsl, dataset))
                 for f, dsl in self.spec["factors"].items()}
 
-    def composite(self, signals: Signals, prices: pd.DataFrame) -> pd.DataFrame:
-        from app.core.portfolio_manager.manager import PortfolioManager
+    def composite(self, signals: Signals, dataset: WidePanel) -> pd.DataFrame:
+        from app.core.clock import paired_returns
+        from app.core.portfolio_manager.manager import PortfolioManager, needs_returns
+        fixed = self.combo_weights
         _, _, comp = PortfolioManager(aum=self.aum, method=self.method).combined_weights(
-            signals, prices, self.combo_weights)
+            signals, dataset["close"], fixed,
+            returns=paired_returns(dataset) if needs_returns(self.method, len(signals), fixed is not None)
+            else None)
         return comp
 
     def targets(self, signals: Signals, dataset: WidePanel, cost_params=None,

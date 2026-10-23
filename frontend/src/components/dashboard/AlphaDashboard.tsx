@@ -9,6 +9,7 @@ import {
 } from '../../api/client'
 import type { AlphaDashboardRow, ICHistoryData, SchedulerStatus, PaperPnLData } from '../../types'
 import ApprovalQueue from './ApprovalQueue'
+import { splitIcByClock } from './icClock'
 
 /**
  * FE-5.1/5.2/5.3: Alpha lifecycle dashboard.
@@ -75,11 +76,14 @@ export default function AlphaDashboard() {
     }
   }
 
-  const icOption = icData && icData.points.length > 0 ? {
+  // D14：c1 / c2 的 IC 是不同的标签，分两条线；滚动统计（后端）只用当前时钟
+  const icClock = icData ? splitIcByClock(icData.points, icData.current_clock ?? 'c2') : null
+  const icOption = icData && icClock && icData.points.length > 0 ? {
     grid: { left: 44, right: 16, top: 24, bottom: 28 },
+    legend: { show: icClock.nLegacy > 0, textStyle: { color: '#94a3b8', fontSize: 10 }, top: 0 },
     xAxis: {
       type: 'category',
-      data: icData.points.map((p) => p.date),
+      data: icClock.dates,
       axisLabel: { color: '#64748b', fontSize: 9 },
       axisLine: { lineStyle: { color: '#1e293b' } },
     },
@@ -89,9 +93,11 @@ export default function AlphaDashboard() {
       splitLine: { lineStyle: { color: '#1e293b' } },
     },
     series: [{
+      name: `IC (${icData.current_clock ?? 'c2'}, current clock)`,
       type: 'line',
-      data: icData.points.map((p) => p.realized_ic),
+      data: icClock.current,
       showSymbol: false,
+      connectNulls: false,
       lineStyle: { color: '#34d399', width: 1.5 },
       markLine: {
         silent: true,
@@ -100,6 +106,13 @@ export default function AlphaDashboard() {
         lineStyle: { color: '#f43f5e', type: 'dashed', width: 1 },
         label: { show: false },
       },
+    }, {
+      name: 'IC (c1, old clock — not counted)',
+      type: 'line',
+      data: icClock.legacy,
+      showSymbol: false,
+      connectNulls: false,
+      lineStyle: { color: '#64748b', width: 1, type: 'dashed' },
     }],
     tooltip: { trigger: 'axis', backgroundColor: '#0f172a', borderColor: '#334155',
                textStyle: { color: '#e2e8f0', fontSize: 11 } },
@@ -263,7 +276,10 @@ export default function AlphaDashboard() {
                 <span className="font-semibold text-slate-200">Alpha #{selected} — Realized IC</span>
                 <span>rolling mean: <b className="font-mono text-slate-200">{NUM(icData.rolling_mean_ic)}</b></span>
                 <span>rolling IC-IR: <b className="font-mono text-slate-200">{NUM(icData.rolling_ic_ir, 2)}</b></span>
-                <span className="text-slate-600">{icData.points.length} days</span>
+                <span className="text-slate-600">
+                  {icClock?.nCurrent ?? 0} days ({icData.current_clock ?? 'c2'})
+                  {icClock && icClock.nLegacy > 0 && ` · ${icClock.nLegacy} days c1 (old clock, excluded from rolling stats)`}
+                </span>
               </div>
               {icOption && (
                 <ReactECharts option={icOption} style={{ height: 260 }} notMerge />

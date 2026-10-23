@@ -413,9 +413,10 @@ def run_backtest(args: argparse.Namespace) -> None:
         prices  = dataset["close"],
         volume  = dataset["volume"],
         signal  = signal,
+        ohlc    = dataset,           # 时钟 c2
     )
 
-    report = RiskReport.from_result(result, prices=dataset["close"])
+    report = RiskReport.from_result(result, prices=dataset.get("open"))   # 时钟 c2：标签用开盘价
 
     print("\n" + "=" * 60)
     print(report.summary())
@@ -608,7 +609,7 @@ def _cli_main() -> None:
     )
 
     # ── Realistic 模式专属参数 ─────────────────────────────────────────────
-    parser.add_argument("--delay",            type=int,   default=1)
+    parser.add_argument("--delay",            type=int,   default=0)   # 时钟 c2：信号不额外延迟
     parser.add_argument("--decay-window",     type=int,   default=0,    dest="decay_window")
     parser.add_argument("--truncation-min-q", type=float, default=0.05, dest="truncation_min_q")
     parser.add_argument("--truncation-max-q", type=float, default=0.95, dest="truncation_max_q")

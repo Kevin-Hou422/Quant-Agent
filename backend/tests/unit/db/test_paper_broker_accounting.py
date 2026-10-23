@@ -33,6 +33,24 @@ def broker(tmp_path):
     return PaperBroker(store=store, initial_capital=CAPITAL)
 
 
+def _step(broker, **kw):
+    """
+    时钟 c2（2026-10-22 D14）起 `step` 必须给当天的开 / 高 / 低。本文件钉的是**记账公式**（容量上限、成本量纲、
+    借券符号、前视、持仓归一……），不是成交规则 —— 这里给一根"开 = 高 = 低 = 今收"的退化 K 线：隔夜段承载
+    整段价格变动、盘中为 0、成交价 = 今收（相对限价参考价 = 昨收，在限价带内才成交）。于是 c2 的记账退化为
+    本文件各条断言原来针对的公式；c2 成交规则本身由 test_reference_ledger_1019.py 的独立账本对照。
+    """
+    bar = kw["prices_t"]
+    for k in ("open_t", "high_t", "low_t"):
+        kw.setdefault(k, bar)
+    return broker.step(**kw)
+
+
+def _flat_ohlc(prices):
+    """replay 用的退化 K 线（同 `_step`）。"""
+    return {"open": prices, "high": prices, "low": prices}
+
+
 def _series(vals, tickers):
     return pd.Series(vals, index=tickers, dtype=float)
 
@@ -61,7 +79,7 @@ def test_adv_cap_formula_is_exact(broker):
     adv_a = 10_000.0                       # 极小 ADV → 上限远低于目标权重
     cap_expected = adv_a * pct / CAPITAL
 
-    pnl = broker.step(
+    pnl = _step(broker, 
         alpha_id=1, date="2024-01-02",
         target_w=_series([1.0, 0.0], tk),          # 想满仓 A
         prices_t=_series([100.0, 100.0], tk),
@@ -89,8 +107,8 @@ def test_adv_cap_scales_with_capital(broker, tmp_path):
     kw = dict(target_w=_series([1.0], tk), prices_t=_series([100.0], tk),
               prices_prev=_series([100.0], tk), adv_usd=_series([adv], tk),
               daily_vol=_series([0.02], tk))
-    broker.step(alpha_id=2, date="2024-01-02", **kw)
-    big.step(alpha_id=2, date="2024-01-02", **kw)
+    _step(broker, alpha_id=2, date="2024-01-02", **kw)
+    _step(big, alpha_id=2, date="2024-01-02", **kw)
     w_small = _filled(broker, 2, "2024-01-02")["A"]
     w_big = _filled(big, 2, "2024-01-02")["A"]
     assert abs(w_big - w_small / 2.0) < 1e-9, (
@@ -124,8 +142,8 @@ def test_cost_usd_scales_with_capital(broker, tmp_path):
                         initial_capital=CAPITAL, cost_params=prop_only)
     big = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp_path/'pb3b.db'}"),
                       initial_capital=CAPITAL * 2, cost_params=prop_only)
-    small.step(alpha_id=3, date="2024-01-02", **kw)
-    big.step(alpha_id=3, date="2024-01-02", **kw)
+    _step(small, alpha_id=3, date="2024-01-02", **kw)
+    _step(big, alpha_id=3, date="2024-01-02", **kw)
 
     def _total_usd(b):
         return sum(abs(f.cost_usd) for f in b.store.fills_on(3, "2024-01-02"))
@@ -158,16 +176,16 @@ def test_borrow_cost_adds_to_reported_cost(tmp_path):
                   adv_usd=_series([1e12, 1e12], tk),
                   daily_vol=_series([0.02, 0.02], tk))
     # 第 1 天建空头
-    b.step(alpha_id=4, date="2024-01-02", target_w=_series([0.5, -0.5], tk), **common)
+    _step(b, alpha_id=4, date="2024-01-02", target_w=_series([0.5, -0.5], tk), **common)
     # 第 2 天维持（此时昨仓含空头 → 产生借券成本）
-    pnl_short = b.step(alpha_id=4, date="2024-01-03",
+    pnl_short = _step(b, alpha_id=4, date="2024-01-03",
                        target_w=_series([0.5, -0.5], tk), **common)
 
     # 对照：全多头，同样维持一天
     st2 = PositionStore(db_url=f"sqlite:///{tmp_path/'pb5.db'}")
     b2 = PaperBroker(store=st2, initial_capital=CAPITAL, cost_params=params)
-    b2.step(alpha_id=5, date="2024-01-02", target_w=_series([0.5, 0.5], tk), **common)
-    pnl_long = b2.step(alpha_id=5, date="2024-01-03",
+    _step(b2, alpha_id=5, date="2024-01-02", target_w=_series([0.5, 0.5], tk), **common)
+    pnl_long = _step(b2, alpha_id=5, date="2024-01-03",
                        target_w=_series([0.5, 0.5], tk), **common)
 
     assert pnl_short.cost_bps > pnl_long.cost_bps, (
@@ -193,7 +211,7 @@ def test_first_day_has_no_lookahead(broker):
     weights = pd.DataFrame({"A": [1.0] * n}, index=idx)
     vol = pd.DataFrame({"A": [1e12] * n}, index=idx)
 
-    broker.replay(alpha_id=6, weights_df=weights, prices_df=prices, volume_df=vol)
+    broker.replay(alpha_id=6, weights_df=weights, prices_df=prices, volume_df=vol, ohlc=_flat_ohlc(prices))
     hist = broker.store.pnl_history(6, limit=n)
     assert hist, "replay 未产生任何记录"
     day0 = min(hist, key=lambda h: str(h.date))
@@ -214,7 +232,7 @@ def test_first_day_has_no_lookahead(broker):
 def test_date_is_normalised_both_input_forms(broker, d, expected):
     """Timestamp（带 .date()）与纯字符串都必须归一到同一个日期串。"""
     tk = ["A"]
-    pnl = broker.step(
+    pnl = _step(broker, 
         alpha_id=7, date=d,
         target_w=_series([0.1], tk), prices_t=_series([100.0], tk),
         prices_prev=_series([100.0], tk), adv_usd=_series([1e12], tk),
@@ -239,7 +257,7 @@ def test_replay_continuation_has_no_lookahead_on_first_day(broker):
     """
     tk = ["A"]
     # 1) 先建仓（窗口之前的一天）
-    broker.step(
+    _step(broker, 
         alpha_id=8, date="2024-01-01",
         target_w=_series([1.0], tk), prices_t=_series([100.0], tk),
         prices_prev=_series([100.0], tk), adv_usd=_series([1e12], tk),
@@ -252,7 +270,7 @@ def test_replay_continuation_has_no_lookahead_on_first_day(broker):
     prices = pd.DataFrame({"A": np.linspace(100.0, 300.0, 8)}, index=idx)
     weights = pd.DataFrame({"A": [1.0] * 8}, index=idx)
     vol = pd.DataFrame({"A": [1e12] * 8}, index=idx)
-    broker.replay(alpha_id=8, weights_df=weights, prices_df=prices, volume_df=vol)
+    broker.replay(alpha_id=8, weights_df=weights, prices_df=prices, volume_df=vol, ohlc=_flat_ohlc(prices))
 
     hist = [h for h in broker.store.pnl_history(8, limit=20)
             if str(h.date) >= "2024-01-02"]
@@ -272,13 +290,13 @@ def test_price_change_uses_subtraction_not_addition(broker):
     （持仓权重相对成交后净值，首日费用让它略大于 1，见 _filled 的说明）。
     """
     tk = ["A"]
-    broker.step(alpha_id=9, date="2024-01-01",
+    _step(broker, alpha_id=9, date="2024-01-01",
                 target_w=_series([1.0], tk), prices_t=_series([100.0], tk),
                 prices_prev=_series([100.0], tk), adv_usd=_series([1e12], tk),
                 daily_vol=_series([0.02], tk))
     held = broker.store.latest_positions(9)["A"]
     assert held == pytest.approx(1.0, abs=1e-2)
-    pnl = broker.step(alpha_id=9, date="2024-01-02",
+    pnl = _step(broker, alpha_id=9, date="2024-01-02",
                       target_w=_series([1.0], tk), prices_t=_series([110.0], tk),
                       prices_prev=_series([100.0], tk), adv_usd=_series([1e12], tk),
                       daily_vol=_series([0.02], tk))
@@ -308,7 +326,7 @@ def test_zero_initial_capital_falls_back_to_no_cap_not_nan(tmp_path):
     b = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp_path/'zero.db'}"),
                     initial_capital=0.0)
     tk = ["A", "B"]
-    b.step(alpha_id=31, date="2024-01-02",
+    _step(b, alpha_id=31, date="2024-01-02",
            target_w=_series([0.6, -0.4], tk), prices_t=_series([100.0, 50.0], tk),
            prices_prev=_series([100.0, 50.0], tk), adv_usd=_series([0.0, 0.0], tk),
            daily_vol=_series([0.02, 0.02], tk))
@@ -329,7 +347,7 @@ def test_unchanged_position_still_appears_in_fills(broker):
     """
     tk = ["A", "B"]
     for d in ("2024-02-01", "2024-02-02"):
-        broker.step(alpha_id=32, date=d,
+        _step(broker, alpha_id=32, date=d,
                     target_w=_series([0.6, -0.4], tk), prices_t=_series([100.0, 50.0], tk),
                     prices_prev=_series([100.0, 50.0], tk),
                     adv_usd=_series([1e12, 1e12], tk), daily_vol=_series([0.02, 0.02], tk))
@@ -347,7 +365,7 @@ def test_fully_filled_order_is_not_flagged_as_adv_capped(broker):
     （filled == tgt）被误标成"被 ADV 上限拒绝"，审计结论完全反了。
     """
     tk = ["A", "B"]
-    broker.step(alpha_id=33, date="2024-02-05",
+    _step(broker, alpha_id=33, date="2024-02-05",
                 target_w=_series([0.6, -0.4], tk), prices_t=_series([100.0, 50.0], tk),
                 prices_prev=_series([100.0, 50.0], tk),
                 adv_usd=_series([1e12, 1e12], tk), daily_vol=_series([0.02, 0.02], tk))
@@ -368,7 +386,7 @@ def test_participation_capped_order_is_flagged_and_booked_as_unfilled(broker):
         而不是只留一个成交后的持仓数字（那看不出这笔单成交了多少）
     """
     tk = ["A", "B"]
-    broker.step(alpha_id=34, date="2024-02-06",
+    _step(broker, alpha_id=34, date="2024-02-06",
                 target_w=_series([0.9, -0.1], tk), prices_t=_series([100.0, 50.0], tk),
                 prices_prev=_series([100.0, 50.0], tk),
                 adv_usd=_series([1e5, 1e12], tk), daily_vol=_series([0.02, 0.02], tk))
@@ -393,7 +411,7 @@ def test_a_constrained_name_does_not_enlarge_the_others(broker):
     tk = ["A", "B"]
     cap_pct = broker.params.max_participation_pct
     adv_a = 0.01 * CAPITAL / cap_pct              # A 当日最多成交 1% 权重
-    broker.step(alpha_id=36, date="2024-02-07",
+    _step(broker, alpha_id=36, date="2024-02-07",
                 target_w=_series([0.9, -0.1], tk),
                 prices_t=_series([100.0, 100.0], tk),
                 prices_prev=_series([100.0, 100.0], tk),
@@ -416,7 +434,7 @@ def test_a_reduction_that_cannot_fill_is_booked_at_its_true_state(broker):
     """
     tk = ["A"]
     cap_pct = broker.params.max_participation_pct
-    broker.step(alpha_id=37, date="2024-02-08",
+    _step(broker, alpha_id=37, date="2024-02-08",
                 target_w=_series([0.20], tk), prices_t=_series([100.0], tk),
                 prices_prev=_series([100.0], tk), adv_usd=_series([1e15], tk),
                 daily_vol=_series([0.02], tk))
@@ -428,7 +446,7 @@ def test_a_reduction_that_cannot_fill_is_booked_at_its_true_state(broker):
     # 当日最多成交 5% 权重 —— 权重相对**调仓前市值**（复审 2026-10-19 N08；价格不动时 = 期初权益，
     # 而第 1 天的成本已经让它略小于 CAPITAL）
     adv_small = 0.05 * broker.store.latest_equity(37) * CAPITAL / cap_pct
-    broker.step(alpha_id=37, date="2024-02-09",
+    _step(broker, alpha_id=37, date="2024-02-09",
                 target_w=_series([0.0], tk), prices_t=_series([100.0], tk),
                 prices_prev=_series([100.0], tk), adv_usd=_series([adv_small], tk),
                 daily_vol=_series([0.02], tk))
@@ -450,11 +468,11 @@ def test_cost_bps_is_consistent_with_gross_minus_net(broker):
     任何"成本为正""净收益低于毛收益"的断言都抓不住它。
     """
     tk = ["A", "B"]
-    broker.step(alpha_id=35, date="2024-03-01",
+    _step(broker, alpha_id=35, date="2024-03-01",
                 target_w=_series([0.6, -0.4], tk), prices_t=_series([100.0, 50.0], tk),
                 prices_prev=_series([100.0, 50.0], tk),
                 adv_usd=_series([1e12, 1e12], tk), daily_vol=_series([0.02, 0.02], tk))
-    pnl = broker.step(alpha_id=35, date="2024-03-04",
+    pnl = _step(broker, alpha_id=35, date="2024-03-04",
                       target_w=_series([0.6, -0.4], tk), prices_t=_series([101.0, 50.0], tk),
                       prices_prev=_series([100.0, 50.0], tk),
                       adv_usd=_series([1e12, 1e12], tk), daily_vol=_series([0.02, 0.02], tk))
@@ -474,7 +492,7 @@ def test_borrow_cost_is_charged_on_shorts_only(broker):
                   daily_vol=_series([0.02, 0.02], tk))
     for aid, w in ((36, [0.6, -0.4]), (37, [0.6, 0.4])):
         for d in ("2024-03-01", "2024-03-04"):
-            broker.step(alpha_id=aid, date=d, target_w=_series(w, tk), **common)
+            _step(broker, alpha_id=aid, date=d, target_w=_series(w, tk), **common)
     pick = lambda aid: [p.cost_bps for p in broker.store.pnl_history(aid, limit=9)
                         if str(p.date) == "2024-03-04"][0]
     s, l = pick(36), pick(37)
@@ -568,7 +586,7 @@ class TestGrossExposureFollowsTheTarget:
     @staticmethod
     def _fill(broker, weights, alpha_id):
         tk = [f"T{i}" for i in range(len(weights))]
-        broker.step(
+        _step(broker, 
             alpha_id=alpha_id, date="2024-01-02",
             target_w=_series(weights, tk),
             prices_t=_series([100.0] * len(tk), tk),
@@ -639,7 +657,7 @@ class TestSubEpsilonPositionsAreADeliberatePolicy:
     @staticmethod
     def _run(broker):
         tk = ["A", "B"]
-        broker.step(
+        _step(broker, 
             alpha_id=77, date="2024-01-02",
             target_w=_series([1e-12, 1.0 - 1e-12], tk),
             prices_t=_series([100.0, 100.0], tk),
@@ -701,7 +719,7 @@ class TestSubEpsilonPositionsAreADeliberatePolicy:
                       prices_prev=_series([100.0, 100.0], tk),
                       adv_usd=_series([1e15, 1e15], tk),
                       daily_vol=_series([0.02, 0.02], tk))
-        broker.step(alpha_id=78, date="2024-01-02",
+        _step(broker, alpha_id=78, date="2024-01-02",
                     target_w=_series([self._PREV, 1.0 - self._PREV], tk), **common)
         prev = broker.store.latest_positions(78).get("A")
         assert prev == self._PREV, (
@@ -710,7 +728,7 @@ class TestSubEpsilonPositionsAreADeliberatePolicy:
         assert (self._FILL - self._PREV) == -1e-12, (
             "delta 不再逐位等于 -1e-12 —— 请重新穷举区分值，不要让这条用例空转")
 
-        broker.step(alpha_id=78, date="2024-01-03",
+        _step(broker, alpha_id=78, date="2024-01-03",
                     target_w=_series([self._FILL, 1.0 - self._FILL], tk), **common)
         names = sorted(f.ticker for f in broker.store.fills_on(78, "2024-01-03"))
         assert "A" in names, (
@@ -738,7 +756,7 @@ class TestSubEpsilonPositionsAreADeliberatePolicy:
                       prices_prev=_series([100.0, 100.0], tk),
                       adv_usd=_series([1e15, 1e15], tk),
                       daily_vol=_series([0.02, 0.02], tk))
-        broker.step(alpha_id=79, date="2024-01-02",
+        _step(broker, alpha_id=79, date="2024-01-02",
                     target_w=_series([self._PREV, 1.0 - self._PREV], tk), **common)
         prev = broker.store.latest_positions(79).get("A")
         assert prev == self._PREV, f"昨仓没有逐位保留 {self._PREV!r}（实际 {prev!r}）"
@@ -747,7 +765,7 @@ class TestSubEpsilonPositionsAreADeliberatePolicy:
         assert 0 < abs(delta) < 1e-12, (
             f"delta={delta!r} 不在 (0, 1e-12) 内 —— 这一格构造不出来，本用例会空转")
 
-        broker.step(alpha_id=79, date="2024-01-03",
+        _step(broker, alpha_id=79, date="2024-01-03",
                     target_w=_series([1e-12, 1.0 - 1e-12], tk), **common)
         names = sorted(f.ticker for f in broker.store.fills_on(79, "2024-01-03"))
         assert "A" in names, (
@@ -829,7 +847,7 @@ class TestPositionsOutsideTheNewTargetAreNotDropped:
     @staticmethod
     def _both(broker, aid):
         tk = ["A", "B"]
-        broker.step(alpha_id=aid, date="2024-04-01",
+        _step(broker, alpha_id=aid, date="2024-04-01",
                     target_w=_series([0.5, 0.5], tk),
                     prices_t=_series([100.0, 100.0], tk),
                     prices_prev=_series([100.0, 100.0], tk),
@@ -841,7 +859,7 @@ class TestPositionsOutsideTheNewTargetAreNotDropped:
         self._both(broker, 51)
         held = broker.store.latest_positions(51)["A"]          # 相对成交后净值，略大于 0.5
         assert held == pytest.approx(0.5, abs=1e-3)
-        pnl = broker.step(alpha_id=51, date="2024-04-02",
+        pnl = _step(broker, alpha_id=51, date="2024-04-02",
                           target_w=_series([1.0], ["B"]),
                           prices_t=_series([110.0, 100.0], ["A", "B"]),
                           prices_prev=_series([100.0, 100.0], ["A", "B"]),
@@ -855,7 +873,7 @@ class TestPositionsOutsideTheNewTargetAreNotDropped:
         """并且要真的平掉：落账持仓里不该再有 A，且有 A 的平仓成交。"""
         self._both(broker, 52)
         held = broker.store.latest_positions(52)["A"]          # 相对成交后净值（N08-b）
-        broker.step(alpha_id=52, date="2024-04-02",
+        _step(broker, alpha_id=52, date="2024-04-02",
                     target_w=_series([1.0], ["B"]),
                     prices_t=_series([110.0, 100.0], ["A", "B"]),
                     prices_prev=_series([100.0, 100.0], ["A", "B"]),
@@ -878,7 +896,7 @@ class TestPositionsOutsideTheNewTargetAreNotDropped:
         held = broker.store.latest_positions(53)["A"]
         cap_pct = broker.params.max_participation_pct
         adv_a = 0.10 * broker.store.latest_equity(53) * CAPITAL / cap_pct   # 相对调仓前市值（N08）
-        broker.step(alpha_id=53, date="2024-04-02",
+        _step(broker, alpha_id=53, date="2024-04-02",
                     target_w=_series([1.0], ["B"]),
                     prices_t=_series([100.0, 100.0], ["A", "B"]),
                     prices_prev=_series([100.0, 100.0], ["A", "B"]),
@@ -899,7 +917,7 @@ class TestPositionsOutsideTheNewTargetAreNotDropped:
         self._both(broker, 54)
         usd_before = broker.store.latest_positions(54)["A"] * broker.store.latest_equity(54)
         with caplog.at_level("WARNING"):
-            pnl = broker.step(alpha_id=54, date="2024-04-02",
+            pnl = _step(broker, alpha_id=54, date="2024-04-02",
                               target_w=_series([1.0], ["B"]),
                               prices_t=_series([100.0], ["B"]),
                               prices_prev=_series([100.0], ["B"]),

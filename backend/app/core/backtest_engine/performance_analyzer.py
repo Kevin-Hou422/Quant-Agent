@@ -74,11 +74,14 @@ def has_meaningful_variation(returns, *, floor_rel: float = VOL_FLOOR_REL) -> bo
 
 def _forward_returns(prices: pd.DataFrame, horizon: int, like: pd.DataFrame) -> pd.DataFrame:
     """
-    `horizon` 日前瞻收益，**按日期与标的**对齐到 `like`（信号）的行列上。
+    信号的预测标签，**按日期与标的**对齐到 `like`（信号）的行列上。
 
+    时钟 c2（app/core/clock.py；2026-10-22 D14 / C3）：`prices` 是**开盘价**，信号日 T 的标签 =
+    开盘(T+1) → 开盘(T+1+horizon)。此前是收盘到收盘 —— 含 T 收盘→T+1 开盘那段在决策时还没法交易的隔夜收益。
     信号面板与价格面板长度不同是常态（预热窗口把信号开头裁掉了），所以不能按行号配对。
     """
-    return prices.pct_change(horizon).shift(-horizon).reindex(index=like.index, columns=like.columns)
+    from app.core.clock import label_returns
+    return label_returns({"open": prices}, horizon).reindex(index=like.index, columns=like.columns)
 
 
 class PerformanceAnalyzer:
@@ -312,8 +315,8 @@ class PerformanceAnalyzer:
         prices: pd.DataFrame,
     ) -> pd.Series:
         """
-        精确版 Rank IC：逐日 spearmanr(signal_t, fwd_price_ret_{t+1})。
-        需要外部传入价格矩阵。推荐在有价格数据时始终使用此方法。
+        精确版 Rank IC：逐日 spearmanr(signal_T, 标签_T)，标签 = 开盘(T+1) → 开盘(T+2)（时钟 c2）。
+        `prices` 传**开盘价**。推荐在有价格数据时始终使用此方法。
 
         前瞻收益**按日期**对到信号上。信号有预热窗口时回测结果比价格面板短（开头被裁掉），
         此前两边按行号配对：信号第 t 行配的是价格第 t 行的收益，即信号**形成窗口之内**的
@@ -352,7 +355,7 @@ class PerformanceAnalyzer:
         Parameters
         ----------
         signal   : (T×N) 信号矩阵
-        prices   : (T×N) 价格矩阵（用于计算 h 日前瞻收益）
+        prices   : (T×N) **开盘价**矩阵（时钟 c2：h 日标签 = 开盘(T+1) → 开盘(T+1+h)）
         horizons : 待测时间跨度列表（天数），默认 [1, 5, 10, 20, 60]
 
         Returns
@@ -421,6 +424,7 @@ class PerformanceAnalyzer:
         """
         将信号按截面分 10 档，统计每档平均下期收益（验证单调性）。
 
+        prices = **开盘价**（时钟 c2：下期收益 = 开盘(T+1) → 开盘(T+2)）。
         若不传入 prices，则用持仓权重的绝对大小近似（相对比较）。
 
         Returns

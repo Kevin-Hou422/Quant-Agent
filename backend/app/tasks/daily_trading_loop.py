@@ -609,7 +609,8 @@ class DailyTradingLoop:
         volume_f = volume.reindex(columns=cols).ffill(limit=5).fillna(0.0)
         adv_df = pf_broker._liq.compute_adv(volume_f, prices_f)            # noqa: SLF001
         vol_df = prices_f.pct_change().rolling(20, min_periods=2).std().fillna(0.02)
-        ret_df = prices_f.pct_change()
+        bars = _bars(dataset, weights.index, cols)                        # 时钟 c2：开 / 高 / 低
+        label = _label_ending(bars["open"])                              # 开盘(t−1) → 开盘(t)
         dates  = weights.index
         cal_years = max((dates[-1] - dates[0]).days / 365.25, 1 / 365.25)
         tdays = len(dates) / cal_years
@@ -623,18 +624,15 @@ class DailyTradingLoop:
             d = dates[t]
             if last is not None and d.date() <= last:
                 continue                                  # 幂等续跑
-            pnl = pf_broker.step(
-                PORTFOLIO_BOOK_ID, d,
-                target_w=weights.iloc[t], prices_t=prices_f.iloc[t],
-                prices_prev=prices_f.iloc[t - 1] if t > 0 else prices_f.iloc[t],
-                adv_usd=adv_df.iloc[t], daily_vol=vol_df.iloc[t], tdays_per_year=tdays,
-            )
-            if t > 0:
-                # F06：前向 = 用**结果发生前就存档**的那份信号结算；否则按当下重算的信号记回放
-                arch = fbook.signal_for(dates[t - 1], d)
+            pnl = pf_broker.step(PORTFOLIO_BOOK_ID, d, **_step_args(weights, prices_f, adv_df, vol_df, bars, t),
+                                 tdays_per_year=tdays)
+            if t > 1:
+                # 时钟 c2（C3）：在 t 结算信号日 T = t−2，标签 = 开盘(T+1) → 开盘(T+2)；
+                # 前向 = 信号在开盘(T+1)（标签起点）之前就已存档；否则按当下重算的信号记回放（F06）
+                arch = fbook.signal_for(dates[t - 2], dates[t - 1])
                 sig = (arch["signal"].reindex(cols).to_numpy(dtype=float) if arch is not None
-                       else comp_arr[t - 1])
-                ic = _cs_spearman(sig, ret_df.iloc[t].to_numpy(dtype=float))
+                       else comp_arr[t - 2])
+                ic = _cs_spearman(sig, label.iloc[t].to_numpy(dtype=float))
                 if not np.isnan(ic):
                     self.store.record_ic(PORTFOLIO_BOOK_ID, d, float(ic),
                                          realized_return=float(pnl.net_ret),
@@ -857,7 +855,7 @@ class DailyTradingLoop:
             from app.core.portfolio_manager.strategy_contract import StrategyContract
             from app.db.strategy_store import StrategyStore
             prices = dataset["close"]
-            rets = prices.pct_change()
+            label_all = _label_ending(_bars(dataset, prices.index, prices.columns)["open"])
             configs = [r for r in StrategyStore().query(limit=200)
                        if str(r.status) in ("proposed", "approved", "integration", "paper_running",
                                             "verified_active")]
@@ -883,22 +881,23 @@ class DailyTradingLoop:
                     logger.error("[evidence] 隔离记录写入失败: %s", exc)
                 continue
             try:
-                composite = contract.composite(contract.signals(dataset), prices)
+                composite = contract.composite(contract.signals(dataset), dataset)
                 key = f"strategy:{rec.id}"
                 book = self._forward_book(key)
                 h = _json.loads(rec.verdict or "{}").get("spec_hash", "")
                 dates = composite.index
                 n = 0
                 cols = composite.columns
-                for t in range(max(1, len(dates) - self.STRATEGY_SETTLE_LOOKBACK), len(dates)):
-                    arch = book.signal_for(dates[t - 1], dates[t])
+                for t in range(max(2, len(dates) - self.STRATEGY_SETTLE_LOOKBACK), len(dates)):
+                    # 时钟 c2（C3）：在 t 结算信号日 T = t−2；标签 = 开盘(T+1) → 开盘(T+2)；归档截止 = 开盘(T+1)
+                    arch = book.signal_for(dates[t - 2], dates[t - 1])
                     if arch is not None and arch["spec_hash"] != h:
                         continue                          # 那份存档属于另一个规格版本
-                    realized = rets.reindex(columns=cols).iloc[t].to_numpy(dtype=float)
-                    if arch is not None:                  # 前向：结果发生前就存档的那份信号
+                    realized = label_all.reindex(columns=cols).iloc[t].to_numpy(dtype=float)
+                    if arch is not None:                  # 前向：标签开始前就存档的那份信号
                         ic = _cs_spearman(arch["signal"].reindex(cols).to_numpy(dtype=float), realized)
                         if not np.isnan(ic) and ev.record_strategy_ic(
-                                rec.id, h, dates[t], ic, dates[t - 1], arch["recorded_at"],
+                                rec.id, h, dates[t], ic, dates[t - 2], arch["recorded_at"],
                                 identity=getattr(self, "_identity", None),
                                 signal_digest=arch.get("data_digest", ""),
                                 # 2026-10-22 C6：工程联调期的前向证据单独归类，不计入验证
@@ -908,9 +907,9 @@ class DailyTradingLoop:
                         continue
                     # 复审 2026-10-19 N03-b：没有及时存档（首跑 / 停机补拉 / 晚到 / 换源）→ 按当下重算的信号
                     # 记一条 **replay**：保留研究价值，不进 →ACTIVE 门（strategy_forward_ic 不读它）
-                    ic = _cs_spearman(composite.iloc[t - 1].to_numpy(dtype=float), realized)
+                    ic = _cs_spearman(composite.iloc[t - 2].to_numpy(dtype=float), realized)
                     if not np.isnan(ic):
-                        ev.record_strategy_ic(rec.id, h, dates[t], ic, dates[t - 1],
+                        ev.record_strategy_ic(rec.id, h, dates[t], ic, dates[t - 2],
                                               now or datetime.utcnow(), identity=getattr(self, "_identity", None),
                                               evidence_class="replay")
                 book.archive(dates[-1], composite.iloc[-1], now, spec_hash=h)
@@ -932,11 +931,10 @@ class DailyTradingLoop:
             if volume is None:
                 volume = pd.DataFrame(1e6, index=prices.index, columns=prices.columns)
 
-            # 信号（含 delay=1）→ 权重
-            cfg = SimulationConfig(delay=1, decay_window=0,
-                                   truncation_min_q=0.05, truncation_max_q=0.95)
+            # 信号 → 权重（与规格同一份信号参数；时钟 c2：T 收盘决策、T+1 执行）
+            from app.core.portfolio_manager.executable_spec import signal_config
             raw_signal  = Executor(validate=False).run_expr(rec.dsl, dataset)
-            proc_signal = SignalProcessor(cfg).process(raw_signal)
+            proc_signal = SignalProcessor(signal_config()).process(raw_signal)
             weights     = SignalWeightedPortfolio(clip_z=3.0).construct(proc_signal)
 
             # 市场上下文（全窗口，与 PaperBroker.replay 口径一致）
@@ -944,7 +942,8 @@ class DailyTradingLoop:
             volume_f = volume.reindex(columns=weights.columns).ffill(limit=5).fillna(0.0)
             adv_df = self.broker._liq.compute_adv(volume_f, prices_f)      # noqa: SLF001
             vol_df = prices_f.pct_change().rolling(20, min_periods=2).std().fillna(0.02)
-            ret_df = prices_f.pct_change()
+            bars = _bars(dataset, weights.index, weights.columns)
+            label = _label_ending(bars["open"])
             dates  = weights.index
             cal_years = max((dates[-1] - dates[0]).days / 365.25, 1/365.25)
             tdays = len(dates) / cal_years
@@ -958,21 +957,15 @@ class DailyTradingLoop:
                 d = dates[t]
                 if last is not None and d.date() <= last:
                     continue                                  # 已处理（幂等续跑）
-                # 模拟成交
-                pnl = self.broker.step(
-                    rec.id, d,
-                    target_w=weights.iloc[t], prices_t=prices_f.iloc[t],
-                    prices_prev=prices_f.iloc[t-1] if t > 0 else prices_f.iloc[t],
-                    adv_usd=adv_df.iloc[t], daily_vol=vol_df.iloc[t],
-                    tdays_per_year=tdays,
-                )
-                # realized IC：昨日信号 rank-预测今日收益
-                if t > 0:
-                    # 与组合账本同一口径（F06）：前向 = 用结果发生前存档的信号结算
-                    arch = fbook.signal_for(dates[t-1], d)
+                # 模拟成交（时钟 c2：今天开盘撮合昨天收盘的目标）
+                pnl = self.broker.step(rec.id, d, **_step_args(weights, prices_f, adv_df, vol_df, bars, t),
+                                       tdays_per_year=tdays)
+                # 预测 IC（时钟 c2，与组合账本同一口径）：信号日 T = t−2 对 开盘(T+1) → 开盘(T+2)
+                if t > 1:
+                    arch = fbook.signal_for(dates[t - 2], dates[t - 1])
                     sig = (arch["signal"].reindex(weights.columns).to_numpy(dtype=float)
-                           if arch is not None else raw_arr[t-1])
-                    ic = _cs_spearman(sig, ret_df.iloc[t].to_numpy(dtype=float))
+                           if arch is not None else raw_arr[t - 2])
+                    ic = _cs_spearman(sig, label.iloc[t].to_numpy(dtype=float))
                     if not np.isnan(ic):
                         self.monitor.update(rec.id, d, float(ic),
                                             realized_return=float(pnl.net_ret),
@@ -1000,6 +993,37 @@ class DailyTradingLoop:
             logger.exception("[daily_trading_loop] 因子 %d 当日处理失败", rec.id)
             res.error = str(exc)
         return res
+
+
+def _bars(dataset: Dict[str, pd.DataFrame], index, columns) -> Dict[str, pd.DataFrame]:
+    """开 / 高 / 低（时钟 c2 撮合与标签用）。缺任何一项 → ValueError：不能拿收盘价凑开盘。"""
+    out = {}
+    for k in ("open", "high", "low"):
+        df = dataset.get(k)
+        if not isinstance(df, pd.DataFrame):
+            raise ValueError(f"时钟 c2 需要 {k}（T+1 按限价规则成交、开盘到开盘的标签）；数据集里没有")
+        out[k] = df.reindex(index=index, columns=columns)
+    return out
+
+
+def _label_ending(open_df: pd.DataFrame) -> pd.DataFrame:
+    """第 t 行 = 在 t **实现完**的标签：开盘(t−1) → 开盘(t)，属于信号日 t−2（见 app/core/clock.py）。"""
+    o = open_df.astype(float)
+    prev = o.shift(1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return o / prev.where(prev != 0) - 1.0
+
+
+def _step_args(weights: pd.DataFrame, prices_f: pd.DataFrame, adv_df: pd.DataFrame, vol_df: pd.DataFrame,
+               bars: Dict[str, pd.DataFrame], t: int) -> Dict[str, object]:
+    """
+    PaperBroker.step 第 t 天的参数（时钟 c2）：撮合**昨天收盘**的目标；成交量上限与波动用截至昨天的；
+    开 / 高 / 低用今天的。第一天只决策、不成交（target_w=None）。
+    """
+    prev = t - 1 if t > 0 else t
+    return dict(target_w=weights.iloc[t - 1] if t > 0 else None, prices_t=prices_f.iloc[t],
+                prices_prev=prices_f.iloc[prev], adv_usd=adv_df.iloc[prev], daily_vol=vol_df.iloc[prev],
+                open_t=bars["open"].iloc[t], high_t=bars["high"].iloc[t], low_t=bars["low"].iloc[t])
 
 
 def _average_ranks(x: np.ndarray) -> np.ndarray:

@@ -19,13 +19,17 @@ from app.core.portfolio_manager import (
 
 
 def _predictive_dataset(T=400, N=8, seed=0, edge=0.06):
-    """构造一个"信号 f 预测次日收益"的数据集：returns[t] ≈ edge·f[t-1] + 噪声。"""
+    """
+    构造一个"信号 f 预测它的标签"的数据集。时钟 c2：信号日 T 的标签 = 开盘(T+1) → 开盘(T+2)；
+    本数据集开盘 = 收盘，所以标签 = returns[T+2]，埋成 returns[t] ≈ edge·f[t−2] + 噪声。
+    （c1 时 delay=1 + 收盘到收盘，埋的是 f[t−1]。）
+    """
     rng = np.random.default_rng(seed)
     idx = pd.bdate_range("2021-01-01", periods=T)
     cols = [f"S{i}" for i in range(N)]
     f = pd.DataFrame(rng.normal(0, 1, (T, N)), index=idx, columns=cols)      # 潜在预测因子
     noise = rng.normal(0, 0.015, (T, N))
-    ret = edge * f.shift(1).fillna(0.0).to_numpy() * 0.02 + noise            # 次日收益含 f 的边际
+    ret = edge * f.shift(2).fillna(0.0).to_numpy() * 0.02 + noise            # 标签含 f 的边际
     ret_df = pd.DataFrame(ret, index=idx, columns=cols)
     close = 100 * (1 + ret_df).cumprod()
     vol = pd.DataFrame(rng.uniform(1e6, 5e6, (T, N)), index=idx, columns=cols)

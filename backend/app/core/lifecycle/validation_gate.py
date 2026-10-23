@@ -286,7 +286,7 @@ class ValidationGate:
     def _net_returns(self, dsl: str, dataset: WidePanel) -> pd.Series:
         """
         与每日循环同口径的净收益序列：
-        Executor → SignalProcessor(delay=1) → 权重 → BacktestEngine。
+        Executor → SignalProcessor（规格的信号参数，时钟 c2）→ 权重 → BacktestEngine（T+1 按限价规则成交）。
 
         门判定（`_deflated_sharpe_and_tstat`）与 Test 段汇报（`_report_on_test`）
         共用这一份 —— 两处各写一份迟早会对同一个 DSL 给出不同的收益序列。
@@ -301,12 +301,11 @@ class ValidationGate:
         if volume is None:
             volume = pd.DataFrame(1e6, index=prices.index, columns=prices.columns)
 
-        cfg = SimulationConfig(delay=1, decay_window=0,
-                               truncation_min_q=0.05, truncation_max_q=0.95)
+        from app.core.portfolio_manager.executable_spec import signal_config
         raw = Executor(validate=False).run_expr(dsl, dataset)
-        proc = SignalProcessor(cfg).process(raw)
+        proc = SignalProcessor(signal_config()).process(raw)          # 与规格同一份信号参数（时钟 c2）
         weights = SignalWeightedPortfolio(clip_z=3.0).construct(proc)
-        result = BacktestEngine().run(weights, prices, volume, proc)
+        result = BacktestEngine().run(weights, prices, volume, proc, ohlc=dataset)
         return pd.Series(result.net_returns).dropna()
 
     def _deflated_sharpe_and_tstat(self, dsl: str, dataset: WidePanel, n_trials: int):

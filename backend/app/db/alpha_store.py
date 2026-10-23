@@ -98,6 +98,13 @@ def _clock() -> str:
     return clock_version()
 
 
+def _current_clock_clause():
+    """当前时钟的行；NULL = 2026-10-20 之前写的行，那时只有 c1（见 input_identity）。"""
+    cur = _clock()
+    col = AlphaICRecord.clock_version
+    return (col == cur) | (col.is_(None)) if cur == "c1" else (col == cur)
+
+
 @dataclass
 class AlphaResult:
     """AlphaEvolver / AlphaAgent 产出，传给 AlphaStore.save()。"""
@@ -320,26 +327,24 @@ class AlphaStore:
                 ))
             session.commit()
 
-    def get_forward_ic(self, alpha_id: int, limit: int = 5000) -> List[AlphaICRecord]:
-        """只取**真前向**的 IC 记录（TR.4 →ACTIVE 门专用；回放样本一律排除）。"""
+    def get_forward_ic(self, alpha_id: int, limit: int = 5000, all_clocks: bool = False) -> List[AlphaICRecord]:
+        """
+        只取**真前向**的 IC 记录（回放样本一律排除）。缺省只取**当前时钟**的行（2026-10-22 D14："旧历史保留旧版本，
+        先隔离重算" —— c1 的 IC 是另一种标签，不能与 c2 混着算衰减 / 晋级）；all_clocks=True 才全取（展示用）。
+        """
         with self._Session() as session:
-            return list(session.scalars(
-                select(AlphaICRecord)
-                .where(AlphaICRecord.alpha_id == alpha_id,
-                       AlphaICRecord.is_forward.is_(True))
-                .order_by(AlphaICRecord.date)
-                .limit(limit)
-            ))
+            q = (select(AlphaICRecord)
+                 .where(AlphaICRecord.alpha_id == alpha_id, AlphaICRecord.is_forward.is_(True)))
+            q = q if all_clocks else q.where(_current_clock_clause())
+            return list(session.scalars(q.order_by(AlphaICRecord.date).limit(limit)))
 
-    def get_ic_history(self, alpha_id: int, limit: int = 250) -> List[AlphaICRecord]:
-        """按日期升序返回某因子最近 limit 条 IC 记录。"""
+    def get_ic_history(self, alpha_id: int, limit: int = 250, all_clocks: bool = False) -> List[AlphaICRecord]:
+        """按日期升序返回某因子最近 limit 条 IC 记录。缺省只取当前时钟的行（衰减监控用）；all_clocks=True 全取。"""
         with self._Session() as session:
-            stmt = (
-                select(AlphaICRecord)
-                .where(AlphaICRecord.alpha_id == alpha_id)
-                .order_by(AlphaICRecord.date.desc())
-                .limit(limit)
-            )
+            stmt = select(AlphaICRecord).where(AlphaICRecord.alpha_id == alpha_id)
+            if not all_clocks:
+                stmt = stmt.where(_current_clock_clause())
+            stmt = stmt.order_by(AlphaICRecord.date.desc()).limit(limit)
             rows = list(session.scalars(stmt))
         return list(reversed(rows))
 

@@ -213,7 +213,7 @@ def strategy_net_returns(factor_signals: Signals, dataset: WidePanel,
 
     composite = tg.composite
     engine = BacktestEngine(cost_params=cp, initial_capital=aum)
-    result = engine.run(tg.weights, prices, volume, composite)
+    result = engine.run(tg.weights, prices, volume, composite, ohlc=dataset)   # 时钟 c2
     rets = pd.Series(result.net_returns).dropna()
     return rets, composite
 

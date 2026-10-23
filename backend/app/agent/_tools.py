@@ -19,6 +19,7 @@ Phase 4 compliance:
 """
 from __future__ import annotations
 
+from app.core.clock import SIGNAL_DELAY
 import json
 import logging
 from typing import Any, Optional
@@ -389,7 +390,7 @@ class QuantTools:
 
         cfg_dict = _safe_json_loads(config_json) if config_json.strip() else {}
         cfg = SimulationConfig(
-            delay            = cfg_dict.get("delay", 1),
+            delay            = cfg_dict.get("delay", SIGNAL_DELAY),
             decay_window     = cfg_dict.get("decay_window", 0),
             truncation_min_q = cfg_dict.get("truncation_min_q", 0.05),
             truncation_max_q = cfg_dict.get("truncation_max_q", 0.95),

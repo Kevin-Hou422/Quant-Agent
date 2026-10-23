@@ -153,6 +153,8 @@ class RealisticBacktestResult:
     processed_signal : 经 SignalProcessor 4 步管道后的最终信号
     is_result        : BacktestResult（含净值曲线等原始序列）
     oos_result       : BacktestResult（OOS 段，可选）
+    oos_warmup       : OOS 段的预热说明（D9）：history_days = 用来算 OOS 特征的行数（IS + OOS），
+                       scored_days = OOS 段实际被评分的天数，first_scored = 第一个被评分的日期
     """
     is_report:        RiskReport
     oos_report:       Optional[RiskReport]
@@ -161,6 +163,7 @@ class RealisticBacktestResult:
     processed_signal: pd.DataFrame             = field(repr=False)
     is_result:        BacktestResult           = field(repr=False)
     oos_result:       Optional[BacktestResult] = field(default=None, repr=False)
+    oos_warmup:       Optional[dict]           = None
 
     def summary(self) -> str:
         """打印 IS / OOS 双段对比摘要。"""
@@ -239,6 +242,24 @@ def _degradation_table(is_r: RiskReport, oos_r: RiskReport) -> str:
 # RealisticBacktester
 # ---------------------------------------------------------------------------
 
+def _warmup_history(is_data: Dict[str, pd.DataFrame],
+                    oos_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+    """
+    OOS 特征的计算历史（D9）：IS 中早于 OOS 第一天的行 + OOS 全部行。只往前拼，不往后 ——
+    OOS 段之后的数据本来就不在这里。两段字段不全一致时，只拼两边都有的表格字段，其余取 OOS 的。
+    IS 与 OOS 之间的隔离带（embargo）不在两段里：按行计算的时序窗口会跨过这段空档（行数口径）。
+    """
+    oos_start = next(v for v in oos_data.values() if isinstance(v, pd.DataFrame)).index[0]
+    out: Dict[str, pd.DataFrame] = {}
+    for k, v in oos_data.items():
+        w = is_data.get(k)
+        if isinstance(v, pd.DataFrame) and isinstance(w, pd.DataFrame):
+            out[k] = pd.concat([w.loc[w.index < oos_start], v]).sort_index()
+        else:
+            out[k] = v
+    return out
+
+
 class RealisticBacktester:
     """
     集成 SimulationConfig 的增强型回测器。
@@ -314,19 +335,33 @@ class RealisticBacktester:
         )
 
         is_report = RiskReport.from_result(
-            is_result, prices=dataset.get("close"), min_obs=self.min_obs
+            is_result, prices=dataset.get("open"), min_obs=self.min_obs     # 时钟 c2：标签用开盘价
         )
 
         # 4. OOS 回测（使用相同 DSL 和 config）
         oos_result: Optional[BacktestResult] = None
         oos_report: Optional[RiskReport]     = None
+        oos_warmup: Optional[dict]           = None
 
         if oos_dataset is not None and len(next(iter(oos_dataset.values()))) > 5:
-            _, _, oos_result = self._run_one_segment(
-                node, oos_dataset, label="OOS"
+            # D9 预热（2026-10-22 用户决定）："特征只用当时已知历史；只对 Validate 日期评分；拟合与标准化
+            # 不使用未来信息。" —— OOS 的特征在 IS + OOS 拼成的历史上算（每一行只用到它自己及之前的数据，
+            # 252 日因子在 Validate 第一天就有值），然后只取 OOS 的日期去评分；回测从 OOS 第一天的空仓开始。
+            history = _warmup_history(dataset, oos_dataset)
+            oos_index = next(v for v in oos_dataset.values() if isinstance(v, pd.DataFrame)).index
+            raw_h = self._executor.run(node, history)
+            proc_h = self._processor.process(raw_h)
+            pre = (raw_h.reindex(oos_index), proc_h.reindex(oos_index))
+            _, oos_proc, oos_result = self._run_one_segment(
+                node, oos_dataset, label="OOS", precomputed=pre
             )
+            oos_warmup = {
+                "history_days": int(len(raw_h.index)),
+                "scored_days": int(len(oos_result.net_returns)),
+                "first_scored": str(oos_proc.index[0].date()) if len(oos_proc.index) else None,
+            }
             oos_report = RiskReport.from_result(
-                oos_result, prices=oos_dataset.get("close"), min_obs=self.min_obs
+                oos_result, prices=oos_dataset.get("open"), min_obs=self.min_obs
             )
 
         return RealisticBacktestResult(
@@ -337,6 +372,7 @@ class RealisticBacktester:
             processed_signal = proc_signal,
             is_result        = is_result,
             oos_result       = oos_result,
+            oos_warmup       = oos_warmup,
         )
 
     # ------------------------------------------------------------------
@@ -348,6 +384,7 @@ class RealisticBacktester:
         node:    object,    # typed_nodes.Node
         dataset: Dict[str, pd.DataFrame],
         label:   str = "",
+        precomputed: Optional[tuple] = None,
     ):
         """
         对单个数据分区执行：信号生成 → 管道处理 → 组合构建 → BacktestEngine。
@@ -356,11 +393,15 @@ class RealisticBacktester:
         -------
         (raw_signal, processed_signal, BacktestResult)
         """
-        # Step 2: 执行 DSL → 原始信号
-        raw_signal = self._executor.run(node, dataset)   # pd.DataFrame (T×N)
+        if precomputed is not None:
+            # 预热过的信号（D9）：在更长的已知历史上算好、已按本段日期取出
+            raw_signal, proc_signal = precomputed
+        else:
+            # Step 2: 执行 DSL → 原始信号
+            raw_signal = self._executor.run(node, dataset)   # pd.DataFrame (T×N)
 
-        # Step 3: SignalProcessor 4 步管道（截断→衰减→中性化→延迟）
-        proc_signal = self._processor.process(raw_signal)
+            # Step 3: SignalProcessor 4 步管道（截断→衰减→中性化→延迟）
+            proc_signal = self._processor.process(raw_signal)
 
         # ── Burn-in trim ────────────────────────────────────────────────────
         # Time-series operators (ts_mean, ts_delta, …) produce all-NaN rows
@@ -416,6 +457,7 @@ class RealisticBacktester:
             prices  = prices,
             volume  = volume,
             signal  = proc_signal,   # 用处理后信号作为 IC 基准
+            ohlc    = dataset,       # 时钟 c2：T+1 按限价规则成交需要开 / 高 / 低
         )
 
         return raw_signal, proc_signal, result

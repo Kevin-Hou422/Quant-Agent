@@ -493,10 +493,20 @@ powershell -ExecutionPolicy Bypass -File scripts\start_forward.ps1 [-RegisterLog
   account** in a machine-wide directory (`ACCOUNT_LOCK_DIR`, default `%PROGRAMDATA%\QuantAgent`), and
   the execution DB refuses to trade a different account than the one it was first bound to (review
   §5.3); the kill switch is re-read before every order in a batch (N01).
+- **One clock for signal, fill, label and archive** (decision D14 (a) + C3, clock version `c2`,
+  `backend/app/core/clock.py`). Information cutoff = T close (after the health gate); the signal and
+  targets are frozen then, with no extra signal delay. Execution is a T+1 DAY limit order (reference
+  = T close, band = `EXEC_LIMIT_BAND_BPS`); the backtest and the internal paper book fill it by the
+  same rule — open price if the open is inside the limit, else the limit price if the day's range
+  reaches it, else no fill — so a planned open execution is not assumed to fill at the open. The
+  predictive label of signal T is open(T+1) → open(T+2); the archive deadline is open(T+1), the
+  label's start, so no part of the scored return has happened when the signal is archived. Realized
+  book / broker P&L is recorded separately from predictive IC. Validate-segment features are
+  computed on the known history before the segment (252-day factors are scorable from the first
+  Validate day; only Validate dates are scored; the book starts flat).
 - **Forward evidence = signal archived before the outcome** (F06). A day's IC counts as forward only
-  if the signal it uses was archived before that session's **open** (review N03 — archiving before
-  the close let most of the scored return happen first); backfilled, re-run or offline
-  results are replay. Strategy promotion reads that strategy's own record (id + spec hash), and the
+  if the signal it uses was archived before its label starts (the open of T+1, see the clock above);
+  backfilled, re-run or offline results are replay. Strategy promotion reads that strategy's own record (id + spec hash), and the
   t-stat is the smaller of the plain and the Newey-West one. Evidence rows carry the input identity
   (data digest, universe, actual price source, PIT vintage, code version), and a spec/runtime
   mismatch quarantines the day instead of crediting it (review N02). Days whose signal was not
@@ -505,8 +515,9 @@ powershell -ExecutionPolicy Bypass -File scripts\start_forward.ps1 [-RegisterLog
   the validation design **registered at proposal time** — thresholds, t-stat rule, evidence rule,
   clock version, registration time, hashed — and counts only forward evidence dated after
   registration; later changes to the `TR_*` settings do not move an existing strategy's bar (review
-  N05-d). Every stored result carries the signal/fill clock version (`c1` today) so results from
-  before and after the D14 clock change can be told apart (review §5.1).
+  N05-d). Every stored result carries the signal/fill clock version (`c2` since 2026-10-22;
+  older rows are `c1`). Factor monitoring and the IC history statistics read the current clock only;
+  `c1` rows stay in the database, labelled, and are not inherited (review §5.1).
 - **Fundamentals have a source / period quality gate** (review §5.4, F13). A strategy whose
   expressions use fundamental fields passes proposal and trades only if the fundamentals quality
   report for that very panel shows last-day coverage ≥ `FUND_MIN_COVERAGE` (0.8) for each field

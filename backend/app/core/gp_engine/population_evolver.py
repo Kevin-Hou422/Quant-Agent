@@ -60,6 +60,7 @@ Architecture note:
 """
 from __future__ import annotations
 
+from app.core.clock import SIGNAL_DELAY
 import logging
 import random
 from dataclasses import dataclass, field
@@ -228,7 +229,7 @@ class PopulationEvolver:
         # Default SimulationConfig for GP evaluation (no parameter tuning per-individual)
         from ..alpha_engine.signal_processor import SimulationConfig
         self._default_cfg = SimulationConfig(
-            delay            = 1,
+            delay            = SIGNAL_DELAY,   # 时钟 c2（app/core/clock.py）
             decay_window     = 0,
             truncation_min_q = 0.05,
             truncation_max_q = 0.95,

@@ -571,19 +571,20 @@ class TestCombinedIc:
         assert "sig_arr.shape[0] - 1" in src and "ret_arr.shape[0] - 1" in src, (
             "IC 循环上限不再为 t+1 留余量")
 
-    def test_returns_are_derived_from_close_when_absent(self):
+    def test_returns_come_from_the_c2_open_pairing_not_the_returns_field(self, monkeypatch):
         """
-        `if ret is None and "close" in data:` —— `and` 放宽成 `or` 时，
-        已经有 returns 的数据集也会被 `data["close"]` 覆盖；
-        而 close 不存在时直接 KeyError。
+        时钟 c2（2026-10-22 D14）：组合 IC 与拟合用 `clock.paired_returns`（开盘到开盘），**不用**数据集里的
+        `returns` 字段 —— 那是收盘到收盘（c1 的口径，含决策时还没法交易的隔夜收益）。
+        把 returns 字段整片换成 NaN：如果还在用它，IC 一个都算不出来。
         """
+        import app.core.clock as clock
+        seen, real = [], clock.paired_returns
+        monkeypatch.setattr(clock, "paired_returns", lambda d: seen.append(d) or real(d))
         ds = _panel(5)
-        assert "returns" in ds
-        # 有 returns 时必须原样用
-        import inspect
-        src = inspect.getsource(W._combine_pool_alphas)
-        assert 'ret is None and "close" in data' in src, (
-            "returns 的派生条件被改了 —— 已有的 returns 可能被 close 派生值覆盖")
+        ds["returns"] = ds["returns"] * np.nan
+        out = W._combine_pool_alphas(self._pool(3), ds, lambda *_: None)
+        assert seen, "组合 IC 没有走时钟 c2 的配对收益"
+        assert out is not None and out["combined_mean_ic"] != 0.0, out
 
     def test_a_pool_smaller_than_two_returns_none(self):
         assert W._combine_pool_alphas([], _panel(6), None) is None

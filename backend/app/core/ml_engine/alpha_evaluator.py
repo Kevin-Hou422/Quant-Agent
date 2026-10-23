@@ -13,6 +13,7 @@ IS 和 OOS 指标完全独立计算，评估结束后合并生成对比摘要。
 
 from __future__ import annotations
 
+from app.core.clock import label_returns
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
@@ -204,10 +205,10 @@ class AlphaEvaluator:
         Parameters
         ----------
         is_report  : IS 段 RiskReport（来自 RealisticBacktester）
-        is_prices  : IS 段资产价格矩阵（T×N），用于精确 IC 计算
+        is_prices  : IS 段**开盘价**矩阵（T×N）：时钟 c2 的标签 = 开盘(T+1) → 开盘(T+k+1)（app/core/clock.py）
         is_signal  : IS 段处理后信号矩阵（T×N）
         oos_report : OOS 段 RiskReport（可选）
-        oos_prices : OOS 段价格（可选）
+        oos_prices : OOS 段开盘价（可选）
         oos_signal : OOS 段信号（可选）
         """
         # IS 评估
@@ -302,9 +303,8 @@ class AlphaEvaluator:
         """
         计算信号与未来 k 期收益的 Rank 相关（IC Decay）。
 
-        向量化实现（无 T 轴 Python 循环）：
-          fwd_ret_k = prices.pct_change(k).shift(-k)
-          对齐后，截面 Spearman 相关取时间均值
+        prices = 开盘价；标签按时钟 c2：信号 T 对 开盘(T+1) → 开盘(T+1+k)（clock.label_returns），
+        对齐后，截面 Spearman 相关取时间均值
         """
         result: Dict[str, float] = {}
 
@@ -313,9 +313,11 @@ class AlphaEvaluator:
         common_col = signal.columns.intersection(prices.columns)
         sig  = signal.loc[common_idx, common_col].to_numpy(dtype=float)    # (T, N)
         px   = prices.loc[common_idx, common_col]
+        if px.empty:                                   # 没有共同的日期 / 标的：没有可算的 IC
+            return {"t1": np.nan, "t5": np.nan}
 
         for k, key in [(1, "t1"), (5, "t5")]:
-            fwd_ret = px.pct_change(k).shift(-k).to_numpy(dtype=float)    # (T, N)
+            fwd_ret = label_returns({"open": px}, k).to_numpy(dtype=float)   # (T, N)，按信号日对齐
 
             # 按行计算截面 Spearman，再取均值（全向量化）
             ic_vals = _cross_section_spearman(sig, fwd_ret)               # (T,)
@@ -373,23 +375,23 @@ def _rolling_rank_ic(
     window: int = 20,
 ) -> Optional[pd.Series]:
     """
-    20 日滚动 Rank IC（信号 vs 次日收益截面 Spearman）。
+    20 日滚动 Rank IC（信号 T vs 标签 开盘(T+1) → 开盘(T+2) 的截面 Spearman；prices = 开盘价，时钟 c2）。
     全向量化：先计算逐日截面 IC，再做 rolling mean。
     """
     common_idx = signal.index.intersection(prices.index)
     common_col = signal.columns.intersection(prices.columns)
-    if len(common_idx) < window + 5:
+    if len(common_idx) < window + 5 or len(common_col) == 0:
         return None
 
     sig_arr = signal.loc[common_idx, common_col].to_numpy(dtype=float)
-    px_arr  = prices.loc[common_idx, common_col].pct_change().to_numpy(dtype=float)
+    lab_arr = label_returns({"open": prices.loc[common_idx, common_col]}, 1).to_numpy(dtype=float)
 
     # 逐日截面 IC
     T = len(common_idx)
     ic_vals = np.full(T, np.nan)
     for t in range(T - 1):
         s   = sig_arr[t]
-        fwd = px_arr[t + 1]     # 次日收益（前瞻 1 期，用于 IC 计算，非回测）
+        fwd = lab_arr[t]        # 信号 t 的标签（已按信号日对齐）
         mask = ~(np.isnan(s) | np.isnan(fwd))
         if mask.sum() < 5:
             continue

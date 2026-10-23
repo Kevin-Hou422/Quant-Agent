@@ -182,13 +182,14 @@ class TestRollingRankIc:
         cols = [f"T{i}" for i in range(N)]
         px = pd.DataFrame(100 + rng.normal(0, 1, (T, N)).cumsum(axis=0),
                           index=idx, columns=cols)
-        # 信号 = 次日收益本身 → 理论 IC 恒为 +1（用来定向）
-        fwd = px.pct_change().shift(-1)
+        # px 当开盘价；信号 = 它自己的标签 开盘(T+1) → 开盘(T+2)（时钟 c2）→ 理论 IC 恒为 +1（用来定向）
+        from app.core.clock import label_returns
+        fwd = label_returns({"open": px})
         return fwd, px
 
     def test_signal_equal_to_next_day_return_gives_ic_one(self):
         """
-        `fwd = px_arr[t + 1]` —— **前瞻一期**。写成 `t - 1` 会拿**昨天**的收益
+        `fwd = lab_arr[t]`（信号 t 的标签，已按信号日对齐）。错一期会拿**别的日子**的收益
         去和今天的信号算相关：一个真实的动量因子会因此显示出虚高的 IC
         （自相关造成），而一个无效因子也可能"看起来有 IC"。
 

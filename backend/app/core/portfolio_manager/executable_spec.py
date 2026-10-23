@@ -34,8 +34,11 @@ logger = logging.getLogger(__name__)
 #: 2：加入 universe / execution / submission（复审 2026-10-19 §5.2）
 SPEC_VERSION = 2
 
-#: 每日循环 / 提案 / 策略门共用的信号处理参数（此前三处各写一份字面量）
-SIGNAL_CONFIG = {"delay": 1, "decay_window": 0, "truncation_min_q": 0.05, "truncation_max_q": 0.95}
+#: 每日循环 / 提案 / 策略门共用的信号处理参数（此前三处各写一份字面量）。
+#: delay 取自时钟（c2 = 0：T 收盘的信息就用于 T 的决策，T+1 执行由引擎负责；见 app/core/clock.py）
+from app.core.clock import SIGNAL_DELAY as _SIGNAL_DELAY  # noqa: E402
+
+SIGNAL_CONFIG = {"delay": _SIGNAL_DELAY, "decay_window": 0, "truncation_min_q": 0.05, "truncation_max_q": 0.95}
 
 
 def signal_config():

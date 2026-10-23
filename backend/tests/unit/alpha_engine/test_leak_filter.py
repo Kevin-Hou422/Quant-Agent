@@ -178,13 +178,12 @@ def _replica_is_sharpe(dsl: str, dataset) -> float:
     from app.core.backtest_engine.backtest_engine import BacktestEngine
     from app.core.backtest_engine.portfolio_constructor import SignalWeightedPortfolio
 
+    from app.core.portfolio_manager.executable_spec import signal_config
     raw = Executor(validate=False).run_expr(dsl, dataset)
-    cfg = SimulationConfig(delay=1, decay_window=0,
-                           truncation_min_q=0.05, truncation_max_q=0.95)
-    proc = SignalProcessor(cfg).process(raw)
+    proc = SignalProcessor(signal_config()).process(raw)              # 与生产同一份信号参数（时钟 c2）
     w = SignalWeightedPortfolio(clip_z=3.0).construct(proc)
     rets = _pd.Series(
-        BacktestEngine().run(w, dataset["close"], dataset["volume"], proc).net_returns
+        BacktestEngine().run(w, dataset["close"], dataset["volume"], proc, ohlc=dataset).net_returns
     ).dropna()
     mu, sd = float(rets.mean()), float(rets.std(ddof=1))
     return (mu / sd) * np.sqrt(252.0) if sd > 1e-12 else 0.0

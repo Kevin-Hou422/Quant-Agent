@@ -104,26 +104,34 @@ class TestImmutable:
 # ---------------------------------------------------------------------------
 
 class TestSignalBeforeOutcome:
+    """
+    时钟 c2（2026-10-22 D14 + C3）：信号日 T 的标签 = 开盘(T+1) → 开盘(T+2)，在 T+2 收盘后结算；
+    前向要求 T 的信号在开盘(T+1)（标签起点）之前存档 —— 即 T 收盘后那一轮就存下。
+    """
 
     def test_day_by_day_running_produces_forward_evidence(self, world):
         ds = _panel()
         days = ds["close"].index
         for d in days[-4:]:
             world.loop().run(_upto(ds, d), data_source="yahoo", now=_after_close(d))
-        assert _fwd_dates(world.store, world.aid) == list(days[-3:])     # 第一天只存档，后三天结算
+        # 前两天只存档；days[-2] 结算 days[-4] 的信号、days[-1] 结算 days[-3] 的
+        assert _fwd_dates(world.store, world.aid) == list(days[-2:])
 
     def test_the_forward_ic_is_computed_from_the_archived_signal(self, world):
         from app.tasks.daily_trading_loop import _cs_spearman
         ds = _panel()
         days = ds["close"].index
-        a, b = days[-2], days[-1]
+        from app.core.clock import archive_deadline
+        a, b, c = days[-3], days[-2], days[-1]
         world.loop().run(_upto(ds, a), data_source="yahoo", now=_after_close(a))
-        arch = world.ev.archived_before(f"alpha:{world.aid}", a, session_close_utc(b).replace(tzinfo=None))
-        world.loop().run(ds, data_source="yahoo", now=_after_close(b))
+        arch = world.ev.archived_before(f"alpha:{world.aid}", a, archive_deadline(a).replace(tzinfo=None))
+        assert arch is not None, "a 收盘后那一轮没有在标签起点之前存下信号"
+        world.loop().run(ds, data_source="yahoo", now=_after_close(c))
         (e,) = world.store.get_forward_ic(world.aid)
-        ret = ds["close"].pct_change().loc[b]
-        assert e.realized_ic == pytest.approx(_cs_spearman(arch["signal"].reindex(ret.index).to_numpy(float),
-                                                           ret.to_numpy(float)))
+        assert pd.Timestamp(e.date) == c
+        lab = ds["open"].loc[c] / ds["open"].loc[b] - 1.0                  # 信号 a 的标签：开盘(b) → 开盘(c)
+        assert e.realized_ic == pytest.approx(_cs_spearman(arch["signal"].reindex(lab.index).to_numpy(float),
+                                                           lab.to_numpy(float)))
 
     def test_one_run_over_history_marks_nothing_forward_whatever_forward_from_says(self, world):
         """此前：一次补拉的 bar 全按 forward_from 标前向。那些天的信号当时从没产生过。"""
@@ -137,20 +145,22 @@ class TestSignalBeforeOutcome:
         days = ds["close"].index
         world.loop().run(_upto(ds, days[-5]), data_source="yahoo", now=_after_close(days[-5]))
         world.loop().run(ds, data_source="yahoo", now=_after_close(days[-1]))                  # 停了三天才跑
-        assert _fwd_dates(world.store, world.aid) == [days[-4]]
+        # 只有停机前最后存下的那份信号（days[-5]）及时存档；它在 days[-3] 结算
+        assert _fwd_dates(world.store, world.aid) == [days[-3]]
 
     def test_a_rerun_without_forward_from_keeps_the_evidence(self, world):
         """此前：落盘后计算失败、重跑时 forward_from=None → 证据丢标。"""
         ds = _panel()
         days = ds["close"].index
-        world.loop().run(_upto(ds, days[-2]), data_source="yahoo", now=_after_close(days[-2]))
+        world.loop().run(_upto(ds, days[-3]), data_source="yahoo", now=_after_close(days[-3]))
         world.loop().run(ds, forward_from=None, data_source="yahoo", now=_after_close(days[-1]))
         assert _fwd_dates(world.store, world.aid) == [days[-1]]
 
     def test_a_signal_archived_after_the_outcome_closed_is_not_forward(self, world):
         ds = _panel()
         days = ds["close"].index
-        world.loop().run(_upto(ds, days[-2]), data_source="yahoo", now=_after_close(days[-1]))  # 存档晚于下一天收盘
+        # 时钟 c2：days[-3] 的信号在 days[-1] 结算，要求存档早于开盘(days[-2])；这里晚到 days[-2] 收盘之后
+        world.loop().run(_upto(ds, days[-3]), data_source="yahoo", now=_after_close(days[-2]))
         world.loop().run(ds, data_source="yahoo", now=_after_close(days[-1], hours=3))
         assert _fwd_dates(world.store, world.aid) == []
 
@@ -161,7 +171,9 @@ class TestSignalBeforeOutcome:
         world.loop().run_portfolio(ds, aum=10_000.0, forward_from=str(days[-20].date()),
                                    data_source="yahoo", now=_after_close(days[-1]))
         assert world.store.get_forward_ic(PORTFOLIO_BOOK_ID) == []
-        nxt = _panel(T=61)                                              # 同一种子，多一天
+        # 同一种子，多两个交易日（c2：T 在 T+2 结算；按交易日数，不按工作日数 —— 中间可能有假日）
+        nxt = next(p for p in (_panel(T=t) for t in range(61, 70)) if len(p["close"]) == len(days) + 2)
+        assert nxt["close"].index[-3] == days[-1]
         world.loop().run_portfolio(nxt, aum=10_000.0, data_source="yahoo", now=_after_close(nxt["close"].index[-1]))
         assert _fwd_dates(world.store, PORTFOLIO_BOOK_ID) == [nxt["close"].index[-1]]
 
@@ -188,12 +200,13 @@ class TestStrategyVersionEvidence:
         sid, h = self._propose(world)
         ds = _panel()
         days = ds["close"].index
-        for d in days[-3:]:
+        for d in days[-4:]:
             world.loop().run_portfolio(_upto(ds, d), aum=10_000.0, data_source="yahoo", now=_after_close(d))
         rows = world.ev.strategy_forward_ic(sid)
+        # 时钟 c2：信号日 T 在 T+2 结算
         assert [pd.Timestamp(r.date) for r in rows] == list(days[-2:])
         assert {r.spec_hash for r in rows} == {h}
-        assert [pd.Timestamp(r.signal_asof) for r in rows] == list(days[-3:-1])
+        assert [pd.Timestamp(r.signal_asof) for r in rows] == list(days[-4:-2])
 
     def test_two_versions_keep_separate_records(self, world, monkeypatch):
         from app.config import settings
@@ -202,7 +215,7 @@ class TestStrategyVersionEvidence:
         b, _ = self._propose(world, dsl="rank(-ts_delta(close, 20))")
         ds = _panel()
         days = ds["close"].index
-        for d in days[-2:]:
+        for d in days[-3:]:                                             # 时钟 c2：T 在 T+2 结算
             world.loop().run_portfolio(_upto(ds, d), aum=10_000.0, data_source="yahoo", now=_after_close(d))
         ra, rb = world.ev.strategy_forward_ic(a), world.ev.strategy_forward_ic(b)
         assert len(ra) == len(rb) == 1 and ra[0].ic != rb[0].ic
