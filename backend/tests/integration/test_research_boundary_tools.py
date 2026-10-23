@@ -68,7 +68,7 @@ def _snapshot(path: Path):
 class TestReadOnlyReport:
 
     def test_the_report_lists_boundaries_exposure_counts_universe_and_experiment(self, tmp_path):
-        from tools.research.d12_boundary_report import build_report
+        from tools.research.research_boundary_report import build_report
         db = tmp_path / "live.db"
         _make_live_like_db(db, with_boundaries=True)
         before = _snapshot(db)
@@ -84,7 +84,7 @@ class TestReadOnlyReport:
         assert rep["trial_total"] == 258
 
     def test_research_without_any_boundary_is_flagged_as_unrecorded_exposure(self, tmp_path):
-        from tools.research.d12_boundary_report import build_report
+        from tools.research.research_boundary_report import build_report
         db = tmp_path / "live.db"
         _make_live_like_db(db, with_boundaries=False)
         rep = build_report(db)
@@ -99,7 +99,7 @@ class TestReadOnlyReport:
             "select count(*) from sqlite_master where name='frozen_boundaries'").fetchone()[0] == 0
 
     def test_a_pending_wal_file_is_refused_rather_than_read_partially(self, tmp_path):
-        from tools.research.d12_boundary_report import LiveDbBusy, build_report
+        from tools.research.research_boundary_report import LiveDbBusy, build_report
         db = tmp_path / "live.db"
         _make_live_like_db(db, with_boundaries=True)
         Path(str(db) + "-wal").write_bytes(b"\0" * 32)
@@ -109,7 +109,7 @@ class TestReadOnlyReport:
     def test_the_report_module_never_touches_store_constructors(self):
         """D12："不调用会建表或迁移的 Store 构造函数" —— 报告模块只许用 sqlite3 的只读连接。"""
         import ast
-        src = Path(__file__).resolve().parents[2] / "tools" / "research" / "d12_boundary_report.py"
+        src = Path(__file__).resolve().parents[2] / "tools" / "research" / "research_boundary_report.py"
         tree = ast.parse(src.read_text(encoding="utf-8"))
         mods = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
         mods |= {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
@@ -123,7 +123,7 @@ def test_an_old_schema_db_reports_inferred_exposure_from_research_activity(tmp_p
     活库是旧结构：没有 frozen_boundaries / trial_run_state，研究记录里没有数据集与窗口，只有研究发生的时刻。
     报告不能把"没记录"说成"没看过"：按用户给定的数据起点，推定研究那天之前的全部数据都已曝光，并标明是推定。
     """
-    from tools.research.d12_boundary_report import build_report
+    from tools.research.research_boundary_report import build_report
     db = tmp_path / "old.db"
     con = sqlite3.connect(db)
     con.execute("CREATE TABLE alpha_records (id INTEGER PRIMARY KEY, dsl TEXT, created_at TEXT, status TEXT)")
@@ -148,7 +148,7 @@ def test_an_old_schema_db_reports_inferred_exposure_from_research_activity(tmp_p
 
 
 def test_registration_is_a_dry_run_unless_confirmed(tmp_path):
-    from tools.research.d12_register_boundary import main
+    from tools.research.register_research_boundary import main
 
     from app.db.trial_ledger import BoundaryStore
     db = tmp_path / "live.db"
