@@ -100,7 +100,9 @@ def test_decisions_endpoint_returns_lineage(store_and_client):
 
 def test_pending_marks_the_fundamental_fields_a_candidate_uses(store_and_client):
     store, client = store_and_client
-    fund = _validated(store, "fund_rank(earnings_yield) + fund_rank(trade_when(days_since_earnings < 60, sue))")
+    from tests.conftest import legacy_alpha        # D1 之后基本面因子不能再晋级：用存量记录
+    fund = legacy_alpha(store, "fund_rank(earnings_yield) + fund_rank(trade_when(days_since_earnings < 60, sue))",
+                        "validated")
     price = _validated(store, "rank(ts_delta(close,5))")
     rows = {row["alpha_id"]: row for row in client.get("/api/alphas/pending").json()}
     assert [f["name"] for f in rows[fund]["sparse_fields"]] == ["earnings_yield", "sue", "days_since_earnings"]
@@ -115,7 +117,8 @@ def test_pending_survives_an_unparsable_expression_in_the_ledger(store_and_clien
     import logging
     store, client = store_and_client
     bad = _validated(store, "rank(ts_min(close,volume,10))")
-    ok = _validated(store, "fund_rank(roe)")
+    from tests.conftest import legacy_alpha        # D1 之后基本面因子不能再晋级：用存量记录
+    ok = legacy_alpha(store, "fund_rank(roe)", "validated")
     with caplog.at_level(logging.WARNING):
         r = client.get("/api/alphas/pending")
     assert r.status_code == 200

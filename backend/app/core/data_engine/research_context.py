@@ -17,10 +17,13 @@ OOS 压在冻结 Test 段上。现在研究窗口**只有** `open_research` 一�
     dataset_key      真实数据集名；"" = 合成 / 未登记（没有持久化的边界）
     universe         选择段里有过收盘价的标的集合（哈希 + 个数）—— 同名数据集换了票就是另一个上下文
     experiment       实验名（缺省 settings.research_experiment）；purpose = 哪个入口
-    boundary         冻结 Test 段起点（含）；None = 本次没有 Test 段
+    test_start       冻结 Test 段起点（含）；None = 本次没有 Test 段
+    boundary         边界状态（2026-10-22 D12）：registered（人登记的）/ unconfirmed（旧代码偶然写下的）/
+                     provisional（还没有边界，临时切分）/ none（真实数据集但本次没有 Test 段）/ synthetic
 
-边界仍按 dataset_key 持久化（是否改按 dataset+universe+experiment 登记是待定事项 D12）；
-这里先让每次运行都**带着**这三项，事后能分开看。
+边界按 dataset_key 持久化，只能由人登记（D12："正式入口不要继续依赖首次调用偶然冻结"）。
+正式结论（验证门、策略提案）只认 registered（合成数据没有可登记的边界，按 synthetic 放行）——
+`formal_boundary_problem()`。曝光次数按数据集 + 区间重叠计，实验名 / 股票池只记录、不进计次。
 """
 
 from __future__ import annotations
@@ -57,6 +60,7 @@ class ResearchContext:
     selection_start: str
     selection_end:   str
     note:            str = ""            # 为什么没有 Test 段 / 开关被忽略等
+    boundary:        str = ""            # registered / unconfirmed / provisional / none / synthetic（D12）
     selection: Dict[str, pd.DataFrame] = field(default_factory=dict, repr=False, compare=False)
     split:     Optional[ThreeWaySplit] = field(default=None, repr=False, compare=False)
 
@@ -66,8 +70,21 @@ class ResearchContext:
             "universe_digest": self.universe_digest, "universe_n": self.universe_n,
             "test_start": self.test_start, "frozen_by": self.frozen_by, "pinned": self.pinned,
             "selection_start": self.selection_start, "selection_end": self.selection_end,
-            "note": self.note,
+            "note": self.note, "boundary": self.boundary,
         }
+
+    def formal_boundary_problem(self) -> str:
+        """
+        正式结论能不能用这个研究上下文（D12）。能 → ""；不能 → 原因。
+        只认人登记过的边界；合成数据（没有可登记的边界）放行。
+        """
+        if self.boundary in ("registered", "synthetic"):
+            return ""
+        what = {"provisional": "还没有登记，本次是临时切分",
+                "unconfirmed": "是旧代码首次调用偶然写下的，没有人确认",
+                "none": "本次没有冻结 Test 段（数据太短或三段切割被关掉）"}.get(self.boundary, self.boundary)
+        return (f"研究边界未登记：数据集 {self.dataset_key} 的冻结边界{what} —— "
+                f"正式结论要等边界登记（D12：日期建议后由用户确认）")
 
     def to_json(self) -> str:
         return json.dumps(self.describe(), ensure_ascii=False, sort_keys=True)
@@ -141,15 +158,21 @@ def open_research(dataset: Dict[str, pd.DataFrame], dataset_key: Optional[str], 
 def _build(selection, key, exp, purpose, split, pinned, note) -> ResearchContext:
     idx = _index_of(selection)
     ts = getattr(split, "test_start", None) if split is not None else None
+    if key in _UNPINNED_KEYS:
+        boundary = "synthetic"
+    elif split is None or ts is None:
+        boundary = "none"
+    else:
+        boundary = str(getattr(split, "boundary", "") or "provisional")
     return ResearchContext(
         dataset_key=key, experiment=str(exp), purpose=str(purpose),
         universe_digest=_universe_digest(selection), universe_n=len(_universe(selection)),
         test_start=str(pd.Timestamp(ts).date()) if ts is not None else None,
         frozen_by=str(getattr(split, "frozen_by", "") or "") if split is not None else "",
-        pinned=bool(pinned and ts is not None),
+        pinned=bool(pinned and ts is not None and boundary in ("registered", "unconfirmed")),
         selection_start=str(pd.Timestamp(idx.min()).date()) if idx is not None and len(idx) else "",
         selection_end=str(pd.Timestamp(idx.max()).date()) if idx is not None and len(idx) else "",
-        note=note, selection=selection, split=split,
+        note=note, boundary=boundary, selection=selection, split=split,
     )
 
 

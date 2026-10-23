@@ -78,6 +78,21 @@ def fresh_db(tmp_path, monkeypatch):
 # Dataset factory
 # ---------------------------------------------------------------------------
 
+def legacy_alpha(store, dsl: str, status: str) -> int:
+    """
+    构造一条 **D1 之前**就已处于 `status` 的存量因子记录（2026-10-22 D1 之后，正常路径 —— save / update_status ——
+    不能再把用到基本面字段的因子放进 validated / paper / active）。只给测试"存量状态下其它功能照常"用：
+    直接插行，不经过晋级校验。
+    """
+    from datetime import datetime
+    from app.db.alpha_store import AlphaRecord
+    with store._Session() as s:                              # noqa: SLF001
+        rec = AlphaRecord(dsl=dsl, created_at=datetime.utcnow(), hypothesis="", status=status, reasoning="")
+        s.add(rec)
+        s.commit()
+        return int(rec.id)
+
+
 def approved_verdict(dsl_by_id: dict, combo_weights: dict, aum: float, method: str = "ic_weighted",
                      band: float = 0.0, settings=None, design_at: str = "2000-01-03T00:00:00") -> dict:
     """

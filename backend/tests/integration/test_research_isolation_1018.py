@@ -39,6 +39,16 @@ def _cut(d, start=None, end=None):
     return {k: v.loc[start:end] for k, v in d.items()}
 
 
+def _pin(d, key="us_x"):
+    """
+    2026-10-22 D12：边界只能由人登记 —— 先临时切分（不写库），再把它的 Test 起点登记下来（F04 的"之后不再滑动"
+    说的是登记之后）。返回登记的日期。
+    """
+    start = split_from_settings(d, dataset_key=key).test_start
+    BoundaryStore().register(key, start, actor="tester", reason="F04 回归：登记一个冻结边界")
+    return start
+
+
 def _holdout_rows(url) -> int:
     from sqlalchemy import create_engine, text
     with create_engine(url).connect() as c:
@@ -53,9 +63,12 @@ class TestFrozenBoundary:
 
     def test_the_test_start_no_longer_slides_with_the_data_end(self, ds, fresh_db):
         a = split_from_settings(ds, dataset_key="us_x")
+        assert a.frozen_by == "years" and a.boundary == "provisional"
+        assert BoundaryStore().get("us_x") is None, "第一次切分不能把边界写死（D12）"
+        BoundaryStore().register("us_x", a.test_start, actor="tester", reason="F04 回归")
         b = split_from_settings({k: v.iloc[:-1] for k, v in ds.items()}, dataset_key="us_x")
         c = split_from_settings({k: v.iloc[:-200] for k, v in ds.items()}, dataset_key="us_x")
-        assert a.frozen_by == "years" and b.frozen_by == c.frozen_by == "pinned"
+        assert b.frozen_by == c.frozen_by == "pinned" and b.boundary == c.boundary == "registered"
         assert a.test_start == b.test_start == c.test_start
         assert a.selection["close"].index.equals(b.selection["close"].index)
         assert BoundaryStore().get("us_x") == a.test_start
@@ -67,19 +80,20 @@ class TestFrozenBoundary:
 
     def test_new_data_lands_on_the_test_side(self, ds, fresh_db):
         first = split_from_settings({k: v.iloc[:-100] for k, v in ds.items()}, dataset_key="us_x")
+        BoundaryStore().register("us_x", first.test_start, actor="tester", reason="F04 回归")
         later = split_from_settings(ds, dataset_key="us_x")
         assert later.test_start == first.test_start
         assert later.n_test == first.n_test + 100
         assert later.selection["close"].index.equals(first.selection["close"].index)
 
     def test_data_entirely_before_the_boundary_has_no_test(self, ds, fresh_db):
-        pinned = split_from_settings(ds, dataset_key="us_x").test_start
+        pinned = _pin(ds)
         early = split_from_settings(_cut(ds, end=pinned - pd.Timedelta(days=200)), dataset_key="us_x")
         assert early.n_test == 0 and early.test_key == "empty"
         assert all(v.empty for v in early.test.values())
 
     def test_data_that_starts_inside_the_frozen_segment_is_refused_not_widened(self, ds, fresh_db):
-        pinned = split_from_settings(ds, dataset_key="us_x").test_start
+        pinned = _pin(ds)
         with pytest.raises(FrozenBoundaryError, match="冻结"):
             split_from_settings(_cut(ds, start=pinned - pd.Timedelta(days=30)), dataset_key="us_x")
         assert not issubclass(FrozenBoundaryError, ValueError)     # 各入口的"太短→全量"兜底接不住它
@@ -104,14 +118,14 @@ class TestFrozenBoundary:
     def test_backtest_entrypoints_refuse_rather_than_fall_back_to_the_full_panel(self, ds, fresh_db):
         from fastapi import HTTPException
         import app.api.router as router
-        pinned = split_from_settings(ds, dataset_key="us_x").test_start
+        pinned = _pin(ds)
         with pytest.raises(HTTPException) as e:
             router._three_way(_cut(ds, start=pinned - pd.Timedelta(days=30)), "us_x", "backtest/run")
         assert e.value.status_code == 422
 
     def test_validation_gate_fails_closed_on_the_frozen_segment(self, ds, fresh_db):
         from app.core.lifecycle.validation_gate import ValidationGate
-        pinned = split_from_settings(ds, dataset_key="us_x").test_start
+        pinned = _pin(ds)
         res = ValidationGate().evaluate("rank(close)", _cut(ds, start=pinned - pd.Timedelta(days=30)),
                                         n_trials=1, dataset_key="us_x")
         assert res.passed is False and res.reasons[0].startswith("冻结边界")

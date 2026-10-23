@@ -454,8 +454,10 @@ def test_cli_gp_never_hands_frozen_dates_to_gp(fresh_db):
 def test_cli_refuses_data_that_starts_inside_the_frozen_segment(fresh_db):
     from app.core.data_engine.data_partitioner import split_from_settings
     import app.main as main
+    from app.db.trial_ledger import BoundaryStore
     ds = _make_dataset(1600, 10)
     frozen = split_from_settings(ds, dataset_key="audit_us")
+    BoundaryStore().register("audit_us", frozen.test_start, actor="tester", reason="N09 回归")   # D12：人登记
     late = {k: v.loc[frozen.test_start - pd.Timedelta(days=20):] for k, v in ds.items()}
     with patch.object(main, "_load_dataset", return_value=late):
         with pytest.raises(SystemExit):

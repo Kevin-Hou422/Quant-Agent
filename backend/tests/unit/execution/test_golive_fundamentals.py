@@ -56,10 +56,16 @@ def _strategy(tmp_path, dsls, active=True):
     url = f"sqlite:///{(tmp_path / 'a.db').as_posix()}"
     store, ids = AlphaStore(db_url=url), []
     from tests.conftest import approved_verdict
+    from app.core.lifecycle.fundamentals_policy import promotion_problem
+    from tests.conftest import legacy_alpha
     for dsl in dsls:
-        aid = store.save(AlphaResult(dsl=dsl, status="candidate"))
-        store.update_status(aid, "validated")
-        store.update_status(aid, "paper")
+        if promotion_problem(dsl):
+            # D1 之后基本面因子不能再晋级 —— 这里测的是"存量策略用到基本面时预检照样查"：用存量记录
+            aid = legacy_alpha(store, dsl, "paper")
+        else:
+            aid = store.save(AlphaResult(dsl=dsl, status="candidate"))
+            store.update_status(aid, "validated")
+            store.update_status(aid, "paper")
         ids.append(str(aid))
     ss = StrategyStore(db_url=url)
     sid = ss.save(StrategyConfig(factors=ids, combo_weights={i: 1.0 for i in ids}, aum=1e6,

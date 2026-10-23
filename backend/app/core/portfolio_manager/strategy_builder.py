@@ -94,10 +94,11 @@ def build_strategy_config(
                                            aum, band, limits)
 
     # PM.S1 策略门：① 冻结规格本身（与每日门同一口径）；② 产出这份规格的**流程**的滚动前推 OOS；
-    # ③ 用到基本面字段时的来源 / 期间质量门（复审 §5.4）。三道都是**必须的门**。
+    # ③ 用到基本面字段时的来源 / 期间质量门（复审 §5.4）；④ 研究边界已登记（2026-10-22 D12，见下）。
+    # 四道都是**必须的门**。
     # 2026-10-22 用户核验 C1：此前 verdict["passed"] 只装了 ①，② 失败只改了 cfg.passed，评级又按 verdict 判 ——
     # 冻结规格过、流程 OOS 不过时 cfg 说没过、verdict 说过了还标 A 级。现在：各门原始结论放在 verdict["gates"]，
-    # verdict["passed"] = cfg.passed = 三道必须的门都**评估了且都过了**；评级在最终结论之后做。
+    # verdict["passed"] = cfg.passed = 必须的门都**评估了且都过了**；评级在最终结论之后做。
     gates: dict = {}
     verdict: dict = {}
     try:
@@ -150,11 +151,31 @@ def build_strategy_config(
         gates["fundamentals_quality"] = {"evaluated": False, "passed": False, "error": str(exc)}
         degraded.append(f"fundamentals_quality_failed: {exc}")
 
+    # 2026-10-22 D1：基本面因子本轮不正式晋级 —— 用到基本面字段的策略不能通过提案
+    from app.core.lifecycle.fundamentals_policy import fundamental_fields, promotion_problem
+    _d1 = promotion_problem(" ".join(v for v in (factor_dsl or {}).values() if v))
+    gates["fundamentals_policy"] = {"evaluated": True, "passed": not _d1, "detail": _d1,
+                                    "fields": fundamental_fields((factor_dsl or {}).values())}
+
+    # 2026-10-22 D12：提案是正式入口 —— 研究边界必须是人登记过的（不再依赖首次调用偶然冻结）。
+    # 不在研究上下文里调用 → 说不清这份提案看的是哪段数据 → 未评估（不可能是 A）
+    from app.core.data_engine.research_context import current as _research_ctx
+    rctx = _research_ctx()
+    if rctx is None:
+        gates["research_boundary"] = {"evaluated": False, "passed": False,
+                                      "error": "不在研究上下文里：说不清这份提案看的是哪段数据、边界是否登记"}
+    else:
+        gap = rctx.formal_boundary_problem()
+        gates["research_boundary"] = {"evaluated": True, "passed": not gap, "boundary": rctx.boundary,
+                                      "dataset_key": rctx.dataset_key, "test_start": rctx.test_start,
+                                      "experiment": rctx.experiment, "detail": gap}
+
     # 最终结论：必须的门都评估了、都过了
     passed = all(g.get("evaluated") and g.get("passed") for g in gates.values())
     reasons = list(verdict.get("reasons", []))
     gate_names = {"frozen_spec": "冻结规格门", "procedure_oos": "流程的滚动前推 OOS",
-                  "fundamentals_quality": "基本面质量门"}
+                  "fundamentals_quality": "基本面质量门", "research_boundary": "研究边界（D12）",
+                  "fundamentals_policy": "基本面不晋级（D1）"}
     for gname, g in gates.items():               # 注意：不能叫 name —— 那是本函数的参数（配置名）
         if not g.get("evaluated"):
             reasons.append(f"必须的门未评估：{gate_names.get(gname, gname)}（{g.get('error', '')}）")

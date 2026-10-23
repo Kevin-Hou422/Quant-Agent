@@ -32,11 +32,13 @@ APP = Path(__file__).resolve().parents[2] / "app"
 
 @pytest.fixture
 def pinned(fresh_db):
-    """真实数据集标识 + 已冻结的边界（第一次切分时写入）。"""
+    """真实数据集标识 + 人登记的冻结边界（2026-10-22 D12：第一次切分只是临时切分，不写库）。"""
     from app.core.data_engine.data_partitioner import split_from_settings
+    from app.db.trial_ledger import BoundaryStore
     ds = _make_dataset(1600, 10)
     frozen = split_from_settings(ds, dataset_key=KEY)
-    assert frozen.test_start is not None
+    assert frozen.test_start is not None and frozen.boundary == "provisional"
+    BoundaryStore().register(KEY, frozen.test_start, actor="tester", reason="研究上下文回归")
     return ds, frozen.test_start
 
 
@@ -190,7 +192,7 @@ def test_the_context_carries_dataset_universe_experiment_and_boundary(pinned):
     ctx = open_research(ds, KEY, "cli.gp", experiment="exp-1")
     d = ctx.describe()
     assert d["dataset_key"] == KEY and d["experiment"] == "exp-1" and d["purpose"] == "cli.gp"
-    assert d["test_start"] == str(boundary.date()) and d["pinned"] is True
+    assert d["test_start"] == str(boundary.date()) and d["pinned"] is True and d["boundary"] == "registered"
     assert d["universe_n"] == 10 and len(d["universe_digest"]) == 16
     assert ctx.selection["close"].index.max() < boundary
     # 同一份数据、不同入口 → 除 purpose 外完全相同

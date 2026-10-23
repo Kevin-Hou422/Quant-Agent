@@ -54,11 +54,11 @@ def test_the_second_day_settles_the_first_days_orders(world):
     world["run_day"](D1)
     sid, h = _active()
     # 人启动正式前向（D13：重新提案并批准之后）；启动时刻在 D2 开盘之前
-    run = ForwardRecordStore().start(sid, h, "kevin", "re-proposed and approved",
+    run = ForwardRecordStore().start(sid, h, "kevin", "re-proposed and approved", benchmark_universe=list(world["yahoo"].close.columns),
                                      started_at=session_open_utc(D2) - timedelta(hours=1))
     assert run.code_version and run.environment and "python" in run.environment
     with pytest.raises(ValueError):
-        ForwardRecordStore().start(sid, h, "kevin", "again")       # 启动时间唯一
+        ForwardRecordStore().start(sid, h, "kevin", "again", benchmark_universe=list(world["yahoo"].close.columns))       # 启动时间唯一
 
     world["open_session"](D2)
     world["yahoo"].published_through = D2
@@ -73,7 +73,11 @@ def test_the_second_day_settles_the_first_days_orders(world):
     assert rec["cash"] is not None and rec["positions"], "持仓现金没记"
     assert rec["costs"]["paper_cost_bps"] is not None and rec["costs"]["broker_slippage_bps"] is not None
     assert rec["net_return"]["paper"] is not None and rec["net_return"]["broker"] is not None
-    assert rec["excess_return"]["paper"] is not None and rec["excess_return"]["broker"] is not None
+    # 2026-10-22 D16：相对满仓基准的差额（不叫 alpha）+ 按净敞口折算的差额；基准成分在启动时冻结
+    ex = rec["excess_return"]
+    assert None not in (ex["paper_vs_full_benchmark"], ex["broker_vs_full_benchmark"],
+                        ex["paper_exposure_matched"], ex["broker_exposure_matched"]), ex
+    assert rec["benchmark"]["universe_frozen"] is True and rec["benchmark"]["return"] is not None
     assert rec["drawdown"]["paper"] is not None and rec["drawdown"]["broker"] is not None
     e = rec["exposure"]
     assert None not in (e["target_gross"], e["target_net"], e["actual_gross"], e["actual_net"])
@@ -87,7 +91,7 @@ def test_a_late_rerun_cannot_turn_a_formal_day_into_a_replay_or_overwrite_it(wor
     from app.db.forward_record import ForwardRecordStore
     world["run_day"](D1)
     sid, h = _active()
-    ForwardRecordStore().start(sid, h, "kevin", "go", started_at=session_open_utc(D2) - timedelta(hours=1))
+    ForwardRecordStore().start(sid, h, "kevin", "go", benchmark_universe=list(world["yahoo"].close.columns), started_at=session_open_utc(D2) - timedelta(hours=1))
     world["open_session"](D2)
     world["yahoo"].published_through = D2
     world["clear"]()
@@ -112,7 +116,7 @@ def test_a_replayed_day_is_never_formal(world):
     from app.db.forward_record import ForwardRecordStore
     world["run_day"](D1)
     sid, h = _active()
-    ForwardRecordStore().start(sid, h, "kevin", "go", started_at=session_close_utc(D1) - timedelta(hours=1))
+    ForwardRecordStore().start(sid, h, "kevin", "go", benchmark_universe=list(world["yahoo"].close.columns), started_at=session_close_utc(D1) - timedelta(hours=1))
     world["clear"]()
     late = (session_open_utc(D2) - session_close_utc(D1)).total_seconds() / 60 + 30
     world["run_day"](D1, minutes_after_close=int(late))

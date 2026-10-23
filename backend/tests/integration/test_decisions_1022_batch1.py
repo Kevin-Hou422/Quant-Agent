@@ -44,7 +44,9 @@ def _propose(frozen=True, procedure=True, frozen_raises=False, procedure_raises=
         if procedure_raises:                                  # 流程的滚动前推
             raise RuntimeError("流程 OOS 崩了")
         return _verdict(procedure)
-    with patch.object(StrategyGate, "evaluate", ev):
+    # 2026-10-22 D12：研究边界也是必须的门 —— 在合成数据的研究上下文里提案（没有可登记的边界，按 synthetic 放行）
+    from app.core.data_engine.research_context import open_research
+    with patch.object(StrategyGate, "evaluate", ev), open_research(ds, "", "proposal", three_way=False).active():
         return build_strategy_config({"1": ds["close"].rank(axis=1)}, ds, 10000, method="equal_weight",
                                      factor_dsl={"1": dsl})
 

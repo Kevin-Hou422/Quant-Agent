@@ -27,7 +27,9 @@ forward_record.py — 正式前向的启动记录与每日记录（复审 2026-1
     `formal_performance()` —— 启动前的决策产生的收益不算正式成绩；
   · 策略状态不允许正式天数（工程联调等，见 strategy_states）→ 不正式。
 
-基准：缺省是**数据集等权宇宙**的收盘到收盘收益（`ew_universe`）。用哪个基准是待定事项 D16。
+基准（2026-10-22 D16）：等权宇宙，规则预先固定在 `app/core/benchmark.py`（股票池在正式前向启动时冻结、每日再平衡、
+收盘到收盘窗口、缺价与被隔离的成分按 0 收益留在分母）。相对满仓基准的差额不叫 alpha，另给按净敞口折算的差额；
+SPY 第二基准后排。
 """
 
 from __future__ import annotations
@@ -48,7 +50,7 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 logger = logging.getLogger(__name__)
 
-BENCHMARK = "ew_universe"
+from app.core.benchmark import BENCHMARK_NAME as BENCHMARK  # noqa: E402  —— 旧名字保留给读方
 ENV_PACKAGES = ("numpy", "pandas", "scipy", "sqlalchemy", "fastapi", "moomoo-api", "pydantic")
 
 
@@ -68,6 +70,8 @@ class ForwardRun(_Base):
     code_version: str      = Column(String(40), nullable=False)
     data_identity: str     = Column(Text, nullable=False, default="{}")
     environment:  str      = Column(Text, nullable=False, default="{}")
+    #: D16：启动时冻结的基准成分（benchmark.freeze_universe 的 JSON）
+    benchmark:    str      = Column(Text, nullable=True)
     __table_args__ = (UniqueConstraint("strategy_id", "spec_hash", name="uq_forward_run"),)
 
 
@@ -126,19 +130,27 @@ class ForwardRecordStore:
         from ._sqlite_utils import harden_sqlite_engine
         harden_sqlite_engine(self._engine)
         _Base.metadata.create_all(self._engine)
+        from app.db.trial_ledger import _add_missing_columns
+        _add_missing_columns(self._engine, {"forward_runs": {"benchmark": "TEXT"}})
         self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
 
     # ------------------------------------------------------------------ 启动（人做）
     def start(self, strategy_id: int, spec_hash: str, actor: str, reason: str,
               data_identity: Optional[dict] = None, started_at: Optional[datetime] = None,
-              strategy_status: Optional[str] = None) -> ForwardRun:
+              strategy_status: Optional[str] = None,
+              benchmark_universe: Optional[List[str]] = None) -> ForwardRun:
         """
         启动正式前向。同一策略 + 规格第二次启动 → ValueError（启动时间唯一，不能重置后"重新开始"）。
         策略的**当前状态**必须允许正式天数（paper_running / verified_active；2026-10-22 C6）—— 以库里的状态为准，
         给了 strategy_status 也要与库里一致。
+        benchmark_universe：等权宇宙基准的成分，**在这一刻冻结**（D16："预先固定股票池时点"）；不给 → ValueError。
         """
         if not actor or not reason:
             raise ValueError("启动正式前向必须写明操作人与原因")
+        if not benchmark_universe:
+            raise ValueError("启动正式前向必须同时冻结基准成分（D16：预先固定股票池时点）")
+        from app.core.benchmark import freeze_universe
+        frozen_bench = freeze_universe(benchmark_universe)
         if not spec_hash:
             raise ValueError("没有规格哈希的策略不能启动正式前向")
         from app.core.lifecycle.strategy_states import label, permissions
@@ -154,7 +166,8 @@ class ForwardRecordStore:
                          started_at=_naive_utc(started_at or datetime.now(timezone.utc)),
                          actor=str(actor)[:64], reason=str(reason), code_version=code_version(),
                          data_identity=json.dumps(data_identity or {}, ensure_ascii=False, default=str),
-                         environment=json.dumps(environment_version(), ensure_ascii=False))
+                         environment=json.dumps(environment_version(), ensure_ascii=False),
+                         benchmark=json.dumps(frozen_bench, ensure_ascii=False))
         with self._Session() as s:
             s.add(row)
             try:
@@ -402,18 +415,41 @@ def build_daily_record(result: Dict[str, Any], *, strategy_id: int, spec_hash: s
     broker_ret = _f(rec.get("day_return"))
     paper_ret = _f(getattr(paper, "net_ret", None))
     out["net_return"] = {"broker": broker_ret, "paper": paper_ret}
-    bench = None
+    # D16：等权宇宙，规则预先固定（app/core/benchmark.py）—— 成分取正式前向启动时冻结的名单；
+    # 缺价 / 被公司行动检查隔离的成分按 0 收益留在分母，不删后再平均
+    from app.core.benchmark import BENCHMARK_NAME, EXCESS_LABEL, ew_universe_return
+    frozen_universe = None
+    if forward_run is not None and getattr(forward_run, "benchmark", None):
+        try:
+            frozen_universe = list(json.loads(forward_run.benchmark)["tickers"])
+        except Exception as exc:
+            logger.error("[forward] 启动记录里的基准成分读不出来: %s", exc)
+            missing["benchmark.universe"] = f"启动记录里的基准成分读不出来：{exc}"
+    elif forward_run is not None:
+        missing["benchmark.universe"] = "正式前向启动时没有冻结基准成分（D16 之前启动的）"
     try:
-        close = dataset["close"]
-        if day in close.index:
-            r = close.pct_change().loc[day]
-            bench = float(r.mean()) if r.notna().any() else None
+        out["benchmark"] = ew_universe_return(dataset["close"], day, frozen_universe,
+                                              quarantined=result.get("ca_quarantined") or ())
     except Exception as exc:
         logger.warning("[forward] 基准收益算不出: %s", exc)
         missing["benchmark"] = f"基准收益算不出：{exc}"
-    out["benchmark"] = {"name": BENCHMARK, "return": bench}
-    out["excess_return"] = {"broker": (broker_ret - bench) if broker_ret is not None and bench is not None else None,
-                            "paper": (paper_ret - bench) if paper_ret is not None and bench is not None else None}
+        out["benchmark"] = {"name": BENCHMARK_NAME, "return": None}
+    bench = out["benchmark"].get("return")
+    if bench is None and "benchmark" not in missing:
+        missing["benchmark"] = out["benchmark"].get("why_none", "基准收益算不出")
+    tw_ = result.get("execution_target") or {}
+    paper_net = float(sum(tw_.values())) if tw_ else None
+
+    def _diff(ret):
+        return (ret - bench) if ret is not None and bench is not None else None
+
+    def _matched(ret, net):
+        return (ret - net * bench) if ret is not None and bench is not None and net is not None else None
+    out["excess_return"] = {"label": EXCESS_LABEL,
+                            "broker_vs_full_benchmark": _diff(broker_ret),
+                            "paper_vs_full_benchmark": _diff(paper_ret),
+                            "paper_exposure_matched": _matched(paper_ret, paper_net),
+                            "broker_exposure_matched": None}
     if broker_ret is None:
         missing["net_return.broker"] = "券商侧没有可比的前一可信快照（首日 / 对账未通过）"
 
@@ -440,6 +476,10 @@ def build_daily_record(result: Dict[str, Any], *, strategy_id: int, spec_hash: s
         "actual_gross": (sum(abs(v) for v in mv) / ta) if ta else None,
         "actual_net": (sum(mv) / ta) if ta else None,
     }
+    # D16：券商侧按**实际**净敞口折算（快照算得出时）
+    out["excess_return"]["broker_exposure_matched"] = (
+        broker_ret - out["exposure"]["actual_net"] * bench
+        if broker_ret is not None and bench is not None and out["exposure"]["actual_net"] is not None else None)
 
     # ---- 资金利用率 / 对账 / 异常
     out["capital_utilization"] = ex.get("capital") if isinstance(ex, dict) else None
@@ -457,6 +497,8 @@ def build_daily_record(result: Dict[str, Any], *, strategy_id: int, spec_hash: s
             anomalies.append({"kind": k, "detail": item})
     for v in result.get("post_band_violations") or []:
         anomalies.append({"kind": "post_band_violation", "detail": v})
+    for tk, since in (result.get("ca_flags") or {}).items():
+        anomalies.append({"kind": "corporate_action_quarantine", "detail": {"ticker": tk, "since": since}})
     out["anomalies"] = anomalies
 
     # ---- 正式与否（2026-10-22 C4 / C6：状态权限 + 完整 UTC 时间戳）

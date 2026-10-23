@@ -571,6 +571,15 @@ class DailyTradingLoop:
                     "reason": "target_generation_failed", "detail": str(exc),
                     "strategy_verdict": strategy_verdict, "used_baseline": used_baseline,
                     "execution": self._maintain_live("target_generation_failed")}
+        # 用户决定第 18 条（F02′）：疑似未知公司行动 → 隔离、不加风险、待人对账。模拟账本与券商目标同一处收缩；
+        # 券商侧另由盘前风控门按实际持仓拒绝加风险单。标记读不到 → 不知道谁该隔离 → 券商只对账不下单
+        ca_quarantined, ca_problem = self._corporate_action_quarantine(dataset)
+        if ca_problem:
+            live_block_reason = live_block_reason or ca_problem
+        if ca_quarantined:
+            from app.core.data_engine.corporate_actions import no_new_risk
+            tg.weights = no_new_risk(tg.weights, ca_quarantined)
+            tg.gated = no_new_risk(tg.gated, ca_quarantined)
         weights, composite, risk_report = tg.weights, tg.composite, tg.risk_report
         sectors = None
         if "sector" in dataset:
@@ -652,7 +661,7 @@ class DailyTradingLoop:
                           {str(k): v for k, v in sectors.items()})
             execution, t3_live = self._execute_live(
                 gated_last, weights.index[-1], prices_f, adv_df,
-                sectors=sector_map, no_trade_band=band)
+                sectors=sector_map, no_trade_band=band, quarantined=set(ca_quarantined))
 
         # ── TR.3：T3 providers（盘口/借券/账户）——仿真背 TR.1 估计、实盘背 moomoo，同接口切换。
         #    这里取账户真实记账状态（买入力/持仓），避免任何"交易当时才知道的量"被写死。
@@ -727,6 +736,9 @@ class DailyTradingLoop:
                 "execution_target": {str(k): float(v) for k, v in gated_last.items()
                                      if np.isfinite(v) and abs(v) > 0},
                 "post_band_violations": post_band_violations,
+                # 第 18 条：仍在隔离中的疑似公司行动 {标的: 标记日}（不加风险；基准按 0 收益留在分母）
+                "ca_quarantined": sorted(ca_quarantined),
+                "ca_flags": dict(ca_quarantined),
                 "trading_context": tc_summary}         # TR.1 交易现实(价差/可交易/可做空/带)
 
         # FE-TR 前置：把本轮诊断只增不改地存下来（失败绝不影响交易）
@@ -774,8 +786,27 @@ class DailyTradingLoop:
         finally:
             gw.close()
 
+    @staticmethod
+    def _corporate_action_quarantine(dataset: Dict[str, pd.DataFrame]):
+        """
+        (隔离中的标的 {ticker: 标记日}, 问题)。先识别最近几根 bar 的疑似公司行动并记标记，再读出所有未结案的。
+        标记库读写失败 → ({}, 原因)：调用方让券商只对账不下单（不知道谁该隔离时不能照常加风险）。
+        """
+        from app.core.data_engine.corporate_actions import detect_suspects
+        try:
+            from app.db.corporate_actions import CorporateActionStore
+            store = CorporateActionStore()
+            for s in detect_suspects(dataset.get("close"), dataset.get("volume")):
+                store.flag(s["ticker"], s["bar_date"], kind="suspected_price_jump", ratio=s["ratio"],
+                           nearest_split=s["nearest_split"])
+            return store.open_tickers(), ""
+        except Exception as exc:
+            logger.error("[portfolio] 公司行动隔离标记读写失败 → 券商本轮只对账不下单: %s", exc)
+            return {}, f"corporate_action_store_unavailable: {exc}"
+
     def _execute_live(self, target_last: pd.Series, decision_ts, prices_f: pd.DataFrame,
-                      adv_df: pd.DataFrame, *, sectors=None, no_trade_band: float = 0.0):
+                      adv_df: pd.DataFrame, *, sectors=None, no_trade_band: float = 0.0,
+                      quarantined=None):
         """
         返回 (执行报告, 实时 T3 状态或 None)。任何失败都是**不下单**，并把原因写进报告：
         执行层出错时继续下单才是危险方向（§U），而模拟账本已经照常记完了。
@@ -797,7 +828,7 @@ class DailyTradingLoop:
                 ).run_cycle(
                     target_weights=target_last, ref_prices=prices_f.loc[decision_ts],
                     adv_usd=adv_df.loc[decision_ts], decision_date=pd.Timestamp(decision_ts).date(),
-                    sectors=sectors, no_trade_band=no_trade_band)
+                    sectors=sectors, no_trade_band=no_trade_band, quarantined=quarantined or ())
                 execution = rep.to_dict()
             except Exception as exc:
                 logger.error("[portfolio] Phase 12 执行周期失败 → 本轮不下单: %s", exc)

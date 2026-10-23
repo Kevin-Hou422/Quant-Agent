@@ -68,6 +68,10 @@ class ValidationResult:
     held_out_test:   Optional[dict] = None
     #: 信号 / 成交时钟口径（复审 2026-10-19 §5.1）
     clock_version:   str = field(default_factory=lambda: _clock())
+    #: 研究边界状态（2026-10-22 D12）：只有 registered（或合成数据 synthetic）才可能给出正式结论
+    research_boundary: str = ""
+    #: 2026-10-22 D1：用到基本面字段 → 只是选择段诊断，永远不给通过
+    diagnostic_only: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -83,6 +87,8 @@ class ValidationResult:
             "partition": self.partition,
             "held_out_test": self.held_out_test,
             "clock_version": self.clock_version,
+            "research_boundary": self.research_boundary,
+            "diagnostic_only": self.diagnostic_only,
         }
 
 
@@ -176,6 +182,7 @@ class ValidationGate:
 
         # ---- 0. 三段切割：门只看 selection 段（S.2）----
         from app.core.data_engine.data_partitioner import FrozenBoundaryError
+        self._ctx = None
         try:
             gate_panel, split = self._selection_panel(dataset, dataset_key)
         except FrozenBoundaryError as exc:          # 有冻结边界却切不出选择段 → 不能退回全量
@@ -184,6 +191,18 @@ class ValidationGate:
             logger.warning("[validation_gate] %s → 判不通过", exc)
         if split is not None:
             res.partition = split.to_dict()
+        # 2026-10-22 D1：基本面因子只做选择段诊断，指标照算，结论不给通过
+        from app.core.lifecycle.fundamentals_policy import promotion_problem
+        d1 = promotion_problem(dsl)
+        if d1:
+            res.diagnostic_only = True
+            reasons.append(d1)
+        # 2026-10-22 D12：正式结论只认登记过的研究边界（不再依赖首次调用偶然冻结）
+        if self._ctx is not None:
+            res.research_boundary = self._ctx.boundary
+            gap = self._ctx.formal_boundary_problem()
+            if gap:
+                reasons.append(gap)
 
         if gate_panel is not None:
             # ---- 1. WalkForward 全折 OOS 为正 ----
@@ -249,6 +268,7 @@ class ValidationGate:
         from app.core.data_engine.research_context import open_research
         ctx = open_research(dataset, dataset_key, "validation_gate", three_way=self.three_way,
                             embargo_days=self.embargo_days)
+        self._ctx = ctx
         if ctx.split is None:
             logger.warning("[validation_gate] 本次**没有**冻结 Test 段（%s），门看全量，结论按『样本内』解读。",
                            ctx.note)

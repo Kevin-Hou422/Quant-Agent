@@ -190,8 +190,10 @@ def wiring(monkeypatch):
 class TestHappyPath:
 
     def test_the_config_is_proposed_and_carries_every_upstream_result(self, wiring):
-        cfg = build_strategy_config({"f1": _sig(1), "f2": _sig(2)}, _panel(),
-                                    aum=100_000.0, name="策略甲")
+        from app.core.data_engine.research_context import open_research
+        with open_research(_panel(), "", "proposal", three_way=False).active():   # D12：边界门要研究上下文
+            cfg = build_strategy_config({"f1": _sig(1), "f2": _sig(2)}, _panel(),
+                                        aum=100_000.0, name="策略甲")
         assert cfg.status == "proposed", (
             f"新建配置的状态是 {cfg.status!r} —— 必须是 proposed（等人审批），"
             f"绝不能直接是 active")
@@ -578,7 +580,9 @@ class TestPaperGrading:
 
     def test_the_grader_sees_the_strategy_gate_verdict(self, wiring):
         """分级的输入必须是策略门的结论，拿错对象会让等级与证据脱节。"""
-        build_strategy_config({"f1": _sig(1)}, _panel(), aum=1e5)
+        from app.core.data_engine.research_context import open_research
+        with open_research(_panel(), "", "proposal", three_way=False).active():   # D12：边界门要研究上下文
+            build_strategy_config({"f1": _sig(1)}, _panel(), aum=1e5)
         assert wiring.seen["grade"][0]["passed"] is True
         assert wiring.seen["grade"][0]["sharpe"] == 1.2
 

@@ -127,6 +127,8 @@ class GateContext:
     #: 持仓里也没有券商价的（新开仓）不放行。没有"不传就跳过检查"的路径（R5 就是那条路径）。
     quotes:        Optional[Mapping[str, object]] = None
     now:           Optional[datetime] = None
+    #: 疑似未知公司行动、处于隔离中的标的（2026-10-22 用户决定第 18 条）：只许减仓，不许加风险
+    quarantined:   frozenset = frozenset()
 
 
 @dataclass
@@ -328,6 +330,8 @@ def check(orders: List[PlannedOrder], ctx: GateContext, limits: PreTradeLimits) 
     for o in orders:
         if ctx.kill_switch and o.purpose != PURPOSE_FLATTEN:
             dec.rejected.append((o, "kill_switch_engaged")); continue
+        if o.ticker in ctx.quarantined and increases_risk(float(ctx.current_qty.get(o.ticker, 0.0)), o.signed_qty):
+            dec.rejected.append((o, "corporate_action_quarantine")); continue
 
         ref = _finite(o.ref_price)
         if ref is None or ref <= 0:

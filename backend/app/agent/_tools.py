@@ -129,7 +129,9 @@ class QuantTools:
         from app.core.data_engine.research_context import open_research
         self._ctx = open_research(ds, self._dataset_key, "chat")
         ds = self._full_dataset = self._ctx.selection
-        self._holdout_split = self._ctx.split if self._ctx.pinned else None
+        # 2026-10-22 D12：真实数据集的 Test 段不论边界已登记还是临时切分，动用都要记账（曝光不能因为边界还没登记就漏记）
+        self._holdout_split = (self._ctx.split if self._ctx.split is not None
+                               and self._ctx.boundary in ("registered", "unconfirmed", "provisional") else None)
 
         # F6 修复：三段式切割 IS / Validate(GP OOS) / Test(真实样本外)
         # GP 全程只接触 IS + Validate；Test 段仅在最终验证时用一次。

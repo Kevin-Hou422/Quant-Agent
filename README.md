@@ -532,9 +532,21 @@ powershell -ExecutionPolicy Bypass -File scripts\start_forward.ps1 [-RegisterLog
   that cannot be computed are `None` with a reason). A day is *formal* only after a human start
   record (unique start time, spec hash, code version, data identity, environment) and only if it ran
   between the decision-day close and the next open with execution live; late reruns cannot overwrite
-  a formal day. No formal forward has been started. The benchmark defaults to the equal-weight
-  universe (roadmap D16). Operating limits (daily-only breaker,
-  log-only alerts, the T−1 signal clock) are spelled out in `backend/OPERATIONS.md` §7.
+  a formal day. No formal forward has been started. The benchmark is the equal-weight universe
+  with rules fixed in advance (`backend/app/core/benchmark.py`, decision D16): members frozen when
+  the formal forward starts, daily rebalance, close-to-close window, and a member with a missing price
+  or a quarantined corporate action is held at a 0 return *in the denominator* (never dropped and
+  re-averaged). The plain difference to this fully-invested benchmark is labelled as such — it is
+  not alpha for a low-exposure book — and an exposure-matched difference is recorded next to it;
+  SPY as a second benchmark is deferred. Operating limits (daily-only breaker, log-only alerts) are
+  spelled out in `backend/OPERATIONS.md` §7.
+- **Unknown corporate actions are quarantined** (decision 18 of 2026-10-22). A one-day move of
+  |log return| ≥ log 1.4 on any of the last few bars (an unadjusted split, a special dividend, …)
+  flags the name; the flag persists until a person reconciles broker shares / cash and the data
+  adjustment and resolves it (`backend/tools/ops/ca_flags.py`). While flagged, the paper book and the
+  broker order gate may reduce but never add risk on that name; broker share counts that disagree
+  with the ledger by a split-like ratio are annotated for reconciliation. The full corporate-action
+  ledger is still deferred.
 - **The daily job runs twice** (21:30 UTC and a 22:45 UTC retry for late data). Every run reconciles
   and continues a pending flatten even when there is no new bar or the ingest is rejected; reruns are
   idempotent (client-id dedupe at the broker, `last_pnl_date` resume in the simulated book).
@@ -630,6 +642,14 @@ than convention.
   are frozen by *calendar* (not by ratio), so the window does not drift when you change the request
   dates. Every research endpoint returns the split it used; when a panel is too short to honour the
   freeze, the response says so (`degraded: true`) instead of silently weakening.
+- **A real dataset's Test start is registered by a person** (decision D12). Nothing pins it as a
+  side effect of the first call any more: until a date is registered
+  (`backend/tools/research/d12_register_boundary.py`, write-once, with actor and reason) research
+  runs on a *provisional* split and formal verdicts — the validation gate and strategy proposals —
+  refuse. `backend/tools/research/d12_boundary_report.py` lists existing boundaries, earliest
+  exposure, exposure counts, universes and experiments from the live database over a read-only,
+  lock-free connection and suggests dates. Exposure counts are per dataset and overlapping window,
+  so renaming the experiment does not refresh them.
 - **The holdout is metered** — touching the Test segment is an explicit opt-in and every use is
   recorded in an append-only ledger. Exceeding the budget (default: once) returns
   `over_budget: true` alongside the numbers. It does not block — blocking would just push people to
@@ -799,16 +819,17 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
   order has been placed on a real paper account yet. Two behaviours can only be confirmed there:
   whether the paper account serves history-order queries, and whether orders placed after the close
   appear in the next session's order list.
-- **Phase 10 remainder.** What is left needs a decision, not code — it is listed in the roadmap's
-  open-decisions register: whether to spend the one-shot holdout budget on a fundamental factor,
-  where multi-class share counts should come from, and whether earnings surprises should become
-  visible at the press release rather than the 10-Q.
-- **Open after the 2026-10-18 review and the 2026-10-19 re-review** (roadmap D12–D16): the frozen
-  Test start for the live database, re-approval of the active strategy, one clock for signal / fill /
-  IC (the daily loop currently trades a T−1 signal), an alert channel (alerts are log-only), and the
-  forward-record benchmark. Per-item status of the re-review is in
-  `backend/docs/REVIEW_2026-10-19_TRACKER.md`. Not built: an intraday
-  breaker watchdog, a backup-restore drill, and storing unadjusted prices + corporate actions in PIT.
+- **Phase 10 remainder — decided 2026-10-22, not open.** Fundamental factors are not promoted this
+  round (D1): no path can move a factor that uses a fundamental field to validated / paper / active,
+  the validation gate only gives such factors a selection-segment diagnostic, and pre-registered
+  diagnostics are counted as trials without touching the frozen Test. Multi-class share counts stay
+  NaN (D7). Press-release-level SUE is not added (D8); whether those numbers require a paid source has
+  **not been verified**.
+- **Open** (per-item status in `backend/docs/DECISIONS_2026-10-22_TRACKER.md`): the Test start dates
+  for the live database — a read-only report with suggested dates is waiting for your confirmation
+  (D12); re-proposal of the active strategy (D13); an alert channel (D15, alerts are log-only). Not
+  built: an intraday breaker watchdog, a backup-restore drill, and the full corporate-action ledger
+  (unknown corporate actions are already quarantined, see above).
 - **Phase 13/14 — red-team agent, fully autonomous mode, validation-period operations.**
 - **R.2 remainder** — residual-based style neutralisation (changes signals, so it needs its own
   validation) and alpha-vs-risk-premium separation; `beta_neutral` closure is deferred until shorting

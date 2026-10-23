@@ -200,6 +200,28 @@ def _active_strategy_problem(settings) -> tuple:
                   f"规格 {json.loads(active.verdict or '{}').get('spec_hash', '')[:12]}）")
 
 
+def _target_vol_problem(settings) -> tuple:
+    """
+    (ok, detail)：2026-10-22 用户决定 N05-c —— 首轮关闭目标波动。
+    运行时 `RISK_TARGET_VOL_ANN` 必须为 0；运行中的策略规格里也不能还开着（那份要重新提案 —— 改 .env 不会
+    悄悄改变已批准的策略：规格对不上，每日循环本来就不按它调仓）。
+    """
+    on = float(getattr(settings, "risk_target_vol_ann", 0.0) or 0.0)
+    if on > 0:
+        return False, (f"RISK_TARGET_VOL_ANN={on}：N05-c 决定首轮关闭目标波动 —— 在活 .env 里设为 0，"
+                       "之后按新配置重新提案（新规格里 target_vol_ann = None）")
+    from app.core.portfolio_manager.executable_spec import approved_spec
+    from app.db.strategy_store import StrategyStore
+    rec = StrategyStore(db_url=settings.database_url).latest_running()
+    spec = approved_spec(rec) if rec is not None else None
+    tv = ((spec or {}).get("risk_limits") or {}).get("target_vol_ann")
+    if tv:
+        return False, (f"运行中的策略 #{rec.id} 的规格里目标波动仍是 {tv}（批准于关闭之前）—— "
+                       "每日循环不会按它调仓；请按新配置重新提案并审批")
+    return True, "RISK_TARGET_VOL_ANN=0（N05-c：首轮关闭目标波动）" + (
+        f"；运行中的策略 #{rec.id} 的规格同样关闭" if rec is not None else "")
+
+
 #: 现役策略用到基本面字段时，宇宙里至少这么大比例的票要有**没过期**的本地事实
 MIN_FUNDAMENTALS_READY = 0.5
 
@@ -339,6 +361,12 @@ def run_preflight(
         logger.warning("[golive] 读取策略配置失败: %s", exc)
         ok, detail = False, f"读取策略配置失败：{exc}"
     rep.add("strategy", ok, detail)
+    try:
+        ok, detail = _target_vol_problem(settings)
+    except Exception as exc:
+        logger.warning("[golive] 目标波动检查失败: %s", exc)
+        ok, detail = False, f"目标波动检查失败：{exc}"
+    rep.add("target_vol_off", ok, detail)
     try:
         if fundamentals_check is not None:
             ok, detail, blocking = fundamentals_check(settings)

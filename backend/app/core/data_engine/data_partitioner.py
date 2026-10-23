@@ -22,7 +22,7 @@ data_partitioner.py — IS/OOS 数据分区引擎（含 Walk-Forward）
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -487,6 +487,13 @@ class ThreeWaySplit:
                    会随入参漂移，可被反复挖掘。故 `degraded=True`，调用方必须能看见。
     ``"pinned"`` — Test 起点是该数据集**持久化的绝对日期**（外部审查 2026-10-18 F04）。
                    "最近 N 年"在数据每天增长时也会每天滑动；只有绝对日期才是真的冻结。
+
+    boundary（2026-10-22 D12）
+    --------------------------
+    ``"registered"``  — 人登记的边界（`BoundaryStore.register`）：正式结论可用
+    ``"unconfirmed"`` — 旧代码首次调用偶然写下的边界：照样冻结，正式结论等人确认
+    ``"provisional"`` — 真实数据集还没有边界：本次按配置**临时**切，不写库，正式结论拒绝
+    ``""``            — 合成 / 未登记数据（不持久化边界）
     """
     train:        Dict[str, pd.DataFrame]
     validate:     Dict[str, pd.DataFrame]
@@ -503,6 +510,7 @@ class ThreeWaySplit:
     test_end:     Optional[pd.Timestamp]
     frozen_by:    str = "years"
     degraded:     bool = False
+    boundary:     str = ""
 
     @property
     def test_key(self) -> str:
@@ -520,6 +528,7 @@ class ThreeWaySplit:
             "test_key":   self.test_key,
             "frozen_by":  self.frozen_by,
             "degraded":   self.degraded,
+            "boundary":   self.boundary,
         }
 
 
@@ -766,9 +775,10 @@ def split_from_settings(
     并记 error —— 与 DEV_LESSONS §U 同一条：兜底要朝**更严**的一侧倒，
     而"读不到就不切 Test"恰恰是最松的那一侧。
 
-    dataset_key : 真实数据集的名字。给定时 Test 起点按该数据集**持久化的绝对日期**切
-                  （第一次切分时写入，见 `trial_ledger.BoundaryStore`）。外部审查 2026-10-18 F04：
-                  此前起点 = 本次数据末日 − 2 年，去掉最后一天就换出一个与原窗口重叠 521 天的"新" Test 段。
+    dataset_key : 真实数据集的名字。给定时 Test 起点按该数据集**持久化的绝对日期**切（`trial_ledger.BoundaryStore`）。
+                  外部审查 2026-10-18 F04：此前起点 = 本次数据末日 − 2 年，去掉最后一天就换出一个与原窗口重叠
+                  521 天的"新" Test 段。2026-10-22 D12：边界只能由人登记；还没有边界时按配置**临时**切
+                  （`boundary="provisional"`，不写库）—— 不再由第一次碰巧发生的调用把它写死。
     """
     kwargs = dict(test_years=2.0, test_ratio=0.15, val_ratio=0.25,
                   embargo_days=20, min_train_days=60, min_selection_days=378,
@@ -792,23 +802,20 @@ def split_from_settings(
 
     part = ThreeWayPartitioner(**kwargs)
     try:
-        from app.db.trial_ledger import BoundaryStore
-        bstore = BoundaryStore()
-        pinned = bstore.get(key)
+        from app.db.trial_ledger import BOUNDARY_PROVISIONAL, BoundaryStore
+        found = BoundaryStore().status(key)
     except Exception as exc:
         raise FrozenBoundaryError(f"读不到数据集 {key} 的冻结边界（{exc}）—— 不按滑动窗口切，拒绝本次切分") from exc
-    if pinned is None:
-        split = part.partition(dataset)                    # 第一次：按配置算出起点，然后固定下来
-        if split.test_start is None:
-            return split
-        try:
-            pinned = bstore.pin(key, split.test_start, frozen_by=split.frozen_by)
-        except Exception as exc:
-            raise FrozenBoundaryError(f"数据集 {key} 的冻结边界写不进去（{exc}）") from exc
-        if pinned == split.test_start:
-            return split
+    if found is None:
+        # D12：没有登记的边界 → 临时切分，不写库（正式结论由调用方据 boundary 拒绝）
+        split = part.partition(dataset)
+        logger.warning("[D12] 数据集 %s 还没有登记冻结边界 → 本次按配置临时切（Test 起点 %s，不写库）；"
+                       "正式结论（验证门 / 策略提案）要等边界登记", key,
+                       split.test_start.date() if split.test_start is not None else None)
+        return replace(split, boundary=BOUNDARY_PROVISIONAL)
+    pinned, status = found
     try:
-        return part.partition(dataset, test_start=pinned)
+        return replace(part.partition(dataset, test_start=pinned), boundary=status)
     except ValueError as exc:
         raise FrozenBoundaryError(
             f"数据集 {key} 的 Test 段从 {pinned.date()} 起冻结；这次的数据在它之前不够切出选择段（{exc}）。"
@@ -830,6 +837,15 @@ def account_holdout_use(
     不能因为记账失败就假装这是第一次看这段数据。
     """
     payload = dict(split.to_dict())
+    # D12：记下是哪个实验、哪个股票池看的（列出用；次数只按数据集 + 区间重叠算，改实验名不刷新额度）
+    exp = uni = uni_n = None
+    try:
+        from app.core.data_engine.research_context import current
+        ctx = current()
+        if ctx is not None:
+            exp, uni, uni_n = ctx.experiment, ctx.universe_digest, ctx.universe_n
+    except Exception as exc:                                    # pragma: no cover - 只影响列出
+        logger.warning("[S.2] 读不到当前研究上下文，这次使用不带实验 / 股票池: %s", exc)
     try:
         from app.db.trial_ledger import HoldoutLedger
         if budget is None:
@@ -840,7 +856,8 @@ def account_holdout_use(
                 logger.warning("[S.2] 读不到 s_holdout_budget，按最严的 1 次计: %s", exc)
                 budget = 1
         usage = HoldoutLedger(budget=budget).record_use(
-            dataset_key=dataset_key, test_key=split.test_key, purpose=purpose)
+            dataset_key=dataset_key, test_key=split.test_key, purpose=purpose,
+            experiment=exp, universe_digest=uni, universe_n=uni_n)
         payload.update(usage.to_dict())
     except Exception as exc:
         logger.error(

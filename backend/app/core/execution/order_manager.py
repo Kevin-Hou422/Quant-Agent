@@ -431,6 +431,9 @@ class OrderManager:
                 e, b = expected.get(tk, 0.0), broker_qty.get(tk, 0.0)
                 if abs(e - b) > DUST_QTY:
                     discrepancies.append({"ticker": tk, "expected": e, "broker": b})
+            # 第 18 条：股数比例像拆股 / 合股 → 标出来，方便人对账（差异照样阻断下单，直到人接受）
+            from app.core.data_engine.corporate_actions import annotate_discrepancies
+            discrepancies = annotate_discrepancies(discrepancies)
             status = "discrepancy" if discrepancies else "clean"
         if unresolved:
             status = "unresolved"
@@ -528,14 +531,15 @@ class OrderManager:
     def run_cycle(self, target_weights: pd.Series, ref_prices: pd.Series,
                   adv_usd: pd.Series, decision_date: date, *,
                   sectors: Optional[Mapping[str, object]] = None,
-                  no_trade_band: float = 0.0) -> ExecutionReport:
+                  no_trade_band: float = 0.0, quarantined=()) -> ExecutionReport:
         """
         sectors       : 标的 → 行业（下单层行业上限用；缺失则只按单票约束）。
         no_trade_band : 相对**券商实际持仓**的无交易带（权重单位），见 build_rebalance_orders。
+        quarantined   : 疑似未知公司行动、隔离中的标的（用户决定第 18 条）：盘前风控门拒绝它们的加风险单。
         """
         with self._account_lock():
             return self._run_cycle(target_weights, ref_prices, adv_usd, decision_date,
-                                   dict(sectors or {}), float(no_trade_band))
+                                   dict(sectors or {}), float(no_trade_band), frozenset(quarantined or ()))
 
     def _await_terminal(self, broker_ids: List[str]) -> List[str]:
         """
@@ -585,7 +589,7 @@ class OrderManager:
             return rep
 
     def _run_cycle(self, target_weights, ref_prices, adv_usd, decision_date,
-                   sectors=None, no_trade_band: float = 0.0) -> ExecutionReport:
+                   sectors=None, no_trade_band: float = 0.0, quarantined: frozenset = frozenset()) -> ExecutionReport:
         from app.core.data_engine.market_calendar import CalendarUnavailable
         rep = ExecutionReport(decision_date=str(decision_date))
         rep.gateway = self.gw.describe()
@@ -699,7 +703,7 @@ class OrderManager:
             broker_prices={tk: p.nominal_price for tk, p in pos.items()},
             adv_usd=adv_usd, day_return=rec.day_return, kill_switch=False,
             open_orders=self._open_order_envelope(), sectors=sectors or {},
-            quotes=quotes, now=self._clock()), self.limits)
+            quotes=quotes, now=self._clock(), quarantined=quarantined), self.limits)
         rep.gate = dec.to_dict()
         for o, reason in dec.rejected:
             self.store.record_gate_rejection(o, self.book_id, decision_date, reason)

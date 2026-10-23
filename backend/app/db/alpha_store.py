@@ -177,6 +177,12 @@ class AlphaStore:
 
     def save(self, result: AlphaResult) -> int:
         """持久化一条 Alpha，返回自增 id。"""
+        # 2026-10-22 D1：直接以晋级状态入库也是一条晋级路径 —— 与 update_status 同一道拦截
+        from app.core.lifecycle.fundamentals_policy import PROMOTED_STATUSES, promotion_problem
+        if str(result.status or "").strip().lower() in PROMOTED_STATUSES:
+            why = promotion_problem(result.dsl)
+            if why:
+                raise ValueError(why)
         record = AlphaRecord(
             dsl          = result.dsl,
             created_at   = datetime.utcnow(),
@@ -229,7 +235,14 @@ class AlphaStore:
             if record is None:
                 raise KeyError(f"Alpha id={alpha_id} 不存在")
             validate_transition(record.status, new_status)
-            record.status = new_status.strip().lower()
+            target = new_status.strip().lower()
+            # 2026-10-22 D1：基本面因子本轮不正式晋级 —— 所有晋级路径（API、验证门、发现、审批）都经过这里
+            from app.core.lifecycle.fundamentals_policy import PROMOTED_STATUSES, promotion_problem
+            if target in PROMOTED_STATUSES:
+                why = promotion_problem(record.dsl)
+                if why:
+                    raise ValueError(why)
+            record.status = target
             session.commit()
             return record
 

@@ -33,11 +33,13 @@ append-only 表 `holdout_usages(dataset_key, test_key, purpose, used_at)`——
 两次都显示"第 1 次使用"。现在一次使用的次数 = 同一数据集里与它**有任何重叠**的历史使用数 + 1。
 看过的数据不会因为窗口滑动而恢复清白；要一个干净的样本外，只能等新收集的、从没被看过的数据。
 
-FrozenBoundary —— 冻结边界持久化（F04）
----------------------------------------
-Test 起点此前由每次的数据末日倒推 2 年得出，数据每天增长它就每天滑动。
-现在每个**真实数据集**第一次切分时把 Test 起点（绝对日期）写进 `frozen_boundaries`，
-以后不管数据截到哪天，都用这个日期切。选择段从此固定；新数据全部落在 Test 一侧。
+FrozenBoundary —— 冻结边界持久化（F04 / 2026-10-22 D12）
+--------------------------------------------------------
+Test 起点此前由每次的数据末日倒推 2 年得出，数据每天增长它就每天滑动。F04 改成"第一次切分时写死"，
+D12 指出这又让边界取决于**哪一次调用碰巧最先发生**。现在：边界只能由人**登记**
+（`BoundaryStore.register`：日期 + 操作人 + 理由，只写一次），研究入口在登记之前按"临时切分"跑、不写库；
+正式结论（验证门、策略提案）要求已登记的边界。旧代码首次调用写下的行（没有操作人）照样冻结 Test 段
+（冻结的数据不能被解冻），但算"未确认"，正式结论同样等人确认。
 """
 
 from __future__ import annotations
@@ -359,6 +361,11 @@ class HoldoutUse(_Base):
     test_key:    str      = Column(String(64),  nullable=False, index=True)
     purpose:     str      = Column(String(64),  nullable=False, default="")
     used_at:     datetime = Column(DateTime, default=datetime.utcnow, nullable=False)
+    #: 2026-10-22 D12：谁、在什么股票池上看的（列出用；**不进计次** —— 次数只按数据集 + 区间重叠算，
+    #: 改实验名不会刷新额度）
+    experiment:      str = Column(String(128), nullable=True)
+    universe_digest: str = Column(String(32), nullable=True)
+    universe_n:      int = Column(Integer, nullable=True)
 
 
 @dataclass(frozen=True)
@@ -409,7 +416,18 @@ class HoldoutLedger:
         from ._sqlite_utils import harden_sqlite_engine
         harden_sqlite_engine(self._engine)
         _Base.metadata.create_all(self._engine)
+        _add_missing_columns(self._engine, {"holdout_usages": {
+            "experiment": "VARCHAR(128)", "universe_digest": "VARCHAR(32)", "universe_n": "INTEGER"}})
         self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
+
+    def usages(self, dataset_key: str) -> List[dict]:
+        """该数据集的全部使用记录（时间顺序）：区间、用途、实验名、股票池。"""
+        with self._Session() as s:
+            rows = list(s.scalars(select(HoldoutUse).where(HoldoutUse.dataset_key == dataset_key)
+                                  .order_by(HoldoutUse.id)).all())
+        return [{"test_key": r.test_key, "purpose": r.purpose, "used_at": r.used_at,
+                 "experiment": r.experiment, "universe_digest": r.universe_digest,
+                 "universe_n": r.universe_n} for r in rows]
 
     def count(self, dataset_key: str, test_key: str) -> int:
         """该数据集里与 `test_key` 这段区间**有重叠**的使用次数（区间解析不了时按键精确匹配）。"""
@@ -431,12 +449,18 @@ class HoldoutLedger:
         return min(starts) if starts else None
 
     def record_use(
-        self, dataset_key: str, test_key: str, purpose: str = "",
+        self, dataset_key: str, test_key: str, purpose: str = "", *,
+        experiment: Optional[str] = None, universe_digest: Optional[str] = None,
+        universe_n: Optional[int] = None,
     ) -> HoldoutUsage:
-        """记一次 Test 段使用并返回记账结果（含本次的累计次数）。"""
+        """
+        记一次 Test 段使用并返回记账结果（含本次的累计次数）。实验名 / 股票池只是记下来，
+        **不参与计次**（D12："改实验名不能刷新重叠数据的曝光额度"）。
+        """
         with self._Session() as s:
             s.add(HoldoutUse(dataset_key=dataset_key, test_key=test_key,
-                             purpose=purpose or ""))
+                             purpose=purpose or "", experiment=experiment,
+                             universe_digest=universe_digest, universe_n=universe_n))
             s.commit()
         uses = max(1, self.count(dataset_key, test_key))
         usage = HoldoutUsage(
@@ -493,6 +517,19 @@ class FrozenBoundary(_Base):
     test_start:  str      = Column(String(10), nullable=False)       # YYYY-MM-DD，含当天
     frozen_by:   str      = Column(String(16), nullable=False, default="")
     created_at:  datetime = Column(DateTime, default=datetime.utcnow, nullable=False)
+    #: D12：人登记的边界才有这两项；空 = 旧代码首次调用偶然写下的（"未确认"）
+    actor:       str      = Column(String(64), nullable=True)
+    reason:      str      = Column(String(512), nullable=True)
+
+
+class BoundaryAlreadyRegistered(RuntimeError):
+    """这个数据集已经有登记过的边界（或与之不同的冻结边界）。改它是另一个研究决定，不在这里做。"""
+
+
+#: 边界状态（`ThreeWaySplit.boundary` / `ResearchContext.boundary`）
+BOUNDARY_REGISTERED = "registered"      # 人登记的：正式结论可用
+BOUNDARY_UNCONFIRMED = "unconfirmed"    # 旧代码偶然写下的：照样冻结，正式结论等人确认
+BOUNDARY_PROVISIONAL = "provisional"    # 还没有边界：本次临时切分，不写库，正式结论拒绝
 
 
 class BoundaryStore:
@@ -509,6 +546,8 @@ class BoundaryStore:
         from ._sqlite_utils import harden_sqlite_engine
         harden_sqlite_engine(self._engine)
         _Base.metadata.create_all(self._engine)
+        _add_missing_columns(self._engine, {"frozen_boundaries": {"actor": "VARCHAR(64)",
+                                                                  "reason": "VARCHAR(512)"}})
         self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
 
     def get(self, dataset_key: str) -> Optional[pd.Timestamp]:
@@ -516,8 +555,53 @@ class BoundaryStore:
             row = s.get(FrozenBoundary, dataset_key)
             return pd.Timestamp(row.test_start) if row is not None else None
 
+    def status(self, dataset_key: str) -> Optional[Tuple[pd.Timestamp, str]]:
+        """(Test 起点, registered / unconfirmed)；没有边界 → None。"""
+        with self._Session() as s:
+            row = s.get(FrozenBoundary, dataset_key)
+            if row is None:
+                return None
+            ok = bool((row.actor or "").strip() and (row.reason or "").strip())
+            return pd.Timestamp(row.test_start), (BOUNDARY_REGISTERED if ok else BOUNDARY_UNCONFIRMED)
+
+    def register(self, dataset_key: str, test_start: pd.Timestamp, actor: str, reason: str) -> pd.Timestamp:
+        """
+        人登记冻结边界（D12：日期建议给出后由用户确认）。只写一次：
+          · 没有边界 → 写入（frozen_by = registered，带操作人与理由）
+          · 旧代码偶然写下、日期**相同** → 补上操作人与理由（确认）
+          · 已登记过，或已有的冻结日期不同 → BoundaryAlreadyRegistered（冻结的段不能被改写成别的日期）
+        """
+        actor, reason = (actor or "").strip(), (reason or "").strip()
+        if not actor or not reason:
+            raise ValueError("登记冻结边界必须写明操作人和理由")
+        day = str(pd.Timestamp(test_start).date())
+        with self._Session() as s:
+            row = s.get(FrozenBoundary, dataset_key)
+            if row is None:
+                s.add(FrozenBoundary(dataset_key=dataset_key, test_start=day, frozen_by="registered",
+                                     actor=actor[:64], reason=reason[:512]))
+            elif (row.actor or "").strip():
+                raise BoundaryAlreadyRegistered(
+                    f"数据集 {dataset_key} 的边界已登记为 {row.test_start}（{row.actor}：{row.reason}）")
+            elif row.test_start != day:
+                raise BoundaryAlreadyRegistered(
+                    f"数据集 {dataset_key} 已冻结在 {row.test_start}（旧代码首次调用写下的）；"
+                    f"冻结的段不能改到 {day} —— 要换边界是另一个研究决定")
+            else:
+                row.actor, row.reason = actor[:64], reason[:512]
+            try:
+                s.commit()
+            except IntegrityError as exc:
+                s.rollback()
+                raise BoundaryAlreadyRegistered(f"数据集 {dataset_key} 同时被别的进程登记了：{exc}") from exc
+        logger.warning("[D12] 数据集 %s 的冻结 Test 起点登记为 %s（%s：%s）", dataset_key, day, actor, reason)
+        return pd.Timestamp(day)
+
     def pin(self, dataset_key: str, test_start: pd.Timestamp, frozen_by: str = "") -> pd.Timestamp:
-        """第一次调用写入并返回 `test_start`；已有边界 → 不改，返回已有的那个（两个进程抢着写也一样）。"""
+        """
+        旧接口（F04 的"首次调用写死"）。D12 之后研究入口**不再调用**它；留着只为测试能构造"旧代码写下的
+        未确认边界"。写下的行没有操作人 → 状态是 unconfirmed，正式结论不认。
+        """
         with self._Session() as s:
             s.add(FrozenBoundary(dataset_key=dataset_key,
                                  test_start=str(pd.Timestamp(test_start).date()),
@@ -533,3 +617,15 @@ class BoundaryStore:
         if got is None:
             raise RuntimeError(f"冻结边界写入后读不回来：{dataset_key}")
         return got
+
+
+def _add_missing_columns(engine, tables: dict) -> None:
+    """后加的可空列：只加、不改、不删（create_all 不会给已存在的表补列）。"""
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    for table, cols in tables.items():
+        have = {c["name"] for c in insp.get_columns(table)}
+        for name, typ in cols.items():
+            if name not in have:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {typ}"))

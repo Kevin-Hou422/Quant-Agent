@@ -46,7 +46,7 @@ def _next_day(world, d):
 def test_a_second_formal_run_appends_instead_of_replacing(world):
     world["run_day"](D1)
     sid, h = _running()
-    _store().start(sid, h, "kevin", "go", started_at=session_close_utc(D1) + timedelta(minutes=30),
+    _store().start(sid, h, "kevin", "go", benchmark_universe=list(world["yahoo"].close.columns), started_at=session_close_utc(D1) + timedelta(minutes=30),
                    strategy_status="paper_running")
     _next_day(world, D2)
     first = _day(sid, D2)
@@ -68,7 +68,7 @@ def test_the_start_is_compared_as_a_full_utc_timestamp(world):
     world["yahoo"].published_through = D2
     world["clear"]()
     decision_at = session_close_utc(D2) + timedelta(minutes=90)
-    _store().start(sid, h, "kevin", "go", started_at=decision_at + timedelta(minutes=5),
+    _store().start(sid, h, "kevin", "go", benchmark_universe=list(world["yahoo"].close.columns), started_at=decision_at + timedelta(minutes=5),
                    strategy_status="paper_running")
     world["run_day"](D2)
     rec = _day(sid, D2)
@@ -78,7 +78,7 @@ def test_the_start_is_compared_as_a_full_utc_timestamp(world):
 def test_returns_earned_before_the_start_are_not_formal_performance(world):
     world["run_day"](D1)                                         # D1 的决策在启动之前
     sid, h = _running()
-    _store().start(sid, h, "kevin", "go", started_at=session_close_utc(D1) + timedelta(minutes=120),
+    _store().start(sid, h, "kevin", "go", benchmark_universe=list(world["yahoo"].close.columns), started_at=session_close_utc(D1) + timedelta(minutes=120),
                    strategy_status="paper_running")
     _next_day(world, D2)                                         # D2 的结果来自 D1 的决策（启动前）
     _next_day(world, D3)                                         # D3 的结果来自 D2 的决策（正式）

@@ -237,7 +237,9 @@ def test_external_change_blocks_trading_until_accepted(tmp_path):
     n = len(_placed(e))
     rep = _cycle(e, D3, px={"AAA": 25.5, "BBB": 20.0, "CCC": 10.0})
     assert rep.blocked == "reconcile_discrepancy"
-    assert rep.reconcile["discrepancies"] == [{"ticker": "AAA", "expected": 200.0, "broker": 400.0}]
+    # 2026-10-22 第 18 条：股数比例像拆股 → 差异里标出疑似比例，方便人对账（照样阻断，直到人接受）
+    assert rep.reconcile["discrepancies"] == [{"ticker": "AAA", "expected": 200.0, "broker": 400.0,
+                                               "suspected_corporate_action": "2:1"}]
     assert len(_placed(e)) == n, "持仓对不上时下了单"
     e.om.accept_discrepancies("kevin", "AAA 2:1 拆股")
     rep2 = _cycle(e, D3, px={"AAA": 25.5, "BBB": 20.0, "CCC": 10.0})
