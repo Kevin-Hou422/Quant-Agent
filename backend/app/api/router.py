@@ -1875,15 +1875,21 @@ def kill_switch_confirm(req: KillSwitchConfirmRequest,
     from app.core.execution.broker_gateway import BrokerError
     from app.core.execution.order_manager import OrderManager
     from app.db.execution_store import ExecutionStore
+    from app.core.alerting.dispatcher import emit_safely
+    from app.core.alerting.events import AlertEvent
     action = _consume_token(req.token)
     store = ExecutionStore()
     if action == "reset":
         st = store.set_kill_switch(False, req.actor, req.reason)
         store.add_event("kill_switch_reset", req.actor, req.reason)
+        emit_safely(AlertEvent(kind="kill_switch", severity="warning", title="熔断已解除",
+                               detail=f"{req.actor}：{req.reason}", dedup_key=f"kill_switch:reset:{st}"))
         return {"action": "reset", "state": st}
     # 先落状态：连券商这一步本身就可能失败（OpenD 没开、网络断），熔断必须在那之前生效
     st = store.set_kill_switch(True, req.actor, req.reason)
     store.add_event("kill_switch_engaged", req.actor, req.reason)
+    emit_safely(AlertEvent(kind="kill_switch", severity="critical", title="熔断已开启（全平并停止调仓）",
+                           detail=f"{req.actor}：{req.reason}", dedup_key=f"kill_switch:engage:{st}"))
     try:
         gw = factory()
     except BrokerError as exc:

@@ -368,6 +368,20 @@ def run_preflight(
         ok, detail = False, f"目标波动检查失败：{exc}"
     rep.add("target_vol_off", ok, detail)
     try:
+        from app.core.alerting.dispatcher import AlertDispatcher, default_event_file
+        ok, detail = AlertDispatcher(event_file=default_event_file(settings), now=lambda: now).unattended_readiness()
+    except Exception as exc:
+        logger.warning("[golive] 告警通道检查失败: %s", exc)
+        ok, detail = False, f"告警通道检查失败：{exc}"
+    rep.add("alert_channel", ok, detail)
+    wd_on = bool(getattr(settings, "intraday_watchdog_enabled", False))
+    wd_s = int(getattr(settings, "intraday_watchdog_interval_s", 60) or 0)
+    wd_ok = wd_on and 10 <= wd_s <= 300
+    rep.add("intraday_watchdog", wd_ok,
+            f"盘中巡检已开启，每 {wd_s} 秒一拍" if wd_ok else
+            (f"盘中巡检间隔 {wd_s} 秒不在 10–300 秒内" if wd_on else
+             "盘中巡检没有开启（INTRADAY_WATCHDOG_ENABLED）—— 熔断只在收盘后检查，不能无人值守"))
+    try:
         if fundamentals_check is not None:
             ok, detail, blocking = fundamentals_check(settings)
         else:

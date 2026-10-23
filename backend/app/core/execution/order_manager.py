@@ -234,6 +234,32 @@ class OrderManager:
             except ProcessLockTimeout as exc:
                 raise BrokerError(f"另一个进程正在操作这个账户（{exc}）—— 本轮不动它") from exc
 
+    @contextmanager
+    def try_account_lock(self):
+        """
+        不等待的账户锁（盘中巡检用）：拿到 → True；另一个线程 / 进程正在操作这个账户 → False（本拍什么都不做）。
+        与 `_account_lock` 是同一把锁（同一个进程内 RLock + 同一个账户锁文件）。
+        """
+        from app.db.process_lock import ProcessLockTimeout, process_lock
+        if not _LOCK.acquire(blocking=False):
+            yield False
+            return
+        try:
+            cm = process_lock(self._account_lock_path(), timeout_s=0.0)
+            try:
+                cm.__enter__()
+            except ProcessLockTimeout:
+                logger.info("[order_manager] 账户锁被另一个进程占用（不等待）")
+                yield False
+                return
+            try:
+                self._check_account_binding()
+                yield True
+            finally:
+                cm.__exit__(None, None, None)
+        finally:
+            _LOCK.release()
+
     def _account_key(self) -> str:
         """
         券商账户身份 = 券商 / 证券公司 / 环境 / 解析出的账户 id（复审 2026-10-19 §5.3）。

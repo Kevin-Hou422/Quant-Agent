@@ -239,7 +239,7 @@ class TestSessionMutationEndpoints:
         # chat_router 自带 prefix="/api/chat"，再传一次会变成 /api/chat/api/chat
         app.include_router(chat_router)
         app.dependency_overrides[get_chat_store] = lambda: store
-        return TestClient(app)
+        return TestClient(app, client=("127.0.0.1", 50000))
 
     class _Store:
         def __init__(self, ok: bool):

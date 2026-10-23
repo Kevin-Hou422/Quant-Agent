@@ -231,6 +231,6 @@ def test_health_api_reports_hard_failures(monkeypatch):
     close.iloc[:5] = 100.0
     monkeypatch.setattr(reg, "load_registry_dataset",
                         lambda name, start=None, end=None: _ds({"close": close, "volume": close * 0 + 1e6}))
-    with TestClient(app) as c:
+    with TestClient(app, client=("127.0.0.1", 50000)) as c:
         body = c.get("/api/datasets/whatever/health").json()
     assert body["healthy"] is False and any("0%" in f for f in body["hard_failures"])

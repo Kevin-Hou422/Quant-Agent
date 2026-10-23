@@ -36,6 +36,7 @@ def _settings(tmp_path, **kw):
         paper_aum=1_000_000.0, moomoo_host="127.0.0.1", moomoo_port=11111,
         paper_dataset="fund_pf_us", price_source="moomoo",
         enable_fundamentals=False, edgar_user_agent="",
+        alert_event_file=str(tmp_path / "alerts" / "events.jsonl"), intraday_watchdog_enabled=True,
     )
     base.update(kw)
     return settings.model_copy(update=base)
@@ -184,9 +185,12 @@ def test_the_check_reads_local_state_only(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _preflight(tmp_path, **settings_kw):
+    from tests.unit.execution.test_golive import _confirm_alert_channel
     ctx = FakeTradeContext(cash=1_000_000.0)
+    s = _settings(tmp_path, **settings_kw)
+    _confirm_alert_channel(s)                    # 告警通道已现场确认 —— 这里只看基本面这一项
     return run_preflight(
-        _settings(tmp_path, **settings_kw), gateway_factory=lambda: make_gateway(ctx),
+        s, gateway_factory=lambda: make_gateway(ctx),
         probe=lambda h, p: True, store=ExecutionStore(db_url=f"sqlite:///{tmp_path / 'e.db'}"),
         position_store=PositionStore(db_url=f"sqlite:///{tmp_path / 'p.db'}"), now=NOW, cwd=tmp_path,
         data_probe=lambda st, target: (True, "bar ok"), jobs=lambda: list(JOBS))

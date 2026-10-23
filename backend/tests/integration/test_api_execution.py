@@ -238,13 +238,13 @@ def test_startup_recovery_runs_when_execution_is_enabled(monkeypatch):
         called.set()
     monkeypatch.setattr(om, "recover_on_startup", _recover)
     monkeypatch.setattr(settings, "execution_mode", "moomoo_paper")
-    with TestClient(app):
+    with TestClient(app, client=("127.0.0.1", 50000)):
         assert called.wait(5.0), "执行层开启时启动恢复没有被调用"
     assert daemon == [True]
 
     called.clear()
     monkeypatch.setattr(settings, "execution_mode", "off")
-    with TestClient(app):
+    with TestClient(app, client=("127.0.0.1", 50000)):
         assert not called.wait(0.5), "执行层关闭时不该连券商"
 
 
@@ -262,6 +262,10 @@ def test_preflight_endpoint_reports_each_check(api, tmp_path, monkeypatch):
     import app.core.execution.golive as gl
     monkeypatch.setattr(settings, "price_source", "moomoo")
     monkeypatch.setattr(settings, "paper_aum", 50_000.0)      # 账户 80k，划 50k 给本系统
+    monkeypatch.setattr(settings, "intraday_watchdog_enabled", True)
+    from app.core.alerting.dispatcher import AlertDispatcher   # 告警通道已现场确认（conftest 的临时事件文件）
+    d = AlertDispatcher()
+    d.confirm_visible(d.send_test_notification(), actor="test")
     monkeypatch.setattr(gl, "_probe_data", lambda s, t: (True, f"bar {t.date()}"))
     monkeypatch.setattr(gl, "_active_strategy_problem", lambda s: (True, "active #1"))
     app.dependency_overrides[get_opend_probe] = lambda: (lambda h, p: True)

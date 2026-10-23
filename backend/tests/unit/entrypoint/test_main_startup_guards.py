@@ -9,10 +9,8 @@ main.py —— 启动自检、CORS、合成数据与 CLI 参数的定钉测试�
 它被改掉不会有任何测试变红 —— 服务照常启动，只是闸没了。
 
 存活项：
-  - `if not loopback and not getattr(settings, "allow_insecure_bind", False)`
-    里的 `False` 默认值 —— 改成 True 等于**默认解除保险**
-  - `if "*" in cors_origins and ... is False` 的 `and` 与 `False`
-    —— 通配 CORS 的告警静默消失
+  - 非回环地址的拒绝（2026-10-22 D11 起没有任何"解除保险"的开关，ALLOW_INSECURE_BIND 已删除）
+  - `if "*" in cors_origins` —— 通配 CORS 的告警静默消失
   - `allow_credentials=True` —— 改成 False 会让带 cookie 的前端请求全挂
   - 合成数据生成里的 `cumprod`、`1 + rng.normal(...)`、`close*(1±u)`
     —— 合成价格变成负数或不再是随机游走，"仅供单元测试"的数据失去意义
@@ -66,7 +64,6 @@ class TestSafeBindGuard:
         """
         from app.config import settings
         monkeypatch.setattr(settings, "api_bind_host", host, raising=False)
-        monkeypatch.setattr(settings, "allow_insecure_bind", False, raising=False)
 
         raised = None
         try:
@@ -77,32 +74,16 @@ class TestSafeBindGuard:
             f"回环地址 {host!r} 被守卫拒绝了：{raised}")
 
     @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.10", "example.com"])
-    def test_non_loopback_is_refused_by_default(self, main_mod, monkeypatch, host):
+    def test_non_loopback_is_refused(self, main_mod, monkeypatch, host):
         """
-        `if not loopback and not getattr(settings, "allow_insecure_bind", False)`
-        —— 那个 `False` 是**默认不解除保险**。改成 True 之后，
-        任何没有显式写 `ALLOW_INSECURE_BIND` 的部署都会直接对外暴露一个
-        零认证的服务：审批、拒绝、删会话、跑 GP，全网可调。
+        非回环地址一律拒绝 —— 零认证的服务对外绑定，审批、拒绝、删会话、跑 GP 全网可调。
+        2026-10-22 D11：首轮只在本机回环上服务，没有解除保险的开关（环境变量也不行）。
         """
         from app.config import settings
         monkeypatch.setattr(settings, "api_bind_host", host, raising=False)
-        monkeypatch.delattr(settings, "allow_insecure_bind", raising=False)
+        monkeypatch.setenv("ALLOW_INSECURE_BIND", "true")
         with pytest.raises(RuntimeError, match="拒绝启动"):
             main_mod._assert_safe_bind()
-
-    def test_explicit_optin_allows_a_public_bind(self, main_mod, monkeypatch):
-        """显式解除保险之后才允许对外绑定 —— 同样要把"没抛"断言出来。"""
-        from app.config import settings
-        monkeypatch.setattr(settings, "api_bind_host", "0.0.0.0", raising=False)
-        monkeypatch.setattr(settings, "allow_insecure_bind", True, raising=False)
-
-        raised = None
-        try:
-            main_mod._assert_safe_bind()
-        except RuntimeError as exc:
-            raised = exc
-        assert raised is None, (
-            f"显式 allow_insecure_bind=True 之后仍被拒绝：{raised}")
 
     def test_the_guard_distinguishes_the_two_cases(self, main_mod, monkeypatch):
         """守卫恒抛或恒不抛时，这条相等断言会成立 —— 必须不相等。"""
@@ -110,9 +91,8 @@ class TestSafeBindGuard:
 
         errors: list = []
 
-        def _raises(host, optin):
+        def _raises(host):
             monkeypatch.setattr(settings, "api_bind_host", host, raising=False)
-            monkeypatch.setattr(settings, "allow_insecure_bind", optin, raising=False)
             try:
                 main_mod._assert_safe_bind()
                 return False
@@ -120,8 +100,8 @@ class TestSafeBindGuard:
                 errors.append((host, exc))
                 return True
 
-        public = _raises("0.0.0.0", False)
-        loop = _raises("127.0.0.1", False)
+        public = _raises("0.0.0.0")
+        loop = _raises("127.0.0.1")
         assert public is True, "0.0.0.0 没有被拒"
         assert loop is False, "127.0.0.1 被误拒"
         assert public != loop, "守卫对回环与非回环给出了同一个结论"
@@ -131,33 +111,25 @@ class TestSafeBindGuard:
         assert "拒绝启动" in str(errors[0][1]), (
             f"拒绝的理由不对：{errors[0][1]}")
 
-    def test_the_error_names_the_offending_host_and_the_optin_flag(self, main_mod,
-                                                                   monkeypatch):
+    def test_the_error_names_the_offending_host_and_what_remote_access_needs(self, main_mod,
+                                                                             monkeypatch):
         from app.config import settings
         monkeypatch.setattr(settings, "api_bind_host", "10.0.0.7", raising=False)
-        monkeypatch.setattr(settings, "allow_insecure_bind", False, raising=False)
         with pytest.raises(RuntimeError) as exc:
             main_mod._assert_safe_bind()
         msg = str(exc.value)
         assert "10.0.0.7" in msg, f"报错没有指出是哪个地址：{msg}"
-        assert "ALLOW_INSECURE_BIND" in msg, f"报错没有给出解除方式：{msg}"
+        assert "认证" in msg and "CORS" in msg, f"报错没有说明远程访问要先做认证授权：{msg}"
+        assert "ALLOW_INSECURE_BIND" not in msg, "报错还在指向已删除的解除保险开关"
 
 
 class TestCorsWarning:
 
-    def test_wildcard_cors_without_optin_warns(self, main_mod, monkeypatch, caplog):
-        """
-        `if "*" in settings.cors_origins and getattr(..., False) is False:`
-        —— `and` 放宽成 `or` 会让**没有**通配来源时也告警（噪声），
-        `False` 改成 True 会让真正危险的组合**不再告警**。
-        """
+    def test_wildcard_cors_warns(self, main_mod, monkeypatch, caplog):
+        """`if "*" in settings.cors_origins:` —— 通配来源 + 零认证必须告警（CORS 不能代替认证）。"""
         from app.config import settings
         monkeypatch.setattr(settings, "api_bind_host", "127.0.0.1", raising=False)
         monkeypatch.setattr(settings, "cors_origins", ["*"], raising=False)
-        # 用 delattr 而不是设成 False：`getattr(settings, "allow_insecure_bind", False)`
-        # 里的那个**默认值**只有在属性缺失时才可达。显式设成 False 时走的是属性，
-        # 默认值被改成 True 也看不出来（上一版就是这么让它活下来的）。
-        monkeypatch.delattr(settings, "allow_insecure_bind", raising=False)
         with caplog.at_level(logging.WARNING, logger="main"):
             main_mod._assert_safe_bind()
         assert any("CORS" in r.getMessage() for r in caplog.records), (
@@ -168,7 +140,6 @@ class TestCorsWarning:
         monkeypatch.setattr(settings, "api_bind_host", "127.0.0.1", raising=False)
         monkeypatch.setattr(settings, "cors_origins",
                             ["http://localhost:5173"], raising=False)
-        monkeypatch.setattr(settings, "allow_insecure_bind", False, raising=False)
         with caplog.at_level(logging.WARNING, logger="main"):
             main_mod._assert_safe_bind()
         assert not any("CORS" in r.getMessage() for r in caplog.records), (

@@ -12,7 +12,7 @@ def client():
     import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
     from app.main import app
-    with TestClient(app, raise_server_exceptions=False) as c:
+    with TestClient(app, client=("127.0.0.1", 50000), raise_server_exceptions=False) as c:
         yield c
 
 

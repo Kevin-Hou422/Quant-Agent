@@ -32,6 +32,25 @@ class Settings(BaseSettings):
     backup_dir:     str  = "backups"   # 建议设为 OneDrive 下的某个目录
     backup_keep_n:  int  = 14          # 保留最近 N 份快照
 
+    # ── 告警（2026-10-22 D15：桌面通知 + 持久化事件文件） ──────────────
+    #: 事件文件（JSON Lines，只追加）；空 = 活库同目录下的 alerts/events.jsonl（不放云同步目录）
+    alert_event_file:         str   = ""
+    #: 同一去重键在这么多分钟内只通知一次（之后的记为 suppressed）
+    alert_dedup_minutes:      float = 60.0
+    #: 一次通知最多尝试几次（指数退避）；用尽 → failed，调度器之后再重试
+    alert_retry_attempts:     int   = 3
+    #: 现场确认"看得见"的有效天数：过期后上线预检不算无人值守就绪
+    alert_confirm_valid_days: float = 14.0
+
+    # ── 盘中巡检（2026-10-22 第 17 条；无人值守前验收，缺省关闭） ─────────
+    intraday_watchdog_enabled:                 bool  = False
+    #: 巡检间隔（秒）
+    intraday_watchdog_interval_s:              int   = 60
+    #: 快照指纹这么久没变 → 陈旧，不据此做决定
+    intraday_watchdog_stale_after_s:           int   = 600
+    #: 连续这么多拍连不上券商 → 严重告警
+    intraday_watchdog_unreachable_alert_after: int   = 3
+
     # ── LLM ──────────────────────────────────────────────────────────────
     openai_api_key: str = Field("", validation_alias="OPENAI_API_KEY")
 
@@ -48,10 +67,9 @@ class Settings(BaseSettings):
         "http://localhost:4173", "http://127.0.0.1:4173",   # vite preview
         "http://localhost:3000", "http://127.0.0.1:3000",
     ]
-    #: 服务绑定地址。非回环地址 = 对外暴露，而本服务**零认证** → 启动时拒绝。
-    #: 确需暴露时，先做认证，再显式设 allow_insecure_bind=true。
+    #: 服务绑定地址。只允许回环（2026-10-22 D11：首轮仅本机，不扩远程）。本服务没有认证 —— 非回环地址
+    #: 启动时一律拒绝，没有"解除保险"的开关；需要远程访问时先做认证授权（CORS 不能代替认证）。
     api_bind_host:        str  = "127.0.0.1"
-    allow_insecure_bind:  bool = False
 
     # ── 数据集默认参数 ────────────────────────────────────────────────────
     # 默认使用真实市场数据集（dataset_registry.py 中的注册名称）

@@ -158,8 +158,10 @@ Optional `backend/.env`:
 - `PRICE_SOURCE=moomoo` switches US price data to the moomoo OpenD gateway (requires OpenD running
   locally on port 11111). Default is `yahoo`.
 
-The server **refuses to start** if bound to a non-loopback address unless `ALLOW_INSECURE_BIND=true`
-— there is no authentication layer, so this is deliberate (see [§14](#14-configuration)).
+The server **refuses to start** if bound to a non-loopback address (config, `--host` or `UVICORN_HOST`),
+and there is no override: there is no authentication layer. State-changing requests from a non-loopback
+client are rejected with 403. Remote access needs authentication and authorisation first — CORS is
+not a substitute (decision D11).
 
 ---
 
@@ -538,8 +540,9 @@ powershell -ExecutionPolicy Bypass -File scripts\start_forward.ps1 [-RegisterLog
   or a quarantined corporate action is held at a 0 return *in the denominator* (never dropped and
   re-averaged). The plain difference to this fully-invested benchmark is labelled as such — it is
   not alpha for a low-exposure book — and an exposure-matched difference is recorded next to it;
-  SPY as a second benchmark is deferred. Operating limits (daily-only breaker, log-only alerts) are
-  spelled out in `backend/OPERATIONS.md` §7.
+  SPY as a second benchmark is deferred. Operating limits (the intraday breaker watchdog and the
+  desktop alerts both need an on-site check before unattended running; restores are only rehearsed on
+  synthetic data) are spelled out in `backend/OPERATIONS.md` §7.
 - **Unknown corporate actions are quarantined** (decision 18 of 2026-10-22). A one-day move of
   |log return| ≥ log 1.4 on any of the last few bars (an unadjusted split, a special dividend, …)
   flags the name; the flag persists until a person reconciles broker shares / cash and the data
@@ -755,7 +758,8 @@ the file itself is the authority and documents *why* each default is what it is.
 | `RISK_ATTR_LOOKBACK` | `252` | risk-model estimation window (diagnostic only) |
 | `RESEARCH_HEALTH_FAIL_CLOSED` / `RESEARCH_MIN_HEALTH` | `true` / `0.7` | reject low-quality data instead of degrading |
 | `CALENDAR_ALLOW_HEURISTIC` | `false` | never guess trading days |
-| `ALLOW_INSECURE_BIND` | `false` | refuse to bind a non-loopback address (there is no auth layer) |
+| `INTRADAY_WATCHDOG_ENABLED` / `INTRADAY_WATCHDOG_INTERVAL_S` | `false` / `60` | intraday breaker watchdog during regular trading hours (uses `EXEC_MAX_DAILY_LOSS`); the go-live preflight blocks while it is off |
+| `ALERT_EVENT_FILE` / `ALERT_DEDUP_MINUTES` / `ALERT_RETRY_ATTEMPTS` / `ALERT_CONFIRM_VALID_DAYS` | next to the main DB / `60` / `3` / `14` | desktop alerts + persistent event file; the preflight blocks until a test notification has been confirmed visible by a person |
 
 > **Trading-time hard gates are off by default; verification is not.** `pm_strategy_gate_block` and
 > `risk_halt_on_drawdown` are `false` during the evidence-gathering phase: the daily strategy gate's
@@ -811,6 +815,7 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
 | moomoo paper execution: reconciliation/crash recovery, pre-trade gate, two-step kill switch, sim-vs-paper fidelity, live T3 providers, execution panel | ✅ Phase 12 + FE-12 (code; **not yet run against a live OpenD gateway**) |
 | External review 2026-10-18 (F01–F14): health-gate hard checks, re-fetch on re-adjustment, frozen Test boundaries + overlap-metered holdout, selection-only research paths, trial counting at the search layer, executable strategy spec, archived-signal forward evidence per strategy version, atomic order claims + account lock, independent quotes, weight drift, content-hashed cost cache, factor-return min-variance, SUE/8-K alignment, single-transaction approvals | ✅ (see the roadmap's fix log; the strategy approved before 2026-10-18 must be re-proposed — D13) |
 | Re-review 2026-10-19 (N01–N09, §5, §7.3): mid-batch kill switch, input identity on evidence, open-time archive deadline, health gate on the consumed panel, freeze-then-evaluate proposals, quote sessions, trial-run lifecycle, pre-trade-value costs + post-trade renormalisation (checked against a share + cash ledger), one research context, one strategy contract, spec v2, broker-account lock, formal-forward daily records | ✅ code (per-item status in `backend/docs/RE_REVIEW_FIX_TRACKER.md`; mutation review owed — D5) |
+| Decisions of 2026-10-22, operations: desktop alerts + persistent event file with delivery status, intraday breaker watchdog, loopback-only API, isolated restore + synthetic recovery drill | ✅ code (on-site checks owed: notification visibility, watchdog on a live OpenD, live-database restore — `backend/docs/DECISION_IMPLEMENTATION_TRACKER.md`) |
 
 **Not built yet** — the honest list:
 
@@ -827,9 +832,11 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
   **not been verified**.
 - **Open** (per-item status in `backend/docs/DECISION_IMPLEMENTATION_TRACKER.md`): the Test start dates
   for the live database — a read-only report with suggested dates is waiting for your confirmation
-  (D12); re-proposal of the active strategy (D13); an alert channel (D15, alerts are log-only). Not
-  built: an intraday breaker watchdog, a backup-restore drill, and the full corporate-action ledger
-  (unknown corporate actions are already quarantined, see above).
+  (D12); re-proposal of the active strategy (D13); on-site checks before unattended running — a
+  desktop test notification confirmed visible by a person (D15) and the intraday breaker watchdog run
+  against a live OpenD (D10). Restores have been rehearsed on synthetic data only; restoring the live
+  database is **not** verified (D2). Not built: the full corporate-action ledger (unknown corporate
+  actions are already quarantined, see above).
 - **Phase 13/14 — red-team agent, fully autonomous mode, validation-period operations.**
 - **R.2 remainder** — residual-based style neutralisation (changes signals, so it needs its own
   validation) and alpha-vs-risk-premium separation; `beta_neutral` closure is deferred until shorting

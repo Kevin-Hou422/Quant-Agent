@@ -259,7 +259,7 @@ def client():
         sys.path.insert(0, root)
     from fastapi.testclient import TestClient
     from app.main import app
-    return TestClient(app)
+    return TestClient(app, client=("127.0.0.1", 50000))
 
 
 class TestChatAPI:

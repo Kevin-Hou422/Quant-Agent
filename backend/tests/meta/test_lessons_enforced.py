@@ -449,7 +449,9 @@ class TestLessonE_IdentifiersMustExist:
 
 _ENTRY_POINTS = {"app.main", "app.api.router", "app.api.chat_router",
                  "app.tasks.scheduler", "app.config",
-                 "app.tasks.forward"}      # `python -m app.tasks.forward preflight|run-now`
+                 "app.tasks.forward",      # `python -m app.tasks.forward preflight|run-now`
+                 "app.tasks.alerts",       # `python -m app.tasks.alerts test|confirm|status|retry`
+                 "app.tasks.restore"}      # `python -m app.tasks.restore <快照> <空目录>`
 
 
 def _module_graph():

@@ -45,7 +45,7 @@ def client(populated, monkeypatch):
     monkeypatch.setattr(service, "_today", lambda: pd.Timestamp("2026-10-12"))
     from fastapi.testclient import TestClient
     from app.main import app
-    with TestClient(app, raise_server_exceptions=False) as c:
+    with TestClient(app, client=("127.0.0.1", 50000), raise_server_exceptions=False) as c:
         yield c
 
 

@@ -102,11 +102,14 @@ def prune_snapshots(backup_root: Path, keep: int) -> List[str]:
 
 
 def run_daily_backup(backup_dir: Optional[str] = None,
-                     keep: Optional[int] = None) -> BackupResult:
+                     keep: Optional[int] = None, *,
+                     database_url: Optional[str] = None, scheduler_db_url: Optional[str] = None,
+                     pit_store_dir: Optional[str] = None) -> BackupResult:
     """
     每日快照：主库 + 调度库 + PIT 全量。放进 `backup_dir`（建议指向云盘同步目录——
     快照是静态文件，同步是安全的；活库则必须留在非同步盘）。
     任一环节失败都记进 errors 并让 ok=False（不静默"成功"）。
+    database_url / scheduler_db_url / pit_store_dir：缺省取 settings（恢复演练用它们指向隔离的合成数据）。
     """
     from app.config import settings
 
@@ -117,7 +120,7 @@ def run_daily_backup(backup_dir: Optional[str] = None,
     res = BackupResult(ok=True, snapshot_dir=str(snap))
 
     # 1) 主库（因子/审批/IC/成交/策略配置 —— 审计资产）
-    main_db = _sqlite_path_from_url(getattr(settings, "database_url", ""))
+    main_db = _sqlite_path_from_url(database_url or getattr(settings, "database_url", ""))
     if main_db and main_db.exists():
         try:
             n = snapshot_sqlite(main_db, snap / f"{main_db.name}")
@@ -130,7 +133,7 @@ def run_daily_backup(backup_dir: Optional[str] = None,
         res.errors.append("main_db: 不存在或非 sqlite")
 
     # 2) 调度库（可重建，但一并备份便于整机恢复）
-    sch_db = _sqlite_path_from_url(getattr(settings, "scheduler_db_url", ""))
+    sch_db = _sqlite_path_from_url(scheduler_db_url or getattr(settings, "scheduler_db_url", ""))
     if sch_db and sch_db.exists():
         try:
             n = snapshot_sqlite(sch_db, snap / sch_db.name)
@@ -140,7 +143,7 @@ def run_daily_backup(backup_dir: Optional[str] = None,
             res.errors.append(f"scheduler_db: {exc}")
 
     # 3) PIT —— **最不可再生**的部分（前向数据买不回来）
-    pit = Path(getattr(settings, "pit_store_dir", "pit_store")).expanduser()
+    pit = Path(pit_store_dir or getattr(settings, "pit_store_dir", "pit_store")).expanduser()
     if pit.exists() and any(pit.rglob("*.parquet")):
         try:
             n = snapshot_tree(pit, snap / "pit_store")

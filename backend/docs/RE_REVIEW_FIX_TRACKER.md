@@ -52,7 +52,7 @@
 | F08 | 锁依赖共享存储路径，不同目录的两个部署不共锁 | ✅ | 见 §5.3 |
 | F12 | 协方差有效性、估计误差需研究评估 | ✅ 评估已做 | `docs/MIN_VARIANCE_STUDY.md` + `tools/research/min_variance_study.py`（蒙特卡洛，真协方差已知，三种设计）。结论：① 原最少样本 max(2n, 20) 太低 —— 等波动时 8 因子 20 天，比等权差 10% 以上的概率 86% → 改为 max(15n, 60)，该概率 ≤ 4%（先写用例、先失败）；② 协方差非平稳时多给数据也没有可靠优势 → 不能假定 min_variance 更好，只能由策略门的流程滚动前推 OOS 判断，保持非缺省。没覆盖：厚尾 / 波动聚集、> 8 个因子、收缩强度的选择、真实因子收益上的检验 |
 | F13 | 股本 fallback 是估计；小比例送股只告警不更正；8-K 与 SUE 按时间先后而非期间配对 | ✅ | ① SUE 按盈利期间配对（`pair_announcements`：只用公告日之前已知的财季日历推出公告报告的季；只有更新的季才置空 SUE；推不出 → 按时间，偏保守）；② 股本按自己那条事实的期末日过期（`sh_end`，`METRICS_VERSION` 4）；③ 估计股本（稀释加权平均）进报告 `estimated_shares`；④ 1.15–1.5 倍复权因子跳变（moomoo 路径）持久化 + 估值字段**异常隔离**到口径日晚于跳变日的股本出现为止。先失败（真缺陷复现：同季更正 8-K 把 SUE 置空 2024-05-16→07-24）。**真实数据冒烟**（scratchpad 里 Phase 10 取下的 95 只真实 EDGAR 事实，只读不联网）：面板期内公告推出的财季 vs 之后实际申报的那一季 —— 1988 条一致；26 条不一致中 25 条是"申报之后的 2.02 公告"（更正 / 展望 / 重述，配到已申报那季正是要的行为），1 条（SPGI 2025-02-11）是本地事实缺 FY2024 10-K 净利润造成的对账假象，配对本身正确；12 条推不出。1175 个标的日的 SUE 不再被同季公告误置空。估计股本：ACN / CMCSA / MA / META / NKE / SPG / UPS。疑似送股的隔离需要 moomoo 的复权价，离线没验（单元用例覆盖）。`tests/unit/data_engine/test_fundamentals_sue_visibility.py`、`test_fundamentals_share_counts.py`、`test_fundamentals_split_detection.py` |
-| F14 | D14 时钟、D15 通知、持续熔断维护、恢复演练、现场验收 | ⛔ / 🧪 / ⬜ |
+| F14 | D14 时钟、D15 通知、持续熔断维护、恢复演练、现场验收 | 🟡 / 🧪 | 代码已做：D14（c2）；D15 桌面通知 + 事件文件、盘中巡检（持续熔断维护）、隔离恢复与合成演练（见 `DECISION_IMPLEMENTATION_TRACKER.md` 批 4）。待现场：通知现场确认可见、巡检与订单在真 OpenD 上验收（D10）、活库恢复（D2） |
 
 ## §5 其他风险
 
@@ -62,7 +62,7 @@
 | 5.2 | 规格哈希覆盖有效股票池 / 数据 vintage / 代码版本 / 执行账户 / 报价规则 / 提交时段 | ✅ | 规格 v2 加了 universe（登记标的列表哈希）、execution（账户、限价带、价格偏差、日亏、报价年龄与收盘窗口）、submission（调度时刻、时区、DAY、盘外成交）；调度时刻与订单有效期改成具名常量，规格读的就是代码实际用的值。**数据 vintage 不进规格**（每天都变，进了就天天不一致），记在证据行；**代码版本**记在提案 verdict 的 `approved_code_version` 与每条证据行，不当作不一致（否则每次部署都要重新审批）；`TestSpecCoverage`（9 条，先看它失败） |
 | 5.3 | 锁按账户 id 建锁域；首轮专用账户、单部署、固定路径并**校验账户身份** | ✅ | 锁名 = 券商 / 证券公司 / 环境 / 解析出的账户 id，放在整台机器共用的目录（`ACCOUNT_LOCK_DIR`，默认 %PROGRAMDATA%\QuantAgent）；拿不到账户 id 不交易；执行库第一次使用时绑定账户，之后连到别的账户 → 拒绝（`moomoo_trd_acc_id=0` 自动取到另一个模拟账户的情形）；`TestAccountLockDomain` |
 | 5.4 | 基本面来源 / 期间质量门 | ✅ | `fundamentals/quality.py`：策略表达式用到基本面字段时，这份面板末日的质量报告（`attach_fundamentals` 每次落盘）必须过门 —— 各字段末日覆盖率 ≥ `FUND_MIN_COVERAGE`（0.8）、估值字段用估计股本的标的占比 ≤ `FUND_MAX_ESTIMATED_SHARES`（0.1）；报告缺失 / 不是这份面板的 → 不过。提案不过 → `passed=False` + 原因；每日循环 active 策略不过 → 不调仓（`fundamentals_quality`）。按真实冒烟的数，现在的 gross_margin（58%）会被拦。`tests/unit/data_engine/test_fundamentals_quality_gate.py` |
-| 5.5 | 告警、恢复演练、盘中熔断说明 | ⛔ / 🧪 |
+| 5.5 | 告警、恢复演练、盘中熔断说明 | 🟡 / 🧪 | 说明已在 OPERATIONS §7 原处改写（盘中巡检、告警、回环、备份恢复）；现场确认与活库恢复未做 |
 | 5.6 | 统计表述收敛（README） | ✅ |
 
 ## §6 决策建议

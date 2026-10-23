@@ -127,7 +127,7 @@ class TestManifestProductionHook:
 
         from fastapi.testclient import TestClient
         from app.main import app
-        with TestClient(app) as c:
+        with TestClient(app, client=("127.0.0.1", 50000)) as c:
             r = c.post("/api/gp/evolve", json={
                 "pop_size": 6, "n_gen": 1, "dataset_name": "",
                 "n_tickers": 8, "n_days": 120, "seed": 7,

@@ -55,6 +55,16 @@ def daily_monitor_job() -> None:
 
 def daily_trading_job() -> dict:
     """
+    每日管线 + 结论进告警（D15：每一种结论 —— 包括非交易日、日历不可用这些提前返回 —— 都走同一个出口）。
+    """
+    import pandas as _pd
+    out = _run_daily_trading()
+    _emit_daily_outcome(out, str(_pd.Timestamp.utcnow().tz_localize(None).normalize().date()))
+    return out
+
+
+def _run_daily_trading() -> dict:
+    """
     Task 7.1/7.3 + Phase 11：每日**前向增量**摄取（健康门）→ 交易循环。
 
     - 非交易日直接跳过（美股日历，节假日/周末）——不空转、不产生噪声日志。
@@ -94,6 +104,43 @@ def daily_trading_job() -> dict:
         code, verdict = classify_run(out)
         (logger.info if code == EXIT_OK else logger.error)("[daily_trading_job] 执行结论：%s", verdict)
     return out
+
+
+def _emit_daily_outcome(out: dict, run_date: str) -> None:
+    """D15：每日运行的结论进告警（正常无订单与异常跳过分属不同分类）。告警出错不影响交易结果。"""
+    try:
+        from app.core.alerting.dispatcher import AlertDispatcher, emit_safely
+        from app.core.alerting.events import events_for_daily_run
+        d = AlertDispatcher()
+        for ev in events_for_daily_run(out, run_date):
+            emit_safely(ev, d)
+    except Exception as exc:
+        logger.error("[daily_trading_job] 运行结论没有进告警: %s", exc)
+
+
+def _on_job_event(event) -> None:
+    """D15：调度任务抛错 / 错过执行时间 → 严重告警（此前只在日志里）。"""
+    from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
+    from app.core.alerting.dispatcher import emit_safely
+    from app.core.alerting.events import AlertEvent
+    when = getattr(event, "scheduled_run_time", None)
+    if event.code == EVENT_JOB_ERROR:
+        ev = AlertEvent(kind="scheduled_job_failed", severity="critical", title=f"调度任务 {event.job_id} 失败",
+                        detail=str(getattr(event, "exception", "") or ""), dedup_key=f"job_failed:{event.job_id}:{when}")
+    elif event.code == EVENT_JOB_MISSED:
+        ev = AlertEvent(kind="scheduled_job_missed", severity="critical", title=f"调度任务 {event.job_id} 错过执行",
+                        detail=f"计划时间 {when}（进程没在运行或被阻塞）", dedup_key=f"job_missed:{event.job_id}:{when}")
+    else:
+        return
+    emit_safely(ev)
+
+
+def alerts_retry_job() -> None:
+    """D15：重新通知送达失败的告警。"""
+    from app.core.alerting.dispatcher import AlertDispatcher
+    out = AlertDispatcher().retry_failed()
+    if out:
+        logger.warning("[alerts] 重试 %d 条送达失败的告警：%s", len(out), out)
 
 
 #: 每日交易任务与补跑的触发时刻（scheduler_timezone 下的 时, 分）。进可执行规格（复审 2026-10-19 §5.2）：
@@ -198,6 +245,23 @@ def create_scheduler(
         },
         timezone = timezone,
     )
+    # D15：任务抛错 / 错过 → 告警；送达失败的告警定期重试
+    from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
+    from apscheduler.triggers.interval import IntervalTrigger
+    sched.add_listener(_on_job_event, EVENT_JOB_ERROR | EVENT_JOB_MISSED)
+    sched.add_job(alerts_retry_job, trigger=IntervalTrigger(minutes=30, timezone=timezone),
+                  id="alerts_retry", name="重试送达失败的告警", replace_existing=True)
+    # 第 17 条：盘中巡检（开启后才注册；每拍自己按交易所日历判断是否在常规时段）
+    try:
+        from app.config import settings
+        if getattr(settings, "intraday_watchdog_enabled", False):
+            from app.core.execution.intraday_watchdog import intraday_watchdog_job
+            sched.add_job(intraday_watchdog_job,
+                          trigger=IntervalTrigger(seconds=int(settings.intraday_watchdog_interval_s), timezone=timezone),
+                          id="intraday_watchdog", name="盘中巡检（日亏熔断）", replace_existing=True,
+                          max_instances=1, coalesce=True, misfire_grace_time=30)
+    except Exception as exc:
+        logger.error("[scheduler] 注册盘中巡检失败: %s", exc)
     # replace_existing=True：重启时以代码定义为准，避免 jobstore 中的旧定义漂移
     sched.add_job(
         daily_monitor_job,

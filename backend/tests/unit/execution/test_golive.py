@@ -32,7 +32,8 @@ NOW = datetime(2025, 3, 4, 22, 0, tzinfo=timezone.utc)       # 周二，收盘�
 JOBS = ["daily_backup", "daily_monitor", "daily_trading", "daily_trading_retry",
         "monthly_cost_calibration"]
 TRADE_CHECKS = ["execution_mode", "scheduler", "scheduler_jobs", "storage", "storage_writable",
-                "calendar", "dataset", "price_source", "strategy", "target_vol_off", "fundamentals"]
+                "calendar", "dataset", "price_source", "strategy", "target_vol_off", "alert_channel",
+                "intraday_watchdog", "fundamentals"]
 CONNECT_CHECKS = ["opend", "broker_account", "account_funds", "kill_switch", "reconcile"]
 
 
@@ -45,13 +46,21 @@ def _settings(tmp_path, **kw):
         pit_store_dir=str(tmp_path / "pit"), paper_aum=1_000_000.0,
         moomoo_host="127.0.0.1", moomoo_port=11111,
         paper_dataset="us_broad_large", price_source="moomoo",
+        alert_event_file=str(tmp_path / "alerts" / "events.jsonl"), intraday_watchdog_enabled=True,
     )
     base.update(kw)
     return settings.model_copy(update=base)
 
 
+def _confirm_alert_channel(s):
+    """桌面通知已现场确认可见（D15）—— 预检就绪的前提之一。"""
+    from app.core.alerting.dispatcher import AlertDispatcher
+    d = AlertDispatcher(event_file=Path(s.alert_event_file), notifier=lambda t, b: None, now=lambda: NOW)
+    d.confirm_visible(d.send_test_notification(), actor="test")
+
+
 def _env(tmp_path, cash=1_000_000.0, data=(True, "bar ok"), strategy=(True, "active #1"),
-         jobs=JOBS, **kw):
+         jobs=JOBS, alerts_confirmed=True, **kw):
     ctx = FakeTradeContext(cash=cash)
     es = ExecutionStore(db_url=f"sqlite:///{tmp_path / 'e.db'}")
     ps = PositionStore(db_url=f"sqlite:///{tmp_path / 'p.db'}")
@@ -62,6 +71,8 @@ def _env(tmp_path, cash=1_000_000.0, data=(True, "bar ok"), strategy=(True, "act
         return make_gateway(ctx)
 
     s = _settings(tmp_path, **kw)
+    if alerts_confirmed:
+        _confirm_alert_channel(s)
     seen = {}
 
     def probe_data(st, target):
@@ -484,7 +495,7 @@ def test_startup_refuses_to_serve_with_live_data_in_onedrive(tmp_path, monkeypat
     monkeypatch.setattr(settings, "enable_scheduler", False)
     monkeypatch.setattr(settings, "database_url", "sqlite:///./alphas.db")
     with pytest.raises(RuntimeError, match="云同步目录"):
-        with TestClient(app):
+        with TestClient(app, client=("127.0.0.1", 50000)):
             pass
     assert not (synced / "alphas.db").exists()
 

@@ -195,7 +195,7 @@ class TestNoAuthServiceIsNotExposed:
             f"默认绑定 {fresh_settings.api_bind_host!r} 不是回环地址 —— "
             f"零认证服务会对整个网络开放"
         )
-        assert fresh_settings.allow_insecure_bind is False
+        assert "allow_insecure_bind" not in type(fresh_settings).model_fields, "解除保险的开关又回来了（D11）"
 
     def test_cors_is_not_wildcard_by_default(self, fresh_settings):
         assert "*" not in fresh_settings.cors_origins, (
@@ -204,23 +204,20 @@ class TestNoAuthServiceIsNotExposed:
         assert fresh_settings.cors_origins, "CORS 白名单为空会让前端无法访问"
 
     def test_startup_refuses_non_loopback_bind(self, monkeypatch):
-        """绑非回环地址时必须**拒绝启动**，除非显式解除保险。"""
+        """绑非回环地址时必须**拒绝启动**（2026-10-22 D11：没有解除保险的开关）。"""
         from app.config import settings as live
         import app.main as m
         monkeypatch.setattr(live, "api_bind_host", "0.0.0.0", raising=False)
-        monkeypatch.setattr(live, "allow_insecure_bind", False, raising=False)
         with pytest.raises(RuntimeError, match="零认证|回环"):
             m._assert_safe_bind()
 
-    def test_explicit_optin_allows_exposure(self, monkeypatch):
-        """显式 allow_insecure_bind=true 才放行（保留逃生口，但必须是有意为之）。"""
+    def test_there_is_no_opt_in_for_exposure(self, monkeypatch):
+        """2026-10-22 D11：首轮仅本机回环 —— 环境变量也解不开；回环照常启动（两个方向都测到）。"""
         from app.config import settings as live
         import app.main as m
         monkeypatch.setattr(live, "api_bind_host", "0.0.0.0", raising=False)
-        monkeypatch.setattr(live, "allow_insecure_bind", True, raising=False)
-        # "不抛即通过" 是零断言（本文件此前唯一一处）：函数被改成空实现也照样过。
-        # 断言真实契约：opt-in 打开时放行，关掉时立刻拒绝 —— 两个方向都测到。
-        m._assert_safe_bind()
-        monkeypatch.setattr(live, "allow_insecure_bind", False, raising=False)
+        monkeypatch.setenv("ALLOW_INSECURE_BIND", "true")
         with pytest.raises(RuntimeError):
             m._assert_safe_bind()
+        monkeypatch.setattr(live, "api_bind_host", "127.0.0.1", raising=False)
+        assert m._assert_safe_bind() is None

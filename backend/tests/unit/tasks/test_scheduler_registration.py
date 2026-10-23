@@ -101,14 +101,15 @@ class TestJobRegistration:
         assert "daily_trading" not in ids and "nightly_discovery" not in ids
         assert "daily_backup" not in ids
 
-    def test_all_six_jobs_register_when_enabled(self, jobs_db, all_jobs_on):
+    def test_all_jobs_register_when_enabled(self, jobs_db, all_jobs_on):
         s = create_scheduler(db_url=jobs_db)
         try:
             ids = {j.id for j in s.get_jobs()}
         finally:
             _safe_shutdown(s)
         assert ids == {"daily_monitor", "daily_trading", "daily_trading_retry",
-                       "monthly_cost_calibration", "nightly_discovery", "daily_backup"}, ids
+                       "monthly_cost_calibration", "nightly_discovery", "daily_backup",
+                       "alerts_retry"}, ids                      # D15：补发送达失败的告警
 
     def test_backup_defaults_to_on_when_the_setting_is_absent(self, jobs_db, monkeypatch):
         """
@@ -139,7 +140,7 @@ class TestJobRegistration:
         first = create_scheduler(db_url=jobs_db)
         first.start()
         try:
-            assert len(first.get_jobs()) == 6
+            assert len(first.get_jobs()) == 7
         finally:
             first.shutdown(wait=False)
 
@@ -151,7 +152,8 @@ class TestJobRegistration:
         finally:
             second.shutdown(wait=False)
         assert ids == {"daily_monitor", "daily_trading", "daily_trading_retry",
-                       "monthly_cost_calibration", "nightly_discovery", "daily_backup"}, (
+                       "monthly_cost_calibration", "nightly_discovery", "daily_backup",
+                       "alerts_retry"}, (
             f"复用同一个 jobstore 重建后任务不全：{ids} —— "
             f"replace_existing 疑似被改成了 False")
 

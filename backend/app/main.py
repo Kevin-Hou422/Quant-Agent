@@ -88,9 +88,10 @@ app = FastAPI(
 
 def _assert_safe_bind() -> None:
     """
-    启动自检（审计 #10）：本服务**没有任何认证** —— 所有策略审批/拒绝/状态变更/
-    会话删除/GP 跑批端点，任何能访问到它的人都能调用。
-    因此绑定到非回环地址等同于把这些能力开放给整个网络，必须显式解除保险。
+    启动自检（审计 #10；2026-10-22 D11）：本服务**没有任何认证** —— 所有策略审批/拒绝/状态变更/
+    会话删除/GP 跑批端点，任何能访问到它的人都能调用。首轮只在本机回环上服务：
+    配置、命令行 --host、UVICORN_HOST 任何一个不是回环 → 拒绝启动，**没有解除保险的开关**
+    （此前的 ALLOW_INSECURE_BIND 已删除）。需要远程访问时先做认证授权。
     """
     loopback_names = ("127.0.0.1", "localhost", "::1", "")
     # 外部审查 2026-10-18 F14：此前只看 API_BIND_HOST 这个配置项 —— `uvicorn app.main:app --host 0.0.0.0`
@@ -101,14 +102,13 @@ def _assert_safe_bind() -> None:
         hosts.append(("UVICORN_HOST", os.getenv("UVICORN_HOST", "")))
     bad = [(src, h) for src, h in hosts if h not in loopback_names]
     host = bad[0][1] if bad else ""
-    if bad and not getattr(settings, "allow_insecure_bind", False):
+    if bad:
         raise RuntimeError(
-            f"拒绝启动：{bad[0][0]}={host!r} 不是回环地址，而本服务**零认证** —— "
-            f"审批/拒绝/删除/跑 GP 等端点将对整个网络开放。"
-            f"请先实现认证（见 roadmap 审计 #10）；若确知风险并要临时暴露，"
-            f"显式设置 ALLOW_INSECURE_BIND=true。"
+            f"拒绝启动：{bad[0][0]}={host!r} 不是回环地址，而本服务没有认证 —— "
+            f"审批/拒绝/删除/跑 GP 等端点将对整个网络开放。首轮只在本机回环上服务（D11）；"
+            f"需要远程访问时先实现认证授权（CORS 不能代替认证）。"
         )
-    if "*" in settings.cors_origins and getattr(settings, "allow_insecure_bind", False) is False:
+    if "*" in settings.cors_origins:
         # 注意：模块级 logger 在本函数之后才定义，这里按名字取，避免 NameError。
         logging.getLogger("main").warning(
             "[security] CORS 允许任意来源（'*'）且服务无认证 —— "
@@ -128,6 +128,10 @@ def _argv_hosts() -> list:
 
 
 _assert_safe_bind()
+
+# D11：关键动作（改状态的请求）只接受本机回环客户端 —— 监听地址之外的第二道
+from app.api.loopback_guard import LoopbackGuardMiddleware  # noqa: E402
+app.add_middleware(LoopbackGuardMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

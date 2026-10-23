@@ -49,6 +49,13 @@ def _hermetic_run_flags(tmp_path_factory):
     settings.scheduler_db_url = f"sqlite:///{tmp_path_factory.mktemp('hermetic_sched') / 'jobs.db'}"
     # 账户锁是整台机器共用的（复审 2026-10-19 §5.3）：测试不得去碰真实部署的锁目录
     settings.account_lock_dir = str(tmp_path_factory.mktemp("hermetic_locks"))
+    # 告警（D15）：事件文件写到临时目录；桌面通知整体替换成记录器 —— 测试绝不弹真实的系统通知
+    settings.alert_event_file = str(tmp_path_factory.mktemp("hermetic_alerts") / "events.jsonl")
+    from app.core.alerting import desktop_notifier
+    def _recorded(title, body):
+        _recorded.sent.append((title, body))
+    _recorded.sent = []
+    desktop_notifier.notify = _recorded
     yield
 
 
@@ -168,7 +175,9 @@ def test_client():
     import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from app.main import app
-    with TestClient(app, raise_server_exceptions=False) as client:
+    # D11：改状态的请求只接受本机回环客户端（app/api/loopback_guard.py）—— 测试客户端以 127.0.0.1 出现，
+    # 生产代码里没有为测试开的口子（Starlette 缺省的客户端地址 "testclient" 不是回环）
+    with TestClient(app, client=("127.0.0.1", 50000), raise_server_exceptions=False) as client:
         yield client
 
 

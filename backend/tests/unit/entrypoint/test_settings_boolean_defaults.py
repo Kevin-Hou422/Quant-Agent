@@ -45,9 +45,9 @@ EXPECTED_BOOL_DEFAULTS = {
     "enable_fundamentals":         False,   # 不自动向 SEC 发请求（且需要用户自己的身份声明）
     "debug":                       False,   # 不在调试模式下发布
     "enable_backup":               True,    # 备份默认开着
+    "intraday_watchdog_enabled":   False,   # 盘中巡检会连券商、能拉熔断全平：由人开（上线预检要求开）
 
     # ── 安全 ────────────────────────────────────────────────────────
-    "allow_insecure_bind":         False,   # 不对外暴露未鉴权服务
     "chat_allow_synthetic":        False,   # 不拿合成数据冒充真实数据
 
     # ── 交易约束 ────────────────────────────────────────────────────

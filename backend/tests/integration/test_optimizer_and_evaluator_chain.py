@@ -243,7 +243,7 @@ def client():
     if root not in sys.path:
         sys.path.insert(0, root)
     from app.main import app
-    return TestClient(app)
+    return TestClient(app, client=("127.0.0.1", 50000))
 
 
 class TestAlphaSimulateAPI:
