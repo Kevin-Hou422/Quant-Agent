@@ -559,7 +559,7 @@
     "tests/unit/data_engine/test_health_hard_failures.py",
     "tests/unit/data_engine/test_health_report.py"
    ],
-   "source": "D5 关键路径复核（批 1：健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "source": "D5 关键路径复核（健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
    "all_runs": [
     0.0,
     75.0,
@@ -1370,7 +1370,7 @@
     "tests/integration/test_trading_clock.py",
     "tests/unit/portfolio_manager/test_executable_spec.py"
    ],
-   "source": "D5 关键路径复核（批 1：健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "source": "D5 关键路径复核（健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
    "all_runs": [
     0.0,
     80.0
@@ -1394,7 +1394,7 @@
     "tests/unit/portfolio_manager/test_strategy_builder_assembly.py",
     "tests/unit/workflows/test_alpha_workflows_internals.py"
    ],
-   "source": "D5 关键路径复核（批 1：健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "source": "D5 关键路径复核（健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
    "all_runs": [
     36.4,
     87.9
@@ -1417,7 +1417,7 @@
     "tests/unit/portfolio_manager/test_executable_spec.py",
     "tests/unit/portfolio_manager/test_strategy_builder_assembly.py"
    ],
-   "source": "D5 关键路径复核（批 1：健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "source": "D5 关键路径复核（健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
    "all_runs": [
     41.2,
     94.1
@@ -1432,7 +1432,7 @@
     "tests/integration/test_contract_targets_and_permissions.py",
     "tests/integration/test_strategy_contract.py"
    ],
-   "source": "D5 关键路径复核（批 1：健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "source": "D5 关键路径复核（健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
    "all_runs": [
     33.3,
     88.9
@@ -1447,7 +1447,7 @@
     "tests/integration/test_contract_targets_and_permissions.py",
     "tests/integration/test_strategy_state_permissions.py"
    ],
-   "source": "D5 关键路径复核（批 1：健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "source": "D5 关键路径复核（健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
    "all_runs": [
     43.8,
     100.0
@@ -1463,7 +1463,7 @@
     "tests/integration/test_preregistered_validation_design.py",
     "tests/integration/test_spec_hash_and_vol_estimate.py"
    ],
-   "source": "D5 关键路径复核（批 1：健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "source": "D5 关键路径复核（健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
    "all_runs": [
     42.9,
     100.0
@@ -2054,7 +2054,7 @@
     "owed": "这 320 个点欠逐点复核。 新进入范围的模块：['app/core/data_engine/fundamentals/quality.py', 'app/core/lifecycle/validation_design.py']。"
    },
    {
-    "date": "2026-10-22 (用户决定批 1：正确性与状态)",
+    "date": "2026-10-22 (用户决定：正确性与状态)",
     "from": 2727,
     "to": 2794,
     "why": "用户 2026-10-22 核验的 6 个问题：C1 提案最终结论 / 评级一致（gates）、C2 来源不可验证时证据隔离、C4 正式日报决策不可变 + 修订链 + 按完整时间戳启动 + 结果归属前一决策、C5 未结案运行一律阻断正式资格、C6 integration / paper_running / verified_active 三态与权限（strategy_states）。",
@@ -2062,19 +2062,19 @@
     "owed": "这 67 个点欠逐点复核。 新进入范围的模块：['app/core/lifecycle/strategy_states.py']。"
    },
    {
-    "date": "2026-10-22 (用户决定批 2：时钟与预热)",
+    "date": "2026-10-22 (用户决定：时钟与预热)",
     "from": 2794,
     "to": 2922,
-    "why": "2026-10-22 用户决定批 2（D14 (a) 时钟 c2 + C3 标签 / 归档截止 + D9 Validate 预热）：时钟模块 clock.py（标签 / 归档截止 / 限价成交规则）、两套引擎改 T+1 限价撮合、每日循环 c2 结算、研究侧标签与合成器配对收益、Validate 预热、评估器 IC 标签、因子 IC 按时钟隔离。",
-    "how_it_was_handled": "**未做逐点变异复核**（D5 已定：关键路径分批复核，时钟在清单里，排在批 5）。每条决定按原话写了验收用例（tests/integration/test_trading_clock.py、test_validation_warmup.py、test_walk_forward_composite_fit.py、test_paper_broker_limit_fills.py），c2 成交与估值另有独立份额 + 现金账本对照（test_engines_match_share_cash_ledger.py）。",
+    "why": "2026-10-22 用户决定（时钟 / 预热：D14 (a) 时钟 c2 + C3 标签 / 归档截止 + D9 Validate 预热）：时钟模块 clock.py（标签 / 归档截止 / 限价成交规则）、两套引擎改 T+1 限价撮合、每日循环 c2 结算、研究侧标签与合成器配对收益、Validate 预热、评估器 IC 标签、因子 IC 按时钟隔离。",
+    "how_it_was_handled": "**未做逐点变异复核**（D5 已定：关键路径分批复核，时钟在清单里，排在「环境与关键路径复核」那一组）。每条决定按原话写了验收用例（tests/integration/test_trading_clock.py、test_validation_warmup.py、test_walk_forward_composite_fit.py、test_paper_broker_limit_fills.py），c2 成交与估值另有独立份额 + 现金账本对照（test_engines_match_share_cash_ledger.py）。",
     "owed": "这 128 个点欠逐点复核。 新进入范围的模块：['app/core/clock.py']。"
    },
    {
-    "date": "2026-10-22 (用户决定批 3：证据与研究纪律)",
+    "date": "2026-10-22 (用户决定：证据与研究纪律)",
     "from": 2922,
     "to": 3050,
-    "why": "2026-10-22 用户决定批 3（D12 研究边界登记、D16 基准、D1 基本面不晋级、D7、N05-c 预检、第 18 条未知公司行动隔离）：研究边界登记（BoundaryStore.register / 临时切分 / 正式结论的边界门）、holdout 曝光记实验与股票池、等权宇宙基准规则、未知公司行动识别 / 隔离 / 不加风险 / 对账标注、基本面不晋级与预登记诊断、目标波动预检。",
-    "how_it_was_handled": "**未做逐点变异复核**（D5 已定：关键路径分批复核，排在批 5）。每条决定按原话写了验收用例（tests/integration/test_frozen_test_boundary.py、test_research_boundary_tools.py、test_equal_weight_benchmark.py、test_corporate_action_quarantine.py、test_multi_class_share_counts.py、test_fundamentals_promotion_policy.py、test_target_vol_preflight.py），关键接线另做了变异验证（收缩接到券商目标、缺股本回填）。",
+    "why": "2026-10-22 用户决定（证据 / 研究纪律：D12 研究边界登记、D16 基准、D1 基本面不晋级、D7、N05-c 预检、第 18 条未知公司行动隔离）：研究边界登记（BoundaryStore.register / 临时切分 / 正式结论的边界门）、holdout 曝光记实验与股票池、等权宇宙基准规则、未知公司行动识别 / 隔离 / 不加风险 / 对账标注、基本面不晋级与预登记诊断、目标波动预检。",
+    "how_it_was_handled": "**未做逐点变异复核**（D5 已定：关键路径分批复核，排在「环境与关键路径复核」那一组）。每条决定按原话写了验收用例（tests/integration/test_frozen_test_boundary.py、test_research_boundary_tools.py、test_equal_weight_benchmark.py、test_corporate_action_quarantine.py、test_multi_class_share_counts.py、test_fundamentals_promotion_policy.py、test_target_vol_preflight.py），关键接线另做了变异验证（收缩接到券商目标、缺股本回填）。",
     "owed": "这 128 个点欠逐点复核。 新进入范围的模块：['app/core/benchmark.py', 'app/core/data_engine/corporate_actions.py', 'app/core/lifecycle/fundamentals_policy.py', 'app/db/corporate_actions.py']。"
    },
    {
@@ -2082,13 +2082,13 @@
     "from": 3050,
     "to": 3202,
     "why": "2026-10-22 用户决定（D15 告警、第 17 条盘中巡检、D11 仅本机回环、第 21 条隔离恢复）：桌面通知 + 事件文件（分类、去重、重试、送达状态、现场确认）、每日结果分类与调度任务失败告警、上线预检 alert_channel / intraday_watchdog、盘中巡检（日历时段、非阻塞账户锁、共用熔断、断线 / 陈旧快照）、回环中间件与绑定拒绝、隔离恢复与核对。",
-    "how_it_was_handled": "**未做逐点变异复核**（D5 已定：关键路径分批复核，排在批 5）。每条决定按原话写了验收用例（tests/integration/test_alerting.py、test_intraday_watchdog.py、test_api_loopback_only.py、test_recovery_drill.py），先看到失败。",
+    "how_it_was_handled": "**未做逐点变异复核**（D5 已定：关键路径分批复核，排在「环境与关键路径复核」那一组）。每条决定按原话写了验收用例（tests/integration/test_alerting.py、test_intraday_watchdog.py、test_api_loopback_only.py、test_recovery_drill.py），先看到失败。",
     "owed": "这 152 个点欠逐点复核。"
    }
   ],
   "critical_path_review": [
    {
-    "batch": "批 1：健康 / 身份 / 时钟 / 规格与结论",
+    "group": "健康 / 身份 / 时钟 / 规格与结论",
     "timing": "首轮 15990 秒（4.4 小时，隔离环境，选路 = 导入了该模块的测试文件，不含 tests/meta）；补测轮 618 秒（只跑新补的用例）",
     "modules": {
      "app/core/data_engine/health_report.py": {

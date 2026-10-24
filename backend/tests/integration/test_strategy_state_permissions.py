@@ -3,7 +3,7 @@
 
 来源（原测试文件的说明，保留出处）：
 
-2026-10-22 用户决定 · 批 1：正确性与状态（`docs/DECISION_IMPLEMENTATION_TRACKER.md` C1 / C2 / C4 / C5 / C6）。
+2026-10-22 用户决定 · 正确性与状态（`docs/DECISION_IMPLEMENTATION_TRACKER.md` C1 / C2 / C4 / C5 / C6）。
 
 每条断言都对着用户的原话写；先跑、先看它们在旧代码上失败，再改。
 """

@@ -9,7 +9,7 @@
 
 推进顺序：正确性与状态 → 时钟 / 预热 → 证据 / 研究纪律 → 告警巡检 / 恢复 → 环境与关键路径复核 → 活库预览 → 人工验收。
 
-## 批 1：正确性与状态
+## 正确性与状态
 
 | # | 要求（原话摘录） | 状态 | 证据 / 说明 |
 |---|---|---|---|
@@ -21,14 +21,14 @@
 | C5 | 试验史中断识别不能有 6 小时宽限：running / 被杀 / 结束标记写失败 → 正式资格等结案、保守计数或明确 incomplete；超时只用于发现僵尸任务 | ✅ | `TrialLedger.open_runs()` = running（不论多久）+ incomplete；`trial_history_problem` 有任何未结案运行就不给正式结论，原因里标进行中 / 疑似僵尸 / 有漏记；结案靠运行结束或 `resolve_run`。先失败。`tests/integration/test_trial_history_completeness.py`（TestOpenRuns）。**影响**：另一个进程正在跑搜索时，验证门 / 策略门不给正式结论（按你的要求偏保守） |
 | C6 | 分清"开始收集证据"与"已通过验证"：明确工程联调、PAPER_RUNNING、VERIFIED_ACTIVE 的状态和权限；不能靠关门、借旧策略 IC、把 active 字样当验证通过来自举 | ✅ | `app/core/lifecycle/strategy_states.py` 是权限表的单一来源：integration（交易，证据与正式天数都不计）/ paper_running（交易、计证据、可正式，未验证）/ verified_active（只能经 `POST /strategies/{sid}/verify` 过预登记验证门，**没有开关**；`tr_enforce_active_gate` 废弃）；旧字样 `active` 无任何权限，每日循环不按它交易（哪怕带规格）。`approve?activate` / `/activate` → paper_running，谱系写明未验证；新增 `/integration`、`/verify`；联调期策略证据记 `integration` 类、不计。前端按状态给按钮。先失败。`tests/integration/test_strategy_state_permissions.py`（TestStrategyStates）；约 22 条按旧状态 / 旧开关写的用例逐条按新状态改写，意图保留 |
 
-## 批 2：时钟 / 预热
+## 时钟 / 预热
 
 | # | 要求 | 状态 | 证据 |
 |---|---|---|---|
-| D14 | 选 (a)：T 收盘信息完成并过健康门后冻结信号与目标，T+1 按明确交易规则执行，换时钟版本；信号、回测、内部模拟、IC、归档、基准、调度同步改；计划开盘执行 ≠ 必按开盘价成交；预测 IC 与实际持仓收益分开记；旧历史保留旧版本、先隔离重算 | 🟡 | **做完**：时钟版本 c2（`CLOCK_VERSION`，进规格哈希 → c1 的规格 / 证据不被继承）。**信号**：`SIGNAL_DELAY=0`，所有 `delay=1` 处改取时钟。**回测 + 内部模拟**：两套引擎都按 T+1 DAY 限价单撮合（参考价 T 收盘、限价带 `exec_limit_band_bps`；开盘在限价内 → 开盘价，否则当日触及 → 限价，否则不成交并按 `limit_not_reached` 挂账；ADV / 波动截至 T）；隔夜收益算旧仓、盘中算新仓；没有开 / 高 / 低就拒绝运行。独立份额 + 现金账本对照 1e-9（`test_engines_match_share_cash_ledger.py`，五条），回测与模拟账本在真实跳空 K 线下逐位一致（`test_paper_broker_replay_parity.py`）。**IC**：每日循环、研究侧回测 IC / IC 衰减 / 分档、评估器、合成器拟合（`clock.paired_returns`）、工作流组合 IC 都用开盘到开盘标签。**归档**：见 C3。**调度**：交易循环 21:30 UTC 与重试 22:45 UTC 在冬夏令时都落在 T 收盘与开盘(T+1) 之间（新用例，5 个日期）。**分开记**：预测 IC 与账本 / 券商收益是两条序列（新用例：限价没成交 → 账本 0，标签照常）。**旧历史**：因子 IC 按时钟隔离，监控与滚动统计只读当前时钟，c1 行保留、面板分两条线显示（`icClock.test.ts`）。顺带修了一个被新用例抓到的缺陷：**完全没成交**的订单不留成交记录（c2 下这是常态）。**未做**：基准（等权宇宙）按 D16 在批 3 统一定义 —— 现在每日记录的基准仍是数据集等权收盘到收盘，与账本的收盘估值同口径，但股票池时点 / 缺价 / 公司行动规则未固定；c1 历史的重算走 D2（批 6，版本化 dry-run）；`gp_engine._evaluate_individual` 仍是收盘到收盘（生产代码不调用，只有测试用）；真 OpenD 下的限价成交与模拟规则的对照要在 D10 人工验收里看 |
+| D14 | 选 (a)：T 收盘信息完成并过健康门后冻结信号与目标，T+1 按明确交易规则执行，换时钟版本；信号、回测、内部模拟、IC、归档、基准、调度同步改；计划开盘执行 ≠ 必按开盘价成交；预测 IC 与实际持仓收益分开记；旧历史保留旧版本、先隔离重算 | 🟡 | **做完**：时钟版本 c2（`CLOCK_VERSION`，进规格哈希 → c1 的规格 / 证据不被继承）。**信号**：`SIGNAL_DELAY=0`，所有 `delay=1` 处改取时钟。**回测 + 内部模拟**：两套引擎都按 T+1 DAY 限价单撮合（参考价 T 收盘、限价带 `exec_limit_band_bps`；开盘在限价内 → 开盘价，否则当日触及 → 限价，否则不成交并按 `limit_not_reached` 挂账；ADV / 波动截至 T）；隔夜收益算旧仓、盘中算新仓；没有开 / 高 / 低就拒绝运行。独立份额 + 现金账本对照 1e-9（`test_engines_match_share_cash_ledger.py`，五条），回测与模拟账本在真实跳空 K 线下逐位一致（`test_paper_broker_replay_parity.py`）。**IC**：每日循环、研究侧回测 IC / IC 衰减 / 分档、评估器、合成器拟合（`clock.paired_returns`）、工作流组合 IC 都用开盘到开盘标签。**归档**：见 C3。**调度**：交易循环 21:30 UTC 与重试 22:45 UTC 在冬夏令时都落在 T 收盘与开盘(T+1) 之间（新用例，5 个日期）。**分开记**：预测 IC 与账本 / 券商收益是两条序列（新用例：限价没成交 → 账本 0，标签照常）。**旧历史**：因子 IC 按时钟隔离，监控与滚动统计只读当前时钟，c1 行保留、面板分两条线显示（`icClock.test.ts`）。顺带修了一个被新用例抓到的缺陷：**完全没成交**的订单不留成交记录（c2 下这是常态）。**未做**：基准（等权宇宙）按 D16 在「证据 / 研究纪律」里统一定义 —— 现在每日记录的基准仍是数据集等权收盘到收盘，与账本的收盘估值同口径，但股票池时点 / 缺价 / 公司行动规则未固定；c1 历史的重算走 D2（活库预览，版本化 dry-run）；`gp_engine._evaluate_individual` 仍是收盘到收盘（生产代码不调用，只有测试用）；真 OpenD 下的限价成交与模拟规则的对照要在 D10 人工验收里看 |
 | D9 | 预热：只用当时已知历史算特征，只评分 Validate 日期；拟合 / 标准化不读未来评分信息；覆盖 252 日因子、嵌套窗口、跨界标签、初始持仓、历史不足 | ✅ | `RealisticBacktester.run`：OOS 特征在"IS 中早于 OOS 的行 + OOS"拼成的历史上算，只取 OOS 日期评分，账本从 OOS 第一天空仓开始；`oos_warmup` 报 history_days / scored_days / first_scored。逐项：252 日因子与嵌套窗口在 Validate 有值（先失败）；Validate 末尾 30 天的价格改了，之前每天结果不变、IS 结果不受 OOS 影响（**这条在旧代码上也通过，是守卫不是先失败**）；初始空仓；历史不足如实少评分（先失败）；跨界标签：信号 T 的标签用到开盘(T+2)，c2 引擎第一天只决策不成交，OOS 段内不读段外价格；**拟合**：滚动前推合成的第 k 段只用 start 收盘时已实现的标签 —— 用例把 start 之后的标签整片换掉，第 2 段逐位不变（信号截断与收益截断两道守卫，同时去掉才会红，已验证）。需要拟合却没给配对收益 → 报错，不拿收盘到收盘凑。**口径说明**：IS 与 OOS 之间的隔离带不在两段数据里，按行计算的时序窗口会跨过这段空档（行数口径，已写进 `_warmup_history` 说明） |
 
-## 批 3：证据 / 研究纪律
+## 证据 / 研究纪律
 
 | # | 要求 | 状态 | 证据 |
 |---|---|---|---|
@@ -40,33 +40,33 @@
 | N05-c | 首轮关闭目标波动：用户手工改 .env；我提供预检和配置说明；决定须体现在新规格中，不能偷偷改变已批准策略 | ✅（.env 由你改） | 上线预检新增 `target_vol_off`（阻断）：`RISK_TARGET_VOL_ANN` 不为 0 → 红；运行中策略的规格里目标波动还开着 → 红并要求重新提案。规格本来就记 `risk_limits.target_vol_ann`（关闭时为空），关闭后旧规格与运行时对不上、每日循环不按它调仓（这条在旧代码上就通过，守卫）。配置说明写进 OPERATIONS §7。先失败（三条预检）。`tests/integration/test_target_vol_preflight.py`（4 条） |
 | F02′ | 完整公司行动账本后排；但未知公司行动必须隔离、停止新增风险并对账（价量策略同样依赖） | ✅（最小层；完整账本后排） | **识别**：每轮看最近 5 根 bar，单日 \|对数收益\| ≥ log(1.4) → 疑似未知公司行动，标出最近的拆股比例（新:旧）。**隔离**：`corporate_action_flags` 表，人结案前一直有效（`tools/ops/ca_flags.py list / resolve`，结案要操作人与对账结论）。**不加风险**：模拟账本与券商目标从标记日起不超过标记前一行（同向收缩可以，加仓 / 反手不行）；盘前风控门对隔离名单拒绝加风险单（减仓放行）；标记库读不到 → 券商只对账不下单。**对账**：券商股数与账本对不上且比例像拆股 → 差异里标 `suspected_corporate_action`。每日记录的异常里列出隔离名单，基准按 0 收益留在分母。先失败。变异验证：收缩没接到券商目标 → 端到端用例红。`tests/integration/test_corporate_action_quarantine.py`（8 条）。**未覆盖**：现金侧（分红到账）没有自动核对；影子账本（逐因子）不做隔离（测量用，不动资金）；单看价格分不清真暴跌与未复权拆股（宁可误报） |
 
-## 批 4：告警巡检 / 恢复
+## 告警巡检 / 恢复
 
 | # | 要求 | 状态 | 证据 |
 |---|---|---|---|
 | D15 | 桌面通知 + 持久化事件文件：分类、严重度、去重、重试、送达状态；区分正常无订单与异常跳过；文件落盘 ≠ 通知成功；不可达时不得称无人值守就绪；桌面通知须现场确认可见 | 🟡（代码 ✅；现场确认 🧪） | `app/core/alerting/`：事件（分类 17 种、严重度 info / warning / critical）先落盘再通知；送达状态 file_only / suppressed（去重窗口内同键）/ handed_to_os / failed，失败按次重试、调度器每 30 分钟补发；去重不吞失败的事件。每日循环结果分类：正常无订单（info）与任务没执行 / 摄取被拒 / 没有新 bar / 组合失败 / 执行没运行或被拦 / 下单出错分开；调度任务失败与错过、熔断开 / 关也发。**送达 ≠ 看见**：`python -m app.tasks.alerts test` → 人看见后 `confirm <id> --actor`；只有交给系统成功的测试通知能被确认。上线预检 `alert_channel`（阻断）：没有 14 天内的现场确认、或确认之后有失败 → 不就绪（预检读传入配置里的事件文件）。测试里桌面通知在 conftest 全局换成记录器。先失败。`tests/integration/test_alerting.py`（30 条）。**未做**：现场确认（要你在这台机器上看见测试通知后确认）；没有外部渠道，人不在机器前就看不到 |
-| W17 | 盘中巡检：交易所日历 + DST 调度，可配置 60 秒，沿用已批准风险阈值；共用账户锁和熔断状态；覆盖锁竞争、断线、陈旧快照、恢复，避免并发重复平仓；无人值守前验收 | 🟡（代码 ✅；真 OpenD 验收 🧪） | `app/core/execution/intraday_watchdog.py`，调度器按 `INTRADAY_WATCHDOG_INTERVAL_S`（缺省 60）注册，缺省关闭。时段按交易所日历（夏令时用例：同一 14:00 UTC 在 03-07 未开盘、03-10 已开盘），日历不可用 → 严重告警不猜；阈值 = 下单风控门的 `max_daily_loss`；切片相对上一可信收盘快照。账户锁不等待（`try_account_lock`）：被占 → 本拍不动、下一拍接着处理；熔断状态与手动熔断同一个开关，先落库再全平；熔断已开只续做全平、在途全平单不重下（第二拍不新增卖单）。断线计数 → 第 3 次严重告警、恢复发 info；快照指纹 10 分钟不变 → 陈旧、不据此决定、恢复变动后照常。上线预检 `intraday_watchdog`（阻断）。先失败。`tests/integration/test_intraday_watchdog.py`（16 条）。**未做**：真 OpenD 上的验收（D10）；巡检是调度器里的线程，调度器停了它也停（没有独立看门狗） |
-| R21 | 隔离恢复演练（合成恢复通过 ≠ 活库恢复已验证） | 🟡（合成 ✅；活库 ⛔ D2） | `app/tasks/restore.py`：`restore_snapshot` 只恢复到空的隔离目录（与活库所在目录 / 活 PIT 重叠、目录非空 → 拒绝），恢复出的库跑完整性检查；`verify_restore` 源库只读、逐表比行数、PIT 逐文件 sha256。`run_daily_backup` 加可选源路径（缺省仍取配置）。`tools/ops/recovery_drill.py`：合成主库 + 合成 PIT → 产品备份路径 → 隔离恢复 → 核对，报告写 `scope=synthetic`、`live_restore_verified=False`。演练不碰配置的活路径（用例比对活库修改时间）。先失败。`tests/integration/test_recovery_drill.py`（6 条，含删一行 / 截断一个 PIT 文件能被核对查出）。**未做**：活库快照的隔离恢复与差异（批 6，D2 / D13，须你确认）；调度库的恢复只做完整性检查、不比行数 |
-| T21 | 文档核对"盘中熔断"等说法；直接修正原结论，不追加矛盾脚注 | ✅ | 原处改写：OPERATIONS §7（"熔断是日频的、没有盘中巡检"、"告警只有日志" → 盘中巡检 / 告警 / 回环 / 备份恢复的实际行为与未验证项）；README（启动绑定、运行边界、配置表删 `ALLOW_INSECURE_BIND` 加巡检与告警、未完成清单）；路线图文首状态、D10 / D15 行、复审节"仍未做"、#10 零认证；`RE_REVIEW_FIX_TRACKER.md` F14 / 5.5 |
+| 盘中巡检 | 盘中巡检：交易所日历 + DST 调度，可配置 60 秒，沿用已批准风险阈值；共用账户锁和熔断状态；覆盖锁竞争、断线、陈旧快照、恢复，避免并发重复平仓；无人值守前验收 | 🟡（代码 ✅；真 OpenD 验收 🧪） | `app/core/execution/intraday_watchdog.py`，调度器按 `INTRADAY_WATCHDOG_INTERVAL_S`（缺省 60）注册，缺省关闭。时段按交易所日历（夏令时用例：同一 14:00 UTC 在 03-07 未开盘、03-10 已开盘），日历不可用 → 严重告警不猜；阈值 = 下单风控门的 `max_daily_loss`；切片相对上一可信收盘快照。账户锁不等待（`try_account_lock`）：被占 → 本拍不动、下一拍接着处理；熔断状态与手动熔断同一个开关，先落库再全平；熔断已开只续做全平、在途全平单不重下（第二拍不新增卖单）。断线计数 → 第 3 次严重告警、恢复发 info；快照指纹 10 分钟不变 → 陈旧、不据此决定、恢复变动后照常。上线预检 `intraday_watchdog`（阻断）。先失败。`tests/integration/test_intraday_watchdog.py`（16 条）。**未做**：真 OpenD 上的验收（D10）；巡检是调度器里的线程，调度器停了它也停（没有独立看门狗） |
+| 隔离恢复演练 | 隔离恢复演练（合成恢复通过 ≠ 活库恢复已验证） | 🟡（合成 ✅；活库 ⛔ D2） | `app/tasks/restore.py`：`restore_snapshot` 只恢复到空的隔离目录（与活库所在目录 / 活 PIT 重叠、目录非空 → 拒绝），恢复出的库跑完整性检查；`verify_restore` 源库只读、逐表比行数、PIT 逐文件 sha256。`run_daily_backup` 加可选源路径（缺省仍取配置）。`tools/ops/recovery_drill.py`：合成主库 + 合成 PIT → 产品备份路径 → 隔离恢复 → 核对，报告写 `scope=synthetic`、`live_restore_verified=False`。演练不碰配置的活路径（用例比对活库修改时间）。先失败。`tests/integration/test_recovery_drill.py`（6 条，含删一行 / 截断一个 PIT 文件能被核对查出）。**未做**：活库快照的隔离恢复与差异（活库预览，D2 / D13，须你确认）；调度库的恢复只做完整性检查、不比行数 |
+| 文档核对 | 文档核对"盘中熔断"等说法；直接修正原结论，不追加矛盾脚注 | ✅ | 原处改写：OPERATIONS §7（"熔断是日频的、没有盘中巡检"、"告警只有日志" → 盘中巡检 / 告警 / 回环 / 备份恢复的实际行为与未验证项）；README（启动绑定、运行边界、配置表删 `ALLOW_INSECURE_BIND` 加巡检与告警、未完成清单）；路线图文首状态、D10 / D15 行、复审节"仍未做"、#10 零认证；`RE_REVIEW_FIX_TRACKER.md` F14 / 5.5 |
 | D11 | API 首轮仅本机回环；保留监听参数与关键动作检查；远程前先认证授权，CORS 不代替认证 | ✅ | 核对现状发现 `ALLOW_INSECURE_BIND=true` 能放行非回环监听 → 删除该开关：绑非回环（配置、`--host` 两种写法、`UVICORN_HOST`）一律拒绝启动，提示先做认证授权、CORS 不代替认证。关键动作检查：`LoopbackGuardMiddleware`，改状态的请求（POST / PUT / PATCH / DELETE）来自非回环客户端 → 403，读请求不受影响。所有测试客户端显式声明来自 127.0.0.1。先失败。`tests/integration/test_api_loopback_only.py`（15 条，并入原 `test_api_bind_check.py`）。**迁移**：.env 里若有 `ALLOW_INSECURE_BIND` 会被忽略（不再生效） |
 
-## 批 5：环境与关键路径复核
+## 环境与关键路径复核
 
 | # | 要求 | 状态 | 证据 |
 |---|---|---|---|
 | D3 | `C:\QuantAgentEnv`（已有则新建子目录）按 lock 建独立测试环境；不升级交易环境、不改系统默认 Python、不复制活 .env | ✅ | `tools/env/isolated_test_env.py`（只用标准库）：`create` 拒绝云同步目录 / 仓库内的根目录，根目录已有内容保留、子目录已存在拒绝，基础解释器必须是 CI 的 3.12（`py -3.12` 选解释器，不改系统默认），`pip install -r requirements.lock`（不加 --upgrade）后 pip freeze 逐条对 lock + `pip check`，写 `environment.json`；`stage` 把工作树（git 跟踪 + 未忽略）镜像过去，`.env*` 不拷（`*.example` 模板除外），删掉过期文件；`run` 在镜像里跑 pytest、只带白名单环境变量。**查出的缺口**：测试从仓库 `backend/` 跑会读到活 `.env`（conftest 只覆盖几个开关）—— 镜像就是为此。已建 `C:\QuantAgentEnv\lock-test`（3.12.10，104 包零漂移，pip check 干净；目录此前不存在）。隔离环境全量：5462 passed / 3 skipped（真实源用例）/ 0 failed（修完下面 D4 之后，66 分钟）。先失败。`tests/integration/test_isolated_test_env.py`（14 条）。**未做**：前端不在隔离环境里（node_modules 仍用仓库的） |
 | D4 | 仓库已公开：真实行情夹具换等价合成数据，保留测试合同；真实源测试单独管理；不重写 Git 历史 | ✅（Git 历史未改） | **行情夹具**：仓库里唯一的真实行情是 `tests/fixtures/prices/` 两份 CSV（moomoo / yfinance 的 NVDA 一拆十前后 22 天 + AAPL）→ 删除，换成手写合成价格 `split_dividend_{moomoo,yahoo}.csv`，生成器 `synthetic_split_prices.py` 入库；合同保留：06-10 一拆十、06-11 除息比值只动约 0.008%、AAPL 无拆股、yfinance Close 已按拆股调整需还原、两源不复权价 1e-3 内一致（yfinance 一侧保留 float32 精度，不是恒等）、跨拆股市值连续、E/P 手算（公式不变，价格数字换成合成值）。新增用例核对 CSV 与生成器逐位一致（真实 CSV 在时它失败）。`tests/fixtures/edgar/` 是 SEC 公开申报（不是行情），保留。**真实源测试**：`tests/network_guard.py` + conftest：测试进程里非回环的 DNS / 连接一律拒绝，**含 curl_cffi**（yfinance 走它，C 层 libcurl 不经过 Python socket —— 第一版只拦 socket，守卫一条都没记到，这是查出来的）；试图连外网的用例判失败（吞了异常也一样；夹具里联网也算）；`@pytest.mark.live_source` 放行且缺省跳过，`QA_LIVE_SOURCES=1` 才跑。全量跑下来查出 5 条在连 yfinance：智能体构造、启动守卫、数据集健康 ×2、市场状态 —— 改成合成面板 / 离线替身各钉一个结论；此前"联网测形状、断网测 502"的二合一用例拆开；真实源各留一条 live_source（yfinance ×2、SEC、OpenD 共 4 条）。`tests/meta/test_network_guard.py`（14 条）。**未做**：Git 历史里仍有旧的真实 CSV（按你的要求不重写） |
-| D5 | 关键路径变异复核分批：健康 / 身份、时钟、规格与结论、资金切片、认领、熔断、证据、研究计数、恢复；报告用时、存活 mutant、未覆盖项 | 🟡（批 1/3 做完） | 三批共 936 点（按现行算子）：① 健康 / 身份 / 时钟 / 规格与结论 156 点 ② 资金切片 / 认领 / 熔断 374 点（order_manager、execution_store、pretrade_gate、intraday_watchdog）③ 证据 / 研究计数 / 恢复 406 点（evidence_store、forward_record、trial_ledger、research_context、backup、restore）。在隔离环境里跑（D3），选路 = 导入了该模块的测试文件（**不含 tests/meta**：每点多 210 秒，三批要多几十小时 —— 这是取舍）。**批 1**：首轮 15990 秒（4.4 小时），156 点存活 62（health_report 95.2%、input_identity 0%、clock 36.4%、executable_spec 41.2%、strategy_contract 33.3%、strategy_states 43.8%、validation_design 42.9%）。存活多半是选路窄（只按 import 选）**加**真缺口：成交规则每条边界、限价带换算、权限表 9 个格子、验证设计三条拒绝路径会被改成"通过"、数据摘要不含日期索引、规格哈希的规范化、能否做空的缺省 —— 都补了用例（6 个新文件：`test_limit_fill_and_session_boundaries.py`、`test_input_identity_and_code_version.py`、`test_spec_hash_and_vol_estimate.py`、`test_contract_targets_and_permissions.py`、`test_health_hard_failure_boundaries.py`）；补测轮 618 秒（只跑新用例），按变异点取并集：148 杀死、7 个等价（证明 + 机械验证用例：clock 4、executable_spec 1、health_report 1、input_identity 1）、**1 个待你定**：strategy_contract L185 按已批准规格生成信号时不重新校验表达式（`validate=False`），改成校验没人发现 —— 是行为选择不是缺陷（旧规格里窗口 > 252 一类的表达式：不校验照常交易 / 校验报错不交易）。登记：`measured_modules.json`（未测量点 3202 → 3078；未处置存活 24 → 25，多的就是这一个，写明原因）。**未做**：批 2、批 3；含 tests/meta 的全选路复核 |
+| D5 | 关键路径变异复核分批：健康 / 身份、时钟、规格与结论、资金切片、认领、熔断、证据、研究计数、恢复；报告用时、存活 mutant、未覆盖项 | 🟡（「健康 / 身份 / 时钟 / 规格与结论」做完，另两组未做） | 共 936 点（按现行算子），分三组：「健康 / 身份 / 时钟 / 规格与结论」156 点；「资金切片 / 认领 / 熔断」374 点（order_manager、execution_store、pretrade_gate、intraday_watchdog）；「证据 / 研究计数 / 恢复」406 点（evidence_store、forward_record、trial_ledger、research_context、backup、restore）。在隔离环境里跑（D3），选路 = 导入了该模块的测试文件（**不含 tests/meta**：每点多 210 秒，三组要多几十小时 —— 这是取舍）。**「健康 / 身份 / 时钟 / 规格与结论」**：首轮 15990 秒（4.4 小时），156 点存活 62（health_report 95.2%、input_identity 0%、clock 36.4%、executable_spec 41.2%、strategy_contract 33.3%、strategy_states 43.8%、validation_design 42.9%）。存活多半是选路窄（只按 import 选）**加**真缺口：成交规则每条边界、限价带换算、权限表 9 个格子、验证设计三条拒绝路径会被改成"通过"、数据摘要不含日期索引、规格哈希的规范化、能否做空的缺省 —— 都补了用例（6 个新文件：`test_limit_fill_and_session_boundaries.py`、`test_input_identity_and_code_version.py`、`test_spec_hash_and_vol_estimate.py`、`test_contract_targets_and_permissions.py`、`test_health_hard_failure_boundaries.py`）；补测轮 618 秒（只跑新用例），按变异点取并集：148 杀死、7 个等价（证明 + 机械验证用例：clock 4、executable_spec 1、health_report 1、input_identity 1）、**1 个待你定**：strategy_contract L185 按已批准规格生成信号时不重新校验表达式（`validate=False`），改成校验没人发现 —— 是行为选择不是缺陷（旧规格里窗口 > 252 一类的表达式：不校验照常交易 / 校验报错不交易）。登记：`measured_modules.json`（未测量点 3202 → 3078；未处置存活 24 → 25，多的就是这一个，写明原因）。**未做**：「资金切片 / 认领 / 熔断」「证据 / 研究计数 / 恢复」两组；含 tests/meta 的全选路复核 |
 | D6 | 活环境基本面继续关闭；保留研究与质量门测试 | ✅ 现状即是 | 未改 .env；质量门测试在 `tests/unit/data_engine/test_fundamentals_quality_gate.py` |
 
-## 批 6：活库预览（只读 / 副本）
+## 活库预览（只读 / 副本）
 
 | # | 要求 | 状态 | 证据 |
 |---|---|---|---|
 | D2 | 先备份、验证恢复、版本化 dry-run；展示受影响记录、旧新值、算法 / 数据 / 时钟版本、排序影响；保留旧值与曝光史；写活库另行确认 | ⬜ | |
 | D13 | 重提案：先修正确性、D14 和资格状态；先隔离预演，再由用户批准活环境操作；不补 hash、不继承旧时钟证据、不先激活旧时钟再重做 | ⬜ | |
 
-## 批 7：人工验收
+## 人工验收
 
 | # | 要求 | 状态 | 证据 |
 |---|---|---|---|
