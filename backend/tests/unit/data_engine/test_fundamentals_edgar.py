@@ -295,6 +295,7 @@ def test_fixture_files_are_real_shaped_json():
 _LIVE_UA = __import__("os").environ.get("EDGAR_USER_AGENT", "").strip()
 
 
+@pytest.mark.live_source
 @pytest.mark.skipif("@" not in _LIVE_UA, reason="未设置 EDGAR_USER_AGENT —— 不向 SEC 发请求")
 def test_live_edgar_still_matches_the_fixture_contract(tmp_path):
     c = EdgarClient(_LIVE_UA, cache_dir=tmp_path)

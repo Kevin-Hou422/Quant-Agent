@@ -771,8 +771,14 @@ the file itself is the authority and documents *why* each default is what it is.
 ## 15. Testing & Engineering Discipline
 
 ```bash
-cd backend  && pytest -q          # 5280 tests (2 skipped, ~53 min; last full run 2026-10-21). One skip is the live-SEC
-                                  # contract test (needs EDGAR_USER_AGENT); the live-OpenD test also skips when OpenD is down
+cd backend  && pytest -q          # ~5470 tests, ~66 min. No test may reach the internet (tests/network_guard.py:
+                                  # Python sockets and curl_cffi); the 4 live-source tests (yfinance ×2, SEC, OpenD)
+                                  # are marked live_source and only run with QA_LIVE_SOURCES=1
+# Verification runs use an isolated environment outside OneDrive, installed from requirements.lock,
+# on a mirror of the working tree without any .env (decision D3):
+py -3.12 backend/tools/env/isolated_test_env.py create   # once: C:\QuantAgentEnv\lock-test
+py -3.12 backend/tools/env/isolated_test_env.py stage    # mirror the working tree (.env* never copied)
+py -3.12 backend/tools/env/isolated_test_env.py run -- -q
 cd frontend && npm run test       # 121 passed (11 files)
 cd frontend && npx tsc -b         # type check (what CI runs; `--noEmit` on the root tsconfig checks nothing)
 ```

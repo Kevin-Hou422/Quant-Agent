@@ -8,8 +8,8 @@ prices.py — 算市值用的**不复权**收盘价 + 拆股记录（Phase 10.2�
 
 两个价格源的"不复权"不是一回事（2026-10-12 用 NVDA 2024-06-10 一拆十实测）：
 
-    moomoo  AuType.NONE          真·不复权：06-07 收 1208.88，06-10 收 121.79
-    yahoo   auto_adjust=False    Close **已按拆股调整**（06-07 给 120.888），只是没按分红调；
+    moomoo  AuType.NONE          真·不复权：一拆十前一天的收盘就是当天成交价，拆股日起是拆后价
+    yahoo   auto_adjust=False    Close **已按拆股调整**（一拆十前一天给的是成交价的 1/10），只是没按分红调；
                                  拆股记录在 `Stock Splits` 列（06-10 = 10.0）
 
 所以 yahoo 的 Close 要乘回"之后发生的拆股"才是当时的成交价；moomoo 没有拆股列，

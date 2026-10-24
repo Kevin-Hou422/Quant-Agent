@@ -10,10 +10,50 @@ conftest.py — 全局测试 fixtures
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+
+from tests import network_guard
+
+
+# ---------------------------------------------------------------------------
+# 不许连外网；真实数据源用例单独标出、缺省不跑（D4，见 tests/network_guard.py）
+# ---------------------------------------------------------------------------
+def pytest_configure(config):
+    config.addinivalue_line("markers", "live_source: 连真实外部数据源（yfinance / SEC / OpenD …）的用例；"
+                                       "缺省跳过，QA_LIVE_SOURCES=1 才跑")
+    network_guard.install()
+
+
+def pytest_collection_modifyitems(config, items):
+    if os.environ.get("QA_LIVE_SOURCES") == "1":
+        return
+    skip = pytest.mark.skip(reason="真实数据源用例：缺省不跑（QA_LIVE_SOURCES=1 才跑）")
+    for item in items:
+        if "live_source" in item.keywords:
+            item.add_marker(skip)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_setup(item):
+    """在这条用例的**全部**夹具（含 module / session 级）建立之前清零 —— 夹具里联网同样算这条用例的。"""
+    network_guard.state.allow = item.get_closest_marker("live_source") is not None
+    network_guard.state.attempts = []
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _network_guard(request):
+    live = request.node.get_closest_marker("live_source") is not None
+    yield
+    tried = sorted(set(network_guard.state.attempts))
+    network_guard.state.allow, network_guard.state.attempts = False, []
+    if tried and not live:
+        pytest.fail(f"这条用例试图连外网：{tried[:5]} —— 用替身 / 合成夹具，或标 @pytest.mark.live_source 单独管理")
 
 
 # ---------------------------------------------------------------------------

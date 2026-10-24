@@ -5,7 +5,8 @@
 （留 edgar.CONCEPTS 用到的科目、近几年披露的事实），结构与字段原样保留。
 四家各有用处：AAPL / NVDA（常规 + 一拆十）、GOOGL（不报毛利、多类别股没有封面页股本）、
 BKNG（净利润在第三个科目下、净资产为负、2026 年一拆二十五）。
-`tests/fixtures/prices/*.csv` 是同一天从 moomoo OpenD / yfinance 取回的 NVDA 一拆十前后的真实价格。
+`tests/fixtures/prices/*.csv` 是**合成**行情（2026-10-22 D4：仓库已公开，不放真实行情）：NVDA 一拆十 + 次日除息、
+AAPL 无拆股，moomoo 与 yfinance 两种返回形状；怎么造的、保留了哪些测试合同见 `synthetic_split_prices.py`。
 
 替身只替到 HTTP 这一层（`FakeSession`）：EdgarClient 的缓存、限速、错误处理全是真代码。
 """
@@ -42,13 +43,13 @@ def events(ticker: str) -> pd.DataFrame:
 
 def moomoo_prices() -> pd.DataFrame:
     """列 = (raw|qfq, ticker)。"""
-    return pd.read_csv(PRICE_DIR / "moomoo_nvda_split.csv", header=[0, 1], index_col=0,
+    return pd.read_csv(PRICE_DIR / "split_dividend_moomoo.csv", header=[0, 1], index_col=0,
                        parse_dates=True)
 
 
 def yahoo_download_frame() -> pd.DataFrame:
-    """yf.download(auto_adjust=False, actions=True, group_by='column') 的真实返回。"""
-    return pd.read_csv(PRICE_DIR / "yahoo_nvda_split.csv", header=[0, 1], index_col=0,
+    """yf.download(auto_adjust=False, actions=True, group_by='column') 返回的形状（合成数字）。"""
+    return pd.read_csv(PRICE_DIR / "split_dividend_yahoo.csv", header=[0, 1], index_col=0,
                        parse_dates=True)
 
 

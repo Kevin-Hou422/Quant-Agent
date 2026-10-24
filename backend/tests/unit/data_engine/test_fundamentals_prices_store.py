@@ -24,6 +24,18 @@ from tests.unit.data_engine import fundamentals_fixtures as fx
 # 拆股识别 / 不复权价 —— 两个源各自的真实口径
 # ---------------------------------------------------------------------------
 
+def test_the_price_fixtures_are_the_documented_synthetic_ones():
+    """D4：仓库里的行情夹具必须是生成器逐位造出来的合成数据（不是哪天取回的真实行情）。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("synthetic_split_prices", fx.PRICE_DIR / "synthetic_split_prices.py")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    pd.testing.assert_frame_equal(fx.moomoo_prices(), gen.moomoo_frame(), check_freq=False, check_names=False)
+    pd.testing.assert_frame_equal(fx.yahoo_download_frame(), gen.yahoo_frame(), check_freq=False,
+                                  check_names=False, check_dtype=False)
+    assert sorted(p.name for p in fx.PRICE_DIR.glob("*.csv")) == ["split_dividend_moomoo.csv", "split_dividend_yahoo.csv"]
+
+
 def test_moomoo_split_is_read_from_the_raw_over_adjusted_ratio():
     df = fx.moomoo_prices()
     s = prices.detect_splits(df["raw"]["NVDA"], df["qfq"]["NVDA"])
@@ -56,9 +68,9 @@ def test_reverse_split_has_a_multiplier_below_one():
 
 
 def test_yahoo_close_is_already_split_adjusted_and_gets_restored():
-    """yfinance auto_adjust=False 的 Close 在拆股前是 120.888 而不是当时成交的 1208.88。"""
+    """yfinance auto_adjust=False 的 Close 在拆股前是 120.0 而不是当时成交的 1200.0。"""
     frame = fx.yahoo_download_frame()
-    assert frame["Close"]["NVDA"]["2024-06-07"] == pytest.approx(120.888, abs=1e-3)
+    assert frame["Close"]["NVDA"]["2024-06-07"] == pytest.approx(120.0, abs=1e-3)
     seen = {}
 
     def download(**kw):
@@ -66,8 +78,8 @@ def test_yahoo_close_is_already_split_adjusted_and_gets_restored():
         return frame.copy()
 
     raw, splits = prices.yahoo_raw_and_splits(["NVDA"], "2024-05-20", "2024-06-20", download=download)
-    assert raw["NVDA"]["2024-06-07"] == pytest.approx(1208.88, abs=1e-3)
-    assert raw["NVDA"]["2024-06-10"] == pytest.approx(121.79, abs=1e-3)      # 拆股日当天已是拆后价
+    assert raw["NVDA"]["2024-06-07"] == pytest.approx(1200.0, abs=1e-3)
+    assert raw["NVDA"]["2024-06-10"] == pytest.approx(121.0, abs=1e-3)      # 拆股日当天已是拆后价
     assert splits["NVDA"].to_dict() == {pd.Timestamp("2024-06-10"): 10.0}
     assert seen["auto_adjust"] is False and seen["actions"] is True
     assert seen["end"] == "2024-06-21"                                       # yfinance 的 end 是排他的
@@ -100,7 +112,7 @@ def test_yahoo_without_split_column_is_an_error():
 
 
 class _Provider:
-    """MoomooProvider 的替身：按 autype 返回真实夹具里对应的那一列。"""
+    """MoomooProvider 的替身：按 autype 返回合成夹具里对应的那一列。"""
     calls: list = []
 
     def __init__(self, autype):
@@ -119,7 +131,7 @@ def test_moomoo_fetches_unadjusted_and_reuses_the_adjusted_close_it_is_given():
                                                adj_close=qfq, provider_factory=_Provider)
     assert [c[0] for c in _Provider.calls] == [None]                 # 只取了一次：不复权
     assert _Provider.calls[0][4] == ("close",)
-    assert raw["NVDA"]["2024-06-07"] == 1208.88
+    assert raw["NVDA"]["2024-06-07"] == 1200.0
     assert list(splits) == ["NVDA"] and splits["NVDA"].iloc[0] == 10.0
 
 
@@ -404,7 +416,7 @@ def test_attach_adds_every_field_aligned_to_the_price_panel(tmp_path):
         assert data[name].index.equals(data["close"].index)
         assert list(data[name].columns) == list(data["close"].columns)
     assert rep.splits == {"NVDA": {"2024-06-10": 10.0}}
-    assert data["earnings_yield"]["NVDA"]["2024-05-31"] == pytest.approx(42.598e9 / (1096.33 * 2.46e9), rel=1e-6)
+    assert data["earnings_yield"]["NVDA"]["2024-05-31"] == pytest.approx(42.598e9 / (1100.0 * 2.46e9), rel=1e-6)
 
 
 def test_attach_default_store_lives_under_the_pit_directory(tmp_path):
@@ -517,7 +529,7 @@ from app.core.data_engine.fundamentals.service import cached_raw_and_splits   # 
 
 
 class _Source:
-    """记录每次被要了哪些票、哪个区间的数据源替身；数据取自真实的 moomoo 夹具。"""
+    """记录每次被要了哪些票、哪个区间的数据源替身；数据取自 moomoo 形状的合成夹具。"""
 
     def __init__(self, missing=()):
         self.calls = []
@@ -542,7 +554,7 @@ def test_raw_prices_are_fetched_once_then_served_from_disk(tmp_path):
     raw2, sp2 = cached_raw_and_splits(st, ["NVDA", "AAPL"], idx, _settings(tmp_path), fetch=src)
     assert src.calls == [(("NVDA", "AAPL"), "2024-05-20", "2024-06-20")]      # 第二次没有请求
     pd.testing.assert_frame_equal(raw1, raw2)
-    assert raw2["NVDA"]["2024-06-07"] == 1208.88
+    assert raw2["NVDA"]["2024-06-07"] == 1200.0
     assert list(sp2) == ["NVDA"] and sp2["NVDA"].to_dict() == {pd.Timestamp("2024-06-10"): 10.0}
     assert raw2.index.equals(idx) and list(raw2.columns) == ["NVDA", "AAPL"]
 
@@ -565,7 +577,7 @@ def test_only_the_missing_tail_is_fetched_with_one_day_of_overlap(tmp_path):
     raw, splits = cached_raw_and_splits(st, ["NVDA"], _idx("2024-05-20", "2024-06-20"), _settings(tmp_path), fetch=src)
     assert src.calls[1] == (("NVDA",), "2024-06-07", "2024-06-20")
     assert splits["NVDA"].to_dict() == {pd.Timestamp("2024-06-10"): 10.0}
-    assert raw["NVDA"].notna().all() and raw["NVDA"]["2024-05-20"] == 947.80
+    assert raw["NVDA"].notna().all() and raw["NVDA"]["2024-05-20"] == 950.25
 
 
 def test_an_earlier_start_or_a_new_ticker_triggers_a_full_fetch_for_those_names_only(tmp_path):
@@ -606,7 +618,7 @@ def test_last_bar_not_yet_published_is_fetched_again_later(tmp_path):
     src = _Source()
     raw, _ = cached_raw_and_splits(st, ["AAPL"], idx, _settings(tmp_path), fetch=src)
     assert src.calls == [(("AAPL",), "2024-06-18", "2024-06-20")]
-    assert raw["AAPL"]["2024-06-20"] == 209.68
+    assert raw["AAPL"]["2024-06-20"] == 209.70
 
 
 def test_caches_are_kept_apart_by_price_source(tmp_path):
@@ -633,7 +645,7 @@ def test_cached_values_are_not_overwritten_by_a_later_fetch(tmp_path):
     tampered = fx.moomoo_prices()["raw"][["NVDA"]] * 0 + 1.0
     st.save_raw_prices("moomoo", tampered, {}, {})
     raw, _ = cached_raw_and_splits(st, ["NVDA"], idx, _settings(tmp_path), fetch=_Source())
-    assert raw["NVDA"]["2024-06-07"] == 1208.88
+    assert raw["NVDA"]["2024-06-07"] == 1200.0
 
 
 def test_attach_uses_the_price_cache_on_the_default_path(tmp_path, monkeypatch):
@@ -648,5 +660,5 @@ def test_attach_uses_the_price_cache_on_the_default_path(tmp_path, monkeypatch):
     for _ in range(2):
         data, _, _ = _price_panel()
         attach_fundamentals(data, ["NVDA", "AAPL"], settings=_settings(tmp_path), client=fx.client())
-        assert data["market_cap"]["NVDA"]["2024-06-10"] == pytest.approx(121.79 * 2.46e9 * 10, rel=1e-9)
+        assert data["market_cap"]["NVDA"]["2024-06-10"] == pytest.approx(121.0 * 2.46e9 * 10, rel=1e-9)
     assert calls == [(("NVDA", "AAPL"), "2024-05-20", "2024-06-20")]

@@ -433,9 +433,16 @@ class TestConstructionAndStreaming:
         构造 QuantTools 时四个数据契约参数必须原样传下去 ——
         少传一个就会退回 QuantTools 自己的默认值（可能是合成数据）。
         """
-        seen = {}
+        from types import SimpleNamespace
+
         import app.agent._agent as mod
+        import app.core.data_engine.dataset_registry as reg
+        from tests.conftest import _make_dataset
+        seen = {}
         real = mod.QuantTools
+        # 数据集换成合成面板（D4：单元测试不连 yfinance）；本条只看参数有没有原样传下去
+        monkeypatch.setattr(reg, "load_registry_dataset",
+                            lambda name, **kw: SimpleNamespace(data=_make_dataset(n_days=300, n_tickers=12)))
 
         def _spy(**kw):
             seen.update(kw)

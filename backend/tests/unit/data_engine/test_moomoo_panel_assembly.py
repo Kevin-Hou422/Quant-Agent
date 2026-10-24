@@ -120,6 +120,7 @@ def _opend_up(host="127.0.0.1", port=11111) -> bool:
         s.close()
 
 
+@pytest.mark.live_source
 @pytest.mark.skipif(not _opend_up(), reason="OpenD 网关未运行（127.0.0.1:11111）")
 def test_live_fetch_real_aapl():
     prov = MoomooProvider()

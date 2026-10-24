@@ -101,9 +101,12 @@ Phase 13.1）。
 - [ ] 本周有没有 `over_budget=true` 的 holdout 使用？哪一段、为什么要再看一次（§1.1）。
 
 **每月：**
-- [ ] 全量回归（当前约 5,170 条、约 48 分钟；按 `requirements.lock` 的环境跑，设 `OPENBLAS_NUM_THREADS=1`、
-      别与别的测试并发 —— 本机内存紧时会出现 OpenBLAS 分配失败的假红）+ 依赖升级窗口
-      （在此窗口内做 pip/npm 升级并跑全量）。
+- [ ] 全量回归（当前约 5,470 条、约 66 分钟）在独立测试环境里跑（D3）：
+      `py -3.12 tools/env/isolated_test_env.py stage` 后 `… run -- -q`（`C:\QuantAgentEnv\lock-test`，按 `requirements.lock` 装，
+      源码镜像不含 `.env`，子进程只带白名单环境变量，`OPENBLAS_NUM_THREADS=1`）；别与别的测试并发 ——
+      本机内存紧时会出现 OpenBLAS 分配失败的假红。测试不许连外网（`tests/network_guard.py`）；真实数据源用例
+      （`live_source`）另跑：`QA_LIVE_SOURCES=1`，SEC 那条还要 `EDGAR_USER_AGENT`。+ 依赖升级窗口
+      （在此窗口内做 pip/npm 升级并跑全量；升级要新建环境，不改 `lock-test`）。
 - [ ] 查 `evidence_revisions`：有没有被拒绝的证据改写尝试？每一条都要能说清楚为什么同一天会算出两个数。
 - [ ] 运行**成本模型校准报告**（Task 8.2，`monthly_cost_calibration_job` 自动产出
       `cost_calibration_YYYYMM.md`）；**人工确认**后方可手动更新 `CostParams`——

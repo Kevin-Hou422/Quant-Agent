@@ -239,7 +239,7 @@ def test_announcement_after_the_last_row_is_ignored():
 
 
 # ---------------------------------------------------------------------------
-# 市值与拆股（真实价格）
+# 市值与拆股（合成价格：tests/fixtures/prices/synthetic_split_prices.py）
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
@@ -262,14 +262,14 @@ def test_earnings_yield_matches_hand_computed_market_cap(facts, events, mm):
     raw, _, splits = mm
     p, _ = build_panels(raw.index, ["AAPL", "NVDA"], facts, events, raw, splits)
     # 2024-05-31：可见的是 05-29 的 10-Q —— TTM 净利润 42.598B，封面页股本 24.6 亿（截至 05-24）
-    mcap = 1096.33 * 2.46e9
+    mcap = 1100.0 * 2.46e9
     assert p["earnings_yield"]["NVDA"]["2024-05-31"] == pytest.approx(42.598e9 / mcap, rel=1e-6)
     assert p["book_to_price"]["NVDA"]["2024-05-31"] == pytest.approx(49.142e9 / mcap, rel=1e-6)
 
 
 def test_market_cap_is_continuous_across_the_ten_for_one_split(facts, events, mm):
     """
-    06-07 收 1208.88，06-10 收 121.79（一拆十）。已知股本还是拆前的 24.6 亿，下一份财报 08-28 才出。
+    06-07 收 1200.0，06-10 收 121.0（一拆十）。已知股本还是拆前的 24.6 亿，下一份财报 08-28 才出。
     不调整的话 06-10 的市值掉到十分之一、E/P 跳 10 倍。
     """
     raw, qfq, splits = mm
@@ -366,9 +366,9 @@ def test_market_cap_is_unadjusted_price_times_split_adjusted_shares(facts, event
     raw, _, splits = mm
     p, _ = build_panels(raw.index, ["AAPL", "NVDA"], facts, events, raw, splits)
     mc = p["market_cap"]["NVDA"]
-    assert mc["2024-05-31"] == pytest.approx(1096.33 * 2.46e9, rel=1e-9)          # 拆股前
-    assert mc["2024-06-10"] == pytest.approx(121.79 * 2.46e9 * 10, rel=1e-9)      # 拆股日：价格 /10，股本 ×10
-    assert mc["2024-06-10"] / mc["2024-06-07"] == pytest.approx(121.79 * 10 / 1208.88, rel=1e-9)
+    assert mc["2024-05-31"] == pytest.approx(1100.0 * 2.46e9, rel=1e-9)          # 拆股前
+    assert mc["2024-06-10"] == pytest.approx(121.0 * 2.46e9 * 10, rel=1e-9)      # 拆股日：价格 /10，股本 ×10
+    assert mc["2024-06-10"] / mc["2024-06-07"] == pytest.approx(121.0 * 10 / 1200.0, rel=1e-9)
     # 与另外两个估值字段是同一个市值
     assert p["earnings_yield"]["NVDA"]["2024-05-31"] * mc["2024-05-31"] == pytest.approx(42.598e9, rel=1e-9)
 

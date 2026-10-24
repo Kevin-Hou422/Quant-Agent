@@ -3,10 +3,10 @@
  "_selection_rule": "一个模块可能有多轮测量。取**同一点数下击杀数最高**的那轮 —— 本项目的工作流只往测试里加断言、不删，故固定点数下击杀率单调不减。不用文件 mtime：多模块批次会在单模块复测之后仍在写盘，mtime 会指错。",
  "_note_state_file_missing": "标了 state_file_missing 的模块：A 档确实测量过（台账有逐条存活分析），但当时的 progress 状态文件后来被清理，数字取自台账而非状态文件。重跑一次即可回到自动生成的口径。",
  "totals": {
-  "modules_with_mutants": 89,
-  "total_points": 1982,
-  "total_survived": 136,
-  "total_killed": 1846
+  "modules_with_mutants": 95,
+  "total_points": 2106,
+  "total_survived": 144,
+  "total_killed": 1962
  },
  "modules": {
   "app/agent/_agent.py": {
@@ -549,18 +549,23 @@
    ]
   },
   "app/core/data_engine/health_report.py": {
-   "points": 32,
-   "killed": 32,
-   "survived": 0,
-   "kill_rate": 100.0,
+   "points": 62,
+   "killed": 61,
+   "survived": 1,
+   "kill_rate": 98.4,
    "tests": [
+    "tests/integration/test_health_hard_failure_boundaries.py",
+    "tests/unit/data_engine/test_dataset_registry_loading.py",
+    "tests/unit/data_engine/test_health_hard_failures.py",
     "tests/unit/data_engine/test_health_report.py"
    ],
-   "source": "progress_d_gap3.json",
+   "source": "D5 关键路径复核（批 1：健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
    "all_runs": [
     0.0,
     75.0,
-    100.0
+    100.0,
+    95.2,
+    98.4
    ]
   },
   "app/core/data_engine/local_parquet_provider.py": {
@@ -1353,24 +1358,134 @@
     100.0
    ],
    "note": "首测 0.0%（该模块此前一条测试都没有）。补 test_sqlite_hardening.py 后用 verify_mutant.py 单点复核：L28 `!=` → `==` 结论 [OK] 变异被杀死。"
+  },
+  "app/core/data_engine/input_identity.py": {
+   "points": 5,
+   "killed": 4,
+   "survived": 1,
+   "kill_rate": 80.0,
+   "tests": [
+    "tests/integration/test_evidence_input_identity.py",
+    "tests/integration/test_input_identity_and_code_version.py",
+    "tests/integration/test_trading_clock.py",
+    "tests/unit/portfolio_manager/test_executable_spec.py"
+   ],
+   "source": "D5 关键路径复核（批 1：健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "all_runs": [
+    0.0,
+    80.0
+   ]
+  },
+  "app/core/clock.py": {
+   "points": 33,
+   "killed": 29,
+   "survived": 4,
+   "kill_rate": 87.9,
+   "tests": [
+    "tests/integration/test_forward_evidence.py",
+    "tests/integration/test_limit_fill_and_session_boundaries.py",
+    "tests/integration/test_paper_broker_limit_fills.py",
+    "tests/integration/test_trading_clock.py",
+    "tests/unit/alpha_engine/test_signal_processor_pipeline.py",
+    "tests/unit/backtest_engine/test_multi_dataset_backtester.py",
+    "tests/unit/ml_engine/test_alpha_evaluator_overfit.py",
+    "tests/unit/ml_engine/test_alpha_optimizer_search.py",
+    "tests/unit/portfolio_manager/test_audit_portfolio_regressions.py",
+    "tests/unit/portfolio_manager/test_strategy_builder_assembly.py",
+    "tests/unit/workflows/test_alpha_workflows_internals.py"
+   ],
+   "source": "D5 关键路径复核（批 1：健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "all_runs": [
+    36.4,
+    87.9
+   ]
+  },
+  "app/core/portfolio_manager/executable_spec.py": {
+   "points": 17,
+   "killed": 16,
+   "survived": 1,
+   "kill_rate": 94.1,
+   "tests": [
+    "tests/integration/test_evidence_input_identity.py",
+    "tests/integration/test_spec_hash_and_vol_estimate.py",
+    "tests/integration/test_strategy_contract.py",
+    "tests/integration/test_strategy_proposal_verdict.py",
+    "tests/integration/test_target_vol_preflight.py",
+    "tests/integration/test_trading_clock.py",
+    "tests/integration/test_validation_warmup.py",
+    "tests/unit/alpha_engine/test_leak_filter.py",
+    "tests/unit/portfolio_manager/test_executable_spec.py",
+    "tests/unit/portfolio_manager/test_strategy_builder_assembly.py"
+   ],
+   "source": "D5 关键路径复核（批 1：健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "all_runs": [
+    41.2,
+    94.1
+   ]
+  },
+  "app/core/portfolio_manager/strategy_contract.py": {
+   "points": 9,
+   "killed": 8,
+   "survived": 1,
+   "kill_rate": 88.9,
+   "tests": [
+    "tests/integration/test_contract_targets_and_permissions.py",
+    "tests/integration/test_strategy_contract.py"
+   ],
+   "source": "D5 关键路径复核（批 1：健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "all_runs": [
+    33.3,
+    88.9
+   ]
+  },
+  "app/core/lifecycle/strategy_states.py": {
+   "points": 16,
+   "killed": 16,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_contract_targets_and_permissions.py",
+    "tests/integration/test_strategy_state_permissions.py"
+   ],
+   "source": "D5 关键路径复核（批 1：健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "all_runs": [
+    43.8,
+    100.0
+   ]
+  },
+  "app/core/lifecycle/validation_design.py": {
+   "points": 14,
+   "killed": 14,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_contract_targets_and_permissions.py",
+    "tests/integration/test_preregistered_validation_design.py",
+    "tests/integration/test_spec_hash_and_vol_estimate.py"
+   ],
+   "source": "D5 关键路径复核（批 1：健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "all_runs": [
+    42.9,
+    100.0
+   ]
   }
  },
  "proof_reconciliation": {
   "_doc": "存活变异的处置对账状态。这是本轮交付**已知未闭合**的唯一缺口，写在这里是为了它不会被忘掉。",
   "modules_with_survivors": 44,
-  "total_survivors": 136,
+  "total_survivors": 144,
   "proof_files_in_suite": 44,
-  "proof_entries_in_suite": 97,
+  "proof_entries_in_suite": 104,
   "per_file_accounting": "自洽：44 个文件的 PROVEN_EQUIVALENT 条目数与各自声明的存活数逐个相等（由 test_lessons_enforced.py::TestLessonX 强制）",
   "module_level_attribution": "已逐模块对账（2026-09-16）：见 survivor_disposition",
   "why_not": "PROVEN_EQUIVALENT 的键是自由文本（如 'L124 (weights < -tol) → <='），不带模块路径；按 import 归属会错判（risk_gate 的 10 条证明在它自己的文件里，而那个文件并不直接 import 该模块）。所以无法机械地把 138 个存活逐条对上 97 条证明。",
   "what_is_established": "① app/ 下 88 个有变异点的模块全部测量过（本文件对账）；② 每个写了证明的文件，条目数与它声明的存活数一致；③ 每条证明说明 ≥40 字、点名的验证用例真实存在。 ④ 已被反例推翻的证明单独登记在 REFUTED_EQUIVALENCE，并配一条固化反例的可执行用例。",
   "how_to_close": "已完成：97 条键全部改写成 `<模块路径> ×<覆盖点数> — <描述>`，由 test_every_proof_key_declares_its_module_and_point_count 强制格式，由 test_survivor_disposition_reconciles_per_module 逐模块对账。遗留的不是『对不上账』，而是『22 个存活项确实没处置』，见 survivor_disposition。",
   "ratchet": {
-   "proof_entries_min": 97,
+   "proof_entries_min": 104,
    "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
    "refuted_entries_min": 2,
-   "unmeasured_points_max": 3202
+   "unmeasured_points_max": 3078
   },
   "refuted_by_counterexample": {
    "count": 2,
@@ -1396,11 +1511,11 @@
  },
  "measurement_scope": {
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
-  "measured_points": 1982,
+  "measured_points": 2106,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
   "current_plan_points": 5184,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-  "unmeasured_points": 3202,
+  "unmeasured_points": 3078,
   "newly_in_scope_modules": [
    "app/core/risk_engine/factor_model.py",
    "app/core/execution/broker_gateway.py",
@@ -1420,16 +1535,10 @@
    "app/agent/_constants.py",
    "app/core/alpha_engine/fields.py",
    "app/db/process_lock.py",
-   "app/core/portfolio_manager/executable_spec.py",
    "app/db/evidence_store.py",
-   "app/core/data_engine/input_identity.py",
    "app/core/data_engine/research_context.py",
-   "app/core/portfolio_manager/strategy_contract.py",
    "app/db/forward_record.py",
    "app/core/data_engine/fundamentals/quality.py",
-   "app/core/lifecycle/validation_design.py",
-   "app/core/lifecycle/strategy_states.py",
-   "app/core/clock.py",
    "app/core/benchmark.py",
    "app/core/data_engine/corporate_actions.py",
    "app/core/lifecycle/fundamentals_policy.py",
@@ -1551,10 +1660,6 @@
    "app/core/data_engine/dataset_registry.py": {
     "measured": 16,
     "now_planned": 21
-   },
-   "app/core/data_engine/health_report.py": {
-    "measured": 32,
-    "now_planned": 39
    },
    "app/core/data_engine/local_parquet_provider.py": {
     "measured": 21,
@@ -1980,25 +2085,80 @@
     "how_it_was_handled": "**未做逐点变异复核**（D5 已定：关键路径分批复核，排在批 5）。每条决定按原话写了验收用例（tests/integration/test_alerting.py、test_intraday_watchdog.py、test_api_loopback_only.py、test_recovery_drill.py），先看到失败。",
     "owed": "这 152 个点欠逐点复核。"
    }
+  ],
+  "critical_path_review": [
+   {
+    "batch": "批 1：健康 / 身份 / 时钟 / 规格与结论",
+    "timing": "首轮 15990 秒（4.4 小时，隔离环境，选路 = 导入了该模块的测试文件，不含 tests/meta）；补测轮 618 秒（只跑新补的用例）",
+    "modules": {
+     "app/core/data_engine/health_report.py": {
+      "points": 62,
+      "killed": 61,
+      "survived_after_followup": 1,
+      "first_round_kill_rate": 95.2
+     },
+     "app/core/data_engine/input_identity.py": {
+      "points": 5,
+      "killed": 4,
+      "survived_after_followup": 1,
+      "first_round_kill_rate": 0.0
+     },
+     "app/core/clock.py": {
+      "points": 33,
+      "killed": 29,
+      "survived_after_followup": 4,
+      "first_round_kill_rate": 36.4
+     },
+     "app/core/portfolio_manager/executable_spec.py": {
+      "points": 17,
+      "killed": 16,
+      "survived_after_followup": 1,
+      "first_round_kill_rate": 41.2
+     },
+     "app/core/portfolio_manager/strategy_contract.py": {
+      "points": 9,
+      "killed": 8,
+      "survived_after_followup": 1,
+      "first_round_kill_rate": 33.3
+     },
+     "app/core/lifecycle/strategy_states.py": {
+      "points": 16,
+      "killed": 16,
+      "survived_after_followup": 0,
+      "first_round_kill_rate": 43.8
+     },
+     "app/core/lifecycle/validation_design.py": {
+      "points": 14,
+      "killed": 14,
+      "survived_after_followup": 0,
+      "first_round_kill_rate": 42.9
+     }
+    },
+    "unmeasured_points": {
+     "before": 3202,
+     "after": 3078
+    }
+   }
   ]
  },
  "survivor_disposition": {
   "_doc": "存活变异的**逐模块**处置对账。外部审计 2026-09-15 指出原来的『每个文件条目数 == 自己声明的存活数』只是文件内自洽，跨文件汇总从未对过账。现在证明键带模块前缀与覆盖点数（`<模块> ×N — 描述`），可以逐模块机械对账。",
-  "total_survivors": 136,
-  "proven_points": 112,
-  "unproven_points": 24,
+  "total_survivors": 144,
+  "proven_points": 119,
+  "unproven_points": 25,
   "unproven_by_module": {
    "app/core/alpha_engine/fast_ops.py": 3,
    "app/core/backtest_engine/transaction_cost.py": 3,
    "app/core/data_engine/data_partitioner.py": 4,
    "app/core/strategies/baselines.py": 2,
    "app/tasks/daily_trading_loop.py": 10,
-   "app/core/ml_engine/proxy_model.py": 2
+   "app/core/ml_engine/proxy_model.py": 2,
+   "app/core/portfolio_manager/strategy_contract.py": 1
   },
   "what_unproven_means": "这些变异点既没有被任何用例杀死，也没有书面的等价性证明 —— 改坏了不会有人知道，而且我们连『为什么可以不管它』都没写下来。两个模块（baselines / daily_trading_loop）是**一条证明都没有**。",
   "how_to_close": "逐模块：要么补用例杀死（首选），要么写可机械验证的等价性证明并配反驳尝试。闭合一个就把 unproven_by_module 里对应的数字改小；test_survivor_disposition_reconciles_per_module 会逐模块核对。",
   "ratchet": {
-   "unproven_max": 24,
+   "unproven_max": 25,
    "_doc": "未处置数只许减不许增。声明数多于存活数会直接判红（证明盖住了不存在的点）。"
   },
   "_raises": [
@@ -2008,6 +2168,13 @@
     "delta": 2,
     "why": "修 B-8 时 `should_prune` 开始读 `_fitted`，于是 L110/L163 那条「`_fitted` 全库无人读 → 死存储 → 等价」的证明**失效**并撤销。那条证明当初自带失效告警（test_fitted_flag_has_no_reader），告警如期响了 —— 这正是它该起的作用。",
     "status": "这 2 个点现在既未被杀死也无有效证明；已换上 test_fitted_flag_actually_guards_the_model_branch 作行为用例，待下一轮 verify_mutant 复核确认是否已被它杀死。"
+   },
+   {
+    "date": "2026-10-24",
+    "module": "app/core/portfolio_manager/strategy_contract.py",
+    "delta": 1,
+    "why": "D5 关键路径复核首次按现行算子测量本模块（此前未测）。L185 `Executor(validate=False)` → True 没有用例发现：按已批准规格生成信号时要不要再过一遍表达式校验，是行为选择而不是缺陷 —— 只在旧规格里的表达式不符合新校验规则（如窗口 > 252）时有差别（不校验：照常交易；校验：报错不交易）。",
+    "status": "等用户决定；决定之后按决定写用例杀掉，不写等价证明（它不等价）。"
    }
   ]
  }

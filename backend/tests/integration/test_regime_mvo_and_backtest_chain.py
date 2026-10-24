@@ -13,13 +13,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.core.data_engine.regime_detector import RegimeDetector, REGIMES
+from app.core.backtest_engine.performance_analyzer import deflated_sharpe_from_returns
 from app.core.backtest_engine.portfolio_constructor import (
     MVOPortfolio,
     SignalWeightedPortfolio,
 )
-from app.core.backtest_engine.performance_analyzer import deflated_sharpe_from_returns
-
+from app.core.data_engine.regime_detector import REGIMES, RegimeDetector
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -237,8 +236,8 @@ class TestMVOPortfolio:
 
     def test_mvo_mode_end_to_end(self, make_dataset):
         """SimulationConfig(portfolio_mode='mvo') 在 RealisticBacktester 中可用。"""
-        from app.core.backtest_engine.realistic_backtester import RealisticBacktester
         from app.core.alpha_engine.signal_processor import SimulationConfig
+        from app.core.backtest_engine.realistic_backtester import RealisticBacktester
 
         ds = make_dataset(n_days=160, n_tickers=10)
         bt = RealisticBacktester(config=SimulationConfig(portfolio_mode="mvo"))
@@ -248,6 +247,7 @@ class TestMVOPortfolio:
 
     def test_unknown_mode_rejected(self):
         from app.core.alpha_engine.signal_processor import SimulationConfig
+
         # Literal 类型仅静态约束；运行时由 _build_weights 抛错
         from app.core.backtest_engine.realistic_backtester import RealisticBacktester
         cfg = SimulationConfig()
@@ -316,8 +316,8 @@ class TestDeflatedSharpe:
 
     def test_risk_report_integration(self, make_dataset):
         """RiskReport.from_result(n_trials=...) 填充 deflated_sharpe 字段。"""
-        from app.core.backtest_engine.realistic_backtester import RealisticBacktester
         from app.core.alpha_engine.signal_processor import SimulationConfig
+        from app.core.backtest_engine.realistic_backtester import RealisticBacktester
 
         ds = make_dataset(n_days=160, n_tickers=10)
         bt = RealisticBacktester(config=SimulationConfig())
@@ -330,9 +330,8 @@ class TestDeflatedSharpe:
 
     def test_analyzer_method_delegates(self, make_dataset):
         """PerformanceAnalyzer.deflated_sharpe_ratio 与模块函数一致。"""
-        from app.core.backtest_engine.realistic_backtester import RealisticBacktester
-        from app.core.backtest_engine.performance_analyzer import PerformanceAnalyzer
         from app.core.alpha_engine.signal_processor import SimulationConfig
+        from app.core.backtest_engine.realistic_backtester import RealisticBacktester
 
         ds = make_dataset(n_days=160, n_tickers=10)
         bt = RealisticBacktester(config=SimulationConfig())
@@ -360,13 +359,34 @@ class TestRegimeAPI:
         )
         assert resp.status_code == 422
 
-    def test_response_schema_offline_safe(self, test_client):
-        """真实数据集加载依赖网络；离线时应返回 502 而非静默降级。"""
+    # 此前一条用例同时接受 200 / 502：联网时测形状、断网时测 502 —— 实际测的是哪一条看当天的网络。
+    # D4 起拆开：两条都用替身、各钉一个结论；真实源单独一条（QA_LIVE_SOURCES=1 才跑）。
+
+    def test_response_schema_on_a_dataset(self, test_client, monkeypatch):
+        from types import SimpleNamespace
+
+        import app.core.data_engine.dataset_registry as reg
+        from tests.conftest import _make_dataset
+        monkeypatch.setattr(reg, "load_registry_dataset",
+                            lambda name, **kw: SimpleNamespace(data=_make_dataset(n_days=300, n_tickers=12)))
         resp = test_client.get("/api/regime", params={"dataset_name": "us_tech_large"})
-        if resp.status_code == 200:
-            body = resp.json()
-            assert body["regime"] in REGIMES
-            assert isinstance(body["counts"], dict)
-            assert len(body["recent_labels"]) <= 20
-        else:
-            assert resp.status_code == 502
+        assert resp.status_code == 200, resp.text[:300]
+        body = resp.json()
+        assert body["regime"] in REGIMES
+        assert isinstance(body["counts"], dict)
+        assert len(body["recent_labels"]) <= 20
+
+    def test_a_failed_load_is_502_not_a_silent_fallback(self, test_client, monkeypatch):
+        import app.core.data_engine.dataset_registry as reg
+
+        def _offline(*a, **k):
+            raise ConnectionError("真实数据源不可用（测试替身）")
+        monkeypatch.setattr(reg, "load_registry_dataset", _offline)
+        resp = test_client.get("/api/regime", params={"dataset_name": "us_tech_large"})
+        assert resp.status_code == 502 and resp.json()["detail"].startswith("Dataset load failed")
+
+    @pytest.mark.live_source
+    def test_response_schema_on_the_real_source(self, test_client):
+        resp = test_client.get("/api/regime", params={"dataset_name": "us_tech_large"})
+        assert resp.status_code == 200, resp.text[:300]
+        assert resp.json()["regime"] in REGIMES

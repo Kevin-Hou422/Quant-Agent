@@ -182,6 +182,11 @@ class TestSyntheticData:
             return real_rng(*a, **k)
 
         args = argparse.Namespace(dataset="us_tech_large")   # 无 use_synthetic 属性
+        import app.core.data_engine.dataset_registry as reg
+
+        def _offline(*a, **k):                                # D4：不连真实数据源，模拟"取不到"
+            raise ConnectionError("真实数据源不可用（测试替身）")
+        _real_load, reg.load_registry_dataset = reg.load_registry_dataset, _offline
         orig = np.random.default_rng
         np.random.default_rng = _spy
         errors: list = []
@@ -195,6 +200,7 @@ class TestSyntheticData:
                 errors.append(exc)
         finally:
             np.random.default_rng = orig
+            reg.load_registry_dataset = _real_load
 
         for exc in errors:
             assert not isinstance(exc, (TypeError, AttributeError)), (
