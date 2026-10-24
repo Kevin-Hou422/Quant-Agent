@@ -571,7 +571,7 @@ class DailyTradingLoop:
                     "reason": "target_generation_failed", "detail": str(exc),
                     "strategy_verdict": strategy_verdict, "used_baseline": used_baseline,
                     "execution": self._maintain_live("target_generation_failed")}
-        # 用户决定第 18 条（F02′）：疑似未知公司行动 → 隔离、不加风险、待人对账。模拟账本与券商目标同一处收缩；
+        # 用户决定第 18 条：疑似未知公司行动 → 隔离、不加风险、待人对账。模拟账本与券商目标同一处收缩；
         # 券商侧另由盘前风控门按实际持仓拒绝加风险单。标记读不到 → 不知道谁该隔离 → 券商只对账不下单
         ca_quarantined, ca_problem = self._corporate_action_quarantine(dataset)
         if ca_problem:

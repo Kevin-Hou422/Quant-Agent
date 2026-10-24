@@ -1,5 +1,5 @@
 """
-corporate_actions.py — 疑似未知公司行动的隔离标记（2026-10-22 用户决定第 18 条 / F02′）
+corporate_actions.py — 疑似未知公司行动的隔离标记（2026-10-22 用户决定第 18 条）
 
 识别见 `app/core/data_engine/corporate_actions.py`。一只票被标记后一直处于隔离（不加风险）状态，
 直到**人**核对完券商股数 / 现金与数据源复权、写明结论后结案（`resolve`）—— 不会因为价格序列后来被复权
