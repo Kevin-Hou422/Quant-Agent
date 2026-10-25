@@ -307,8 +307,8 @@ PROVEN_EQUIVALENT = {
 
     # 这一条原本一句话盖了两个模块，逐模块对账时会把两个点都算到 trial_ledger 上。
     # 拆开写 —— 键里的模块前缀是对账的唯一依据，不允许一条横跨两个模块。
-    "app/db/trial_ledger.py ×1 — L49 `sessionmaker(..., expire_on_commit=False)` -> True":
-        "`add()` 提交后用一条**新查询**读 total（不读提交前加载的对象属性），"
+    "app/db/trial_ledger.py ×0 — L49 `sessionmaker(..., expire_on_commit=False)` -> True（已被杀死）":
+        "（D5 关键路径复核时已被 tests/integration/test_audit_table_schema.py 杀死，留作记录）原证明：`add()` 提交后用一条**新查询**读 total（不读提交前加载的对象属性），"
         "`total()` 走的是只读 session、不 commit 因此不触发过期。"
         "两种取值在本模块的任何调用路径上都观察不到差别。",
 

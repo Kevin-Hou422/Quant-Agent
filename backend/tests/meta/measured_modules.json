@@ -3,10 +3,10 @@
  "_selection_rule": "一个模块可能有多轮测量。取**同一点数下击杀数最高**的那轮 —— 本项目的工作流只往测试里加断言、不删，故固定点数下击杀率单调不减。不用文件 mtime：多模块批次会在单模块复测之后仍在写盘，mtime 会指错。",
  "_note_state_file_missing": "标了 state_file_missing 的模块：A 档确实测量过（台账有逐条存活分析），但当时的 progress 状态文件后来被清理，数字取自台账而非状态文件。重跑一次即可回到自动生成的口径。",
  "totals": {
-  "modules_with_mutants": 95,
-  "total_points": 2106,
-  "total_survived": 144,
-  "total_killed": 1962
+  "modules_with_mutants": 103,
+  "total_points": 2876,
+  "total_survived": 161,
+  "total_killed": 2715
  },
  "modules": {
   "app/agent/_agent.py": {
@@ -584,18 +584,39 @@
    ]
   },
   "app/core/data_engine/market_calendar.py": {
-   "points": 22,
-   "killed": 20,
-   "survived": 2,
-   "kill_rate": 90.9,
+   "points": 34,
+   "killed": 33,
+   "survived": 1,
+   "kill_rate": 97.1,
    "tests": [
-    "tests/unit/data_engine/test_market_calendar_fail_closed.py"
+    "tests/integration/test_alerting.py",
+    "tests/integration/test_calendar_and_forward_split.py",
+    "tests/integration/test_calendar_schedule_cache.py",
+    "tests/integration/test_daily_ingest_increment.py",
+    "tests/integration/test_formal_forward_daily_record.py",
+    "tests/integration/test_forward_daily_end_to_end.py",
+    "tests/integration/test_forward_evidence.py",
+    "tests/integration/test_incremental_ingest_forward.py",
+    "tests/integration/test_intraday_watchdog.py",
+    "tests/integration/test_isolated_test_env.py",
+    "tests/integration/test_limit_fill_and_session_boundaries.py",
+    "tests/integration/test_phase12_execution_wiring.py",
+    "tests/integration/test_simulate_acceptance.py",
+    "tests/integration/test_trading_clock.py",
+    "tests/unit/data_engine/test_health_hard_failures.py",
+    "tests/unit/data_engine/test_market_calendar_fail_closed.py",
+    "tests/unit/execution/test_golive.py",
+    "tests/unit/execution/test_order_manager.py",
+    "tests/unit/portfolio_manager/test_audit_portfolio_regressions.py",
+    "tests/unit/tasks/test_scheduler_registration.py"
    ],
-   "source": "progress_final.json",
+   "source": "D5 关键路径复核（交易所日程按年缓存后的重测）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
    "all_runs": [
     77.3,
     86.4,
-    90.9
+    90.9,
+    94.1,
+    97.1
    ]
   },
   "app/core/data_engine/multi_dataset.py": {
@@ -1227,17 +1248,37 @@
    ]
   },
   "app/db/trial_ledger.py": {
-   "points": 8,
-   "killed": 7,
-   "survived": 1,
-   "kill_rate": 87.5,
+   "points": 93,
+   "killed": 93,
+   "survived": 0,
+   "kill_rate": 100.0,
    "tests": [
-    "tests/integration/test_validation_gate_contracts.py"
+    "tests/integration/test_audit_table_schema.py",
+    "tests/integration/test_daily_record_assembly.py",
+    "tests/integration/test_evidence_store_edges.py",
+    "tests/integration/test_frozen_test_boundary.py",
+    "tests/integration/test_fundamentals_promotion_policy.py",
+    "tests/integration/test_recovery_drill.py",
+    "tests/integration/test_research_boundary_tools.py",
+    "tests/integration/test_research_context.py",
+    "tests/integration/test_research_context_edges.py",
+    "tests/integration/test_selection_only_research.py",
+    "tests/integration/test_trial_accounting.py",
+    "tests/integration/test_trial_history_completeness.py",
+    "tests/integration/test_trial_ledger_edges.py",
+    "tests/integration/test_trial_ledger_pbo_and_tstat_gate.py",
+    "tests/integration/test_validation_gate_contracts.py",
+    "tests/unit/data_engine/test_phase_s_equivalence_proofs.py",
+    "tests/unit/db/test_holdout_ledger.py",
+    "tests/unit/entrypoint/test_phase_s_config_fallbacks.py",
+    "tests/unit/portfolio_manager/test_strategy_gate_contracts.py"
    ],
-   "source": "progress_final2.json",
+   "source": "D5 关键路径复核（证据 / 研究计数 / 恢复）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
    "all_runs": [
     50.0,
-    87.5
+    87.5,
+    65.6,
+    100.0
    ]
   },
   "app/main.py": {
@@ -1259,18 +1300,26 @@
    ]
   },
   "app/tasks/backup.py": {
-   "points": 14,
-   "killed": 14,
+   "points": 21,
+   "killed": 21,
    "survived": 0,
    "kill_rate": 100.0,
    "tests": [
+    "tests/integration/test_audit_table_schema.py",
+    "tests/integration/test_daily_record_assembly.py",
+    "tests/integration/test_evidence_store_edges.py",
+    "tests/integration/test_recovery_drill.py",
+    "tests/integration/test_research_context_edges.py",
+    "tests/integration/test_trial_ledger_edges.py",
     "tests/unit/tasks/test_backup.py",
     "tests/unit/tasks/test_backup_failure_paths.py"
    ],
-   "source": "progress_c_rerun_2.json",
+   "source": "D5 关键路径复核（证据 / 研究计数 / 恢复）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
    "all_runs": [
     57.1,
     92.9,
+    100.0,
+    100.0,
     100.0
    ]
   },
@@ -1468,24 +1517,215 @@
     42.9,
     100.0
    ]
+  },
+  "app/core/execution/order_manager.py": {
+   "points": 137,
+   "killed": 134,
+   "survived": 3,
+   "kill_rate": 97.8,
+   "tests": [
+    "tests/integration/test_api_execution.py",
+    "tests/integration/test_corporate_action_quarantine.py",
+    "tests/integration/test_daily_ingest_health_gate.py",
+    "tests/integration/test_forward_daily_end_to_end.py",
+    "tests/integration/test_intraday_watchdog.py",
+    "tests/integration/test_intraday_watchdog_edges.py",
+    "tests/integration/test_kill_switch_mid_batch.py",
+    "tests/integration/test_order_manager_edge_paths.py",
+    "tests/integration/test_phase12_execution_wiring.py",
+    "tests/integration/test_quote_contract_boundaries.py",
+    "tests/unit/execution/test_account_lock.py",
+    "tests/unit/execution/test_order_builder.py",
+    "tests/unit/execution/test_order_manager.py"
+   ],
+   "source": "D5 关键路径复核（资金切片 / 认领 / 熔断）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "all_runs": [
+    81.8,
+    97.8
+   ]
+  },
+  "app/db/execution_store.py": {
+   "points": 103,
+   "killed": 102,
+   "survived": 1,
+   "kill_rate": 99.0,
+   "tests": [
+    "tests/integration/test_api_execution.py",
+    "tests/integration/test_forward_daily_end_to_end.py",
+    "tests/integration/test_intraday_watchdog.py",
+    "tests/integration/test_intraday_watchdog_edges.py",
+    "tests/integration/test_kill_switch_mid_batch.py",
+    "tests/integration/test_order_manager_edge_paths.py",
+    "tests/integration/test_phase12_execution_wiring.py",
+    "tests/integration/test_quote_contract_boundaries.py",
+    "tests/unit/db/test_execution_store_schema.py",
+    "tests/unit/execution/test_account_lock.py",
+    "tests/unit/execution/test_audit_order_regressions.py",
+    "tests/unit/execution/test_equivalence_proofs.py",
+    "tests/unit/execution/test_fidelity.py",
+    "tests/unit/execution/test_golive.py",
+    "tests/unit/execution/test_golive_fundamentals.py",
+    "tests/unit/execution/test_order_claim_atomicity.py",
+    "tests/unit/execution/test_order_manager.py",
+    "tests/unit/execution/test_order_quotes.py",
+    "tests/unit/tasks/test_monthly_fidelity.py"
+   ],
+   "source": "D5 关键路径复核（资金切片 / 认领 / 熔断）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "all_runs": [
+    99.0,
+    99.0
+   ]
+  },
+  "app/core/execution/pretrade_gate.py": {
+   "points": 98,
+   "killed": 97,
+   "survived": 1,
+   "kill_rate": 99.0,
+   "tests": [
+    "tests/integration/test_corporate_action_quarantine.py",
+    "tests/integration/test_intraday_watchdog.py",
+    "tests/integration/test_intraday_watchdog_edges.py",
+    "tests/integration/test_kill_switch_mid_batch.py",
+    "tests/integration/test_order_manager_edge_paths.py",
+    "tests/integration/test_quote_contract_boundaries.py",
+    "tests/unit/execution/test_audit_order_regressions.py",
+    "tests/unit/execution/test_equivalence_proofs.py",
+    "tests/unit/execution/test_order_manager.py",
+    "tests/unit/execution/test_order_quotes.py",
+    "tests/unit/execution/test_pretrade_gate.py"
+   ],
+   "source": "D5 关键路径复核（资金切片 / 认领 / 熔断）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "all_runs": [
+    92.9,
+    99.0
+   ]
+  },
+  "app/core/execution/intraday_watchdog.py": {
+   "points": 36,
+   "killed": 35,
+   "survived": 1,
+   "kill_rate": 97.2,
+   "tests": [
+    "tests/integration/test_intraday_watchdog.py",
+    "tests/integration/test_intraday_watchdog_edges.py",
+    "tests/integration/test_kill_switch_mid_batch.py",
+    "tests/integration/test_order_manager_edge_paths.py",
+    "tests/integration/test_quote_contract_boundaries.py"
+   ],
+   "source": "D5 关键路径复核（资金切片 / 认领 / 熔断）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "all_runs": [
+    61.1,
+    97.2
+   ]
+  },
+  "app/db/evidence_store.py": {
+   "points": 85,
+   "killed": 82,
+   "survived": 3,
+   "kill_rate": 96.5,
+   "tests": [
+    "tests/integration/test_audit_table_schema.py",
+    "tests/integration/test_calendar_and_forward_split.py",
+    "tests/integration/test_daily_record_assembly.py",
+    "tests/integration/test_evidence_input_identity.py",
+    "tests/integration/test_evidence_store_edges.py",
+    "tests/integration/test_forward_evidence.py",
+    "tests/integration/test_recovery_drill.py",
+    "tests/integration/test_research_context_edges.py",
+    "tests/integration/test_strategy_state_permissions.py",
+    "tests/integration/test_trading_clock.py",
+    "tests/integration/test_trial_ledger_edges.py",
+    "tests/unit/db/test_strategy_config_endpoints.py",
+    "tests/unit/portfolio_manager/test_audit_portfolio_regressions.py"
+   ],
+   "source": "D5 关键路径复核（证据 / 研究计数 / 恢复）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "all_runs": [
+    60.0,
+    96.5
+   ]
+  },
+  "app/db/forward_record.py": {
+   "points": 146,
+   "killed": 139,
+   "survived": 7,
+   "kill_rate": 95.2,
+   "tests": [
+    "tests/integration/test_audit_table_schema.py",
+    "tests/integration/test_daily_record_assembly.py",
+    "tests/integration/test_equal_weight_benchmark.py",
+    "tests/integration/test_evidence_store_edges.py",
+    "tests/integration/test_formal_forward_daily_record.py",
+    "tests/integration/test_recovery_drill.py",
+    "tests/integration/test_research_context_edges.py",
+    "tests/integration/test_strategy_state_permissions.py",
+    "tests/integration/test_trial_ledger_edges.py"
+   ],
+   "source": "D5 关键路径复核（证据 / 研究计数 / 恢复）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "all_runs": [
+    45.9,
+    95.2
+   ]
+  },
+  "app/core/data_engine/research_context.py": {
+   "points": 33,
+   "killed": 30,
+   "survived": 3,
+   "kill_rate": 90.9,
+   "tests": [
+    "tests/integration/test_audit_table_schema.py",
+    "tests/integration/test_daily_record_assembly.py",
+    "tests/integration/test_evidence_store_edges.py",
+    "tests/integration/test_frozen_test_boundary.py",
+    "tests/integration/test_fundamentals_promotion_policy.py",
+    "tests/integration/test_recovery_drill.py",
+    "tests/integration/test_research_context.py",
+    "tests/integration/test_research_context_edges.py",
+    "tests/integration/test_strategy_proposal_verdict.py",
+    "tests/integration/test_trial_ledger_edges.py",
+    "tests/unit/portfolio_manager/test_strategy_builder_assembly.py"
+   ],
+   "source": "D5 关键路径复核（证据 / 研究计数 / 恢复）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "all_runs": [
+    39.4,
+    90.9
+   ]
+  },
+  "app/tasks/restore.py": {
+   "points": 28,
+   "killed": 28,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_audit_table_schema.py",
+    "tests/integration/test_daily_record_assembly.py",
+    "tests/integration/test_evidence_store_edges.py",
+    "tests/integration/test_recovery_drill.py",
+    "tests/integration/test_research_context_edges.py",
+    "tests/integration/test_trial_ledger_edges.py"
+   ],
+   "source": "D5 关键路径复核（证据 / 研究计数 / 恢复）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "all_runs": [
+    78.6,
+    100.0
+   ]
   }
  },
  "proof_reconciliation": {
   "_doc": "存活变异的处置对账状态。这是本轮交付**已知未闭合**的唯一缺口，写在这里是为了它不会被忘掉。",
   "modules_with_survivors": 44,
-  "total_survivors": 144,
+  "total_survivors": 161,
   "proof_files_in_suite": 44,
-  "proof_entries_in_suite": 104,
+  "proof_entries_in_suite": 118,
   "per_file_accounting": "自洽：44 个文件的 PROVEN_EQUIVALENT 条目数与各自声明的存活数逐个相等（由 test_lessons_enforced.py::TestLessonX 强制）",
   "module_level_attribution": "已逐模块对账（2026-09-16）：见 survivor_disposition",
   "why_not": "PROVEN_EQUIVALENT 的键是自由文本（如 'L124 (weights < -tol) → <='），不带模块路径；按 import 归属会错判（risk_gate 的 10 条证明在它自己的文件里，而那个文件并不直接 import 该模块）。所以无法机械地把 138 个存活逐条对上 97 条证明。",
   "what_is_established": "① app/ 下 88 个有变异点的模块全部测量过（本文件对账）；② 每个写了证明的文件，条目数与它声明的存活数一致；③ 每条证明说明 ≥40 字、点名的验证用例真实存在。 ④ 已被反例推翻的证明单独登记在 REFUTED_EQUIVALENCE，并配一条固化反例的可执行用例。",
   "how_to_close": "已完成：97 条键全部改写成 `<模块路径> ×<覆盖点数> — <描述>`，由 test_every_proof_key_declares_its_module_and_point_count 强制格式，由 test_survivor_disposition_reconciles_per_module 逐模块对账。遗留的不是『对不上账』，而是『22 个存活项确实没处置』，见 survivor_disposition。",
   "ratchet": {
-   "proof_entries_min": 104,
+   "proof_entries_min": 118,
    "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
    "refuted_entries_min": 2,
-   "unmeasured_points_max": 3078
+   "unmeasured_points_max": 2313
   },
   "refuted_by_counterexample": {
    "count": 2,
@@ -1511,19 +1751,16 @@
  },
  "measurement_scope": {
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
-  "measured_points": 2106,
+  "measured_points": 2876,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-  "current_plan_points": 5184,
+  "current_plan_points": 5189,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-  "unmeasured_points": 3078,
+  "unmeasured_points": 2313,
   "newly_in_scope_modules": [
    "app/core/risk_engine/factor_model.py",
    "app/core/execution/broker_gateway.py",
    "app/core/execution/order_builder.py",
-   "app/core/execution/pretrade_gate.py",
-   "app/core/execution/order_manager.py",
    "app/core/execution/fidelity.py",
-   "app/db/execution_store.py",
    "app/core/execution/golive.py",
    "app/tasks/forward.py",
    "app/core/data_engine/fundamentals/edgar.py",
@@ -1535,9 +1772,6 @@
    "app/agent/_constants.py",
    "app/core/alpha_engine/fields.py",
    "app/db/process_lock.py",
-   "app/db/evidence_store.py",
-   "app/core/data_engine/research_context.py",
-   "app/db/forward_record.py",
    "app/core/data_engine/fundamentals/quality.py",
    "app/core/benchmark.py",
    "app/core/data_engine/corporate_actions.py",
@@ -1547,9 +1781,7 @@
    "app/core/alerting/desktop_notifier.py",
    "app/core/alerting/dispatcher.py",
    "app/core/alerting/events.py",
-   "app/core/execution/intraday_watchdog.py",
-   "app/tasks/alerts.py",
-   "app/tasks/restore.py"
+   "app/tasks/alerts.py"
   ],
   "per_module_delta": {
    "app/agent/_agent.py": {
@@ -1664,10 +1896,6 @@
    "app/core/data_engine/local_parquet_provider.py": {
     "measured": 21,
     "now_planned": 29
-   },
-   "app/core/data_engine/market_calendar.py": {
-    "measured": 22,
-    "now_planned": 25
    },
    "app/core/data_engine/multi_dataset.py": {
     "measured": 23,
@@ -1825,17 +2053,9 @@
     "measured": 13,
     "now_planned": 17
    },
-   "app/db/trial_ledger.py": {
-    "measured": 8,
-    "now_planned": 9
-   },
    "app/main.py": {
     "measured": 21,
     "now_planned": 26
-   },
-   "app/tasks/backup.py": {
-    "measured": 14,
-    "now_planned": 21
    },
    "app/tasks/cost_calibration.py": {
     "measured": 16,
@@ -2138,13 +2358,109 @@
      "before": 3202,
      "after": 3078
     }
+   },
+   {
+    "batch": "交易所日程按年缓存后的重测",
+    "timing": "首轮 1942 秒（隔离环境，选路 = 提到 market_calendar 的 20 个测试文件，不含 tests/meta）；补测轮只跑新补的用例",
+    "modules": {
+     "app/core/data_engine/market_calendar.py": {
+      "points": 34,
+      "killed": 33,
+      "survived_after_followup": 1,
+      "first_round_kill_rate": 94.1
+     }
+    },
+    "unmeasured_points": {
+     "before": 3078,
+     "after": 3071
+    }
+   },
+   {
+    "batch": "资金切片 / 认领 / 熔断",
+    "timing": "首轮 15719 秒（4.4 小时，隔离环境，交易所日程缓存之后；选路 = 导入了该模块的测试文件，不含 tests/meta）；补测轮 4229 秒（新补的用例 + 选路漏掉的中途熔断、盘中巡检两个文件）",
+    "modules": {
+     "app/core/execution/order_manager.py": {
+      "points": 137,
+      "killed": 134,
+      "survived_after_followup": 3,
+      "first_round_kill_rate": 81.8
+     },
+     "app/db/execution_store.py": {
+      "points": 103,
+      "killed": 102,
+      "survived_after_followup": 1,
+      "first_round_kill_rate": 99.0
+     },
+     "app/core/execution/pretrade_gate.py": {
+      "points": 98,
+      "killed": 97,
+      "survived_after_followup": 1,
+      "first_round_kill_rate": 92.9
+     },
+     "app/core/execution/intraday_watchdog.py": {
+      "points": 36,
+      "killed": 35,
+      "survived_after_followup": 1,
+      "first_round_kill_rate": 61.1
+     }
+    },
+    "unmeasured_points": {
+     "before": 3071,
+     "after": 2697
+    }
+   },
+   {
+    "batch": "证据 / 研究计数 / 恢复",
+    "timing": "首轮 19847 秒（5.5 小时，隔离环境；选路 = 导入了该模块的测试文件，不含 tests/meta）；补测两轮 2721 秒 + 约 700 秒（只跑新补的用例）",
+    "modules": {
+     "app/db/evidence_store.py": {
+      "points": 85,
+      "killed": 82,
+      "survived_after_followup": 3,
+      "first_round_kill_rate": 60.0
+     },
+     "app/db/forward_record.py": {
+      "points": 146,
+      "killed": 139,
+      "survived_after_followup": 7,
+      "first_round_kill_rate": 45.9
+     },
+     "app/db/trial_ledger.py": {
+      "points": 93,
+      "killed": 93,
+      "survived_after_followup": 0,
+      "first_round_kill_rate": 65.6
+     },
+     "app/core/data_engine/research_context.py": {
+      "points": 33,
+      "killed": 30,
+      "survived_after_followup": 3,
+      "first_round_kill_rate": 39.4
+     },
+     "app/tasks/backup.py": {
+      "points": 21,
+      "killed": 21,
+      "survived_after_followup": 0,
+      "first_round_kill_rate": 100.0
+     },
+     "app/tasks/restore.py": {
+      "points": 28,
+      "killed": 28,
+      "survived_after_followup": 0,
+      "first_round_kill_rate": 78.6
+     }
+    },
+    "unmeasured_points": {
+     "before": 2697,
+     "after": 2313
+    }
    }
   ]
  },
  "survivor_disposition": {
   "_doc": "存活变异的**逐模块**处置对账。外部审计 2026-09-15 指出原来的『每个文件条目数 == 自己声明的存活数』只是文件内自洽，跨文件汇总从未对过账。现在证明键带模块前缀与覆盖点数（`<模块> ×N — 描述`），可以逐模块机械对账。",
-  "total_survivors": 144,
-  "proven_points": 119,
+  "total_survivors": 161,
+  "proven_points": 136,
   "unproven_points": 25,
   "unproven_by_module": {
    "app/core/alpha_engine/fast_ops.py": 3,

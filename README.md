@@ -771,7 +771,7 @@ the file itself is the authority and documents *why* each default is what it is.
 ## 15. Testing & Engineering Discipline
 
 ```bash
-cd backend  && pytest -q          # ~5470 tests, ~66 min. No test may reach the internet (tests/network_guard.py:
+cd backend  && pytest -q          # ~5550 tests, ~40 min. No test may reach the internet (tests/network_guard.py:
                                   # Python sockets and curl_cffi); the 4 live-source tests (yfinance ×2, SEC, OpenD)
                                   # are marked live_source and only run with QA_LIVE_SOURCES=1
 # Verification runs use an isolated environment outside OneDrive, installed from requirements.lock,

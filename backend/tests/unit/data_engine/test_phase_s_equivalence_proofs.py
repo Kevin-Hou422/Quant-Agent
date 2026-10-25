@@ -68,28 +68,28 @@ NEW_POINT_EQUIVALENCE = {
         "见 test_capped_is_always_at_least_one。",
 
     # ── trial_ledger（基础设施参数）──────────────────────────────────────
-    "app/db/trial_ledger.py ×2 — L103/L104 `index=True` -> False":
-        "索引只影响查询**代价**，不影响结果集：count()/select() 在有无索引时返回"
+    "app/db/trial_ledger.py ×0 — L103/L104 `index=True` -> False（已被杀死）":
+        "（D5 关键路径复核时已被 tests/integration/test_audit_table_schema.py 杀死，留作记录）原证明：索引只影响查询**代价**，不影响结果集：count()/select() 在有无索引时返回"
         "完全相同的行。本模块没有任何依赖索引存在性的断言或行为（无唯一约束、"
         "无 ON CONFLICT）。来源反驳：若索引承担唯一性则会改变写入行为 —— "
         "这里 index=True 不带 unique=True，由 "
         "test_the_usage_index_is_not_a_uniqueness_constraint 直接写两行同键数据验证。",
 
-    "app/db/trial_ledger.py ×2 — L105/L106 `purpose`/`used_at` 的 `nullable=False` -> True":
-        "这两列都带 default（purpose='' / used_at=utcnow），而本模块**唯一**的写入点 "
+    "app/db/trial_ledger.py ×0 — L105/L106 `purpose`/`used_at` 的 `nullable=False` -> True（已被杀死）":
+        "（D5 关键路径复核时已被 tests/integration/test_audit_table_schema.py 杀死，留作记录）原证明：这两列都带 default（purpose='' / used_at=utcnow），而本模块**唯一**的写入点 "
         "record_use 总是提供 purpose、从不显式写 used_at，因此 NULL 在任何调用路径上"
         "都构造不出来，约束放开与否观察不到。来源反驳：外部直接 INSERT 可绕过 —— "
         "那不是本模块的行为；dataset_key/test_key 这两个**没有默认值**的键则确实可达，"
         "已由 test_a_usage_row_without_a_key_is_rejected_by_the_schema 覆盖。",
 
-    "app/db/trial_ledger.py ×1 — L153 `create_engine(..., echo=False)` -> True":
-        "echo 只控制 SQLAlchemy 是否把 SQL 打到日志，不改变任何查询结果或写入语义。"
+    "app/db/trial_ledger.py ×0 — L153 `create_engine(..., echo=False)` -> True（已被杀死）":
+        "（D5 关键路径复核时已被 tests/integration/test_audit_table_schema.py 杀死，留作记录）原证明：echo 只控制 SQLAlchemy 是否把 SQL 打到日志，不改变任何查询结果或写入语义。"
         "本模块所有断言都读返回值，没有一条依赖日志内容。"
         "来源反驳：若有用例断言日志里**没有** SQL，则 echo 可观测 —— 全库无此断言，"
         "由 test_no_holdout_ledger_test_asserts_on_sql_log_output 扫描确认。",
 
-    "app/db/trial_ledger.py ×1 — L157 `sessionmaker(..., expire_on_commit=False)` -> True":
-        "与本仓已有的 trial_ledger L49 同型论证：record_use 在**同一个 session 内**"
+    "app/db/trial_ledger.py ×0 — L157 `sessionmaker(..., expire_on_commit=False)` -> True（已被杀死）":
+        "（D5 关键路径复核时已被 tests/integration/test_audit_table_schema.py 杀死，留作记录）原证明：与本仓已有的 trial_ledger L49 同型论证：record_use 在**同一个 session 内**"
         "commit 之后只再执行一次 select(count)（过期会自动 refresh，拿得到），"
         "返回给调用方的是一个普通 dataclass（HoldoutUsage）而非 ORM 对象，"
         "commit 后不存在被过期的属性访问。count() 只读不 commit，不触发过期。",
@@ -273,6 +273,8 @@ def test_no_holdout_ledger_test_asserts_on_sql_log_output():
 def test_every_survivor_has_a_written_proof():
     """
     本轮新增点的存活处置对账：18 个已证明 + 8 个未处置 = 26 个存活。
+    其中 trial_ledger 的 6 个（索引 ×2、非空 ×2、echo、expire_on_commit）在 D5 关键路径复核时已被
+    tests/integration/test_audit_table_schema.py 杀死，键改成 ×0 留作记录 —— 已证明的点数因此是 12。
 
     数字对不上就红 —— 复测后存活数变了却没更新这里，会在这条上顶出来，
     而不是让一份过期的处置继续躺着。
@@ -280,7 +282,7 @@ def test_every_survivor_has_a_written_proof():
     def _points(d: dict) -> int:
         return sum(int(re.findall(r"×(\d+)", k)[0]) for k in d)
 
-    assert _points(NEW_POINT_EQUIVALENCE) == 18, _points(NEW_POINT_EQUIVALENCE)
+    assert _points(NEW_POINT_EQUIVALENCE) == 12, _points(NEW_POINT_EQUIVALENCE)
     assert _points(NEW_POINT_UNPROVEN) == 8, _points(NEW_POINT_UNPROVEN)
     all_entries = {**NEW_POINT_EQUIVALENCE, **NEW_POINT_UNPROVEN}
     for key, why in all_entries.items():

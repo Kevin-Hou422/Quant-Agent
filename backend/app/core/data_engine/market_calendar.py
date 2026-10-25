@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta, timezone
+from functools import lru_cache
 from typing import List, Optional, Tuple, Union
 
 import pandas as pd
@@ -71,6 +72,29 @@ def _calendar(exchange: str = _DEFAULT_EXCHANGE):
         return None
 
 
+@lru_cache(maxsize=32)
+def _year_schedule(exchange: str, year: int) -> pd.DataFrame:
+    """
+    某交易所一整年的日程（每个交易日的开盘 / 收盘 UTC 时刻）。
+
+    pandas_market_calendars 的 `schedule()` 每次调用都重算一遍节假日表（实测约 0.5 秒）；
+    下单门、对账、盘中巡检、每日管线一轮要调几十次（测量：下单周期用例 15 秒里 13.6 秒花在这里）。
+    一年的节假日是固定的 → 按 (交易所, 年) 缓存，之后只切片。日历库升级要重启进程才生效。
+    """
+    import pandas_market_calendars as mcal
+    return mcal.get_calendar(exchange).schedule(start_date=pd.Timestamp(year, 1, 1),
+                                                end_date=pd.Timestamp(year, 12, 31))
+
+
+def _schedule(exchange: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    """[start, end] 的日程：按年缓存的切片（与直接 `cal.schedule(start, end)` 逐行相同）。"""
+    if end < start:
+        return _year_schedule(exchange, start.year).iloc[0:0]
+    years = [_year_schedule(exchange, y) for y in range(start.year, end.year + 1)]
+    sched = years[0] if len(years) == 1 else pd.concat(years)
+    return sched.loc[(sched.index >= start) & (sched.index <= end)]
+
+
 def trading_days(start: DateLike, end: DateLike,
                  exchange: str = _DEFAULT_EXCHANGE) -> pd.DatetimeIndex:
     """[start, end] 内的交易日（不含节假日/周末）。库缺失时退回工作日。"""
@@ -78,7 +102,7 @@ def trading_days(start: DateLike, end: DateLike,
     s, e = _to_ts(start).normalize(), _to_ts(end).normalize()
     if cal is None:
         return pd.bdate_range(s, e)
-    sched = cal.schedule(start_date=s, end_date=e)
+    sched = _schedule(exchange, s, e)
     return pd.DatetimeIndex([pd.Timestamp(d).normalize() for d in sched.index])
 
 
@@ -114,7 +138,7 @@ def session_open_utc(d: Optional[DateLike] = None,
     ts = (_to_ts(d) if d is not None else pd.Timestamp.utcnow().tz_localize(None)).normalize()
     if cal is None:
         return None
-    sched = cal.schedule(start_date=ts, end_date=ts)
+    sched = _schedule(exchange, ts, ts)
     if len(sched) == 0:
         return None
     return pd.Timestamp(sched.iloc[0]["market_open"]).to_pydatetime().astimezone(timezone.utc)
@@ -130,7 +154,7 @@ def session_close_utc(d: Optional[DateLike] = None,
     ts = (_to_ts(d) if d is not None else pd.Timestamp.utcnow().tz_localize(None)).normalize()
     if cal is None:
         return None
-    sched = cal.schedule(start_date=ts, end_date=ts)
+    sched = _schedule(exchange, ts, ts)
     if len(sched) == 0:
         return None
     close = pd.Timestamp(sched.iloc[0]["market_close"])

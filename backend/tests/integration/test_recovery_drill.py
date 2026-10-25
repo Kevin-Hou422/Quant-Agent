@@ -85,3 +85,60 @@ class TestRestoreSafety:
         assert v["ok"] is False
         assert "alpha_records" in v["row_count_mismatches"]
         assert v["pit_mismatches"] == [str(pit_file.relative_to(restored / "pit_store")).replace("\\", "/")]
+
+
+def test_verifying_against_a_wal_mode_source_leaves_no_files_next_to_it(tmp_path):
+    """源库可能是活库：比对时不能在它旁边建 -wal / -shm（普通 mode=ro 打开 WAL 库就会建）。"""
+    from app.tasks.restore import verify_restore
+    rep = _drill(tmp_path)
+    src = Path(rep["paths"]["source_db"])
+    con = sqlite3.connect(src)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.close()
+    before = sorted(p.name for p in src.parent.iterdir())
+    verify_restore(src, next(Path(rep["paths"]["restored"]).glob("*.db")))
+    assert sorted(p.name for p in src.parent.iterdir()) == before
+
+
+class TestRestoreTargets:
+
+    def test_an_existing_empty_directory_is_a_valid_target(self, tmp_path):
+        from app.tasks.restore import restore_snapshot
+        rep = _drill(tmp_path)
+        target = tmp_path / "empty"
+        target.mkdir()
+        out = restore_snapshot(Path(rep["paths"]["snapshot"]), target)
+        assert out["ok"] is True and out["pit_dir"] == str(target / "pit_store")
+
+    def test_a_nested_new_directory_is_created(self, tmp_path):
+        from app.tasks.restore import restore_snapshot
+        rep = _drill(tmp_path)
+        target = tmp_path / "a" / "b" / "c"
+        assert restore_snapshot(Path(rep["paths"]["snapshot"]), target)["ok"] is True
+
+    def test_a_file_as_target_is_refused(self, tmp_path):
+        from app.tasks.restore import RestoreRefused, restore_snapshot
+        rep = _drill(tmp_path)
+        f = tmp_path / "file.txt"
+        f.write_text("x")
+        with pytest.raises(RestoreRefused, match="不是空的"):
+            restore_snapshot(Path(rep["paths"]["snapshot"]), f)
+
+    def test_a_missing_table_alone_fails_the_check(self, tmp_path):
+        from app.tasks.restore import verify_restore
+        rep = _drill(tmp_path)
+        restored = next(Path(rep["paths"]["restored"]).glob("*.db"))
+        con = sqlite3.connect(restored)
+        con.execute("DROP TABLE alpha_decisions")
+        con.commit()
+        con.close()
+        v = verify_restore(Path(rep["paths"]["source_db"]), restored)
+        assert v["missing_tables"] == ["alpha_decisions"] and v["row_count_mismatches"] == {} and v["ok"] is False
+
+
+def test_the_cli_prints_readable_paths(tmp_path, capsys):
+    from app.tasks.restore import main
+    rep = _drill(tmp_path)
+    target = tmp_path / "恢复演练"
+    assert main([rep["paths"]["snapshot"], str(target)]) == 0
+    assert "恢复演练" in capsys.readouterr().out

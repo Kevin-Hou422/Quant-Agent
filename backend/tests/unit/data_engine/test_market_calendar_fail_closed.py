@@ -208,14 +208,16 @@ class TestTimestampCoercion:
 # ===========================================================================
 
 PROVEN_EQUIVALENT = {
-    "app/core/data_engine/market_calendar.py ×1 — L55 `allow = False`（进入 try 之前的初值）":
+    "app/core/data_engine/market_calendar.py ×1 — L56 `allow = False`（进入 try 之前的初值）":
         "该初值**必被覆盖**：紧随其后的 `try` 里无论成功（走 getattr 赋值）"
         "还是失败（走 except 的 `allow = False`），都会重新给 allow 赋值。"
         "它是一条死赋值，取何值都观察不到差别。"
-        "见 test_pre_try_allow_initialiser_is_always_overwritten。",
+        "见 test_pre_try_allow_initialiser_is_always_overwritten；配置读不到的那条路径的行为见 "
+        "test_missing_library_fails_closed_even_when_settings_cannot_be_read（交易所日程按年缓存后重测仍存活）。",
 
-    "app/core/data_engine/market_calendar.py ×1 — L107 `return days[0] if len(days) else ts + pd.Timedelta(days=1)` 的 `+`":
-        "该兜底分支不可达：`days = trading_days(ts+1天, ts+14天)`，"
+    "app/core/data_engine/market_calendar.py ×0 — L131 `return days[0] if len(days) else ts + pd.Timedelta(days=1)` 的 `+`（已被杀死，留作记录）":
+        "交易所日程按年缓存后重测：已由 test_next_trading_day_falls_back_to_tomorrow_when_the_calendar_gives_nothing 杀死"
+        "（用替身让日历返回空，直接验兜底结果）。原证明：该兜底分支在真实日历上不可达：`days = trading_days(ts+1天, ts+14天)`，"
         "真实日历与工作日启发式在任意连续 14 天里都至少包含一个交易日"
         "（美股最长休市不超过 4 个连续日历日）。"
         "见 test_fourteen_day_window_always_contains_a_trading_day。",

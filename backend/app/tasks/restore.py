@@ -11,7 +11,7 @@ restore.py — 把一份备份快照恢复到隔离目录并核对（2026-10-22 
     · 恢复出来的每个库都跑 `PRAGMA integrity_check`
 把恢复结果换回活库是另一回事：要人看过 `verify_restore` 的差异后另行确认（D2），本模块不做。
 
-`verify_restore` 对照源库（只读连接）与恢复出的库：表是否齐、逐表行数是否一致；PIT 文件逐字节（sha256）比对。
+`verify_restore` 对照源库（只读 + immutable，不在源库旁建任何文件）与恢复出的库：表是否齐、逐表行数是否一致；PIT 文件逐字节（sha256）比对。
 """
 
 from __future__ import annotations
@@ -56,8 +56,13 @@ def check_target(target: Path) -> None:
         raise RestoreRefused(f"恢复目标 {t} 不是空的 —— 不覆盖任何已有内容，请指定一个新的空目录")
 
 
+def _ro(db: Path, immutable: bool = False) -> sqlite3.Connection:
+    """只读连接。读源库（可能是活库）时 immutable=1：WAL 模式的库用普通 mode=ro 打开也会在旁边建 -wal / -shm。"""
+    return sqlite3.connect(f"file:{Path(db).as_posix()}?mode=ro" + ("&immutable=1" if immutable else ""), uri=True)
+
+
 def _integrity(db: Path) -> str:
-    con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+    con = _ro(db)
     try:
         return str(con.execute("PRAGMA integrity_check").fetchone()[0])
     finally:
@@ -87,8 +92,8 @@ def restore_snapshot(snapshot_dir: Path, target_dir: Path) -> dict:
             "pit_dir": str(pit) if pit is not None else None}
 
 
-def _row_counts(db: Path) -> Dict[str, int]:
-    con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+def _row_counts(db: Path, immutable: bool = False) -> Dict[str, int]:
+    con = _ro(db, immutable)
     try:
         names = [r[0] for r in con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
@@ -108,7 +113,7 @@ def verify_restore(source_db: Path, restored_db: Path,
                    source_pit: Optional[Path] = None, restored_pit: Optional[Path] = None) -> dict:
     """源库（只读）与恢复库逐表行数对照；PIT 文件逐字节对照。ok = 完整性 ok 且没有任何差异。"""
     integrity = _integrity(Path(restored_db))
-    src, dst = _row_counts(Path(source_db)), _row_counts(Path(restored_db))
+    src, dst = _row_counts(Path(source_db), immutable=True), _row_counts(Path(restored_db))
     missing = sorted(set(src) - set(dst))
     mismatches = {t: {"source": n, "restored": dst[t]} for t, n in src.items() if t in dst and dst[t] != n}
     s_pit, d_pit = _file_digests(source_pit), _file_digests(restored_pit)
