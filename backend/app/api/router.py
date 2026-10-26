@@ -1568,26 +1568,34 @@ def strategy_approve(sid: int, req: StrategyDecisionRequest = StrategyDecisionRe
         raise HTTPException(status_code=404, detail=f"Strategy id={sid} 不存在")
     if str(rec.status) != "proposed":
         raise HTTPException(status_code=409, detail=f"仅 proposed 可批准，当前={rec.status}")
+    # 2026-10-25 审计：批准时按规格里冻结的校验政策核对表达式（没有凭据的旧规格不追认 —— 重新提案）
+    from app.core.alpha_engine.validation_policy import check_frozen
+    from app.core.portfolio_manager.executable_spec import approved_spec
+    spec = approved_spec(rec)
+    problems = check_frozen(spec) if spec is not None else []
+    if problems:
+        raise HTTPException(status_code=409, detail="表达式校验不通过，不能批准：" + "; ".join(problems))
     # 外部审查 2026-10-18 F14：批准 / 退役旧的 / 开始运行 / 谱系，**一个事务**
-    steps = [(sid, "approved", "approve", req.reason, req.actor)]
-    if req.activate:
-        steps += _start_steps(sstore, sid, req, "paper_running")
+    approve = [(sid, "approved", "approve", req.reason, req.actor)]
     try:
-        sstore.apply_transitions(steps)
+        if req.activate:
+            _start(sstore, sid, req, "paper_running", before=approve)
+        else:
+            sstore.apply_transitions(approve)
     except IllegalStrategyTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return StrategyStore.to_dict(sstore.get(sid))
 
 
-def _start_steps(sstore, sid: int, req, target: str) -> list:
-    """同一时刻只运行一份策略：开始运行新版本时，正在运行的旧版本一并退役（留谱系）。"""
-    from app.core.lifecycle.strategy_states import LEGACY_ACTIVE, RUNNING_STATES
-    steps = [(o.id, "retired", "retire", f"被策略 #{sid} 取代", req.actor)
-             for st in RUNNING_STATES + (LEGACY_ACTIVE,) for o in sstore.query(status=st) if o.id != sid]
+def _start(sstore, sid: int, req, target: str, before=None) -> list:
+    """
+    同一时刻只运行一份策略：开始运行新版本时，正在运行的旧版本一并退役（留谱系）。
+    2026-10-25 审计 R7：选出当前运行者、退役、启动、谱系在**同一个**加了写锁的事务里（`StrategyStore.start_running`）；
+    此前在事务之外先查运行者，两个并发请求都读到"没有运行策略"，留下两份 paper_running。
+    """
     note = ("工程联调：在模拟账户交易，前向证据与正式天数都不计" if target == "integration"
             else "开始纸交易、收集前向证据 —— **未验证**")
-    steps.append((sid, target, "start_" + target, f"{req.reason} | {note}".strip(" |"), req.actor))
-    return steps
+    return sstore.start_running(sid, target, f"{req.reason} | {note}".strip(" |"), req.actor, before=before)
 
 
 def _active_gate(rec, sid: int):
@@ -1611,7 +1619,7 @@ def strategy_activate(sid: int, req: StrategyDecisionRequest = StrategyDecisionR
     if str(rec.status) not in ("approved", "integration"):
         raise HTTPException(status_code=409, detail=f"仅 approved / integration 可开始纸交易，当前={rec.status}")
     try:
-        sstore.apply_transitions(_start_steps(sstore, sid, req, "paper_running"))
+        _start(sstore, sid, req, "paper_running")
     except IllegalStrategyTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return StrategyStore.to_dict(sstore.get(sid))
@@ -1628,7 +1636,7 @@ def strategy_integration(sid: int, req: StrategyDecisionRequest = StrategyDecisi
     if str(rec.status) != "approved":
         raise HTTPException(status_code=409, detail=f"仅 approved 可进入联调，当前={rec.status}")
     try:
-        sstore.apply_transitions(_start_steps(sstore, sid, req, "integration"))
+        _start(sstore, sid, req, "integration")
     except IllegalStrategyTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return StrategyStore.to_dict(sstore.get(sid))

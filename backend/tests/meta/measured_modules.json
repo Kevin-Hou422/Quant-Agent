@@ -5,8 +5,8 @@
  "totals": {
   "modules_with_mutants": 103,
   "total_points": 2876,
-  "total_survived": 161,
-  "total_killed": 2715
+  "total_survived": 160,
+  "total_killed": 2716
  },
  "modules": {
   "app/agent/_agent.py": {
@@ -1474,9 +1474,9 @@
   },
   "app/core/portfolio_manager/strategy_contract.py": {
    "points": 9,
-   "killed": 8,
-   "survived": 1,
-   "kill_rate": 88.9,
+   "killed": 9,
+   "survived": 0,
+   "kill_rate": 100.0,
    "tests": [
     "tests/integration/test_contract_targets_and_permissions.py",
     "tests/integration/test_strategy_contract.py"
@@ -1725,7 +1725,7 @@
    "proof_entries_min": 118,
    "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
    "refuted_entries_min": 2,
-   "unmeasured_points_max": 2313
+   "unmeasured_points_max": 2635
   },
   "refuted_by_counterexample": {
    "count": 2,
@@ -1753,9 +1753,9 @@
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
   "measured_points": 2876,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-  "current_plan_points": 5189,
+  "current_plan_points": 5511,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-  "unmeasured_points": 2313,
+  "unmeasured_points": 2635,
   "newly_in_scope_modules": [
    "app/core/risk_engine/factor_model.py",
    "app/core/execution/broker_gateway.py",
@@ -1781,7 +1781,12 @@
    "app/core/alerting/desktop_notifier.py",
    "app/core/alerting/dispatcher.py",
    "app/core/alerting/events.py",
-   "app/tasks/alerts.py"
+   "app/tasks/alerts.py",
+   "app/core/execution/order_intent.py",
+   "app/tasks/snapshot_manifest.py",
+   "app/core/execution/run_permit.py",
+   "app/tasks/run_permit.py",
+   "app/core/alpha_engine/validation_policy.py"
   ],
   "per_module_delta": {
    "app/agent/_agent.py": {
@@ -2304,6 +2309,14 @@
     "why": "2026-10-22 用户决定（D15 告警、第 17 条盘中巡检、D11 仅本机回环、第 21 条隔离恢复）：桌面通知 + 事件文件（分类、去重、重试、送达状态、现场确认）、每日结果分类与调度任务失败告警、上线预检 alert_channel / intraday_watchdog、盘中巡检（日历时段、非阻塞账户锁、共用熔断、断线 / 陈旧快照）、回环中间件与绑定拒绝、隔离恢复与核对。",
     "how_it_was_handled": "**未做逐点变异复核**（D5 已定：关键路径分批复核，排在「环境与关键路径复核」那一组）。每条决定按原话写了验收用例（tests/integration/test_alerting.py、test_intraday_watchdog.py、test_api_loopback_only.py、test_recovery_drill.py），先看到失败。",
     "owed": "这 152 个点欠逐点复核。"
+   },
+   {
+    "date": "2026-10-26 (固定提交 eca36e3 审计的工作包 A)",
+    "from": 2313,
+    "to": 2635,
+    "why": "按审计修 R1（冻结委托 order_intent，两套模拟引擎改为消费它）、R2（停写窗口快照 + 清单 + 业务不变量 snapshot_manifest）、R3（运行许可 run_permit）、R4（拒单分类 / 记录失败 / 备份健康）、R7（唯一运行槽）、R8（验收判定按时序）、版本化表达式校验政策（validation_policy）。新模块与改动产生的变异点。 另含 R5（基准规则 b2）、R6（巡检新鲜度只认行情时间）。",
+    "how_it_was_handled": "**未做逐点变异复核**。每项都按审计原话写了有区分力的用例，并用 HEAD（eca36e3）与工作区各跑一遍审计场景，HEAD 复现缺陷、工作区修正（证据文件见追踪表）。唯一做了的单点复核：strategy_contract L185（validate=False→True）被 test_validation_policy 杀死。",
+    "owed": "这 322 个点欠逐点复核（数小时级，须先征得同意）。"
    }
   ],
   "critical_path_review": [
@@ -2337,9 +2350,10 @@
      },
      "app/core/portfolio_manager/strategy_contract.py": {
       "points": 9,
-      "killed": 8,
-      "survived_after_followup": 1,
-      "first_round_kill_rate": 33.3
+      "killed": 9,
+      "survived_after_followup": 0,
+      "first_round_kill_rate": 33.3,
+      "closed_later": "L185 `Executor(validate=False)` → True：按审计决定实现版本化校验政策后，由 tests/integration/test_validation_policy.py::test_an_old_policy_keeps_working_after_the_rules_tighten 杀死（单点复核：变异后该用例失败，还原后通过）"
      },
      "app/core/lifecycle/strategy_states.py": {
       "points": 16,
@@ -2468,13 +2482,12 @@
    "app/core/data_engine/data_partitioner.py": 4,
    "app/core/strategies/baselines.py": 2,
    "app/tasks/daily_trading_loop.py": 10,
-   "app/core/ml_engine/proxy_model.py": 2,
-   "app/core/portfolio_manager/strategy_contract.py": 1
+   "app/core/ml_engine/proxy_model.py": 2
   },
   "what_unproven_means": "这些变异点既没有被任何用例杀死，也没有书面的等价性证明 —— 改坏了不会有人知道，而且我们连『为什么可以不管它』都没写下来。两个模块（baselines / daily_trading_loop）是**一条证明都没有**。",
   "how_to_close": "逐模块：要么补用例杀死（首选），要么写可机械验证的等价性证明并配反驳尝试。闭合一个就把 unproven_by_module 里对应的数字改小；test_survivor_disposition_reconciles_per_module 会逐模块核对。",
   "ratchet": {
-   "unproven_max": 25,
+   "unproven_max": 24,
    "_doc": "未处置数只许减不许增。声明数多于存活数会直接判红（证明盖住了不存在的点）。"
   },
   "_raises": [
@@ -2490,7 +2503,7 @@
     "module": "app/core/portfolio_manager/strategy_contract.py",
     "delta": 1,
     "why": "D5 关键路径复核首次按现行算子测量本模块（此前未测）。L185 `Executor(validate=False)` → True 没有用例发现：按已批准规格生成信号时要不要再过一遍表达式校验，是行为选择而不是缺陷 —— 只在旧规格里的表达式不符合新校验规则（如窗口 > 252）时有差别（不校验：照常交易；校验：报错不交易）。",
-    "status": "等用户决定；决定之后按决定写用例杀掉，不写等价证明（它不等价）。"
+    "status": "已闭合：2026-10-25 审计决定『按批准时冻结的校验政策运行』，实现见 app/core/alpha_engine/validation_policy.py；用例 tests/integration/test_validation_policy.py::test_an_old_policy_keeps_working_after_the_rules_tighten 杀死该点（单点复核，非整轮重测）。"
    }
   ]
  }

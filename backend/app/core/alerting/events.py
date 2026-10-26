@@ -4,10 +4,19 @@ events.py — 告警事件：分类、严重度、去重键（2026-10-22 用户�
 分类是一张固定的表（不认识的分类 / 严重度直接报错，不让拼错的名字悄悄成为一类）。每日运行的结果按
 `events_for_daily_run` 归类，**正常无订单**（no_orders_normal / no_trading_day，info）与**异常跳过**
 （run_skipped / execution_blocked / ingest_rejected …，critical）永远不会落在同一个分类里。
+
+下单门的拒单按原因分类（2026-10-25 审计 R4：计划 2 张买单都因缺报价时刻 / 独立报价被拒、实际 0 张，
+却得到退出码 0 和 run_completed/info）—— `execution_outcome` 是每日结论与 `forward.classify_run` 的**同一个**出口：
+    数据 / 报价 / 估值异常、熔断类  → 异常；本轮新单全被它们拒 → orders_rejected_abnormal（critical，运行失败）
+    计划内风控（单票 / 总敞口 / 行业 / 净敞口 / 参与率 / 不做空 / 买入力）→ 正常的风险缩减；全被拒 → warning，不算失败
+    部分被异常拒 → orders_partially_rejected（warning，运行"受损"：退出码单列）
+    计划的单都已在之前发过 → orders_already_submitted（info）
+正式证据 / 信号存档写入失败（record_write_failed）与备份失败（backup_failed）各有分类，不能只留日志。
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import List
 
@@ -28,6 +37,12 @@ KINDS = {
     "order_submit_errors":   "有订单下单异常（待对账确认）",
     "corporate_action_quarantine": "疑似未知公司行动，已隔离（不加风险），待人对账",
     "post_band_violation":   "无交易带 + 二次风控后仍违规",
+    "orders_already_submitted": "计划的单都已在之前发过（同日重跑去重）",
+    "orders_rejected_abnormal": "本轮新单全部被数据 / 报价 / 估值异常或熔断拦下，实际没有下单",
+    "orders_rejected_by_limits": "本轮新单全部被计划内风控缩减（限额 / 买入力），实际没有下单",
+    "orders_partially_rejected": "部分新单因数据 / 报价 / 估值异常被拦下",
+    "record_write_failed":   "正式证据 / 每日记录 / 信号存档写入失败",
+    "backup_failed":         "每日备份失败",
     # 调度
     "scheduled_job_failed":  "调度任务抛错",
     "scheduled_job_missed":  "调度任务错过了执行时间",
@@ -55,6 +70,57 @@ class AlertEvent:
             raise ValueError(f"未知的严重度 {self.severity!r}（允许：{SEVERITIES}）")
         if not str(self.dedup_key or "").strip():
             raise ValueError("告警必须有去重键")
+
+
+#: 下单门拒单原因 → 类别（app/core/execution/pretrade_gate.py 的全部原因；不认识的按异常）
+GATE_REASON_CLASS = {
+    **{r: "data" for r in ("no_reference_price", "price_mismatch", "no_independent_quote", "quote_without_time",
+                           "no_decision_clock", "quote_in_future", "stale_quote", "quote_mismatch",
+                           "quote_outside_session", "quote_stale_in_session", "no_adv", "gross_unpriceable",
+                           "sector_unpriceable", "net_unpriceable", "equity_unavailable")},
+    **{r: "halt" for r in ("kill_switch_engaged", "daily_loss_halt")},
+    "corporate_action_quarantine": "quarantine",
+    **{r: "limits" for r in ("would_short", "exceeds_adv_participation", "exceeds_name_limit",
+                             "exceeds_gross_limit", "exceeds_sector_limit", "exceeds_net_limit",
+                             "insufficient_buying_power", "permit_notional_limit")},
+}
+ABNORMAL_CLASSES = ("data", "halt", "unknown")
+
+
+def gate_reason_class(reason: str) -> str:
+    return GATE_REASON_CLASS.get(str(reason or ""), "unknown")
+
+
+def execution_outcome(ex: dict) -> dict:
+    """
+    执行报告 → {kind, severity, status, detail, rejections}。status：ok / degraded / failed。
+    只看"计划了、没在之前发过的新单"：它们被谁拦下、发出去多少。
+    """
+    ex = ex or {}
+    planned, dup = int(ex.get("n_planned") or 0), int(ex.get("n_duplicate") or 0)
+    sent, rej = int(ex.get("n_submitted") or 0), int(ex.get("n_gate_rejected") or 0)
+    listed = list((ex.get("gate") or {}).get("rejected") or [])
+    by = Counter(gate_reason_class(r.get("reason")) for r in listed)
+    if rej > len(listed):                                  # 报告里没列出原因的拒单：按原因不明（异常）
+        by["unknown"] += rej - len(listed)
+    abnormal = sum(by[c] for c in ABNORMAL_CLASSES)
+    counts = {k: v for k, v in sorted(by.items()) if v}
+    detail = (f"计划 {planned} / 之前已发 {dup} / 已下 {sent} / 风控拒 {rej}"
+              + (f"（{', '.join(f'{k} {v}' for k, v in counts.items())}）" if counts else "")
+              + (f"；独立报价取不到：{ex['quote_error']}" if ex.get("quote_error") else ""))
+    fresh = planned - dup
+    out = {"rejections": counts, "detail": detail}
+    if planned == 0 and sent == 0:
+        return {**out, "kind": "no_orders_normal", "severity": "info", "status": "ok"}
+    if fresh <= 0 and sent == 0:
+        return {**out, "kind": "orders_already_submitted", "severity": "info", "status": "ok"}
+    if sent == 0 and rej >= fresh:
+        if abnormal:
+            return {**out, "kind": "orders_rejected_abnormal", "severity": "critical", "status": "failed"}
+        return {**out, "kind": "orders_rejected_by_limits", "severity": "warning", "status": "ok"}
+    if abnormal:
+        return {**out, "kind": "orders_partially_rejected", "severity": "warning", "status": "degraded"}
+    return {**out, "kind": "run_completed", "severity": "info", "status": "ok"}
 
 
 def events_for_daily_run(out: dict, run_date: str) -> List[AlertEvent]:
@@ -88,11 +154,13 @@ def events_for_daily_run(out: dict, run_date: str) -> List[AlertEvent]:
     elif ex.get("n_submit_errors"):
         add("order_submit_errors", "critical", f"{ex['n_submit_errors']} 张单下单异常",
             f"计划 {ex.get('n_planned', 0)} / 已下 {ex.get('n_submitted', 0)}")
-    elif not ex.get("n_planned") and not ex.get("n_submitted"):
-        add("no_orders_normal", "info", "运行完成，按计划没有订单")
     else:
-        add("run_completed", "info", "运行完成",
-            f"计划 {ex.get('n_planned', 0)} / 已下 {ex.get('n_submitted', 0)} / 风控拒 {ex.get('n_gate_rejected', 0)}")
+        o = execution_outcome(ex)
+        add(o["kind"], o["severity"], KINDS[o["kind"]] if o["kind"] != "run_completed" else "运行完成", o["detail"])
+
+    for f in (pf.get("record_failures") or []) if isinstance(pf, dict) else []:
+        add("record_write_failed", "critical", f"{f.get('stage')} 写入失败", f.get("error"),
+            k=f"{key}:record:{f.get('stage')}")
 
     if isinstance(pf, dict):
         for tk, since in (pf.get("ca_flags") or {}).items():

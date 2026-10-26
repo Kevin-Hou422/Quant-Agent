@@ -8,9 +8,11 @@ factor_metrics_dry_run.py — 活库因子指标的备份 + 恢复验证 + 版�
     python tools/research/factor_metrics_dry_run.py inventory --copy <out>/restored/alphas.db
     python tools/research/factor_metrics_dry_run.py dry-run  --copy <out>/restored/alphas.db --dataset us_tech_large [--start … --end …]
 
-snapshot   活库只读（`mode=ro&immutable=1`：不加锁、不建 -wal / -shm）`VACUUM INTO` 出一份快照，完整性检查，
-           恢复到 `<out>/restored`，逐表比行数（`app.tasks.restore`）。前后比对活库的哈希、修改时间、目录里的文件；
-           旁边有未合并的 -wal → 拒绝（immutable 读会漏数据，先停掉用库的进程）。输出目录必须是新的空目录、不在活库目录里
+snapshot   活库不建连接：在**验证过的停写窗口**里逐字节复制主库到 `<out>/frozen`（窗口两端主库、-wal、-shm、-journal 的
+           哈希 / 大小 / 修改时间必须完全相同，副本哈希等于窗口内主库哈希；否则副本作废、报错 —— 2026-10-25 审计 R2），
+           之后只在这份冻结副本上 immutable 读：`VACUUM INTO` 出快照、恢复到 `<out>/restored`，逐表比行数、主键、内容摘要
+           与业务不变量（`app.tasks.snapshot_manifest`），清单写进 `preview.json`。旁边有未合并的 -wal → 拒绝
+           （先停掉用库的进程；不要手动删除 -wal / -shm）。输出目录必须是新的空目录、不在活库目录里
 inventory  逐条列出：是哪条路径写的、`ic_ir` 这一列存的到底是什么、算没算过
 dry-run    只在快照副本上（再复制一份工作库，配置指向它 —— 研究上下文构造 Store 会建表，恢复副本保持原样）：
            按**当前代码**在研究选择段上重算（不碰 Test；边界没登记时是临时切分，报告里写明），
@@ -43,8 +45,8 @@ WRITERS = [
 ]
 
 
-class LiveDbBusy(RuntimeError):
-    """活库旁边有未合并的 -wal。"""
+from app.tasks.snapshot_manifest import SourceBusy as LiveDbBusy  # noqa: E402  活库旁边有未合并的 -wal
+from app.tasks.snapshot_manifest import SourceChanged  # noqa: E402,F401  停写窗口内活库变了
 
 
 class PreviewRefused(RuntimeError):
@@ -68,30 +70,36 @@ def _inside(a: Path, b: Path) -> bool:
 
 def snapshot_live(db: Path, out: Path) -> dict:
     from app.tasks.restore import restore_snapshot, verify_restore
+    from app.tasks.snapshot_manifest import copy_in_quiet_window, describe_db
     db, out = Path(db), Path(out)
-    wal = Path(str(db) + "-wal")
-    if wal.exists() and wal.stat().st_size > 0:
-        raise LiveDbBusy(f"{db} 旁边有未合并的 {wal.name}（{wal.stat().st_size} 字节）—— 先停掉用库的进程再做快照")
     if _inside(out, db.parent):
         raise PreviewRefused(f"输出目录 {out} 在活库所在目录 {db.parent} 里 —— 放到别处（例如 C:\\QuantAgentEnv\\…）")
     if out.exists() and any(out.iterdir()):
         raise PreviewRefused(f"输出目录 {out} 不是空的")
-    before = fingerprint(db)
+    out.mkdir(parents=True, exist_ok=True)
+    frozen = out / "frozen" / db.name
+    try:
+        window = copy_in_quiet_window(db, frozen)
+    except Exception:
+        shutil.rmtree(out / "frozen", ignore_errors=True)
+        raise
     snap = out / "snapshot"
     snap.mkdir(parents=True)
     dest = snap / db.name
-    con = _ro(db)
+    con = _ro(frozen)                                         # 冻结副本：immutable 只用在这里
     try:
         con.execute("VACUUM INTO ?", (str(dest),))
     finally:
         con.close()
     restored = out / "restored"
     rs = restore_snapshot(snap, restored)
-    ver = verify_restore(db, restored / db.name)
-    after = fingerprint(db)
-    rep = {"at": datetime.now(timezone.utc).isoformat(), "live": str(db), "snapshot": str(dest),
-           "copy": str(restored / db.name), "restore": {**ver, "integrity_after_restore": rs["integrity"]},
-           "live_before": before, "live_after": after, "live_unchanged": before == after}
+    ver = verify_restore(frozen, restored / db.name)
+    rep = {"at": datetime.now(timezone.utc).isoformat(), "live": str(db), "frozen_copy": str(frozen),
+           "snapshot": str(dest), "copy": str(restored / db.name),
+           "window": window, "manifest": describe_db(frozen),
+           "restore": {**ver, "integrity_after_restore": rs["integrity"]},
+           "live_before": window["before"], "live_after": window["after"],
+           "live_unchanged": window["before"] == window["after"]}
     (out / PREVIEW_MANIFEST).write_text(json.dumps(rep, ensure_ascii=False, indent=1), encoding="utf-8")
     return rep
 

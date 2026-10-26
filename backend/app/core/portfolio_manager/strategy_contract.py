@@ -107,6 +107,10 @@ def generate_targets(signals: Signals, dataset: WidePanel, *, aum: float, method
     )
 
 
+class SpecValidationRefused(ValueError):
+    """已批准规格的表达式按它冻结的校验政策核对不过（或没有凭据）。"""
+
+
 class StrategyContract:
     """冻结的可执行规格 + 照它验证、照它生成。规格内容决定一切；运行时只提供数据与成交适配器。"""
 
@@ -176,11 +180,20 @@ class StrategyContract:
 
     # ------------------------------------------------------------------ 3. 生成
     def signals(self, dataset: WidePanel) -> Signals:
-        """规格里的表达式 + 规格里的信号参数。某个成分算不出来 → 抛错（不能少一个成分照常交易）。"""
+        """
+        规格里的表达式 + 规格里的信号参数。某个成分算不出来 → 抛错（不能少一个成分照常交易）。
+        表达式按**批准时冻结的校验政策**核对（2026-10-25 审计；`validation_policy.check_frozen`）：没有凭据、政策 /
+        算子集对不上、按那一版不通过、安全底线不通过 → SpecValidationRefused（调用方不生成目标、不交易）。
+        核对过之后执行器不再套用**现行**默认校验器 —— 已批准的规格按它批准时的那一版解释（不把 300 偷偷截成 252）。
+        """
         from app.core.alpha_engine.dsl_executor import Executor
         from app.core.alpha_engine.signal_processor import SignalProcessor
+        from app.core.alpha_engine.validation_policy import check_frozen
         if not self.complete():
             raise ValueError(f"规格成分缺表达式：{self.spec['factors']}")
+        problems = check_frozen(self.spec)
+        if problems:
+            raise SpecValidationRefused("; ".join(problems))
         cfg = self.signal_config()
         return {f: SignalProcessor(cfg).process(Executor(validate=False).run_expr(dsl, dataset))
                 for f, dsl in self.spec["factors"].items()}

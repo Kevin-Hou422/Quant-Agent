@@ -45,6 +45,7 @@ def _world(tmp_path):
     e = _env(tmp_path)
     _day2(e)                                       # 持仓 AAA 200 / BBB 400 / CCC 500，D2 收盘有可信快照
     e.ctx.now = "2025-03-05 09:31:00.000"
+    e.ctx.quote_time = None                        # 盘中行情带当前时刻（新鲜度只认行情时间，审计 R6）
     return e
 
 
@@ -191,17 +192,19 @@ class TestFailureModes:
         assert alerts[-1].severity == "info" and "恢复" in alerts[-1].title
 
     def test_a_frozen_snapshot_is_reported_and_not_acted_on(self, tmp_path):
+        """陈旧由**行情时间**判定（审计 R6）：券商那边的行情时间 11 分钟没前进 → 巡检失明，不据此做决定。"""
         e = _world(tmp_path)
         clock = Clock(OPEN_D3 + timedelta(minutes=5))
         wd, alerts = _watchdog(e, clock, stale_after_s=600)
         assert wd.tick()["status"] == "ok"
-        clock.t += timedelta(minutes=11)                 # 11 分钟里总资产与持仓价一点没动
+        clock.t += timedelta(minutes=11)                 # 行情时间停在 09:31
         out = wd.tick()
         assert out["status"] == "stale_snapshot"
         assert alerts and alerts[-1].kind == "intraday_watchdog" and "陈旧" in alerts[-1].title
         _drop(e, 0.40)
         clock.t += timedelta(minutes=1)
-        assert wd.tick()["status"] == "breaker_engaged", "快照恢复变动后照常判断"
+        e.ctx.now = "2025-03-05 09:47:00.000"            # 行情恢复更新
+        assert wd.tick()["status"] == "breaker_engaged", "行情恢复更新后照常判断"
 
     def test_no_trusted_close_snapshot_means_no_verdict(self, tmp_path):
         e = _env(tmp_path)                               # 没跑过任何周期：没有可信快照
@@ -219,3 +222,80 @@ def test_the_preflight_requires_the_watchdog_for_unattended_running(tmp_path):
                         strategy_check=lambda st: (True, ""), fundamentals_check=lambda st: (True, "", True))
     c = {x.name: x for x in rep.checks}["intraday_watchdog"]
     assert c.ok is False and c.blocking is True and "盘中巡检" in c.detail
+
+
+class TestFreshnessIsAboutTimeNotValues:
+    """
+    2026-10-25 审计 R6："API 每次查询都成功、账户无持仓且总资产稳定，11 分钟后仍被判为 stale_snapshot 并发 critical。
+    纯现金、价格短暂不动都不能证明数据源陈旧。"新鲜度只认行情时间；数值不变最多是辅助信号。
+    """
+
+    @staticmethod
+    def _cash_world(tmp_path):
+        from tests.unit.execution.test_order_manager import D2, _cycle
+        e = _env(tmp_path)
+        _cycle(e, D2, w={"AAA": 0.0})                    # 只建立可信收盘基准，不持仓
+        e.ctx.now = "2025-03-05 09:31:00.000"
+        e.ctx.quote_time = None
+        return e
+
+    def test_a_healthy_cash_only_account_is_never_stale(self, tmp_path):
+        e = self._cash_world(tmp_path)
+        clock = Clock(OPEN_D3 + timedelta(minutes=5))
+        wd, alerts = _watchdog(e, clock, stale_after_s=600)
+        for _ in range(3):
+            out = wd.tick()
+            assert out["status"] == "ok" and out["freshness"] == "no_positions", out
+            clock.t += timedelta(minutes=11)
+        assert [a for a in alerts if a.severity == "critical"] == []
+
+    def test_static_prices_with_updating_quote_times_are_fresh(self, tmp_path):
+        e = _world(tmp_path)
+        clock = Clock(OPEN_D3 + timedelta(minutes=5))
+        wd, alerts = _watchdog(e, clock, stale_after_s=600)
+        for minute in (5, 16, 27):
+            clock.t = OPEN_D3 + timedelta(minutes=minute)
+            e.ctx.now = f"2025-03-05 09:{30 + minute - 1:02d}:00.000"   # 价格没动，但行情时间在走
+            out = wd.tick()
+            assert out["status"] == "ok" and out["freshness"] == "fresh", out
+        assert alerts == []
+
+    def test_quote_times_that_really_stopped_are_stale(self, tmp_path):
+        e = _world(tmp_path)
+        e.ctx.quote_time = "2025-03-05 09:31:00.000"
+        clock = Clock(OPEN_D3 + timedelta(minutes=25))
+        wd, alerts = _watchdog(e, clock, stale_after_s=600)
+        _drop(e, 0.40)                                   # 数值变了，但行情时间是 20 分钟前的 —— 不据此拉熔断
+        out = wd.tick()
+        assert out["status"] == "stale_snapshot" and e.es.kill_switch().get("engaged") is False
+        assert [(a.severity, "陈旧" in a.title) for a in alerts] == [("critical", True)]
+
+    def test_without_quote_times_unchanged_values_only_warn_and_the_check_still_runs(self, tmp_path, monkeypatch):
+        e = _world(tmp_path)
+        from app.core.execution.broker_gateway import Quote
+        monkeypatch.setattr(e.gw, "quotes", lambda tks: {tk: Quote(price=1.0, asof=None) for tk in tks})
+        clock = Clock(OPEN_D3 + timedelta(minutes=5))
+        wd, alerts = _watchdog(e, clock, stale_after_s=600)
+        assert wd.tick()["freshness"] == "unproven"
+        clock.t += timedelta(minutes=11)
+        out = wd.tick()
+        assert out["status"] == "ok" and out["freshness"] == "unproven"
+        assert [(a.severity, "无法证明" in a.title) for a in alerts] == [("warning", True)]
+        _drop(e, 0.40)
+        clock.t += timedelta(minutes=1)
+        assert wd.tick()["status"] == "breaker_engaged", "证明不了新鲜不等于失明：亏损照常判断"
+
+    def test_one_halted_name_is_a_warning_not_blindness(self, tmp_path, monkeypatch):
+        e = _world(tmp_path)
+        from datetime import datetime as _dt
+
+        from app.core.execution.broker_gateway import Quote
+        def quotes(tks):                                 # AAA 当前；BBB / CCC 停在昨天下午（停牌之类）
+            return {tk: Quote(price=1.0, asof=_dt(2025, 3, 5, 9, 31) if tk == "AAA" else _dt(2025, 3, 4, 15, 0))
+                    for tk in tks}
+        monkeypatch.setattr(e.gw, "quotes", quotes)
+        wd, alerts = _watchdog(e, Clock(OPEN_D3 + timedelta(minutes=5)), stale_after_s=600)
+        out = wd.tick()
+        assert out["status"] == "ok" and out["freshness"] == "fresh"
+        assert sorted(a.title for a in alerts) == ["盘中巡检：BBB 的行情时间偏旧", "盘中巡检：CCC 的行情时间偏旧"]
+        assert {a.severity for a in alerts} == {"warning"}

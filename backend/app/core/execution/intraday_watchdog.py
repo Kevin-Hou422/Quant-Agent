@@ -10,7 +10,10 @@ intraday_watchdog.py — 盘中巡检（2026-10-22 用户决定第 17 条）
               不在 → 不连券商。日历不可用 → 严重告警，不猜
     账户锁    与调仓 / 全平 / 对账同一把锁，但**不等待**：拿不到 = 另一个进程正在动这个账户 → 本拍什么都不做
     断线      连不上券商 → 计数；连续 `unreachable_alert_after` 次 → 严重告警；恢复后发恢复通知
-    陈旧快照  总资产 + 各持仓价组成的指纹 `stale_after_s` 秒没变 → 不据此做任何决定，严重告警（巡检失明）
+    新鲜度    （2026-10-25 审计 R6："用账户数值不变判断数据陈旧，会误报健康的纯现金账户"）只认**权威时间**：持仓标的的
+              独立行情时间戳。最新的行情时间 `stale_after_s` 秒没更新 → 陈旧：不据此做任何决定，严重告警（巡检失明）。
+              纯现金账户没有需要估值的持仓 → 不存在陈旧。拿不到行情时间 → "无法证明新鲜"：照常判断，
+              数值（总资产 + 持仓价）长时间不变只作辅助信号发 warning，不当作陈旧的证据
     熔断      共用执行库里的熔断开关。已开（不论是谁开的）→ 只续做全平（在途全平单存在时不再下，不重复平仓）；
               没开且切片相对上一个可信收盘快照跌幅 ≥ 已批准的日亏阈值（与下单风控门同一个 max_daily_loss）
               → 先把熔断状态落库，再撤单、全平
@@ -70,6 +73,8 @@ class IntradayWatchdog:
         self._fingerprint = None
         self._fp_since: Optional[datetime] = None
         self._stale_alerted = False
+        self._unproven_alerted = False
+        self._stale_names_alerted: set = set()
 
     # ------------------------------------------------------------------
     def threshold(self) -> float:
@@ -107,18 +112,62 @@ class IntradayWatchdog:
             self._event("info", "盘中巡检恢复：券商重新连上", f"此前连续 {self._fails} 次连不上", f"recovered:{now.isoformat()}")
         self._fails, self._unreachable_alerted = 0, False
 
-    def _stale(self, fp, now) -> bool:
+    def _freshness(self, om, positions, now) -> dict:
+        """
+        持仓的行情时间（权威 as-of）→ fresh / stale / unproven；没有持仓 → no_positions。
+        `stale` 只由时间判定：最新的行情时间也早于 stale_after。个别标的的行情旧（停牌等）只提醒，不算巡检失明。
+        """
+        from app.core.execution.broker_gateway import BrokerError
+        from app.core.execution.pretrade_gate import QUOTE_TZ
+        if not positions:
+            return {"state": "no_positions"}
+        try:
+            quotes = om.gw.quotes(sorted(positions))
+        except BrokerError as exc:
+            logger.warning("[watchdog] 取不到持仓行情时间: %s", exc)
+            return {"state": "unproven", "detail": f"取不到持仓行情：{exc}"}
+        n = pd.Timestamp(now)
+        n = n.tz_localize("UTC") if n.tzinfo is None else n
+        asof = {}
+        for tk, q in (quotes or {}).items():
+            if q is not None and getattr(q, "asof", None) is not None:
+                t = pd.Timestamp(q.asof)
+                asof[tk] = t.tz_localize(QUOTE_TZ) if t.tzinfo is None else t
+        if not asof:
+            return {"state": "unproven", "detail": "持仓行情没有时间戳"}
+        newest = max(asof.values())
+        old = sorted(tk for tk, t in asof.items() if n - t > self.stale_after)
+        out = {"as_of": newest.isoformat(), "old_names": old}
+        if n - newest > self.stale_after:
+            return {**out, "state": "stale"}
+        return {**out, "state": "fresh"}
+
+    def _on_freshness(self, f, fp, now) -> bool:
+        """处理新鲜度结论；返回"这一拍不能据此做决定"。"""
         if fp != self._fingerprint:
-            self._fingerprint, self._fp_since, self._stale_alerted = fp, now, False
-            return False
-        if now - self._fp_since < self.stale_after:
-            return False
-        if not self._stale_alerted:
-            self._stale_alerted = True
-            self._event("critical", "盘中巡检：券商快照陈旧",
-                        f"总资产与持仓价自 {self._fp_since.isoformat()} 起没有变化 —— 巡检失明，不据此做决定",
-                        f"stale:{self._fp_since.isoformat()}")
-        return True
+            self._fingerprint, self._fp_since, self._unproven_alerted = fp, now, False
+        if f["state"] != "stale":
+            self._stale_alerted = False
+        if f["state"] == "stale":
+            if not self._stale_alerted:
+                self._stale_alerted = True
+                self._event("critical", "盘中巡检：行情时间陈旧",
+                            f"持仓的最新行情时间 {f['as_of']}，超过 {self.stale_after} 没有更新 —— 巡检失明，不据此做决定",
+                            f"stale:{f['as_of']}")
+            return True
+        if f["state"] == "fresh":
+            for tk in f.get("old_names") or []:
+                if (tk, exchange_date(now)) not in self._stale_names_alerted:
+                    self._stale_names_alerted.add((tk, exchange_date(now)))
+                    self._event("warning", f"盘中巡检：{tk} 的行情时间偏旧",
+                                "其余持仓的行情在更新（停牌 / 没有成交？）—— 这只票的估值可能不是现价",
+                                f"old_quote:{tk}:{exchange_date(now)}")
+        if f["state"] == "unproven" and now - self._fp_since >= self.stale_after and not self._unproven_alerted:
+            self._unproven_alerted = True
+            self._event("warning", "盘中巡检：无法证明快照新鲜",
+                        f"{f.get('detail', '')}；总资产与持仓价自 {self._fp_since.isoformat()} 起没变 —— "
+                        "数值不变本身不等于陈旧，但也证明不了新鲜", f"unproven:{self._fp_since.isoformat()}")
+        return False
 
     # ------------------------------------------------------------------
     def tick(self) -> dict:
@@ -152,15 +201,16 @@ class IntradayWatchdog:
                 self._reachable_again(now)
                 fp = (round(float(acct.total_assets), 6),
                       tuple(sorted((tk, round(float(p.nominal_price), 6)) for tk, p in positions.items())))
-                stale = self._stale(fp, now)
+                fresh = self._freshness(om, positions, now)
+                stale = self._on_freshness(fresh, fp, now)
                 if om.store.kill_switch().get("engaged"):
                     if not positions:
                         return {"status": "breaker_active", "flat": True}
                     rep = om.maintain("intraday_watchdog: 熔断已开，续做全平")
                     return {"status": "breaker_active", "maintain": rep.to_dict()}
                 if stale:
-                    return {"status": "stale_snapshot", "since": self._fp_since.isoformat()}
-                return self._check_loss(om, acct, now)
+                    return {"status": "stale_snapshot", "as_of": fresh.get("as_of"), "freshness": fresh}
+                return {**self._check_loss(om, acct, now), "freshness": fresh["state"]}
         finally:
             self._close(om)
 

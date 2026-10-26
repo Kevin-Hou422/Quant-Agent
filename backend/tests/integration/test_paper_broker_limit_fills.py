@@ -56,7 +56,8 @@ class TestPlannedOpenIsNotAssumedFilled:
         f = self._buy(b, o=102.0, h=103.0, lo=101.0)["A"]
         assert f.reject_reason == "limit_not_reached"
         assert f.filled_weight == pytest.approx(0.0, abs=1e-12)
-        assert f.unfilled_weight == pytest.approx(0.5, abs=1e-12)
+        # 未成交的是**冻结的委托**（审计 R1）：T 收盘 50% × 100 万 / 100 = 5,000 股，按开盘价 102 相对开盘市值 100 万
+        assert f.unfilled_weight == pytest.approx(5000 * 102.0 / 1e6, abs=1e-12)
         assert b.store.latest_positions(1).get("A", 0.0) == pytest.approx(0.0, abs=1e-12)
 
     def test_the_predictive_label_and_the_realized_book_are_separate_quantities(self, tmp_path):

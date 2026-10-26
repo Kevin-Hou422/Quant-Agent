@@ -33,7 +33,7 @@ JOBS = ["daily_backup", "daily_monitor", "daily_trading", "daily_trading_retry",
         "monthly_cost_calibration"]
 TRADE_CHECKS = ["execution_mode", "scheduler", "scheduler_jobs", "storage", "storage_writable",
                 "calendar", "dataset", "price_source", "strategy", "target_vol_off", "alert_channel",
-                "intraday_watchdog", "fundamentals"]
+                "backup", "intraday_watchdog", "fundamentals"]
 CONNECT_CHECKS = ["opend", "broker_account", "account_funds", "kill_switch", "reconcile"]
 
 
@@ -47,6 +47,7 @@ def _settings(tmp_path, **kw):
         moomoo_host="127.0.0.1", moomoo_port=11111,
         paper_dataset="us_broad_large", price_source="moomoo",
         alert_event_file=str(tmp_path / "alerts" / "events.jsonl"), intraday_watchdog_enabled=True,
+        backup_dir=str(tmp_path / "backups"),
     )
     base.update(kw)
     return settings.model_copy(update=base)
@@ -57,6 +58,14 @@ def _confirm_alert_channel(s):
     from app.core.alerting.dispatcher import AlertDispatcher
     d = AlertDispatcher(event_file=Path(s.alert_event_file), notifier=lambda t, b: None, now=lambda: NOW)
     d.confirm_visible(d.send_test_notification(), actor="test")
+
+
+def _record_backup(s, ok=True):
+    """最近一次每日备份的结果（审计 R4：预检的健康门读它）。"""
+    import json
+    root = Path(s.backup_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "last_backup.json").write_text(json.dumps({"ok": ok, "at": NOW.isoformat(), "errors": []}))
 
 
 def _env(tmp_path, cash=1_000_000.0, data=(True, "bar ok"), strategy=(True, "active #1"),
@@ -73,6 +82,7 @@ def _env(tmp_path, cash=1_000_000.0, data=(True, "bar ok"), strategy=(True, "act
     s = _settings(tmp_path, **kw)
     if alerts_confirmed:
         _confirm_alert_channel(s)
+    _record_backup(s)
     seen = {}
 
     def probe_data(st, target):

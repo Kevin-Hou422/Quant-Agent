@@ -29,6 +29,11 @@ from tests.unit.backtest_engine.prev_close_bars import (
     prev_close_bars,  # 时钟 c2：只有收盘价的用例配这根 K 线（见模块说明）
 )
 
+#: 2026-10-25 审计 R1 之后两套引擎按券商同一合同冻结委托（整股、买单按限价占用资金）。这里的用例验的是
+#: 漂移与调仓前市值的记账，把整股取整和限价占资关掉（限价带 0、按分数股）；那两条规则由
+#: tests/integration/test_frozen_order_intent_ledger.py 的独立账本验
+ISOLATE = dict(limit_band_bps=0.0, whole_shares=False)
+
 
 def _no_cost():
     return CostParams(fixed_bps=0.0, min_ticket_fee=0.0, spread_bps=0.0, impact_coef=0.0,
@@ -38,7 +43,9 @@ def _no_cost():
 def _panel():
     idx = pd.bdate_range("2025-01-06", periods=3)
     close = pd.DataFrame({"A": [100.0, 110.0, 110.0], "B": [50.0, 50.0, 50.0]}, index=idx)
-    weights = pd.DataFrame({"A": [0.5, 0.5, 0.5], "B": [0.5, 0.5, 0.5]}, index=idx)
+    # 45% / 45%，留 10% 现金：满仓多头时卖 A 的钱当天不能买 B（券商买入力不预支未成交卖单，审计 R1 之后模拟也一样），
+    # 调仓会拆到两天 —— 这里验的是漂移记账，留出现金让两条腿当天都能成交
+    weights = pd.DataFrame({"A": [0.45, 0.45, 0.45], "B": [0.45, 0.45, 0.45]}, index=idx)
     vol = pd.DataFrame(1e12, index=idx, columns=close.columns)
     return idx, close, weights, vol
 
@@ -77,10 +84,11 @@ def test_drift_handles_cash_shorts_and_missing_prices():
 def test_the_backtest_engine_trades_what_a_share_ledger_would_trade():
     from app.core.backtest_engine.backtest_engine import BacktestEngine
     idx, close, weights, vol = _panel()
-    res = BacktestEngine(cost_params=_no_cost(), initial_capital=1e6).run(weights, close, vol, weights,
+    res = BacktestEngine(cost_params=_no_cost(), initial_capital=1e6, **ISOLATE).run(weights, close, vol, weights,
                                                                          ohlc=prev_close_bars(close))
     oracle = _oracle_trades(close, weights, 1e6)
-    assert oracle[1] == pytest.approx(2 * (0.55 / 1.05 - 0.5), abs=1e-12)   # 第二天：漂移后调回 50/50
+    # 第二天：A 涨 10% 后漂移成 0.495/1.045、B 0.45/1.045，调回 45/45
+    assert oracle[1] == pytest.approx(abs(0.495 / 1.045 - 0.45) + abs(0.45 / 1.045 - 0.45), abs=1e-12)
     got = np.asarray(res.turnover, dtype=float) * 2.0               # 单边换手 × 2 = 成交名义额 / 权益
     # 时钟 c2：第 t 天的决策在 t+1 开盘执行；这根 K 线的开盘 = 前收，成交价与 oracle 在 t 收盘成交相同，
     # 所以 回测第 t+1 天的成交 == oracle 第 t 天的成交
@@ -94,7 +102,7 @@ def test_the_paper_broker_trades_from_the_drifted_weights(tmp_path):
     from app.db.position_store import PositionStore
     idx, close, weights, vol = _panel()
     br = PaperBroker(store=PositionStore(f"sqlite:///{(tmp_path / 'p.db').as_posix()}"),
-                     cost_params=_no_cost(), initial_capital=1e6)
+                     cost_params=_no_cost(), initial_capital=1e6, **ISOLATE)
     adv = pd.Series(1e15, index=close.columns)
     dv = pd.Series(0.02, index=close.columns)
     bars = prev_close_bars(close)
@@ -128,7 +136,13 @@ def test_paper_broker_and_backtest_still_agree_after_the_fix(tmp_path):
 # N08：费用按调仓前市值算
 # ---------------------------------------------------------------------------
 
-def test_the_rebalance_fee_uses_the_pre_trade_value(tmp_path):
+def test_an_overnight_gap_after_the_decision_does_not_resize_the_frozen_order(tmp_path):
+    """
+    此前这条叫 test_the_rebalance_fee_uses_the_pre_trade_value，预期是"开盘按开盘市值调回 50/50、卖 A 买 B、费用 5.00"
+    —— 那正是 2026-10-25 审计 R1 指出的错误：券商在 T 收盘按 T 收盘价冻结股数，隔夜跳空不会让委托变大变小。
+    T 收盘 A、B 都是 100、各 50 股 = 目标 50%：不需要交易；次日 A 开在 110，冻结的委托（没有）不变，费用 0。
+    调仓前市值计费的那一层由下面的回测用例（漂移发生在决策之前）验。
+    """
     from app.core.backtest_engine.transaction_cost import CostParams
     from app.core.execution.paper_broker import PaperBroker
     from app.db.position_store import DailyPnL, PositionStore
@@ -136,14 +150,13 @@ def test_the_rebalance_fee_uses_the_pre_trade_value(tmp_path):
     ps.record_day(1, "2026-01-05", {"AAA": .5, "BBB": .5}, [], DailyPnL(1, "2026-01-05", 0., 0., 0., 1.))
     broker = PaperBroker(ps, CostParams(fixed_bps=100, min_ticket_fee=0, spread_bps=0, impact_coef=0,
                                         short_borrow_annual_bps=0), 10000)
-    # 时钟 c2：开 = 高 = 低 = 今收 —— 漂移发生在隔夜，开盘按目标调回 50/50（卖 A 买 B 都在限价带内）
     bar = pd.Series({"AAA": 110., "BBB": 100.})
     pnl = broker.step(1, "2026-01-06", pd.Series({"AAA": .5, "BBB": .5}), bar,
                       pd.Series({"AAA": 100., "BBB": 100.}), pd.Series({"AAA": 1e9, "BBB": 1e9}),
                       pd.Series({"AAA": .02, "BBB": .02}), open_t=bar, high_t=bar, low_t=bar)
-    fee_usd = pnl.cost_bps / 1e4 * 10000                               # cost 按期初权益 10,000 归一
-    assert fee_usd == pytest.approx(5.0)                                # 成交 500 美元 × 100 bps
-    assert pnl.equity == pytest.approx((10500 - 5) / 10000)
+    assert pnl.cost_bps == pytest.approx(0.0)
+    assert pnl.equity == pytest.approx((5500 + 5000) / 10000)
+    assert [f.traded_weight for f in ps.fills_on(1, "2026-01-06") if abs(f.traded_weight) > 0] == []
 
 
 def test_the_backtest_engine_charges_the_same_fee(tmp_path):
@@ -151,15 +164,14 @@ def test_the_backtest_engine_charges_the_same_fee(tmp_path):
     from app.core.backtest_engine.transaction_cost import CostParams
     idx = pd.bdate_range("2026-01-05", periods=3)
     close = pd.DataFrame({"AAA": [100., 110., 110.], "BBB": [100., 100., 100.]}, index=idx)
-    w = pd.DataFrame(.5, index=idx, columns=close.columns)
+    w = pd.DataFrame(.45, index=idx, columns=close.columns)
     res = BacktestEngine(cost_params=CostParams(fixed_bps=100, min_ticket_fee=0, spread_bps=0, impact_coef=0,
                                                 short_borrow_annual_bps=0),
-                         initial_capital=10000).run(w, close, pd.DataFrame(1e12, index=idx, columns=close.columns), w,
+                         initial_capital=10000, **ISOLATE).run(w, close, pd.DataFrame(1e12, index=idx, columns=close.columns), w,
                                                     ohlc=prev_close_bars(close))
-    # 时钟 c2（开盘 = 前收）：第 0 天的决策第 1 天开盘按 100 成交 —— 买入 10,000 × 100 bps = 100，费用从**现金**扣
-    # → 两腿市值各 5,000、现金 -100；盘中 A 涨到 5,500，净值 10,400。第 2 天开盘（= 110）调仓前市值 10,400，
-    # 目标各 5,200 → 卖 A 300、买 B 200，共 500 × 100 bps = 5.00。（此前这里写 4.95 = 把建仓费用摊进了持仓，
-    # 正是 N08-b 的那个偏差）
+    # 时钟 c2（开盘 = 前收）：第 0 天的决策第 1 天开盘按 100 成交，费用从**现金**扣（N08-b：此前把建仓费用摊进了持仓）
     day2_cost = (res.gross_returns.iloc[2] - res.net_returns.iloc[2]) * res.equity_curve.iloc[1] * 10000
-    assert res.equity_curve.iloc[1] == pytest.approx(1.04)
-    assert day2_cost == pytest.approx(5.00)
+    # 目标 45% / 45%（留现金，理由见 _panel）：第 1 天买入 9,000 × 100 bps = 90 → 现金 910；盘中 A 到 4,950，
+    # 净值 10,360。第 2 天开盘调仓前市值 10,360，目标各 4,662 → 卖 A 288、买 B 162，共 450 × 100 bps = 4.50
+    assert res.equity_curve.iloc[1] == pytest.approx(1.036)
+    assert day2_cost == pytest.approx(4.50)

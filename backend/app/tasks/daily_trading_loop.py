@@ -91,6 +91,12 @@ class DailyTradingLoop:
         self._gateway_factory = gateway_factory
         self._execution_store = execution_store
         self._evidence_store = evidence_store
+        #: 本轮正式证据 / 每日记录 / 信号存档的写入失败（2026-10-25 审计 R4：不能只留日志却报"前向成功"）——
+        #: run_portfolio 放进结果的 `record_failures`，每日结论与退出码据此判失败、发 critical
+        self._record_failures: List[dict] = []
+
+    def _note_failure(self, stage: str, exc) -> None:
+        self._record_failures.append({"stage": stage, "error": f"{type(exc).__name__}: {exc}"})
 
     def _evidence(self):
         """证据库；打不开 → None（本轮所有 IC 按回放记，前向证据少一天，交易照常）。"""
@@ -100,6 +106,7 @@ class DailyTradingLoop:
                 self._evidence_store = EvidenceStore()
             except Exception as exc:
                 logger.error("[daily_loop] 证据库打不开 → 本轮 IC 全部按回放记: %s", exc)
+                self._note_failure("evidence_store", exc)
                 return None
         return self._evidence_store
 
@@ -127,6 +134,7 @@ class DailyTradingLoop:
                 logger.warning("[daily_loop] 本轮数据的实际价格源未知 → 证据只记回放，不计正式前向")
         except Exception as exc:
             logger.error("[daily_loop] 输入身份算不出来（证据行不带身份）: %s", exc)
+            self._note_failure("input_identity", exc)
             self._identity = None
         return self._identity
 
@@ -198,9 +206,11 @@ class DailyTradingLoop:
                       forward_from=None, now: Optional[datetime] = None,
                       data_source: Optional[str] = None, identity: Optional[dict] = None) -> dict:
         """组合账本一轮（见 `_run_portfolio`）+ 这一天的前向记录（复审 2026-10-19 §7.3；任何提前返回也记）。"""
+        self._record_failures = []
         result = self._run_portfolio(dataset, aum=aum, forward_from=forward_from, now=now,
                                      data_source=data_source, identity=identity)
         self._record_forward_day(result, dataset, now)
+        result["record_failures"] = list(self._record_failures)
         return result
 
     def _record_forward_day(self, result: dict, dataset: Dict[str, pd.DataFrame],
@@ -233,6 +243,7 @@ class DailyTradingLoop:
                                         "missing": sorted(rec["missing"])}
         except Exception as exc:
             logger.error("[forward] 每日记录写入失败（不影响交易）: %s", exc)
+            self._note_failure("forward_record", exc)
 
     def _archived_at(self, key: str, day) -> Optional[str]:
         """这份组合信号的存档时刻（同日重跑时是第一次存档的时刻）。"""
@@ -243,6 +254,7 @@ class DailyTradingLoop:
             row = ev.archived_before(key, day, datetime(9999, 1, 1))
         except Exception as exc:
             logger.error("[forward] 读不到 %s 的存档时刻: %s", key, exc)
+            self._note_failure("signal_archive_read", exc)
             return None
         return row["recorded_at"].isoformat() if row else None
 
@@ -892,6 +904,7 @@ class DailyTradingLoop:
                                             "verified_active")]
         except Exception as exc:
             logger.error("[evidence] 策略版本证据本轮跳过（读不到配置）: %s", exc)
+            self._note_failure("strategy_evidence", exc)
             return out
         rt = self._runtime_settings(data_source)
         for rec in configs:
@@ -910,6 +923,7 @@ class DailyTradingLoop:
                                     "运行时与可执行规格不一致，本轮信号不存档、不结算")
                 except Exception as exc:
                     logger.error("[evidence] 隔离记录写入失败: %s", exc)
+                    self._note_failure(f"evidence_quarantine:{rec.id}", exc)
                 continue
             try:
                 composite = contract.composite(contract.signals(dataset), dataset)
@@ -947,6 +961,7 @@ class DailyTradingLoop:
                 out[key] = n
             except Exception as exc:
                 logger.error("[evidence] 策略 #%s 的前向证据本轮失败（不影响交易）: %s", rec.id, exc)
+                self._note_failure(f"strategy_evidence:{rec.id}", exc)
         return out
 
     def _run_one_alpha(self, rec, dataset: Dict[str, pd.DataFrame],

@@ -54,7 +54,10 @@ def _activate(spec=None, tamper=False, **cfg):
     base = dict(factors=["1"], combo_weights={"1": 1.0}, aum=1234.0, method="equal_weight",
                 no_trade_band=.123, status="paper_running", verdict=verdict)   # 2026-10-22 C6：运行状态
     base.update(cfg)
-    return StrategyStore().save(StrategyConfig(**base))
+    st = StrategyStore()
+    # 唯一运行槽（2026-10-25 审计 R7）：开始运行新的一份之前，在运行的那份退役 —— 与真实启动同一规则
+    st.apply_transitions([(r.id, "retired", "retire", "测试：换一份", "test") for r in st.running()])
+    return st.save(StrategyConfig(**base))
 
 
 def _spec_for(loop, method="equal_weight", band=.123, dsl="rank(close)"):

@@ -27,10 +27,16 @@ from app.db.position_store import PositionStore
 CAPITAL = 1_000_000.0
 
 
+#: 本文件钉的是权重级的记账公式（10⁻³ 的容量上限、10⁻¹² 的皮权重……）。2026-10-25 审计 R1 之后两套模拟按券商合同
+#: 冻结**整股**委托，这些构造在整股下会被取整成 0；这里按分数股记账，整股与资金规则由
+#: tests/integration/test_frozen_order_intent_ledger.py 的独立账本验
+FRACTIONAL = dict(whole_shares=False, limit_band_bps=0.0)
+
+
 @pytest.fixture
 def broker(tmp_path):
     store = PositionStore(db_url=f"sqlite:///{tmp_path/'pb.db'}")
-    return PaperBroker(store=store, initial_capital=CAPITAL)
+    return PaperBroker(store=store, initial_capital=CAPITAL, **FRACTIONAL)
 
 
 def _step(broker, **kw):
@@ -103,7 +109,7 @@ def test_adv_cap_scales_with_capital(broker, tmp_path):
     tk = ["A"]
     adv = 50_000.0
     big = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp_path/'pb2.db'}"),
-                      initial_capital=CAPITAL * 2)
+                      initial_capital=CAPITAL * 2, **FRACTIONAL)
     kw = dict(target_w=_series([1.0], tk), prices_t=_series([100.0], tk),
               prices_prev=_series([100.0], tk), adv_usd=_series([adv], tk),
               daily_vol=_series([0.02], tk))
@@ -139,9 +145,9 @@ def test_cost_usd_scales_with_capital(broker, tmp_path):
               adv_usd=_series([1e12, 1e12], tk),
               daily_vol=_series([0.02, 0.02], tk))
     small = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp_path/'pb3a.db'}"),
-                        initial_capital=CAPITAL, cost_params=prop_only)
+                        initial_capital=CAPITAL, cost_params=prop_only, **FRACTIONAL)
     big = PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp_path/'pb3b.db'}"),
-                      initial_capital=CAPITAL * 2, cost_params=prop_only)
+                      initial_capital=CAPITAL * 2, cost_params=prop_only, **FRACTIONAL)
     _step(small, alpha_id=3, date="2024-01-02", **kw)
     _step(big, alpha_id=3, date="2024-01-02", **kw)
 
@@ -169,7 +175,7 @@ def test_borrow_cost_adds_to_reported_cost(tmp_path):
     tk = ["A", "B"]
     params = CostParams(short_borrow_annual_bps=500.0)   # 显著的借券费率
     st = PositionStore(db_url=f"sqlite:///{tmp_path/'pb4.db'}")
-    b = PaperBroker(store=st, initial_capital=CAPITAL, cost_params=params)
+    b = PaperBroker(store=st, initial_capital=CAPITAL, cost_params=params, **FRACTIONAL)
 
     common = dict(prices_t=_series([100.0, 100.0], tk),
                   prices_prev=_series([100.0, 100.0], tk),
@@ -183,7 +189,7 @@ def test_borrow_cost_adds_to_reported_cost(tmp_path):
 
     # 对照：全多头，同样维持一天
     st2 = PositionStore(db_url=f"sqlite:///{tmp_path/'pb5.db'}")
-    b2 = PaperBroker(store=st2, initial_capital=CAPITAL, cost_params=params)
+    b2 = PaperBroker(store=st2, initial_capital=CAPITAL, cost_params=params, **FRACTIONAL)
     _step(b2, alpha_id=5, date="2024-01-02", target_w=_series([0.5, 0.5], tk), **common)
     pnl_long = _step(b2, alpha_id=5, date="2024-01-03",
                        target_w=_series([0.5, 0.5], tk), **common)
@@ -652,7 +658,7 @@ class TestSubEpsilonPositionsAreADeliberatePolicy:
         free = CostParams(fixed_bps=0.0, min_ticket_fee=0.0, spread_bps=0.0, impact_coef=0.0,
                           short_borrow_annual_bps=0.0)
         return PaperBroker(store=PositionStore(db_url=f"sqlite:///{tmp_path/'pb_free.db'}"),
-                           cost_params=free, initial_capital=CAPITAL)
+                           cost_params=free, initial_capital=CAPITAL, **FRACTIONAL)
 
     @staticmethod
     def _run(broker):

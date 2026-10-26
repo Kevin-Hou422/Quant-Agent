@@ -122,6 +122,11 @@ def test_paper_execution_trades_the_risk_gated_row_of_the_active_strategy(loop_e
     ctx.mark(ds["close"].iloc[-1].to_dict())          # 独立报价 = 决策日收盘（F09）
     # 这个循环用真实时钟：报价也是"刚刚"的 —— 交易所本地时间（复审 N06：不能用本机时区冒充）
     ctx.quote_time = pd.Timestamp(_decision_now()).tz_convert("America/New_York").strftime("%Y-%m-%d %H:%M:%S.000")
+    # 审计 R3：新增风险要有运行许可（人工联调许可，签在订单管理用的那个执行库里）
+    from app.core.execution.run_permit import issue
+    from app.db.execution_store import ExecutionStore
+    issue(loop._execution_store or ExecutionStore(), mode="supervised", actor="tester", reason="接线测试",   # noqa: SLF001
+          account=2001, hours=2, max_order_notional=AUM, settings=settings)
     out = loop.run_portfolio(ds, aum=AUM)
 
     assert out["active_config"] == sid and out["combo_weights"] == pytest.approx(

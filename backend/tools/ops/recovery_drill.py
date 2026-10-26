@@ -68,7 +68,8 @@ def run_synthetic_drill(work_dir: Path) -> dict:
                           pit_store_dir=str(pit))
     restored = work / "restored"
     rs = restore_snapshot(Path(bk.snapshot_dir), restored) if bk.ok else None
-    ver = verify_restore(db, restored / db.name, pit, restored / "pit_store") if rs else None
+    # 对照的是快照文件本身（冻结的）；源库在备份之后可能又被写过，不能拿它当恢复的基准（2026-10-25 审计 R2）
+    ver = verify_restore(Path(bk.snapshot_dir) / db.name, restored / db.name, pit, restored / "pit_store") if rs else None
     ok = bool(bk.ok and rs and rs["ok"] and ver and ver["ok"])
     return {"ok": ok, "scope": "synthetic", "live_restore_verified": False, "note": NOTE,
             "paths": {"source_db": str(db), "source_pit": str(pit), "backups": str(backups),

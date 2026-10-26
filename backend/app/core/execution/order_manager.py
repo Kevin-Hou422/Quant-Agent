@@ -167,6 +167,7 @@ class ExecutionReport:
     cancelled_stale: List[str] = field(default_factory=list)
     flatten:         Optional[dict] = None
     quote_error:     str = ""                  # F09：独立报价取不到时的原因（新开仓因此被拦）
+    permit:          Optional[dict] = None     # 本轮核对的运行许可（审计 R3）
     #: 资金利用（外部审查 2026-10-18 F14）：买入力不预支未成交卖单的现金 —— 保守，但会让"先卖后买"
     #: 跨两个交易日。这里记下实际用了多少，事后能看出钱有没有闲着
     capital:         Optional[dict] = None
@@ -195,6 +196,7 @@ class OrderManager:
         sleep: Optional[Callable[[float], None]] = None,
         cancel_wait_polls: int = _CANCEL_WAIT_POLLS,
         cancel_wait_s: float = _CANCEL_WAIT_S,
+        permit_check: Optional[Callable] = None,
     ) -> None:
         if not (math.isfinite(paper_aum) and paper_aum > 0):
             raise ValueError(f"paper_aum 必须为正：{paper_aum!r}")
@@ -213,6 +215,9 @@ class OrderManager:
         self.flatten_band_bps = float(flatten_band_bps)
         self.book_id = int(book_id)
         self._clock = clock or _utcnow
+        #: 运行许可（2026-10-25 审计 R3）：每轮下调仓单之前调用，返回 run_permit.PermitDecision。
+        #: `from_settings`（生产路径）一律装上；直接构造（单元测试）不装 = 不核对
+        self.permit_check = permit_check
 
     #: 等另一个进程放开这个账户最多这么久（撤单确认轮询要几十秒）；等不到 → 本轮不动这个账户
     ACCOUNT_LOCK_TIMEOUT_S = 180.0
@@ -295,6 +300,7 @@ class OrderManager:
     def from_settings(cls, gateway: BrokerGateway, store: Optional[ExecutionStore] = None,
                       position_store=None, clock=None) -> "OrderManager":
         from app.config import settings
+        from app.core.execution.run_permit import settings_check
         return cls(
             gateway, store, position_store,
             limits=PreTradeLimits.from_settings(settings),
@@ -302,6 +308,7 @@ class OrderManager:
             limit_band_bps=float(settings.exec_limit_band_bps),
             flatten_band_bps=float(settings.exec_flatten_band_bps),
             clock=clock,
+            permit_check=settings_check(settings),
         )
 
     # ------------------------------------------------------------------
@@ -645,6 +652,16 @@ class OrderManager:
             rep.blocked = why
             return rep
 
+        # 2026-10-25 审计 R3：新增风险之前核对运行许可（每轮重新核对）；不通过 → 不发调仓单。
+        # 上面的对账 / 熔断续平照常（维护不需要许可）
+        if self.permit_check is not None:
+            dec = self.permit_check(self)
+            rep.permit = dec.to_dict()
+            if not dec.allowed:
+                logger.error("[exec] 运行许可不通过 → 本轮不发调仓单：%s", "; ".join(dec.reasons))
+                rep.blocked = "run_permit: " + "; ".join(dec.reasons)
+                return rep
+
         acct = rec.account_obj
         base = self._baseline_assets()
         if base is None or base < self.paper_aum:
@@ -730,6 +747,14 @@ class OrderManager:
             adv_usd=adv_usd, day_return=rec.day_return, kill_switch=False,
             open_orders=self._open_order_envelope(), sectors=sectors or {},
             quotes=quotes, now=self._clock(), quarantined=quarantined), self.limits)
+        cap = (rep.permit or {}).get("max_order_notional")
+        if cap:
+            # 人工联调许可的单笔金额上限（审计 R3："明确、限额的许可"）：减仓 / 全平不受它限制
+            over = [o for o in dec.approved if o.purpose != PURPOSE_FLATTEN
+                    and increases_risk(float(pos[o.ticker].qty) if o.ticker in pos else 0.0, o.signed_qty)
+                    and o.qty * o.limit_price > float(cap)]
+            dec.approved = [o for o in dec.approved if o not in over]
+            dec.rejected += [(o, "permit_notional_limit") for o in over]
         rep.gate = dec.to_dict()
         for o, reason in dec.rejected:
             self.store.record_gate_rejection(o, self.book_id, decision_date, reason)

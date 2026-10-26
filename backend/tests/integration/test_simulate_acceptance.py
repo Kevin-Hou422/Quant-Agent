@@ -27,8 +27,12 @@ class Crash(BaseException):
     """替代 os._exit：让用例能接住"进程在下单途中退出"。"""
 
 
-def _session(e, tmp_path, **kw):
+def _session(e, tmp_path, permit=True, **kw):
     kw.setdefault("crash", lambda: (_ for _ in ()).throw(Crash()))
+    if permit and not (e.es.get_state("run_permit") or ""):
+        from app.core.execution.run_permit import issue
+        issue(e.es, mode="supervised", actor="tester", reason="验收", account=ACC, hours=24, max_order_notional=2000,
+              now=e.clock())
     return sa.AcceptanceSession(e.gw, e.es, account=ACC, evidence_file=tmp_path / sa.EVIDENCE_NAME, actor="tester",
                                 now=e.clock, om_factory=lambda gw, st, now: e.om, **kw)
 
@@ -131,7 +135,8 @@ class TestScenarios:
         _next_open(e, D2, {"AAA": 60.0})                                     # 开在限价之上：不成交
         s.snapshot("day_order_across_sessions", "次日开盘后")
         assert _verdict(s, "day_order_across_sessions")[1] == {
-            "下单时间在 T 收盘之后": True, "次一交易日的订单列表里有这张单": True,
+            "下单时间在 T 收盘之后": True, "次一交易时段开始之前这张单没有结束": True,
+            "次一交易时段里这张单可执行（时段内观察到在途，或券商成交时间落在时段内）": True,
             "次一交易日收盘后这张单已结束（成交或过期）": False}
         e.ctx.expire_day()
         _after_close(e, D2, {"AAA": 60.0})
@@ -172,8 +177,8 @@ class TestScenarios:
     def test_restart_dedup(self, tmp_path):
         e = _env(tmp_path)
         _after_close(e, D1)
-        _session(e, tmp_path).cycle("restart_dedup", "AAA", 0.01, confirm=True)
-        s2 = _session(e, tmp_path)                                            # "重启"：新会话、同一个执行库
+        _session(e, tmp_path, pid=101).cycle("restart_dedup", "AAA", 0.01, confirm=True)
+        s2 = _session(e, tmp_path, pid=102)                                   # "重启"：新进程、同一个执行库
         s2.cycle("restart_dedup", "AAA", 0.01, confirm=True)
         ok, checks = _verdict(s2, "restart_dedup")
         assert ok, checks
@@ -206,8 +211,8 @@ class TestScenarios:
         e = _env(tmp_path)
         _after_close(e, D1)
         with pytest.raises(Crash):
-            _session(e, tmp_path).cycle("crash_recovery", "AAA", 0.01, confirm=True, crash_after_submit=True)
-        s = _session(e, tmp_path)
+            _session(e, tmp_path, pid=201).cycle("crash_recovery", "AAA", 0.01, confirm=True, crash_after_submit=True)
+        s = _session(e, tmp_path, pid=202)
         s.reconcile("crash_recovery")
         s.cycle("crash_recovery", "AAA", 0.01, confirm=True)
         ok, checks = _verdict(s, "crash_recovery")
@@ -239,3 +244,98 @@ def test_the_evidence_template_walks_through_every_scenario_and_check():
         body = doc.split(f"### {key} ", 1)[1].split("\n### ", 1)[0]
         missing = [p for p in s["pass"] if p not in body]
         assert not missing, (key, missing)
+
+
+class TestEvidenceMustProveTheEvent:
+    """
+    2026-10-25 审计 R8："订单在 T 日已 CANCELLED_ALL，次日开盘及收盘快照中只是仍能查到这条历史订单，脚本三项检查
+    却全部通过。"判定要用时序证明目标事件真的发生了；历史可见、后来一次干净的对账都不能顶替。
+    （证据行按 `_record` 的格式直接构造，钉住判定本身。）
+    """
+
+    OID = "B-1"
+
+    @staticmethod
+    def _t(day, hh, mm=0, tz="America/New_York"):
+        import pandas as pd
+        return pd.Timestamp(f"{day:%Y-%m-%d} {hh:02d}:{mm:02d}", tz=tz).tz_convert("UTC").isoformat()
+
+    def _row(self, step, at, status=None, dealt=0, updated="", pid=1, scenario="day_order_across_sessions", **data):
+        orders = [] if status is None else [{"broker_order_id": self.OID, "client_id": "c-1", "ticker": "AAA",
+                                             "side": "BUY", "qty": 2, "price": 50.0, "status": status,
+                                             "dealt_qty": dealt, "create_time": "", "updated_time": updated}]
+        return {"at": at, "scenario": scenario, "step": step, "pid": pid,
+                "data": {"broker_orders": orders, "store_orders": [], "positions": {}, **data}}
+
+    def _cycle(self, scenario="day_order_across_sessions"):
+        return self._row("cycle", self._t(D1, 17), "SUBMITTED", updated=f"{D1:%Y-%m-%d} 17:00:00", scenario=scenario,
+                         decision_date=str(D1), submitted=[{"broker_order_id": self.OID, "client_id": "c-1",
+                                                           "side": "BUY"}], report={})
+
+    @staticmethod
+    def _day(rows):
+        return {c["name"]: c["ok"] for c in sa._check_day_order(rows)}
+
+    def test_the_audit_case_cancelled_on_t_and_merely_visible_later_fails(self):
+        rows = [self._cycle(),
+                self._row("snapshot", self._t(D1, 17, 30), "CANCELLED_ALL", updated=f"{D1:%Y-%m-%d} 17:20:00"),
+                self._row("snapshot", self._t(D2, 9, 45), "CANCELLED_ALL", updated=f"{D1:%Y-%m-%d} 17:20:00"),
+                self._row("snapshot", self._t(D2, 17), "CANCELLED_ALL", updated=f"{D1:%Y-%m-%d} 17:20:00")]
+        got = self._day(rows)
+        assert got["次一交易时段开始之前这张单没有结束"] is False
+        assert got["次一交易时段里这张单可执行（时段内观察到在途，或券商成交时间落在时段内）"] is False
+
+    def test_history_alone_fails_even_without_a_snapshot_on_t(self):
+        """只有次日的快照、券商更新时间显示 T 日就已取消 —— 同样不过。"""
+        rows = [self._cycle(),
+                self._row("snapshot", self._t(D2, 9, 45), "CANCELLED_ALL", updated=f"{D1:%Y-%m-%d} 17:20:00"),
+                self._row("snapshot", self._t(D2, 17), "CANCELLED_ALL", updated=f"{D1:%Y-%m-%d} 17:20:00")]
+        assert self._day(rows)["次一交易时段开始之前这张单没有结束"] is False
+
+    def test_filled_right_at_the_open_passes_without_seeing_it_open(self):
+        rows = [self._cycle(),
+                self._row("snapshot", self._t(D2, 17), "FILLED_ALL", dealt=2, updated=f"{D2:%Y-%m-%d} 09:30:01")]
+        assert all(self._day(rows).values()), self._day(rows)
+
+    def test_an_open_state_seen_only_after_the_session_does_not_prove_executability(self):
+        rows = [self._cycle(),
+                self._row("snapshot", self._t(D2, 16, 30), "SUBMITTED", updated=f"{D1:%Y-%m-%d} 17:00:00"),
+                self._row("snapshot", self._t(D2, 17), "CANCELLED_ALL", updated=f"{D2:%Y-%m-%d} 16:00:00")]
+        assert self._day(rows)["次一交易时段里这张单可执行（时段内观察到在途，或券商成交时间落在时段内）"] is False
+
+    def test_a_fill_without_a_usable_broker_time_cannot_be_placed_in_the_session(self):
+        rows = [self._cycle(),
+                self._row("snapshot", self._t(D2, 17), "FILLED_ALL", dealt=2, updated="")]
+        assert self._day(rows)["次一交易时段里这张单可执行（时段内观察到在途，或券商成交时间落在时段内）"] is False
+
+    def test_a_partial_cancel_from_the_history_list_does_not_count(self):
+        hist = self._row("cancel", self._t(D2, 10), "CANCELLED_PART", dealt=1, scenario="partial_fill_then_cancel",
+                         broker_order_id=self.OID, report={"status": "clean"})
+        rec = self._row("reconcile", self._t(D2, 17), "CANCELLED_PART", dealt=1, scenario="partial_fill_then_cancel",
+                        report={"status": "clean"})
+        checks = {c["name"]: c["ok"] for c in sa._check_partial_cancel([hist, rec])}
+        assert checks["出现部分成交后撤单的订单"] is False, "这张单不是本场景下的"
+
+    def test_flattening_an_empty_book_does_not_prove_the_kill_switch_flatten(self):
+        eng = self._row("kill_switch_engage", self._t(D2, 17), scenario="kill_switch_flatten",
+                        kill_switch={"engaged": True})
+        checks = {c["name"]: c["ok"] for c in sa._check_kill_switch([eng])}
+        assert checks["开熔断时确有持仓"] is False
+
+    def test_a_restart_in_the_same_process_does_not_count(self):
+        a = self._row("cycle", self._t(D1, 17), scenario="restart_dedup", pid=7, decision_date=str(D1),
+                      submitted=[{"broker_order_id": self.OID, "client_id": "c-1", "side": "BUY"}], report={})
+        b = self._row("cycle", self._t(D1, 17, 5), scenario="restart_dedup", pid=7, decision_date=str(D1),
+                      submitted=[], report={})
+        checks = {c["name"]: c["ok"] for c in sa._check_restart_dedup([a, b])}
+        assert checks["第二次是另一个进程"] is False
+
+
+def test_an_external_order_needs_a_valid_permit(tmp_path):
+    """审计 R3：绕过 OrderManager 的下单入口同样要许可。"""
+    e = _env(tmp_path)
+    s = _session(e, tmp_path, permit=False)
+    _after_close(e, D1)
+    with pytest.raises(sa.AcceptanceRefused, match="运行许可"):
+        s.external_order("unknown_order", "AAA", "BUY", 1, 50.0, confirm=True)
+    assert e.ctx.calls_of("place_order") == []

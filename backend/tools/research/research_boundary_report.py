@@ -5,10 +5,11 @@ research_boundary_report.py — 研究边界与 Test 段曝光的**只读**报�
 列出已有边界、最早曝光日期、次数、股票池和实验身份，给出日期建议后由我确认。"
 
 只读的含义（本模块的硬约束，由 tests/integration/test_research_boundary_tools.py 检查）：
-  · 只用标准库 sqlite3，URI `mode=ro&immutable=1` —— 不加锁、不建 -wal / -shm、不建表、不迁移；
-    不 import app.db 的任何 Store（它们的构造函数会 create_all / 补列）
-  · 库旁边有未合并的 -wal 文件时拒绝（immutable 读会漏掉其中已提交的数据）：请先停掉用库的进程
-  · 读前读后比对文件哈希、修改时间和目录内容，有任何变化就报错
+  · 活库上不建任何连接：在**验证过的停写窗口**里把主库逐字节复制到临时目录（窗口两端主库、-wal、-shm、-journal 的
+    哈希 / 大小 / 修改时间完全相同，副本哈希等于窗口内主库哈希，否则报错 —— 2026-10-25 审计 R2：
+    immutable 不看 WAL、也不检测变化，只能用在真正冻结的副本上），再用标准库 sqlite3 `mode=ro&immutable=1` 读这份副本；
+    不建表、不迁移，不 import app.db 的任何 Store（它们的构造函数会 create_all / 补列）
+  · 库旁边有未合并的 -wal 文件时拒绝（其中已提交的数据不在主库文件里）：请先停掉用库的进程，不要手动删除 -wal / -shm
 
 用法：
     python tools/research/research_boundary_report.py --db C:\\QuantAgentData\\alphas.db \\
@@ -28,6 +29,8 @@ import json
 import os
 import sqlite3
 import sys
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -40,8 +43,17 @@ D12_TABLES = ("frozen_boundaries", "holdout_usages", "trial_run_state")
 CONVENTIONAL_TEST_YEARS = 2
 
 
-class LiveDbBusy(RuntimeError):
-    """库旁边有未合并的 -wal：有进程在用（或异常退出没合并），只读快照会漏数据。"""
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from app.tasks.snapshot_manifest import SourceBusy as LiveDbBusy  # noqa: E402  库旁边有未合并的 -wal
+from app.tasks.snapshot_manifest import (  # noqa: E402
+    SourceChanged,  # noqa: E402  停写窗口内库变了
+    copy_in_quiet_window,
+    frozen_ro,
+)
+
+__all__ = ["LiveDbBusy", "SourceChanged", "build_report", "render"]
 
 
 def _snapshot(path: Path):
@@ -49,13 +61,17 @@ def _snapshot(path: Path):
             sorted(os.listdir(path.parent)))
 
 
-def _connect_readonly(path: Path) -> sqlite3.Connection:
-    wal = Path(str(path) + "-wal")
-    if wal.exists() and wal.stat().st_size > 0:
-        raise LiveDbBusy(f"{path} 旁边有未合并的 {wal.name}（{wal.stat().st_size} 字节）—— 请先停掉用库的进程再查")
-    con = sqlite3.connect(f"file:{path.as_posix()}?mode=ro&immutable=1", uri=True)
-    con.row_factory = sqlite3.Row
-    return con
+@contextmanager
+def read_frozen(path: Path):
+    """停写窗口里复制出一份副本，产出 (副本上的只读连接, 窗口记录)；离开时关连接、删副本。"""
+    with tempfile.TemporaryDirectory(prefix="boundary-report-") as tmp:
+        window = copy_in_quiet_window(Path(path), Path(tmp) / Path(path).name)
+        con = frozen_ro(Path(window["copy"]))
+        con.row_factory = sqlite3.Row
+        try:
+            yield con, window
+        finally:
+            con.close()
 
 
 def _tables(con) -> set:
@@ -112,14 +128,13 @@ def build_report(db_path, assume_data_start: Optional[Dict[str, str]] = None) ->
     if not path.is_file():
         raise FileNotFoundError(f"没有这个库文件：{path}")
     before = _snapshot(path)
-    con = _connect_readonly(path)
-    try:
+    with read_frozen(path) as (con, window):
         rep = _collect(con, assume_data_start or {})
-    finally:
-        con.close()
     if _snapshot(path) != before:
         raise RuntimeError(f"只读查询前后 {path} 或其目录发生了变化 —— 请检查是否有别的进程在写")
-    rep["db"] = {"path": str(path), "sha256": before[0], "read_mode": "sqlite3 mode=ro&immutable=1",
+    rep["db"] = {"path": str(path), "sha256": before[0],
+                 "read_mode": "停写窗口逐字节副本 + sqlite3 mode=ro&immutable=1（只读副本）",
+                 "window_opened_at": window["window_opened_at"], "window_closed_at": window["window_closed_at"],
                  "unchanged_after_read": True}
     return rep
 
@@ -285,5 +300,4 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     sys.exit(main())

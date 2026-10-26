@@ -4,14 +4,18 @@
 "回测和 paper 一起改过且彼此相等，仍不能证明经济记账正确" —— 两套引擎互相对账只证明实现一致。
 参考账本不用权重：持有股数、现金。时钟 c2（2026-10-22 用户决定 D14 (a)）：
 
-  · T 收盘决策（目标 w[T]），T+1 按明确规则执行：DAY 限价单，参考价 = T 收盘，限价带 b；
+  · T 收盘决策（目标 w[T]），**委托股数在 T 收盘冻结**（2026-10-25 审计 R1）：
+      trunc(w × T 收盘净值 / T 收盘价) − 现有股数 —— 次日开盘价只决定成交价，不重新解释目标
+  · T+1 按明确规则执行：DAY 限价单，参考价 = T 收盘，限价 = 参考价 × (1 ± b) 按 0.01 取整（买向下、卖向上）；
       买：开盘 ≤ 限价 → 按开盘价成交；否则当日最低 ≤ 限价 → 按限价成交；否则不成交（卖对称）
   · 计划在开盘执行 ≠ 必按开盘价成交 —— 上面第二、三种情形都覆盖
-  · 成交量上限按**截至前一天**的 ADV（开盘时当天的量还不知道）
+  · 成交量上限按**截至前一天**的 ADV（开盘时当天的量还不知道），整股向零取整，不超过委托量
   · 隔夜（昨收 → 今开）算旧仓，盘中（今开 → 今收）算新仓；费用按成交额从现金扣；空头按昨收市值收借券费
 """
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 import pandas as pd
@@ -50,14 +54,21 @@ def _market(seed=5, T=30):
     return {"open": open_, "high": high, "low": low, "close": close}, vol, w
 
 
+def _limit(ref, side, band):
+    """限价 = 参考价 × (1 ± b)，按 0.01（<$1 为 0.0001）取整：买向下、卖向上（与引擎无关地写一遍）。"""
+    raw = ref * (1 + band) if side > 0 else ref * (1 - band)
+    tick = 0.01 if raw >= 1.0 else 0.0001
+    n = math.floor(raw / tick + 1e-9) if side > 0 else math.ceil(raw / tick - 1e-9)
+    return round(n * tick, 4)
+
+
 def _fill_price(side, ref, o, h, lo, band):
     """限价规则（与引擎无关地写一遍）：返回成交价或 None。"""
+    lim = _limit(ref, side, band)
     if side > 0:
-        lim = ref * (1 + band)
         if o <= lim:
             return o
         return lim if lo <= lim else None
-    lim = ref * (1 - band)
     if o >= lim:
         return o
     return lim if h >= lim else None
@@ -79,12 +90,12 @@ def _oracle(px, vol, w, capital=1e6):
             prev_c = close.iloc[t - 1]
             borrow = float((np.maximum(-shares, 0.0) * prev_c).sum()) * daily_borrow
             o = open_.loc[d]
-            v_open = cash + float((shares * o).sum())                # 开盘时的市值
-            target = w.iloc[t - 1] * v_open / o                      # 昨天收盘决定的目标
+            eq_decision = cash + float((shares * prev_c).sum())      # 昨天收盘的净值
+            target = np.trunc(w.iloc[t - 1] * eq_decision / prev_c)  # 昨天收盘冻结的目标股数
             want = target - shares
             cap_sh = (adv.iloc[t - 1] * MPP) / o                     # 截至前一天的 ADV
             for tk in close.columns:
-                q = float(np.sign(want[tk]) * min(abs(want[tk]), cap_sh[tk]))
+                q = float(np.sign(want[tk]) * math.floor(min(abs(want[tk]), cap_sh[tk])))
                 if abs(q) < 1e-12:
                     continue
                 p = _fill_price(np.sign(q), prev_c[tk], o[tk], high.loc[d, tk], low.loc[d, tk], band)

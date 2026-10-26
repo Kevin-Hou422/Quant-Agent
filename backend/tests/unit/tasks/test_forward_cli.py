@@ -33,7 +33,9 @@ OK_RUN = {"ingest_accepted": True, "mode": "incremental", "forward_from": "2025-
           "n_new_bars": 1,
           "portfolio": {"execution": {"mode": "moomoo_paper", "blocked": "", "n_planned": 4,
                                       "n_submitted": 3, "n_gate_rejected": 1, "n_duplicate": 0,
-                                      "n_submit_errors": 0}}}
+                                      "n_submit_errors": 0,
+                                      # 拒单要带原因（审计 R4：原因不明的拒单按异常算）；这一张是计划内的单票限额
+                                      "gate": {"rejected": [{"ticker": "AAA", "reason": "exceeds_name_limit"}]}}}}
 
 
 def _body(printed):
@@ -66,7 +68,7 @@ def test_run_now_succeeds_only_when_execution_completed(capsys):
     printed = capsys.readouterr().out
     assert _body(printed)["execution"]["n_submitted"] == 3
     assert _body(printed)["ingest_accepted"] is True and _body(printed)["forward_from"] == "2025-03-04"
-    assert "执行完成：计划 4 / 已下 3 / 风控拒 1 / 重复 0" in printed
+    assert "执行完成：计划 4 / 之前已发 0 / 已下 3 / 风控拒 1（limits 1）" in printed
 
 
 @pytest.mark.parametrize("out,needle", [

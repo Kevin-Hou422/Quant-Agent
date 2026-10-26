@@ -124,11 +124,10 @@ def rehearse(copy: Path, dataset: str, start: Optional[str] = None, end: Optiona
                         name=f"{old.name}-c2"))
             started = None
             if "same_composition" in proposals:
-                from app.api.router import _start_steps
+                from app.api.router import _start
                 sid = proposals["same_composition"]
                 req = SimpleNamespace(reason="隔离预演：按旧策略成分重新提案", actor=actor)
-                sstore.apply_transitions([(sid, "approved", "approve", req.reason, actor)]
-                                         + _start_steps(sstore, sid, req, "paper_running"))
+                _start(sstore, sid, req, "paper_running", before=[(sid, "approved", "approve", req.reason, actor)])
                 rec = sstore.get(sid)
                 spec = approved_spec(rec)
                 dsl_now = {k: astore.get_by_id(int(k)).dsl for k in (spec or {}).get("factors", {})}

@@ -97,6 +97,7 @@ _ENTRY_POINTS = {"app.main", "app.api.router", "app.api.chat_router",
                  "app.tasks.scheduler", "app.config",
                  "app.tasks.forward",      # `python -m app.tasks.forward preflight|run-now`
                  "app.tasks.alerts",       # `python -m app.tasks.alerts test|confirm|status|retry`（OPERATIONS §7）
+                 "app.tasks.run_permit",   # `python -m app.tasks.run_permit issue|status|revoke`（审计 R3）
                  "app.tasks.restore"}      # `python -m app.tasks.restore <快照> <空目录>`（OPERATIONS §7）
 
 

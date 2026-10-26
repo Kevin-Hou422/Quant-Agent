@@ -78,9 +78,12 @@ class BacktestEngine:
         vol_window:      int   = 20,
         max_net:         Optional[float] = None,
         limit_band_bps:  Optional[float] = None,
+        whole_shares:    Optional[bool] = None,
     ) -> None:
         from app.core.clock import default_band
         self.max_net         = max_net
+        #: 盘后冻结的委托数量按整股（与券商同一合同）。缺省：有初始资金就按整股
+        self.whole_shares    = (initial_capital > 0) if whole_shares is None else bool(whole_shares)
         #: T+1 限价单的限价带（小数）。缺省 = settings.exec_limit_band_bps（与券商下单同一参数）
         self.band            = default_band() if limit_band_bps is None else float(limit_band_bps) * 1e-4
         self.params          = cost_params or CostParams()
@@ -129,6 +132,7 @@ class BacktestEngine:
 
         prices_arr  = prices.to_numpy(dtype=float)
         from app.core.clock import limit_fill_prices, require_ohlc
+        from app.core.execution.order_intent import open_targets, whole_share_fills
         ohlc_arr = require_ohlc(ohlc, dates, tickers)
         open_raw = ohlc_arr["open"]
         high_arr, low_arr = ohlc_arr["high"], ohlc_arr["low"]
@@ -208,16 +212,25 @@ class BacktestEngine:
             borrow = float(np.sum(np.maximum(-prev_filled, 0.0))) * daily_borrow_rate
             v_open = equity * (1.0 + r_on)
             pre = drift_weights(prev_filled, on_chg)              # 相对开盘市值
-            # 2) 开盘撮合**昨天收盘**定下的目标：截至昨天的 ADV 上限；限价规则下碰不到的名字上限置 0
-            target = tgt_arr[t - 1]
+            # 2) 开盘撮合**昨天收盘冻结的委托**（2026-10-25 审计 R1）：数量在 T 收盘按当时权益与参考价冻结
+            #    （与券商 build_rebalance_orders 同一个函数，app/core/execution/order_intent.py），撮合只决定
+            #    成交多少、成交价 —— 不按开盘市值重新解释目标权重。截至昨天的 ADV 上限；限价碰不到的名字上限置 0
+            if self.initial_capital > 0:
+                pre, target_after, px, _plan = open_targets(
+                    tgt_arr[t - 1], prev_filled, pre, equity, v_open, c_prev, o, open_raw[t], high_arr[t],
+                    low_arr[t], tickers, dates[t - 1], dates[t], self.band, self.whole_shares)
+            else:
+                # 初始资金 0 = 只看权重的回测：没有权益就冻结不出股数，目标权重按限价规则直接撮合（不设容量上限）
+                target_after = tgt_arr[t - 1]
+                px = limit_fill_prices(np.sign(target_after - pre), c_prev, open_raw[t], high_arr[t], low_arr[t],
+                                       self.band)
             if v_open > 0:
                 cap = adv_usd[t - 1] * self.params.max_participation_pct / v_open
             else:
                 cap = np.full(N, np.inf)
-            px = limit_fill_prices(np.sign(target - pre), c_prev, open_raw[t], high_arr[t], low_arr[t],
-                                   self.band)
             cap = np.where(np.isfinite(px), cap, 0.0)
-            fr = simulate_partial_fills(pre, target, cap, max_net=self.max_net)
+            fr = simulate_partial_fills(pre, target_after, cap, max_net=self.max_net)
+            fr = whole_share_fills(fr, pre, target_after, v_open, o, self.whole_shares)
             delta = fr.filled_w - pre
             delta_w_mat[t] = delta
             exec_px = np.where(np.isfinite(px), px, o)

@@ -122,6 +122,11 @@ def world(tmp_path, monkeypatch):
         from app.tasks.daily_ingest import run_daily_pipeline
         clock["now"] = session_close_utc(day) + timedelta(minutes=minutes_after_close)
         ctx.now = f"{day:%Y-%m-%d} 16:{min(minutes_after_close, 59):02d}:00.000"
+        # 审计 R3：新增风险要有运行许可 —— 人工联调许可最长 24 小时，操作人每个交易日签一次
+        from app.core.execution.run_permit import issue
+        from app.db.execution_store import ExecutionStore
+        issue(ExecutionStore(), mode="supervised", actor="kevin", reason="端到端联调", account=2001, hours=24,
+              max_order_notional=AUM, now=clock["now"])
         # 收盘后决策：券商的行情报价 = 当天收盘价（F09 的独立报价从这里来）
         if day in yahoo.close.index:
             ctx.mark({tk: float(yahoo.close.loc[day, tk]) for tk in yahoo.close.columns})

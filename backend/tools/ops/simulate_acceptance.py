@@ -23,6 +23,8 @@ simulate_acceptance.py — 专用 SIMULATE 账户的人工监督验收：动作�
     · 执行库要单独给（`--exec-db`）：验收不混进正式前向的执行库，也就不计入策略证据
     · 任何会下单 / 撤单 / 动熔断的动作都要 `--confirm`；不带就只打印要做什么
     · 单笔上限：`--max-qty`（缺省 5 股）、`--max-notional`（缺省 2000 美元）；目标权重 × 切片权益也受这个上限
+    · 下单（cycle 与 external-order）要验收执行库里有有效的**人工联调许可**（`python -m app.tasks.run_permit issue
+      --mode supervised --exec-db <验收执行库> …`；审计 R3）—— 没有、过期、账户 / 代码 / 价格源变了都不下单
 证据：每一步追加一行到 `<exec-db 所在目录>/simulate_acceptance.jsonl`（时间、场景、步骤、账户、代码版本、券商与执行库的状态），
 `verify` 只读这份文件判定，结果也追加进去。判定"过"只说明这一次的记录满足条件，不代替你看券商端的成交回报。
 """
@@ -55,7 +57,9 @@ SCENARIOS: Dict[str, dict] = {
         "title": "DAY 单跨 session",
         "steps": ["T 收盘后 cycle --confirm", "T+1 开盘后 snapshot（看这张单在不在订单列表里）",
                   "T+1 收盘后 snapshot（看它是否已结束）"],
-        "pass": ["下单时间在 T 收盘之后", "次一交易日的订单列表里有这张单", "次一交易日收盘后这张单已结束（成交或过期）"],
+        "pass": ["下单时间在 T 收盘之后", "次一交易时段开始之前这张单没有结束",
+                 "次一交易时段里这张单可执行（时段内观察到在途，或券商成交时间落在时段内）",
+                 "次一交易日收盘后这张单已结束（成交或过期）"],
     },
     "partial_fill_then_cancel": {
         "title": "部分成交后撤单",
@@ -72,13 +76,13 @@ SCENARIOS: Dict[str, dict] = {
     "restart_dedup": {
         "title": "重启后不重复下单",
         "steps": ["cycle --confirm", "关掉进程（本工具每次就是一个新进程）", "同一决策日再 cycle --confirm", "snapshot"],
-        "pass": ["同一决策日跑了两次", "第二次没有新下单", "券商侧每个委托号只有一张单"],
+        "pass": ["同一决策日跑了两次", "第二次是另一个进程", "第二次没有新下单", "券商侧每个委托号只有一张单"],
     },
     "kill_switch_flatten": {
         "title": "熔断后续做全平",
         "steps": ["先有持仓（submit_and_fill 之后）", "kill-switch engage --confirm", "maintain --confirm（之后每个交易日一次）",
                   "持仓清空后 snapshot", "kill-switch reset --confirm"],
-        "pass": ["熔断已开", "熔断开着时没有加仓的买单", "持仓最终清空"],
+        "pass": ["熔断已开", "开熔断时确有持仓", "熔断开着时没有加仓的买单", "持仓最终清空"],
     },
     "input_anomaly": {
         "title": "输入异常被拦",
@@ -89,7 +93,7 @@ SCENARIOS: Dict[str, dict] = {
         "title": "下单途中崩溃后恢复",
         "steps": ["cycle --crash-after-submit --confirm（第一张单被券商接受后进程立即退出）", "新进程 reconcile",
                   "同一决策日再 cycle --confirm", "snapshot"],
-        "pass": ["崩溃前已有单被券商接受", "恢复后对账没有悬而未决的单", "恢复后没有重复下单"],
+        "pass": ["崩溃前已有单被券商接受", "恢复后对账没有悬而未决的单（在另一个进程里）", "恢复后没有重复下单"],
     },
 }
 
@@ -105,8 +109,11 @@ def _hard_exit() -> None:
 class AcceptanceSession:
     def __init__(self, gateway, store, *, account: int, evidence_file: Path, actor: str = "",
                  now: Optional[Callable[[], datetime]] = None, max_qty: int = 5, max_notional: float = 2000.0,
-                 om_factory: Optional[Callable] = None, crash: Callable[[], None] = _hard_exit) -> None:
+                 om_factory: Optional[Callable] = None, crash: Callable[[], None] = _hard_exit,
+                 pid: Optional[int] = None) -> None:
         self.gw, self.store = gateway, store
+        #: 写进每条证据：重启 / 崩溃恢复的场景要证明后一步真的发生在另一个进程里
+        self.pid = os.getpid() if pid is None else int(pid)
         self.evidence_file = Path(evidence_file)
         self.actor = actor
         self.now = now or (lambda: datetime.now(timezone.utc))
@@ -130,7 +137,7 @@ class AcceptanceSession:
         if scenario not in SCENARIOS:
             raise AcceptanceRefused(f"未知场景 {scenario}；可选：{sorted(SCENARIOS)}")
         row = {"at": self.now().isoformat(), "scenario": scenario, "step": step, "actor": self.actor,
-               "account": self.env, "code_version": code_version(), "data": data}
+               "pid": self.pid, "account": self.env, "code_version": code_version(), "data": data}
         self.evidence_file.parent.mkdir(parents=True, exist_ok=True)
         with self.evidence_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
@@ -248,6 +255,11 @@ class AcceptanceSession:
                            qty=int(qty), limit_price=float(limit))
         if not self._need(confirm, f"直接向券商下一张不是本系统格式的单：{req}"):
             return None
+        # 2026-10-25 审计 R3：绕过 OrderManager 直接下单的入口也要有效的运行许可（验收执行库里的那份）
+        from app.core.execution.run_permit import evaluate
+        dec = evaluate(self.store, account=int(self.env.get("acc_id") or 0), now=self.now())
+        if not dec.allowed:
+            raise AcceptanceRefused("运行许可不通过：" + "; ".join(dec.reasons))
         oid = self.gw.place(req)
         return self._record(scenario, "external_order", {"request": req.__dict__, "broker_order_id": oid,
                                                           **self._state()})
@@ -339,7 +351,31 @@ def _check_submit_and_fill(rows) -> List[dict]:
     return out
 
 
+#: 券商订单的创建 / 更新时间是交易所本地时间（moomoo 美股：美东）
+BROKER_TZ = "America/New_York"
+
+
+def _broker_time(s):
+    """券商时间串 → UTC；空 / 解析不了 → None（证明不了时序就不能算过）。"""
+    import pandas as pd
+    try:
+        t = pd.Timestamp(str(s or "").strip())
+    except (ValueError, TypeError):
+        return None
+    if pd.isna(t):
+        return None
+    return (t.tz_localize(BROKER_TZ) if t.tzinfo is None else t).tz_convert("UTC")
+
+
 def _check_day_order(rows) -> List[dict]:
+    """
+    2026-10-25 审计 R8："订单在 T 日已 CANCELLED_ALL，次日开盘及收盘快照中只是仍能查到这条历史订单，脚本三项检查
+    却全部通过。"查询结果里出现了委托号只说明历史可见。现在要求用时序证明这张单在次一交易时段**可执行**：
+        · 次一时段开始前的任何记录里它都没进入终态（T 日已取消 / 过期 / 失败 → 不过）
+        · 次一时段内（开盘 ≤ 记录时刻 < 收盘）观察到它仍在途；或者券商记的成交（更新时间）落在次一时段内、
+          且开盘前没有任何成交 —— 开盘即成交、没来得及看到在途的单也能证明
+        · 次一交易日收盘后它已结束（成交或过期）
+    """
     import pandas as pd
 
     from app.core.data_engine.market_calendar import (
@@ -357,32 +393,72 @@ def _check_day_order(rows) -> List[dict]:
     nxt_open, nxt_close = pd.Timestamp(session_open_utc(nxt)), pd.Timestamp(session_close_utc(nxt))
     at = lambda r: pd.Timestamp(r["at"]).tz_convert("UTC")                      # noqa: E731
     oid = c["data"]["submitted"][0]["broker_order_id"]
-    later = _steps(_after(rows, c), "snapshot", "reconcile")
-    in_next = [r for r in later if nxt_open <= at(r)]
-    seen = next((r for r in in_next if _broker(r, oid) is not None), None)
-    ended = [r for r in later if at(r) >= nxt_close and _broker(r, oid) is not None
-             and not _is_open(_broker(r, oid)["status"])]
+    views = [(r, _broker(r, oid)) for r in [c] + _steps(_after(rows, c), "snapshot", "reconcile")]
+    views = [(r, o) for r, o in views if o is not None]
+
+    def ended_before_open(r, o):
+        if _is_open(o["status"]):
+            return False
+        upd = _broker_time(o.get("updated_time"))
+        return at(r) < nxt_open or (upd is not None and upd < nxt_open)
+    early_end = next(((r, o) for r, o in views if ended_before_open(r, o)), None)
+    filled_early = next(((r, o) for r, o in views if at(r) < nxt_open and float(o.get("dealt_qty") or 0) > 0), None)
+    open_in_session = next((r for r, o in views if nxt_open <= at(r) < nxt_close and _is_open(o["status"])), None)
+    fill_in_session = next((o for r, o in views if float(o.get("dealt_qty") or 0) > 0
+                            and (lambda u: u is not None and nxt_open <= u < nxt_close)(_broker_time(o.get("updated_time")))),
+                           None)
+    executable = early_end is None and filled_early is None and (open_in_session is not None or fill_in_session is not None)
+    if early_end is not None:
+        why = (f"{early_end[1]['status']}（记录 {at(early_end[0]).isoformat()}，券商更新 {early_end[1].get('updated_time')}）"
+               f"在次一时段 {nxt_open.isoformat()} 开始之前就结束了 —— 只是历史可见，不是跨日有效")
+    elif filled_early is not None:
+        why = f"开盘前的记录里已有成交 {filled_early[1].get('dealt_qty')}：不是次一时段的成交"
+    elif open_in_session is not None:
+        why = f"次一时段内 {at(open_in_session).isoformat()} 观察到在途"
+    elif fill_in_session is not None:
+        why = f"券商成交时间 {fill_in_session.get('updated_time')}（美东）落在次一时段内"
+    else:
+        why = "次一时段内既没观察到在途，也没有时间落在时段内的成交"
+    ended = [r for r, o in views if at(r) >= nxt_close and not _is_open(o["status"])]
     return [
         _check("下单时间在 T 收盘之后", at(c) >= close, f"下单 {at(c).isoformat()}，收盘 {close.isoformat()}"),
-        _check("次一交易日的订单列表里有这张单", seen is not None,
-               f"委托号 {oid}，次一交易日 {nxt.date()}" + ("" if seen else "：开盘之后的记录里都查不到（这正是要确认的问题）")),
+        _check("次一交易时段开始之前这张单没有结束", early_end is None and filled_early is None,
+               f"委托号 {oid}，次一交易日 {nxt.date()}；{why}"),
+        _check("次一交易时段里这张单可执行（时段内观察到在途，或券商成交时间落在时段内）", executable, why),
         _check("次一交易日收盘后这张单已结束（成交或过期）", bool(ended),
                f"状态 {_broker(ended[0], oid)['status']}" if ended else "次一交易日收盘之后还没有看到它进入终态"),
     ]
 
 
 
+def _scenario_orders(rows) -> set:
+    """这个场景里**自己下的**单（cycle / maintain 提交的、external_order 下的）—— 历史列表里别的单不算。"""
+    ids = {o["broker_order_id"] for r in _steps(rows, "cycle", "maintain") for o in r["data"].get("submitted", [])}
+    ids |= {r["data"]["broker_order_id"] for r in _steps(rows, "external_order")}
+    return {i for i in ids if i}
+
+
 def _check_partial_cancel(rows) -> List[dict]:
+    """
+    部分成交、撤单要真的在这个场景里发生（审计 R8：不能让历史列表里的一张旧单、或后来一次干净对账顶替）：
+    单是本场景下的；有针对它的 cancel 步骤；撤单那一刻之前（含）它已部分成交；之后它是 CANCELLED_PART。
+    """
+    mine = _scenario_orders(rows)
     hit = None
-    for r in _steps(rows, "snapshot", "reconcile", "cancel"):
-        for o in r["data"].get("broker_orders", []):
-            if 0 < float(o["dealt_qty"]) < float(o["qty"]) and o["status"] == "CANCELLED_PART":
-                hit = (r, o)
-                break
-        if hit:
+    for cr in _steps(rows, "cancel"):
+        oid = cr["data"]["broker_order_id"]
+        if oid not in mine:
+            continue
+        upto = rows[:next(i for i, r in enumerate(rows) if r is cr) + 1]
+        dealt_before = any(0 < float((_broker(r, oid) or {}).get("dealt_qty") or 0) for r in upto)
+        o = next((_broker(r, oid) for r in [cr] + _after(rows, cr)
+                  if (_broker(r, oid) or {}).get("status") == "CANCELLED_PART"), None)
+        if dealt_before and o is not None and 0 < float(o["dealt_qty"]) < float(o["qty"]):
+            hit = (cr, o)
             break
     if hit is None:
-        return [_check("出现部分成交后撤单的订单", False, "记录里没有 0 < 成交 < 委托 且 CANCELLED_PART 的单")]
+        return [_check("出现部分成交后撤单的订单", False,
+                       "本场景下的单里没有『撤单前已部分成交、撤单后 CANCELLED_PART』的 —— 当天没出现就记未覆盖")]
     r, o = hit
     out = [_check("出现部分成交后撤单的订单", True, f"{o['broker_order_id']}：{o['dealt_qty']}/{o['qty']}")]
     rec = _steps(([r] if r["step"] == "reconcile" else []) + _after(rows, r), "reconcile")
@@ -425,11 +501,13 @@ def _check_restart_dedup(rows) -> List[dict]:
     day = next((d for d, rs in by_day.items() if len(rs) >= 2 and rs[0]["data"]["submitted"]), None)
     if day is None:
         return [_check("同一决策日跑了两次", False, "没有同一决策日、第一次下了单的两次 cycle")]
-    second = by_day[day][1]
+    first, second = by_day[day][0], by_day[day][1]
     last = rows[-1]["data"].get("broker_orders", [])
     cids = [o["client_id"] for o in last if o["client_id"]]
     dup = sorted({c for c in cids if cids.count(c) > 1})
     return [_check("同一决策日跑了两次", True, day),
+            _check("第二次是另一个进程", first.get("pid") is not None and first.get("pid") != second.get("pid"),
+                   f"进程 {first.get('pid')} → {second.get('pid')}"),
             _check("第二次没有新下单", not second["data"]["submitted"],
                    f"第二次新下 {len(second['data']['submitted'])} 张"),
             _check("券商侧每个委托号只有一张单", not dup, f"重复：{dup}" if dup else f"共 {len(set(cids))} 个备注")]
@@ -440,12 +518,17 @@ def _check_kill_switch(rows) -> List[dict]:
     if not eng:
         return [_check("熔断已开", False, "没有 kill_switch_engage 记录")]
     e = eng[0]
+    held = {k: v for k, v in e["data"].get("positions", {}).items() if float(v["qty"])}
+    if not held:
+        return [_check("熔断已开", bool(e["data"]["kill_switch"].get("engaged")), str(e["data"]["kill_switch"])),
+                _check("开熔断时确有持仓", False, "开熔断时没有持仓 —— 『持仓最终清空』证明不了全平（先做 submit_and_fill）")]
     after = _after(rows, e)
     reset_at = next((r["at"] for r in after if r["step"] == "kill_switch_reset"), None)
     during = [r for r in after if reset_at is None or r["at"] < reset_at]
     buys = [o for r in _steps(during, "cycle", "maintain") for o in r["data"]["submitted"] if o["side"] == "BUY"]
     flat = any(not {k: v for k, v in r["data"].get("positions", {}).items() if float(v["qty"])} for r in during)
     return [_check("熔断已开", bool(e["data"]["kill_switch"].get("engaged")), str(e["data"]["kill_switch"])),
+            _check("开熔断时确有持仓", True, str({k: v["qty"] for k, v in held.items()})),
             _check("熔断开着时没有加仓的买单", not buys, f"买单：{buys}" if buys else ""),
             _check("持仓最终清空", flat, "" if flat else "熔断期间的记录里持仓一直不为空")]
 
@@ -470,13 +553,15 @@ def _check_crash_recovery(rows) -> List[dict]:
     after = _after(rows, c)
     rec = _steps(after, "reconcile")
     rec_ok = bool(rec) and not rec[0]["data"]["report"]["unresolved"] \
-        and (_store(rec[0], sub["client_id"]) or {}).get("broker_order_id") == sub["broker_order_id"]
+        and (_store(rec[0], sub["client_id"]) or {}).get("broker_order_id") == sub["broker_order_id"] \
+        and rec[0].get("pid") is not None and rec[0].get("pid") != c.get("pid")
     again = [r for r in _steps(after, "cycle") if r["data"]["decision_date"] == c["data"]["decision_date"]]
     cids = [o["client_id"] for o in (after[-1] if after else c)["data"].get("broker_orders", []) if o["client_id"]]
     dup = sorted({x for x in cids if cids.count(x) > 1})
     return [_check("崩溃前已有单被券商接受", bool(sub.get("broker_order_id")), str(sub)),
-            _check("恢复后对账没有悬而未决的单", rec_ok,
-                   (str(rec[0]["data"]["report"]["unresolved"]) if rec else "崩溃之后没有对账记录")),
+            _check("恢复后对账没有悬而未决的单（在另一个进程里）", rec_ok,
+                   (f"未决 {rec[0]['data']['report']['unresolved']}；进程 {c.get('pid')} → {rec[0].get('pid')}"
+                    if rec else "崩溃之后没有对账记录")),
             _check("恢复后没有重复下单", bool(again) and not dup and all(
                 o["client_id"] != sub["client_id"] for r in again for o in r["data"]["submitted"]),
                 f"同日再跑 {len(again)} 次；重复备注 {dup}")]

@@ -374,6 +374,13 @@ def run_preflight(
         logger.warning("[golive] 告警通道检查失败: %s", exc)
         ok, detail = False, f"告警通道检查失败：{exc}"
     rep.add("alert_channel", ok, detail)
+    try:
+        from app.tasks.backup import backup_health
+        ok, detail, blocking = backup_health(getattr(settings, "backup_dir", None), now)
+    except Exception as exc:
+        logger.warning("[golive] 备份检查失败: %s", exc)
+        ok, detail, blocking = False, f"备份检查失败：{exc}", True
+    rep.add("backup", ok, detail, blocking=blocking)
     wd_on = bool(getattr(settings, "intraday_watchdog_enabled", False))
     wd_s = int(getattr(settings, "intraday_watchdog_interval_s", 60) or 0)
     wd_ok = wd_on and 10 <= wd_s <= 300

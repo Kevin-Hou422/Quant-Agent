@@ -46,9 +46,12 @@ class PaperBroker:
         initial_capital: float = 1_000_000.0,
         max_net:         Optional[float] = None,
         limit_band_bps:  Optional[float] = None,
+        whole_shares:    Optional[bool] = None,
     ) -> None:
         from app.core.clock import default_band
         self.store           = store or PositionStore()
+        #: 盘后冻结的委托数量按整股（与券商同一合同）。缺省：有初始资金就按整股
+        self.whole_shares    = (initial_capital > 0) if whole_shares is None else bool(whole_shares)
         #: T+1 限价单的限价带（小数）。缺省 = settings.exec_limit_band_bps（与券商下单同一参数；时钟 c2）
         self.band            = default_band() if limit_band_bps is None else float(limit_band_bps) * 1e-4
         self.params          = cost_params or CostParams()
@@ -77,12 +80,14 @@ class PaperBroker:
         high_t:         pd.Series,      # (N,) 今日最高价
         low_t:          pd.Series,      # (N,) 今日最低价
         tdays_per_year: float = 252.0,
+        decision_date=None,             # 冻结意图的决策日（昨天）；只进意图的记录字段
     ) -> DailyPnL:
         """
         执行 alpha 在 date 的单日模拟成交并原子持久化（幂等：同日重跑覆盖）。时钟 c2（app/core/clock.py）：
 
           1) 旧仓吃隔夜收益（昨收 → 今开）
-          2) 开盘撮合**昨天收盘**冻结的目标：DAY 限价单，参考价 = 昨收、限价带 = exec_limit_band_bps；
+          2) 开盘撮合**昨天收盘**冻结的委托（app/core/execution/order_intent.py，与券商同一个数量合同：
+             股数按昨收权益与昨收参考价冻结，撮合只决定成交多少、成交价）：DAY 限价单，参考价 = 昨收、限价带 = exec_limit_band_bps；
              开盘在限价内 → 开盘价；否则当日触及限价 → 限价；否则不成交（未成交原因 limit_not_reached）
           3) 费用按成交价的成交额；成交价相对开盘价的差额记为执行成本
           4) 新仓吃盘中收益（今开 → 今收），收盘估值
@@ -91,7 +96,7 @@ class PaperBroker:
         昨仓与净值从 PositionStore 读取（崩溃恢复安全）。
         """
         from app.core.backtest_engine.transaction_cost import drift_weights
-        from app.core.clock import limit_fill_prices
+        from app.core.execution.order_intent import open_targets, whole_share_fills
         # 幂等/续跑：状态取**严格早于 date** 的最近一日（非全局最近），
         # 使重跑第 t 日基于 t-1 状态，全量重放逐位可复现。
         equity, prev_pos = self.store.state_before(alpha_id, date)
@@ -139,15 +144,29 @@ class PaperBroker:
         pre_w = drift_weights(prev_w, on_chg)
         tgt = (target_w.reindex(tickers).fillna(0.0).to_numpy(dtype=float) if target_w is not None
                else pre_w.copy())
+        rejected = {}
+        if target_w is not None and self.initial_capital > 0:
+            # 昨收冻结的委托（2026-10-25 审计 R1）：数量在昨收按 v_prev 与昨收参考价冻结，不按开盘市值重新解释
+            pre_w, want, px, plan = open_targets(
+                tgt, prev_w, pre_w, v_prev, v_open, p_prev, o_eff, o_raw, h_raw, l_raw, tickers,
+                decision_date, date, self.band, self.whole_shares, tradable=~stale)
+            rejected = {r["ticker"]: r["reason"] for r in plan.rejected}
+        elif target_w is not None:
+            # 初始资金 0 = 只看权重：没有权益就冻结不出股数，目标权重按限价规则直接撮合（与 BacktestEngine 同）
+            from app.core.clock import limit_fill_prices
+            want = tgt
+            px = limit_fill_prices(np.sign(tgt - pre_w), p_prev, o_raw, h_raw, l_raw, self.band)
+        else:
+            want, px = pre_w.copy(), np.full(len(tickers), np.nan)
         if v_open > 0:
             cap_trade_w = adv * self.params.max_participation_pct / v_open
         else:
             cap_trade_w = np.full_like(adv, np.inf)
         cap_trade_w = np.where(stale, 0.0, cap_trade_w)
-        px = limit_fill_prices(np.sign(tgt - pre_w), p_prev, o_raw, h_raw, l_raw, self.band)
-        limit_blocked = ~np.isfinite(px) & (np.abs(tgt - pre_w) > 1e-12) & ~stale
+        limit_blocked = ~np.isfinite(px) & (np.abs(want - pre_w) > 1e-12) & ~stale
         cap_trade_w = np.where(np.isfinite(px), cap_trade_w, 0.0)
-        fr = simulate_partial_fills(pre_w, tgt, cap_trade_w, max_net=self.max_net)
+        fr = simulate_partial_fills(pre_w, want, cap_trade_w, max_net=self.max_net)
+        fr = whole_share_fills(fr, pre_w, want, v_open, o_eff, self.whole_shares)
         filled, delta = fr.filled_w, fr.filled_d
         exec_px = np.where(np.isfinite(px), px, o_eff)
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -172,17 +191,22 @@ class PaperBroker:
         fills: List[dict] = []
         pv = max(v_open, 0.0)
         for i, tk in enumerate(tickers):
-            # 没交易、没持仓、也没有未成交的意图 → 跳过；一笔**完全没成交**的订单（c2 限价没碰到）必须留记录
-            if abs(delta[i]) < 1e-12 and abs(filled[i]) < 1e-12 and abs(float(fr.unfilled_d[i])) <= 1e-12:
+            # 没交易、没持仓、也没有未成交的意图 → 跳过；一笔**完全没成交**的订单（c2 限价没碰到）必须留记录，
+            # 冻结时就因资金不足没发的买单也留记录（insufficient_buying_power，未成交量 = 目标与调仓前之差）
+            unfilled = float(fr.unfilled_d[i])
+            if tk in rejected:
+                unfilled = float(tgt[i] - pre_w[i])
+            if abs(delta[i]) < 1e-12 and abs(filled[i]) < 1e-12 and abs(unfilled) <= 1e-12:
                 continue
             # 未成交的原因分得开（用户决策 #2）：limit_not_reached（限价没碰到）/ participation（成交量打满）/
             # net_exposure_*（整组新增订单被缩减 / 暂缓，否则部分成交会把净敞口推出限额）
-            unfilled = float(fr.unfilled_d[i])
-            if abs(unfilled) <= 1e-12:
+            if tk in rejected:
+                reject = rejected[tk]
+            elif abs(unfilled) <= 1e-12:
                 reject = ""
             elif limit_blocked[i]:
                 reject = "limit_not_reached"
-            elif abs(delta[i]) >= abs(cap_trade_w[i]) - 1e-12:
+            elif abs(want[i] - pre_w[i]) > cap_trade_w[i] + 1e-12:
                 reject = "participation"
             else:
                 reject = "net_exposure_defer" if fr.deferred else "net_exposure_scaled"
@@ -249,7 +273,7 @@ class PaperBroker:
                 target_w=weights.iloc[t - 1] if t > 0 else None, prices_t=prices.iloc[t],
                 prices_prev=prices.iloc[prev], adv_usd=adv_df.iloc[prev], daily_vol=vol_df.iloc[prev],
                 open_t=bars["open"].iloc[t], high_t=bars["high"].iloc[t], low_t=bars["low"].iloc[t],
-                tdays_per_year=tdays,
+                tdays_per_year=tdays, decision_date=dates[prev] if t > 0 else None,
             )
             equity_curve.append(pnl.equity)
         return pd.Series(equity_curve, index=dates, name="paper_equity")

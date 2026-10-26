@@ -22,6 +22,8 @@ EXIT_NOT_READY = 2
 #: 跑了，但没有按计划完成（执行被拦 / 下单异常 / 组合报错 / 摄取被拒 / 日历不可用）。
 #: 以前这些情况一律返回 0，外部监控会把"一张单都没下"当成成功（审计 F14）。
 EXIT_RUN_FAILED = 3
+#: 跑完了，但部分新单因数据 / 报价 / 估值异常被拦下（2026-10-25 审计 R4：部分拒绝也要可见）
+EXIT_RUN_DEGRADED = 4
 
 
 def classify_run(out: dict) -> tuple:
@@ -45,8 +47,18 @@ def classify_run(out: dict) -> tuple:
         return EXIT_RUN_FAILED, f"执行被拦：{ex['blocked']}"
     if ex.get("n_submit_errors"):
         return EXIT_RUN_FAILED, f"{ex['n_submit_errors']} 张单下单异常（待对账确认）"
-    return EXIT_OK, (f"执行完成：计划 {ex.get('n_planned', 0)} / 已下 {ex.get('n_submitted', 0)} / "
-                     f"风控拒 {ex.get('n_gate_rejected', 0)} / 重复 {ex.get('n_duplicate', 0)}")
+    # 2026-10-25 审计 R4：与告警同一个分类出口；正式证据 / 存档写不进去也不能报"成功"
+    from app.core.alerting.events import KINDS, execution_outcome
+    o = execution_outcome(ex)
+    failures = pf.get("record_failures") or []
+    if o["status"] == "failed":
+        return EXIT_RUN_FAILED, f"{KINDS[o['kind']]}：{o['detail']}"
+    if failures:
+        return EXIT_RUN_FAILED, ("执行完成但正式记录写入失败：" + "; ".join(
+            f"{f.get('stage')}: {f.get('error')}" for f in failures) + f" | {o['detail']}")
+    if o["status"] == "degraded":
+        return EXIT_RUN_DEGRADED, f"{KINDS[o['kind']]}：{o['detail']}"
+    return EXIT_OK, f"执行完成：{o['detail']}"
 
 
 def _print_preflight(rep) -> None:

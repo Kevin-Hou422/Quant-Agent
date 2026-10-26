@@ -180,7 +180,12 @@ def daily_backup_job() -> None:
         logger.info("[scheduler] 备份完成 %s | %s | %.1f KB",
                     res.snapshot_dir, res.items, res.bytes_written / 1024)
     else:
+        # 2026-10-25 审计 R4：不能只记日志 —— 发 critical 告警；结果已写进 last_backup.json，预检据此阻塞
         logger.error("[scheduler] 备份**失败** %s: %s", res.snapshot_dir, res.errors)
+        from app.core.alerting.dispatcher import emit_safely
+        from app.core.alerting.events import AlertEvent
+        emit_safely(AlertEvent(kind="backup_failed", severity="critical", title="每日备份失败",
+                               detail="; ".join(res.errors), dedup_key=f"backup_failed:{res.snapshot_dir}"))
 
 
 def monthly_cost_calibration_job() -> None:

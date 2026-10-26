@@ -21,9 +21,8 @@ import pandas as pd
 
 def plan(db: Path, dataset: str, test_start: str) -> dict:
     """预演：只读看现状，返回将要发生什么。"""
-    from tools.research.research_boundary_report import _connect_readonly, _columns, _tables
-    con = _connect_readonly(db)
-    try:
+    from tools.research.research_boundary_report import _columns, _tables, read_frozen
+    with read_frozen(db) as (con, _window):
         existing = None
         if "frozen_boundaries" in _tables(con):
             cols = _columns(con, "frozen_boundaries")
@@ -32,8 +31,6 @@ def plan(db: Path, dataset: str, test_start: str) -> dict:
                 r = dict(row)
                 existing = {"test_start": r["test_start"],
                             "registered": bool({"actor", "reason"} <= cols and (r.get("actor") or "").strip())}
-    finally:
-        con.close()
     day = str(pd.Timestamp(test_start).date())
     if existing is None:
         action = "insert"

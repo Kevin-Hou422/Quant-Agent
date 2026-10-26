@@ -32,7 +32,7 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 #: 2：加入 universe / execution / submission（复审 2026-10-19 §5.2）
-SPEC_VERSION = 2
+SPEC_VERSION = 3          # v3（2026-10-25 审计）：加 `validation`（表达式校验政策的版本、摘要与结果）
 
 #: 每日循环 / 提案 / 策略门共用的信号处理参数（此前三处各写一份字面量）。
 #: delay 取自时钟（c2 = 0：T 收盘的信息就用于 T 的决策，T+1 执行由引擎负责；见 app/core/clock.py）
@@ -93,7 +93,14 @@ def build_spec(factor_dsl: Dict[str, Optional[str]], combo_weights: Dict[str, fl
         "universe": _universe_section(str(getattr(settings, "paper_dataset", ""))),
         "execution": _execution_section(settings),
         "submission": _submission_section(settings),
+        # 表达式校验凭据（2026-10-25 审计）：按 CURRENT 政策校验的版本 / 摘要 / 结果；在规格里 → 绑定在 spec_hash 上
+        "validation": _validation_section(factor_dsl),
     }
+
+
+def _validation_section(factor_dsl: Dict[str, Optional[str]]) -> dict:
+    from app.core.alpha_engine.validation_policy import validation_record
+    return validation_record({str(k): v for k, v in factor_dsl.items()})
 
 
 def _clock() -> str:

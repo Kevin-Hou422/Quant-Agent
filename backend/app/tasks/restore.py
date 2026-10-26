@@ -11,7 +11,9 @@ restore.py — 把一份备份快照恢复到隔离目录并核对（2026-10-22 
     · 恢复出来的每个库都跑 `PRAGMA integrity_check`
 把恢复结果换回活库是另一回事：要人看过 `verify_restore` 的差异后另行确认（D2），本模块不做。
 
-`verify_restore` 对照源库（只读 + immutable，不在源库旁建任何文件）与恢复出的库：表是否齐、逐表行数是否一致；PIT 文件逐字节（sha256）比对。
+`verify_restore` 对照**冻结的**源副本（快照文件本身，或停写窗口里复制出的副本；immutable 只用在这种不会再变的文件上）
+与恢复出的库：完整性、表是否齐、逐表行数、主键与内容摘要、业务不变量（运行槽、订单认领 / 成交 / 熔断、正式证据），
+见 `app.tasks.snapshot_manifest`（2026-10-25 审计 R2：只比表和行数证明不了恢复的是同一份数据）；PIT 文件逐字节（sha256）比对。
 """
 
 from __future__ import annotations
@@ -56,9 +58,9 @@ def check_target(target: Path) -> None:
         raise RestoreRefused(f"恢复目标 {t} 不是空的 —— 不覆盖任何已有内容，请指定一个新的空目录")
 
 
-def _ro(db: Path, immutable: bool = False) -> sqlite3.Connection:
-    """只读连接。读源库（可能是活库）时 immutable=1：WAL 模式的库用普通 mode=ro 打开也会在旁边建 -wal / -shm。"""
-    return sqlite3.connect(f"file:{Path(db).as_posix()}?mode=ro" + ("&immutable=1" if immutable else ""), uri=True)
+def _ro(db: Path) -> sqlite3.Connection:
+    """恢复出的库（本模块自己的产物、没有别的连接）用普通只读连接。"""
+    return sqlite3.connect(f"file:{Path(db).as_posix()}?mode=ro", uri=True)
 
 
 def _integrity(db: Path) -> str:
@@ -92,16 +94,6 @@ def restore_snapshot(snapshot_dir: Path, target_dir: Path) -> dict:
             "pit_dir": str(pit) if pit is not None else None}
 
 
-def _row_counts(db: Path, immutable: bool = False) -> Dict[str, int]:
-    con = _ro(db, immutable)
-    try:
-        names = [r[0] for r in con.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
-        return {n: int(con.execute(f'SELECT count(*) FROM "{n}"').fetchone()[0]) for n in names}
-    finally:
-        con.close()
-
-
 def _file_digests(root: Optional[Path]) -> Dict[str, str]:
     if root is None or not Path(root).exists():
         return {}
@@ -109,18 +101,19 @@ def _file_digests(root: Optional[Path]) -> Dict[str, str]:
             for p in sorted(Path(root).rglob("*")) if p.is_file()}
 
 
-def verify_restore(source_db: Path, restored_db: Path,
+def verify_restore(frozen_db: Path, restored_db: Path,
                    source_pit: Optional[Path] = None, restored_pit: Optional[Path] = None) -> dict:
-    """源库（只读）与恢复库逐表行数对照；PIT 文件逐字节对照。ok = 完整性 ok 且没有任何差异。"""
-    integrity = _integrity(Path(restored_db))
-    src, dst = _row_counts(Path(source_db), immutable=True), _row_counts(Path(restored_db))
-    missing = sorted(set(src) - set(dst))
-    mismatches = {t: {"source": n, "restored": dst[t]} for t, n in src.items() if t in dst and dst[t] != n}
+    """
+    冻结源副本与恢复库逐项对照（`snapshot_manifest.compare_descriptions`）；PIT 文件逐字节对照。
+    `frozen_db` 必须是不会再变的文件（快照文件 / 停写窗口副本）—— 不要传活库。ok = 完整性 ok 且没有任何差异。
+    """
+    from app.tasks.snapshot_manifest import compare_descriptions, describe_db
+    out = compare_descriptions(describe_db(Path(frozen_db)), describe_db(Path(restored_db)))
     s_pit, d_pit = _file_digests(source_pit), _file_digests(restored_pit)
     pit_bad = sorted(k for k, h in s_pit.items() if d_pit.get(k) != h)
-    ok = integrity == "ok" and not missing and not mismatches and not pit_bad
-    return {"ok": ok, "integrity": {"main": integrity}, "tables_checked": len(src), "missing_tables": missing,
-            "row_count_mismatches": mismatches, "pit_files_checked": len(s_pit), "pit_mismatches": pit_bad}
+    out.update(ok=bool(out["ok"] and not pit_bad), frozen_source=str(frozen_db),
+               pit_files_checked=len(s_pit), pit_mismatches=pit_bad)
+    return out
 
 
 def main(argv: Optional[List[str]] = None) -> int:

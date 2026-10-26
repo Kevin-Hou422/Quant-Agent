@@ -44,8 +44,13 @@ def _frames(prices: list[list[float]], weights: list[list[float]],
 
 
 def _run(prices, weights, params: CostParams = FREE, capital: float = 1_000_000.0):
+    """
+    限价带设 0（2026-10-25 审计 R1 之后）：两套引擎按券商同一合同冻结委托，买单按"股数 × 限价"占用资金 ——
+    满仓目标在 50bp 限价带下会超出权益、最后一张买单被资金规则拒掉。这里只验记账算术，把这条规则关掉；
+    限价带与资金规则由 tests/integration/test_frozen_order_intent_ledger.py 的独立账本验。
+    """
     w, px, vol = _frames(prices, weights)
-    eng = BacktestEngine(cost_params=params, initial_capital=capital)
+    eng = BacktestEngine(cost_params=params, initial_capital=capital, limit_band_bps=0.0)
     return eng.run(w, px, vol, w, ohlc=prev_close_bars(px))
 
 
