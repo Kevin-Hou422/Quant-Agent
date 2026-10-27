@@ -108,3 +108,30 @@ describe('ApprovalQueue — fundamental field annotations', () => {
     expect(row).not.toHaveTextContent('第一个交易日')
   })
 })
+
+describe('ApprovalQueue — IC mean and IC-IR are shown separately (audit decision 2)', () => {
+  it('shows both fields for an evaluated candidate and a dash for an empty IC-IR', async () => {
+    api.apiFetchPending.mockResolvedValue({ data: [
+      { ...PRICE, alpha_id: 21, ic_mean: 0.031, ic_ir: null, ic_status: 'evaluated' },
+    ] })
+    render(<ApprovalQueue />)
+    expect(await screen.findByText(/IC 均值 0\.031 · IC-IR —/)).toBeInTheDocument()
+  })
+
+  it('never labels a legacy value as IC-IR', async () => {
+    api.apiFetchPending.mockResolvedValue({ data: [{ ...PRICE, alpha_id: 22, ic_ir: 0.05, ic_status: 'legacy_unknown' }] })
+    render(<ApprovalQueue />)
+    const line = await screen.findByText(/口径未知/)
+    expect(line.textContent).not.toMatch(/IC-IR 0\.050/)
+  })
+
+  it('tells "never evaluated" apart from an evaluated zero', async () => {
+    api.apiFetchPending.mockResolvedValue({ data: [
+      { ...PRICE, alpha_id: 23, ic_mean: null, ic_ir: null, ic_status: 'never_evaluated' },
+      { ...PRICE, alpha_id: 24, dsl: 'rank(close)', ic_mean: 0, ic_ir: 0, ic_status: 'evaluated' },
+    ] })
+    render(<ApprovalQueue />)
+    expect(await screen.findByText(/（未评估）/)).toBeInTheDocument()
+    expect(screen.getByText(/IC 均值 0\.000 · IC-IR 0\.000$/)).toBeInTheDocument()
+  })
+})

@@ -68,6 +68,7 @@
 | 3 | 成交后 `reconcile`，再 `cycle … --confirm` | 对账报差异；调仓被拦、没有新下单 |
 
 判定：外部单没有被当成本系统的单；外部单成交后对账报差异并阻断调仓。核对券商端之后用 `accept --scenario unknown_order --reason "…" --confirm` 接受差异（作用于验收执行库；API 的 `/execution/reconcile/accept` 用的是缺省执行库，验收时不要用它），再 `cycle` 确认恢复调仓。
+被拦的调仓只认对账差异（`reconcile_*`）；因没有运行许可等别的原因被拦，证明不了外部单被识别（审计 R8）。
 
 结果：日期 ____ 操作人 ____ 外部委托号 ____ 对账状态 ____ verify ____ 备注 ____
 
@@ -103,6 +104,7 @@
 | 1 | `cycle --scenario input_anomaly --ticker <票> --weight 0.01 --ref-skew 0.3 --confirm`（决策参考价比独立报价偏 30%） | 风控门拒绝（价格偏离），没有下单 |
 
 判定：异常输入下没有下单，且被风控门或预检拦下。另可人工核对：数据源 / 规格对不上时每日循环不调仓（见每日记录的 quarantine / spec 字段）。
+只认参考价与独立报价 / 持仓价对不上的拒单（`quote_mismatch` / `price_mismatch`）；被别的原因拦下不算（审计 R8）。
 
 结果：日期 ____ 操作人 ____ 拒绝原因 ____ verify ____ 备注 ____
 

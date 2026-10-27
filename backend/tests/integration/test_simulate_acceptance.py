@@ -339,3 +339,38 @@ def test_an_external_order_needs_a_valid_permit(tmp_path):
     with pytest.raises(sa.AcceptanceRefused, match="运行许可"):
         s.external_order("unknown_order", "AAA", "BUY", 1, 50.0, confirm=True)
     assert e.ctx.calls_of("place_order") == []
+
+
+class TestOnlyTheTargetEventCounts:
+    """审计 R8："核对其它场景的证据是否真实证明了目标事件"：被别的原因拦下不能顶替。"""
+
+    @staticmethod
+    def _cycle(scenario, report, submitted=(), skew=0.0, at="2025-03-04T21:30:00+00:00"):
+        return {"at": at, "scenario": scenario, "step": "cycle", "pid": 1,
+                "data": {"report": report, "submitted": list(submitted), "ref_skew": skew, "decision_date": "2025-03-04",
+                         "broker_orders": [], "store_orders": [], "positions": {}}}
+
+    def test_an_input_anomaly_stopped_for_another_reason_does_not_pass(self):
+        r = self._cycle("input_anomaly", {"blocked": "run_permit: 没有运行许可", "n_gate_rejected": 0}, skew=0.3)
+        assert sa._check_input_anomaly([r])[0]["ok"] is False
+        r = self._cycle("input_anomaly", {"blocked": "", "n_gate_rejected": 1,
+                                          "gate": {"rejected": [{"reason": "exceeds_name_limit"}]}}, skew=0.3)
+        assert sa._check_input_anomaly([r])[0]["ok"] is False
+
+    def test_an_input_anomaly_rejected_for_the_mismatch_passes(self):
+        r = self._cycle("input_anomaly", {"blocked": "", "n_gate_rejected": 1,
+                                          "gate": {"rejected": [{"reason": "quote_mismatch"}]}}, skew=0.3)
+        assert sa._check_input_anomaly([r])[0]["ok"] is True
+
+    def test_an_unknown_order_needs_a_reconcile_block_not_any_block(self):
+        ext = {"at": "2025-03-04T21:00:00+00:00", "scenario": "unknown_order", "step": "external_order", "pid": 1,
+               "data": {"broker_order_id": "X1", "broker_orders": [], "store_orders": []}}
+        filled = {"at": "2025-03-05T21:00:00+00:00", "scenario": "unknown_order", "step": "reconcile", "pid": 1,
+                  "data": {"report": {"status": "discrepancy"}, "store_orders": [],
+                           "broker_orders": [{"broker_order_id": "X1", "dealt_qty": 3, "status": "FILLED_ALL"}]}}
+        other = self._cycle("unknown_order", {"blocked": "run_permit: 许可已过期"}, at="2025-03-05T21:05:00+00:00")
+        checks = {c["name"]: c["ok"] for c in sa._check_unknown_order([ext, filled, other])}
+        assert checks["外部单成交后对账报差异并阻断调仓"] is False
+        right = self._cycle("unknown_order", {"blocked": "reconcile_discrepancy"}, at="2025-03-05T21:06:00+00:00")
+        checks = {c["name"]: c["ok"] for c in sa._check_unknown_order([ext, filled, right])}
+        assert checks["外部单成交后对账报差异并阻断调仓"] is True

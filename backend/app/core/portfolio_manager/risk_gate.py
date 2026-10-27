@@ -82,21 +82,27 @@ class PortfolioRiskGate:
         对权重面板逐日施加风控约束，返回 (调整后权重, RiskReport)。
 
         sectors      : Series(index=ticker → 行业标签/代码)；None 时自动按 GICS 推导。
-        port_vol_ann : 组合当前估计年化波动；配合 limits.target_vol_ann 做 vol targeting。
+        port_vol_ann : 组合估计年化波动；配合 limits.target_vol_ann 做 vol targeting。可以是一个数（只对最后一个
+                       决策适用），或按日期的 Series（逐日缩放，第 t 天只用截至 t 的估计 —— 历史回放必须用这种，
+                       2026-10-25 审计 §4.2）；某天是 NaN → 那天不缩放。
         """
         lim = self.limits
         cols = list(weights.columns)
         sec = self._resolve_sectors(sectors, cols)
         rep = RiskReport()
 
-        # ---- 目标波动缩放（先算一个全局标量，再逐日 clip 保证硬约束）----
-        vol_scalar = 1.0
-        if lim.target_vol_ann and port_vol_ann and port_vol_ann > 1e-9:
-            vol_scalar = float(lim.target_vol_ann / port_vol_ann)
-            vol_scalar = float(np.clip(vol_scalar, 0.0, 3.0))    # 防止极端放大
-        rep.vol_scalar = vol_scalar
+        # ---- 目标波动缩放（逐日缩放系数，再逐日 clip 保证硬约束）----
+        scal = pd.Series(1.0, index=weights.index)
+        if lim.target_vol_ann and isinstance(port_vol_ann, pd.Series):
+            v = port_vol_ann.reindex(weights.index).astype(float)
+            ok = np.isfinite(v) & (v > 1e-9)
+            scal = pd.Series(np.where(ok, np.clip(lim.target_vol_ann / v.where(ok, 1.0), 0.0, 3.0), 1.0),
+                             index=weights.index)
+        elif lim.target_vol_ann and port_vol_ann and port_vol_ann > 1e-9:
+            scal[:] = float(np.clip(float(lim.target_vol_ann / port_vol_ann), 0.0, 3.0))    # 防止极端放大
+        rep.vol_scalar = float(scal.iloc[-1]) if len(scal) else 1.0
 
-        out = weights.copy().astype(float) * vol_scalar
+        out = weights.copy().astype(float).mul(scal, axis=0)
         for dt in out.index:
             v = out.loc[dt]
             v_adj, nclip, nsec, gscaled = self._apply_vector(v, sec, lim)

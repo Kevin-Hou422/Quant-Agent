@@ -1725,7 +1725,7 @@
    "proof_entries_min": 118,
    "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
    "refuted_entries_min": 2,
-   "unmeasured_points_max": 2635
+   "unmeasured_points_max": 2654
   },
   "refuted_by_counterexample": {
    "count": 2,
@@ -1753,9 +1753,9 @@
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
   "measured_points": 2876,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-  "current_plan_points": 5511,
+  "current_plan_points": 5530,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-  "unmeasured_points": 2635,
+  "unmeasured_points": 2654,
   "newly_in_scope_modules": [
    "app/core/risk_engine/factor_model.py",
    "app/core/execution/broker_gateway.py",
@@ -1786,7 +1786,8 @@
    "app/tasks/snapshot_manifest.py",
    "app/core/execution/run_permit.py",
    "app/tasks/run_permit.py",
-   "app/core/alpha_engine/validation_policy.py"
+   "app/core/alpha_engine/validation_policy.py",
+   "app/core/alpha_engine/ic_metrics.py"
   ],
   "per_module_delta": {
    "app/agent/_agent.py": {
@@ -2313,10 +2314,10 @@
    {
     "date": "2026-10-26 (固定提交 eca36e3 审计的工作包 A)",
     "from": 2313,
-    "to": 2635,
-    "why": "按审计修 R1（冻结委托 order_intent，两套模拟引擎改为消费它）、R2（停写窗口快照 + 清单 + 业务不变量 snapshot_manifest）、R3（运行许可 run_permit）、R4（拒单分类 / 记录失败 / 备份健康）、R7（唯一运行槽）、R8（验收判定按时序）、版本化表达式校验政策（validation_policy）。新模块与改动产生的变异点。 另含 R5（基准规则 b2）、R6（巡检新鲜度只认行情时间）。",
+    "to": 2654,
+    "why": "按审计修 R1（冻结委托 order_intent，两套模拟引擎改为消费它）、R2（停写窗口快照 + 清单 + 业务不变量 snapshot_manifest）、R3（运行许可 run_permit）、R4（拒单分类 / 记录失败 / 备份健康）、R7（唯一运行槽）、R8（验收判定按时序）、版本化表达式校验政策（validation_policy）。新模块与改动产生的变异点。 另含 R5（基准规则 b2）、R6（巡检新鲜度只认行情时间）。 另含 IC 双字段（ic_metrics）、min_variance 配对、目标波动逐日估计。",
     "how_it_was_handled": "**未做逐点变异复核**。每项都按审计原话写了有区分力的用例，并用 HEAD（eca36e3）与工作区各跑一遍审计场景，HEAD 复现缺陷、工作区修正（证据文件见追踪表）。唯一做了的单点复核：strategy_contract L185（validate=False→True）被 test_validation_policy 杀死。",
-    "owed": "这 322 个点欠逐点复核（数小时级，须先征得同意）。"
+    "owed": "这 341 个点欠逐点复核（数小时级，须先征得同意）。"
    }
   ],
   "critical_path_review": [

@@ -158,7 +158,8 @@ def test_vol_targeting_is_applied_once_in_the_daily_loop(tmp_path, monkeypatch):
         return real(self, w, sectors=sectors, port_vol_ann=port_vol_ann)
     monkeypatch.setattr(PortfolioRiskGate, "apply", spy)
     loop.run_portfolio(ds)
-    assert len(vols) == 2 and vols[0] is not None and vols[0] > 0
+    # 2026-10-25 审计 §4.2 起第一次传的是逐决策日的估计（Series）；最后一个决策日有值
+    assert len(vols) == 2 and vols[0] is not None and float(vols[0].iloc[-1]) > 0
     assert vols[1] is None, "无交易带之后的第二次风控又传了波动估计 —— 缩放会叠乘"
 
 

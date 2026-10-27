@@ -28,7 +28,8 @@ import pytest
 
 from app.core.backtest_engine.alpha_combiner import AlphaCombiner, _ic_ir
 
-IDX = pd.bdate_range("2022-01-03", periods=60)
+#: 61 天 = 60 个有已实现标签的信号日（信号 t 配 returns[t+1]），够 min_variance 的最小样本 max(15n, 60)
+IDX = pd.bdate_range("2022-01-03", periods=61)
 COLS = [f"S{i}" for i in range(8)]
 
 
@@ -329,12 +330,16 @@ def _mv_world(seed=21, n_days=None):
 
 
 def _factor_returns(sig, ret):
-    """因子组合日收益的独立参考实现：截面去均值、按 Σ|w| 归一，收益 = Σ w·r。"""
+    """
+    因子组合收益的独立参考实现：截面去均值、按 Σ|w| 归一，信号 t 配 returns[t+1]（`clock.paired_returns` 的合同；
+    2026-10-25 审计 §4.2 指出此前同日相乘错一格）。长度 T−1：最后一个信号日没有已实现标签。
+    """
     a = sig.to_numpy(float)
     r = ret.reindex(index=sig.index, columns=sig.columns).to_numpy(float)
     w = a - np.nanmean(a, axis=1, keepdims=True)
     g = np.nansum(np.abs(w), axis=1, keepdims=True)
     w = np.where(g > 1e-12, w / np.where(g > 1e-12, g, 1.0), np.nan)
+    w, r = w[:-1], r[1:]
     both = np.isfinite(w) & np.isfinite(r)
     out = np.where(both, w * r, 0.0).sum(axis=1)
     out[~both.any(axis=1)] = np.nan
@@ -383,7 +388,9 @@ class TestMinVarianceWeights:
         loud = mk(rng.normal(0, 1, (len(IDX), len(COLS))))
         quiet = mk(rng.normal(0, 1, (len(IDX), len(COLS))))
         k = rng.normal(0, 0.05, (len(IDX), 1))
-        ret = mk(k * loud.sub(loud.mean(axis=1), axis=0).to_numpy() + rng.normal(0, 1e-4, loud.shape))
+        driven = k * loud.sub(loud.mean(axis=1), axis=0).to_numpy()
+        # 信号 t 驱动 returns[t+1]（配对合同）：收益整体后移一天
+        ret = mk(np.vstack([np.zeros((1, driven.shape[1])), driven[:-1]]) + rng.normal(0, 1e-4, loud.shape))
         assert np.std(_factor_returns(loud, ret)) > 2 * np.std(_factor_returns(quiet, ret))   # 前提
         w = AlphaCombiner().optimize_weights({"quiet": quiet, "loud": loud}, ret, method="min_variance")
         assert w["quiet"] > w["loud"], f"低波动因子拿到的权重更少：{w} —— 最小方差解算反了"
@@ -398,8 +405,8 @@ class TestMinVarianceWeights:
         assert all(v >= 0.0 for v in w.values()), f"出现了负权重：{w}"
         assert sum(w.values()) == pytest.approx(1.0)
 
-    @pytest.mark.parametrize("n_factors,n_days,equal", [(2, 59, True), (2, 60, False),
-                                                        (5, 74, True), (5, 75, False)])
+    @pytest.mark.parametrize("n_factors,n_days,equal", [(2, 60, True), (2, 61, False),
+                                                        (5, 75, True), (5, 76, False)])
     def test_the_minimum_sample_follows_the_min_variance_study(self, n_factors, n_days, equal):
         """
         复审 2026-10-19 F12：门槛 = max(15 × 因子数, 60) 个可用日（两侧都钉住）。
@@ -410,7 +417,7 @@ class TestMinVarianceWeights:
         names = [f"f{i}" for i in range(n_factors)]
         sigs = {k: mk(rng.normal(0, 1, (n_days, len(COLS)))) for k in names}
         usable = int((~np.isnan(np.stack([_factor_returns(v, ret) for v in sigs.values()], 1)).any(1)).sum())
-        assert usable == n_days
+        assert usable == n_days - 1, "最后一个信号日没有已实现标签，不算可用日"
         w = AlphaCombiner().optimize_weights(sigs, ret, method="min_variance")
         assert (w == {k: pytest.approx(1.0 / n_factors) for k in names}) is equal
 
@@ -922,7 +929,7 @@ class TestMinVarianceAgainstReference:
             return {dsls[0]: 1.0}
         mat = np.stack([_factor_returns(s, ret) for s in signals.values()], axis=1)
         mask = ~np.isnan(mat).any(axis=1)
-        if mask.sum() < max(2 * n, 20):
+        if mask.sum() < max(AlphaCombiner.MIN_VAR_DAYS_PER_FACTOR * n, AlphaCombiner.MIN_VAR_MIN_DAYS):
             return {d: 1.0 / n for d in dsls}
         sample = np.cov(mat[mask].T)
         cov = (1 - shrink) * sample + shrink * np.diag(np.diag(sample))

@@ -486,8 +486,10 @@ def _check_unknown_order(rows) -> List[dict]:
         return out
     after_fill = _after(rows, filled_at) + [filled_at]
     blocking = [r for r in _steps(after_fill, "reconcile") if r["data"]["report"]["status"] in ("discrepancy", "unresolved")]
+    # 只认"因对账差异被拦"（审计 R8：别的原因 —— 没有运行许可、日历不可用 —— 拦下的调仓证明不了外部单被识别）
     blocked_cycle = [r for r in _steps(after_fill, "cycle")
-                     if r["data"]["report"].get("blocked") and not r["data"]["submitted"]]
+                     if str(r["data"]["report"].get("blocked") or "").startswith("reconcile_")
+                     and not r["data"]["submitted"]]
     out.append(_check("外部单成交后对账报差异并阻断调仓", bool(blocking) and bool(blocked_cycle),
                       f"差异对账 {len(blocking)} 次、被拦的调仓 {len(blocked_cycle)} 次"))
     return out
@@ -533,15 +535,21 @@ def _check_kill_switch(rows) -> List[dict]:
             _check("持仓最终清空", flat, "" if flat else "熔断期间的记录里持仓一直不为空")]
 
 
+#: input_anomaly 场景认可的拒单原因：决策参考价与独立报价 / 券商持仓价对不上
+ANOMALY_REASONS = frozenset({"quote_mismatch", "price_mismatch"})
+
+
 def _check_input_anomaly(rows) -> List[dict]:
     cyc = [r for r in _steps(rows, "cycle") if abs(float(r["data"].get("ref_skew") or 0)) > 0]
     if not cyc:
         return [_check("异常输入下没有下单，且被风控门或预检拦下", False, "没有带 --ref-skew 的 cycle 记录")]
     r = cyc[0]["data"]
     rep = r["report"]
-    stopped = (rep.get("n_gate_rejected", 0) > 0) or bool(rep.get("blocked"))
+    # 只认参考价与独立报价对不上这一类原因（审计 R8：被别的原因拦下 —— 没有运行许可、对账差异 —— 证明不了输入异常被识别）
+    reasons = [x.get("reason") for x in ((rep.get("gate") or {}).get("rejected") or [])]
+    stopped = bool(reasons) and all(x in ANOMALY_REASONS for x in reasons)
     return [_check("异常输入下没有下单，且被风控门或预检拦下", not r["submitted"] and stopped,
-                   f"新下 {len(r['submitted'])} 张；风控拒 {rep.get('n_gate_rejected')}；拦截 {rep.get('blocked')!r}")]
+                   f"新下 {len(r['submitted'])} 张；拒单原因 {reasons}；拦截 {rep.get('blocked')!r}")]
 
 
 def _check_crash_recovery(rows) -> List[dict]:

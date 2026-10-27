@@ -88,6 +88,8 @@ class TestInventory:
         assert inv[1]["writer"] == "discovery" and inv[1]["ic_ir_column_holds"] == "样本内 IC 均值（is_ic）"
         assert inv[3]["writer"] == "baseline_seed" and inv[3]["evaluated"] is False
         assert inv[1]["stored"]["ic_ir"] == pytest.approx(-0.02)
+        # 审计决定 2：不再按"指标是否非零"推断评估过；旧行除基准种子外一律"不知道"
+        assert inv[1]["ic_status"] == "legacy_unknown" and inv[1]["evaluated"] is None
 
 
 def _loader(name, start=None, end=None, **kw):
@@ -118,6 +120,13 @@ class TestDryRun:
         assert v["boundary"] and v["segment"] == "selection" and v["data"]["price_source"]
         assert "exposure" in out and "holdout_usages" in out["exposure"]
         assert out["writes"] == "none"
+        # 审计决定 2 / 3：新值分列（ic_mean / ic_ir），列语义纠错与新版本重评估是分开的修订理由
+        import json as _json
+        pf = rows[1]["proposed_fields"]
+        assert set(pf) == {"ic_mean", "ic_ir", "ic_metrics"} and _json.loads(pf["ic_metrics"])["segment"] == "selection"
+        assert any("列语义纠错" in x for x in rows[1]["revision_reasons"])
+        assert any("未评估" in x for x in rows[3]["revision_reasons"])
+        assert all(any("新版本重评估" in x for x in r["revision_reasons"]) for r in rows.values())
         assert Path(out["report_file"]).exists() and json.loads(Path(out["report_file"]).read_text(encoding="utf-8"))
 
     def test_the_dry_run_refuses_to_point_at_the_configured_live_database(self, tmp_path, monkeypatch):

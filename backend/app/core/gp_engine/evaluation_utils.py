@@ -98,7 +98,10 @@ def quick_ic_eval(
     ranks = pd.DataFrame(sig).rank(axis=1, pct=True).to_numpy()
     turn  = float(np.nanmean(np.abs(np.diff(ranks, axis=0)))) * 252
 
-    return {"ic_ir": ic_ir, "ann_turnover": turn, "sharpe": ic_ir}
+    # 存进因子记录用的统一口径（审计决定 2）：均值、有效观测、mean/std(ddof=1)；上面的 ic_ir 是 GP 适应度用的，不改
+    sd1 = float(np.std(ic_arr, ddof=1)) if len(ic_arr) > 1 else 0.0
+    return {"ic_ir": ic_ir, "ann_turnover": turn, "sharpe": ic_ir, "ic_mean": float(np.mean(ic_arr)),
+            "ic_n": int(len(ic_arr)), "ic_ir_ddof1": (float(np.mean(ic_arr)) / sd1) if sd1 > 0 else None}
 
 
 # ---------------------------------------------------------------------------

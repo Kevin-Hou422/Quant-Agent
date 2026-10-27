@@ -307,6 +307,7 @@ def run_gp(args: argparse.Namespace) -> None:
     from app.core.data_engine.data_partitioner import DataPartitioner
     from app.core.gp_engine.population_evolver import PopulationEvolver
     from app.db.alpha_store import AlphaStore, AlphaResult
+    from app.core.alpha_engine.ic_metrics import not_computed
 
     ctx     = _research_cli(_load_dataset(args), args, "cli.gp")
     dataset = ctx.selection
@@ -373,9 +374,10 @@ def run_gp(args: argparse.Namespace) -> None:
         ar = AlphaResult(
             dsl          = entry["dsl"],
             sharpe       = entry["sharpe_oos"],
-            ic_ir        = entry.get("fitness", 0.0),
             ann_turnover = entry["turnover"],
             status       = "candidate",
+            # 审计决定 2：GP 适应度不是 IC-IR，不写进 ic_ir
+            **not_computed("cli/gp", "GP 池只给了适应度（fitness），没有按统一口径算 IC"),
         )
         store.save(ar)
 
@@ -429,6 +431,7 @@ def run_backtest(args: argparse.Namespace) -> None:
 def run_report(args: argparse.Namespace) -> None:
     """report 模式：从 SQLite 读取 Alpha 记录并打印。"""
     from app.db.alpha_store import AlphaStore
+    from app.core.alpha_engine.ic_metrics import status_of as ic_status_of
 
     store = AlphaStore()
     if args.alpha_id:
@@ -440,7 +443,8 @@ def run_report(args: argparse.Namespace) -> None:
         print(f"  DSL        : {record.dsl}")
         print(f"  Hypothesis : {record.hypothesis}")
         print(f"  Sharpe     : {record.sharpe:.4f}")
-        print(f"  IC-IR      : {record.ic_ir:.4f}")
+        print(f"  IC mean    : {_fmt_opt(record.ic_mean)}")
+        print(f"  IC-IR      : {_fmt_opt(record.ic_ir)}（状态 {ic_status_of(record)['status']}）")
         print(f"  MaxDD      : {record.max_drawdown:.4f}")
         print(f"  AnnTurnover: {record.ann_turnover:.2f}")
         print(f"  Status     : {record.status}")
@@ -449,8 +453,12 @@ def run_report(args: argparse.Namespace) -> None:
         print(f"\n共 {len(records)} 条 Alpha 记录（按 Sharpe 降序）:")
         for r in records[:20]:
             print(f"  id={r.id:4d}  sharpe={r.sharpe:6.3f}  "
-                  f"ic_ir={r.ic_ir:6.3f}  status={r.status:<12}  "
+                  f"ic_mean={_fmt_opt(r.ic_mean):>7}  ic_ir={_fmt_opt(r.ic_ir):>7}  status={r.status:<12}  "
                   f"dsl={r.dsl[:60]}")
+
+
+def _fmt_opt(v) -> str:
+    return "—" if v is None else f"{float(v):.4f}"
 
 
 def run_realistic(args: argparse.Namespace) -> None:

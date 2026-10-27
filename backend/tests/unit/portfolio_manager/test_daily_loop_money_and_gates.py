@@ -243,6 +243,8 @@ def test_portfolio_vol_estimate_is_annualised_correctly(loop, monkeypatch):
 
     vol = seen.get("vol")
     assert vol is not None, "目标波动已配置，却没有把 port_vol_ann 传进风控门"
+    # 2026-10-25 审计 §4.2 起传的是逐决策日的估计（Series）；这里看最后一个决策日
+    vol = vol.iloc[-1] if isinstance(vol, pd.Series) else vol
     # 日波动约 1.2% → 年化 ≈ 0.19。合理带宽放宽到 [0.02, 2.0]；
     # 若 √252 的方向反了，估计会掉到 ~0.0008，远低于下界。
     assert 0.02 <= float(vol) <= 2.0, (

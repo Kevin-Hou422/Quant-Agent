@@ -27,6 +27,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 
 from app.core.portfolio_manager import executable_spec as _es
@@ -90,10 +91,14 @@ def generate_targets(signals: Signals, dataset: WidePanel, *, aum: float, method
         except Exception as exc:
             logger.warning("[contract] 行业标签读取失败，行业集中度约束本次不生效: %s", exc)
             notes.append(f"sector_unavailable: {exc}")
-    vol = _es.estimate_port_vol(raw, prices, int(vol_lookback)) if limits.target_vol_ann else None
+    # 逐决策日的波动估计（审计 §4.2：不拿整段样本末尾的一个标量乘到全部历史）
+    vol_series = _es.estimate_port_vol_series(raw, prices, int(vol_lookback)) if limits.target_vol_ann else None
+    vol = None
+    if vol_series is not None and len(vol_series) and np.isfinite(vol_series.iloc[-1]):
+        vol = float(vol_series.iloc[-1])
     if limits.target_vol_ann and vol is None:
         notes.append("target_vol_skipped_insufficient_sample")
-    gated, report = PortfolioRiskGate(limits).apply(raw, sectors=sectors, port_vol_ann=vol)
+    gated, report = PortfolioRiskGate(limits).apply(raw, sectors=sectors, port_vol_ann=vol_series)
     if halt:
         gated = gated * 0.0
         notes.append("drawdown_halt_flatten")

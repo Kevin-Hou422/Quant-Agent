@@ -181,7 +181,8 @@ def _run_backtest_core(
 
     Returns
     -------
-    dict with keys: is_sharpe, oos_sharpe, is_return, is_turnover, is_ic,
+    dict with keys: is_sharpe, oos_sharpe, is_return, is_turnover, is_ic（IC 均值）,
+                    is_ic_ir（IC-IR，mean/std 不年化）, is_ic_n（有效观测数）,
                     overfitting_score, is_overfit, summary
     """
     from app.core.backtest_engine.realistic_backtester import RealisticBacktester
@@ -209,6 +210,8 @@ def _run_backtest_core(
         "is_return":         _f(is_r.annualized_return),
         "is_turnover":       _f(is_r.ann_turnover),
         "is_ic":             _f(is_r.mean_ic),
+        "is_ic_ir":          _f(getattr(is_r, "ic_ir", None)),   # 真正的 IC-IR（mean/std，不年化；审计决定 2）
+        "is_ic_n":           int(getattr(is_r, "ic_n_obs", 0) or 0),
         "overfitting_score": overfit_score,
         "is_overfit":        overfit_score > _OVERFIT_THRESHOLD,
         "summary":           result.summary(),

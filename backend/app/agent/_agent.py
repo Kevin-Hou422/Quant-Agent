@@ -482,7 +482,9 @@ class QuantAgent:
                 "metrics": {
                     "sharpe_ratio":      m.get("is_sharpe"),
                     "annualized_return": m.get("is_return"),
-                    "ic_ir":             m.get("is_ic"),
+                    # 审计决定 2：is_ic 是 IC 均值，不再标成 ic_ir
+                    "ic_mean":           m.get("is_ic"),
+                    "ic_ir":             m.get("is_ic_ir"),
                 },
             })
 

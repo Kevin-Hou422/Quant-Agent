@@ -220,7 +220,8 @@ export const apiSaveAlpha = (body: {
   dsl: string
   hypothesis?: string
   sharpe?: number
-  ic_ir?: number
+  ic_ir?: number | null
+  ic_mean?: number | null
   ann_turnover?: number
   ann_return?: number
 }) =>

@@ -688,32 +688,39 @@ class TestRunAndPersist:
             f"落库状态是 {ar.status!r} —— LLM 产出的因子必须以 candidate 起步")
 
     def test_the_saved_record_carries_the_hypothesis_and_metrics(self, agent):
-        agent.state["metrics"] = [{"ic_ir": 0.75, "ann_turnover": 2.5,
-                                   "sharpe": 1.25}]
+        # 审计决定 2：落库的是统一口径（ic_mean / mean/std(ddof=1)）；metrics["ic_ir"] 是筛选用的适应度，只决定过不过
+        agent.state["metrics"] = [{"ic_ir": 0.75, "ann_turnover": 2.5, "sharpe": 1.25,
+                                   "ic_mean": 0.031, "ic_n": 120, "ic_ir_ddof1": 0.74}]
         agent.agent.run("动量在科技股上更强", _dataset())
         ar = agent.store.saved[0]
         assert ar.hypothesis == "动量在科技股上更强"
-        assert ar.ic_ir == pytest.approx(0.75)
+        assert ar.ic_ir == pytest.approx(0.74) and ar.ic_mean == pytest.approx(0.031)
+        import json
+        assert json.loads(ar.ic_metrics)["status"] == "evaluated" and json.loads(ar.ic_metrics)["n_obs"] == 120
         assert ar.sharpe == pytest.approx(1.25)
         assert ar.ann_turnover == pytest.approx(2.5)
         assert ar.dsl
 
-    def test_the_saved_ic_ir_is_always_a_float(self, agent):
+    def test_the_saved_ic_ir_is_a_builtin_float_or_empty(self, agent):
         """
-        `ic_ir = (lambda v: 0.0 if v is None else float(v))(metrics.get("ic_ir"))`
-
-        这个 lambda 被简化成 `float(...)` 会在 IC-IR 为 None 时抛
-        TypeError —— 整轮研究在最后一步作废。
-        落库的字段必须是 `float`，不能是 numpy 标量或 None，
-        否则 SQLAlchemy 在某些后端上会存成 BLOB。
+        落库的字段不能是 numpy 标量（SQLAlchemy 在某些后端上会存成 BLOB）。
+        2026-10-25 审计决定 2：没有 IC-IR 时存**空**（不是 0）—— 此前这里把 None 改成 0.0 落库，
+        "从未评估"与"评估后恰好为 0"分不开。
         """
-        agent.state["metrics"] = [{"ic_ir": np.float64(0.9),
-                                   "ann_turnover": 1.0, "sharpe": 1.0}]
+        agent.state["metrics"] = [{"ic_ir": np.float64(0.9), "ann_turnover": 1.0, "sharpe": 1.0,
+                                   "ic_mean": np.float64(0.02), "ic_n": 100, "ic_ir_ddof1": np.float64(0.9)}]
         agent.agent.run("动量", _dataset())
         ar = agent.store.saved[0]
-        assert type(ar.ic_ir) is float, (
+        assert type(ar.ic_ir) is float and type(ar.ic_mean) is float, (
             f"落库的 ic_ir 类型是 {type(ar.ic_ir).__name__}，不是内置 float")
         assert ar.ic_ir == pytest.approx(0.9)
+
+    def test_a_missing_ic_ir_is_stored_empty_not_zero(self, agent):
+        agent.state["metrics"] = [{"ic_ir": 0.9, "ann_turnover": 1.0, "sharpe": 1.0,
+                                   "ic_mean": 0.02, "ic_n": 5, "ic_ir_ddof1": None}]
+        agent.agent.run("动量", _dataset())
+        ar = agent.store.saved[0]
+        assert ar.ic_ir is None and ar.ic_mean == pytest.approx(0.02)
 
     def test_a_failing_alpha_is_not_saved(self, agent):
         """

@@ -932,6 +932,8 @@ class PopulationEvolver:
             "is_return":         _f(is_r.annualized_return),
             "is_turnover":       turn,
             "is_ic":             _f(is_r.mean_ic),
+            "is_ic_ir":          _f(getattr(is_r, "ic_ir", None)),   # 真正的 IC-IR（mean/std，不年化；审计决定 2）
+            "is_ic_n":           int(getattr(is_r, "ic_n_obs", 0) or 0),
             "overfitting_score": overfit,
             "is_overfit":        overfit > 0.5,
             "summary":           result.summary(),

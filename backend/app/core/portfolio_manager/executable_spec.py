@@ -205,19 +205,26 @@ def verify_against_runtime(spec: dict, factor_dsl: Dict[str, Optional[str]], aum
 MIN_VOL_SAMPLE = 20
 
 
-def estimate_port_vol(weights, close, lookback: int = 60) -> Optional[float]:
+def estimate_port_vol_series(weights, close, lookback: int = 60):
     """
-    组合年化波动的估计：**已实现**日收益 = 权重(t−1) · 收益(t)（不用当日权重看当日收益）。
-    样本不足 MIN_VOL_SAMPLE / 非有限 / 非正 → None（调用方据此本轮不做目标波动缩放）。
+    **逐决策日**的组合年化波动估计（2026-10-25 审计 §4.2：此前用整段样本末尾的一个标量乘到全部历史权重，
+    过去各天的回放目标用了后来的样本）。第 t 天只用截至 t 已实现的组合收益 = 权重(s−1) · 收益(s)，s ≤ t，
+    取最近 `lookback` 个；不足 MIN_VOL_SAMPLE / 非有限 / 非正 → NaN（那天不缩放）。
+    近似说明：用收盘到收盘的收益估波动；时钟 c2 的实际持有段是开盘到开盘（同一量级，不是同一序列）。
     """
     import numpy as np
     rets = close.pct_change().reindex(columns=weights.columns)
-    port_ret = (weights.shift(1) * rets).sum(axis=1).dropna()
-    sample = port_ret.tail(int(lookback))
-    if len(sample) < MIN_VOL_SAMPLE:
-        return None
-    vol = float(sample.std(ddof=1) * np.sqrt(252.0))
-    return vol if np.isfinite(vol) and vol > 1e-9 else None
+    port_ret = (weights.shift(1) * rets).sum(axis=1)      # 与此前同一口径（首日没有持仓记 0），末值与此前完全相同
+    vol = port_ret.rolling(int(lookback), min_periods=MIN_VOL_SAMPLE).std(ddof=1) * np.sqrt(252.0)
+    return vol.where(np.isfinite(vol) & (vol > 1e-9)).reindex(weights.index)
+
+
+def estimate_port_vol(weights, close, lookback: int = 60) -> Optional[float]:
+    """最后一个决策日的估计（= `estimate_port_vol_series` 的末值）；None = 本轮不做目标波动缩放。"""
+    import numpy as np
+    s = estimate_port_vol_series(weights, close, lookback)
+    v = float(s.iloc[-1]) if len(s) else float("nan")
+    return v if np.isfinite(v) else None
 
 
 def band_then_reproject(weights, band: float, limits, sectors=None):

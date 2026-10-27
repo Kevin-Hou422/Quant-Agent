@@ -26,6 +26,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.dependencies import get_store, get_strategy_store
+from app.core.alpha_engine.ic_metrics import from_workflow_metrics, not_computed
+from app.core.alpha_engine.ic_metrics import status_of as ic_status_of
 from app.db.alpha_store import AlphaStore
 
 logger = logging.getLogger(__name__)
@@ -296,7 +298,7 @@ class GPAlphaItem(BaseModel):
     dsl: str
     fitness: float
     sharpe: float
-    ic_ir: float
+    ic_ir: Optional[float] = None
     ann_return: float
     ann_turnover: float
 
@@ -432,6 +434,10 @@ class AlphaRecord(BaseModel):
     hypothesis: Optional[str]
     sharpe: Optional[float]
     ic_ir: Optional[float]
+    #: 审计决定 2：IC 均值与 IC-IR 分列；ic_status = evaluated / not_computed / never_evaluated / legacy_unknown …
+    ic_mean: Optional[float] = None
+    ic_status: str = "legacy_unknown"
+    ic_metrics: Dict[str, Any] = Field(default_factory=dict)
     ann_turnover: Optional[float]
     status: Optional[str]
     created_at: Optional[str]
@@ -583,9 +589,10 @@ def gp_evolve(
             ar = AlphaResult(
                 dsl          = entry["dsl"],
                 sharpe       = entry.get("sharpe_oos", 0.0),
-                ic_ir        = entry.get("fitness",    0.0),
                 ann_turnover = entry.get("turnover",   0.0),
                 status       = "candidate",
+                # 审计决定 2：GP 池给的是适应度（fitness），不是 IC-IR —— 不再写进 ic_ir
+                **not_computed("api/gp_evolve", "GP 池只给了适应度（fitness），没有按统一口径算 IC"),
             )
             saved_ids.append(store.save(ar))
         except Exception:
@@ -596,7 +603,7 @@ def gp_evolve(
             dsl         = e["dsl"],
             fitness     = e.get("fitness",    0.0),
             sharpe      = e.get("sharpe_oos", 0.0),
-            ic_ir       = e.get("fitness",    0.0),
+            ic_ir       = None,                       # 审计决定 2：适应度不是 IC-IR
             ann_return  = e.get("sharpe_oos", 0.0),
             ann_turnover= e.get("turnover",   0.0),
         )
@@ -810,7 +817,9 @@ class SaveAlphaRequest(BaseModel):
     dsl:          str   = Field(...)
     hypothesis:   str   = Field("")
     sharpe:       float = Field(0.0)
-    ic_ir:        float = Field(0.0)
+    #: 审计决定 2：IC 均值与 IC-IR 分列；没给就是空，不是 0（手工保存没有样本与来源 → values_without_provenance）
+    ic_ir:        Optional[float] = Field(None)
+    ic_mean:      Optional[float] = Field(None)
     ann_turnover: float = Field(0.0)
     ann_return:   float = Field(0.0)
 
@@ -835,6 +844,7 @@ def alpha_save(
         ann_return   = req.ann_return,
         ann_turnover = req.ann_turnover,
         ic_ir        = req.ic_ir,
+        ic_mean      = req.ic_mean,
         status       = "candidate",
     )
     alpha_id = store.save(ar)
@@ -1257,7 +1267,8 @@ def alpha_retrain(
             rec = session.get(type(record), alpha_id)
             rec.sharpe       = float(m.get("is_sharpe") or 0.0)
             rec.ann_return   = float(m.get("is_return") or 0.0)
-            rec.ic_ir        = float(m.get("is_ic") or 0.0)
+            for k, v in from_workflow_metrics(m, source="api/alpha_retrain").items():   # 审计决定 2
+                setattr(rec, k, v)
             rec.ann_turnover = float(m.get("is_turnover") or 0.0)
             session.commit()
     except Exception:
@@ -1386,7 +1397,10 @@ class PendingItem(BaseModel):
     dsl:        str
     hypothesis: str
     sharpe:     float
-    ic_ir:      float
+    #: 审计决定 2：只放统一口径的 IC-IR；没有 → None（旧行原值保留，状态 legacy_unknown）
+    ic_ir:      Optional[float] = None
+    ic_mean:    Optional[float] = None
+    ic_status:  str = "legacy_unknown"
     #: 表达式用到的基本面字段（name / class / note）；只用价格的因子为空
     sparse_fields:   List[dict] = []
     #: 用到基本面字段时附上可见规则 —— 批准的人应当知道这些数字从哪天起才算"已知"
@@ -1420,7 +1434,7 @@ def alphas_pending(store: AlphaStore = Depends(get_store)) -> List[PendingItem]:
             sparse = []
         out.append(PendingItem(
             alpha_id=r.id, dsl=r.dsl, hypothesis=r.hypothesis or "",
-            sharpe=r.sharpe or 0.0, ic_ir=r.ic_ir or 0.0,
+            sharpe=r.sharpe or 0.0, ic_ir=r.ic_ir, ic_mean=r.ic_mean, ic_status=ic_status_of(r)["status"],
             sparse_fields=sparse, visibility_rule=rule if sparse else None,
         ))
     return out
@@ -2016,6 +2030,9 @@ def report_query(
             hypothesis   = r.hypothesis,
             sharpe       = r.sharpe,
             ic_ir        = r.ic_ir,
+            ic_mean      = r.ic_mean,
+            ic_status    = ic_status_of(r)["status"],
+            ic_metrics   = ic_status_of(r),
             ann_turnover = r.ann_turnover,
             status       = r.status,
             created_at   = str(r.created_at) if r.created_at else None,
@@ -2850,10 +2867,10 @@ def workflow_generate(
             hypothesis   = req.hypothesis,
             sharpe       = float(m.get("is_sharpe") or 0.0),
             ann_return   = float(m.get("is_return") or 0.0),
-            ic_ir        = float(m.get("is_ic") or 0.0),
             ann_turnover = float(m.get("is_turnover") or 0.0),
             reasoning    = result.explanation,
             status       = "candidate",
+            **from_workflow_metrics(m, source="api/workflow"),   # 审计决定 2：均值与 IC-IR 分列
         ))
     except Exception:
         pass
@@ -2937,10 +2954,10 @@ def workflow_optimize(
             hypothesis   = req.dsl[:100],
             sharpe       = float(m.get("is_sharpe") or 0.0),
             ann_return   = float(m.get("is_return") or 0.0),
-            ic_ir        = float(m.get("is_ic") or 0.0),
             ann_turnover = float(m.get("is_turnover") or 0.0),
             reasoning    = result.explanation,
             status       = "candidate",
+            **from_workflow_metrics(m, source="api/workflow"),   # 审计决定 2：均值与 IC-IR 分列
         ))
     except Exception:
         pass
@@ -3069,10 +3086,10 @@ async def workflow_optimize_stream(
                 hypothesis   = req.dsl[:100],
                 sharpe       = float(m.get("is_sharpe") or 0.0),
                 ann_return   = float(m.get("is_return") or 0.0),
-                ic_ir        = float(m.get("is_ic") or 0.0),
                 ann_turnover = float(m.get("is_turnover") or 0.0),
                 reasoning    = result.explanation,
                 status       = "candidate",
+                **from_workflow_metrics(m, source="api/workflow"),   # 审计决定 2：均值与 IC-IR 分列
             ))
         except Exception as exc:
             # 静默吞掉 = 流式跑完了但结果**没落库**，用户以为存下了。
@@ -3126,10 +3143,10 @@ async def workflow_generate_stream(
                 hypothesis   = req.hypothesis,
                 sharpe       = float(m.get("is_sharpe") or 0.0),
                 ann_return   = float(m.get("is_return") or 0.0),
-                ic_ir        = float(m.get("is_ic") or 0.0),
                 ann_turnover = float(m.get("is_turnover") or 0.0),
                 reasoning    = result.explanation,
                 status       = "candidate",
+                **from_workflow_metrics(m, source="api/workflow"),   # 审计决定 2：均值与 IC-IR 分列
             ))
         except Exception:
             pass

@@ -46,7 +46,13 @@ class AlphaRecord(_Base):
     ann_return:   float    = Column(Float, default=0.0)
     sharpe:       float    = Column(Float, default=0.0)
     max_drawdown: float    = Column(Float, default=0.0)
-    ic_ir:        float    = Column(Float, default=0.0)
+    #: 只存按统一口径算的 IC-IR（mean/std, ddof=1, 不年化）；样本不足 / 没算 → NULL（2026-10-25 审计决定 2）。
+    #: 本项之前写入的旧行里，这一列多数存的是**样本内 IC 均值**（ic_metrics 为空 = legacy_unknown，原值保留）
+    ic_ir:        float    = Column(Float, default=None, nullable=True)
+    #: IC 均值（与 ic_ir 分列）
+    ic_mean:      float    = Column(Float, nullable=True)
+    #: 评估状态、n_obs、样本区间、切分、来源、时钟、计算版本、IC-IR 为空的原因（JSON；见 app/core/alpha_engine/ic_metrics.py）
+    ic_metrics:   str      = Column(Text, nullable=True)
     ann_turnover: float    = Column(Float, default=0.0)
     status:       str      = Column(String(32), default="active")
     reasoning:    str      = Column(Text, default="")
@@ -113,8 +119,10 @@ class AlphaResult:
     ann_return:   float = 0.0
     sharpe:       float = 0.0
     max_drawdown: float = 0.0
-    ic_ir:        float = 0.0
+    ic_ir:        Optional[float] = None     # 只放统一口径的 IC-IR；没有就是 None（不是 0）
     ann_turnover: float = 0.0
+    ic_mean:      Optional[float] = None
+    ic_metrics:   Optional[str] = None       # ic_metrics.ic_fields(...) 给的 JSON；None 且没有任何 IC → never_evaluated
     # Phase 9.3：新因子一律 CANDIDATE 起步，经验证门（ValidationGate）+ 人工审批逐级晋级，
     # 不再直接写 active（修复"发现即激活"绕过分级的缺口）。特殊场景可显式传 status。
     status:       str   = "candidate"
@@ -164,7 +172,9 @@ class AlphaStore:
         """
         adds = (("alpha_ic_history", "is_forward", "BOOLEAN DEFAULT 0"),
                 ("alpha_ic_history", "clock_version", "VARCHAR(16)"),
-                ("alpha_records", "clock_version", "VARCHAR(16)"))
+                ("alpha_records", "clock_version", "VARCHAR(16)"),
+                ("alpha_records", "ic_mean", "FLOAT"),
+                ("alpha_records", "ic_metrics", "TEXT"))
         for table, col, typ in adds:
             try:
                 with self._engine.begin() as conn:
@@ -183,6 +193,11 @@ class AlphaStore:
             why = promotion_problem(result.dsl)
             if why:
                 raise ValueError(why)
+        ic_metrics = result.ic_metrics
+        if ic_metrics is None:
+            from app.core.alpha_engine.ic_metrics import never_evaluated, no_provenance
+            ic_metrics = (never_evaluated("save")["ic_metrics"] if result.ic_mean is None and result.ic_ir is None
+                          else no_provenance("save")["ic_metrics"])
         record = AlphaRecord(
             dsl          = result.dsl,
             created_at   = datetime.utcnow(),
@@ -191,6 +206,8 @@ class AlphaStore:
             sharpe       = result.sharpe,
             max_drawdown = result.max_drawdown,
             ic_ir        = result.ic_ir,
+            ic_mean      = result.ic_mean,
+            ic_metrics   = ic_metrics,
             ann_turnover = result.ann_turnover,
             status       = result.status,
             reasoning    = result.reasoning,
@@ -369,7 +386,7 @@ class AlphaStore:
         fields = [
             "id", "dsl", "created_at", "hypothesis",
             "ann_return", "sharpe", "max_drawdown",
-            "ic_ir", "ann_turnover", "status",
+            "ic_ir", "ic_mean", "ann_turnover", "status",
         ]
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fields)

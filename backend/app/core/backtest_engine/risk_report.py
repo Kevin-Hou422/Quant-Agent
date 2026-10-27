@@ -68,6 +68,7 @@ class RiskReport:
     # 标准因子 IC。二者在有执行延迟时不等价，**不可与外部因子库的 IC 直接比较**。
     mean_ic:            float = np.nan   # 策略信号 IC（延迟后，非原始因子 1 日 IC）
     ic_ir:              float = np.nan   # 同上口径的 IC 信息比率
+    ic_n_obs:           int   = 0        # IC 序列的有效观测数（因子记录的 ic_metrics.n_obs，审计决定 2）
     ann_turnover:       float = np.nan
     cost_drag_bps:      float = np.nan
 
@@ -241,6 +242,7 @@ class RiskReport:
             net_returns        = result.net_returns,
             rolling_sharpe     = rs,
             rolling_ic         = rolling_ic,
+            ic_n_obs           = int(raw_ic.dropna().shape[0]),
             drawdown_series    = dd,
             n_days             = len(result.equity_curve),
             n_assets           = result.positions.shape[1],

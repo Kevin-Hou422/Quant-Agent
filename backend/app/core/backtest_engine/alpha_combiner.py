@@ -256,12 +256,15 @@ class AlphaCombiner:
             w = arr - np.nanmean(arr, axis=1, keepdims=True)
             gross = np.nansum(np.abs(w), axis=1, keepdims=True)
             w = np.where(gross > 1e-12, w / np.where(gross > 1e-12, gross, 1.0), np.nan)
-            both = np.isfinite(w) & np.isfinite(ret)
-            pr = np.where(both, w * ret, 0.0).sum(axis=1)
+            # 2026-10-25 审计 §4.2：信号 t 配 returns[t+1]（`clock.paired_returns` 的合同，与 `_ic_ir` 同）——
+            # 此前是 w[t]·ret[t]（同日），错一格。最后一个信号日的标签还不可知，不进估计
+            w, nxt = w[:-1], ret[1:]
+            both = np.isfinite(w) & np.isfinite(nxt)
+            pr = np.where(both, w * nxt, 0.0).sum(axis=1)
             pr[~both.any(axis=1)] = np.nan
             vecs.append(pr)
 
-        mat  = np.stack(vecs, axis=1)  # (T, n)：各因子组合的日收益
+        mat  = np.stack(vecs, axis=1)  # (T−1, n)：各因子组合按信号日期对齐的已实现收益
         mask = ~np.isnan(mat).any(axis=1)
         need = max(self.MIN_VAR_DAYS_PER_FACTOR * n, self.MIN_VAR_MIN_DAYS)
         if mask.sum() < need:

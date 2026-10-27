@@ -38,6 +38,7 @@ from app.agent._data_utils import (
     _run_backtest_core, load_real_dataset, load_real_research,
 )
 from app.agent._helpers import _safe_json_loads
+from app.core.alpha_engine.ic_metrics import from_workflow_metrics, not_computed
 
 logger = logging.getLogger(__name__)
 
@@ -742,7 +743,9 @@ class QuantTools:
             sharpe       = 0.0 if synthetic else float(metrics.get("is_sharpe")   or 0.0),
             ann_return   = 0.0 if synthetic else float(metrics.get("is_return")   or 0.0),
             ann_turnover = 0.0 if synthetic else float(metrics.get("is_turnover") or 0.0),
-            ic_ir        = 0.0 if synthetic else float(metrics.get("is_ic")       or 0.0),
+            # 审计决定 2：均值与 IC-IR 分列；合成数据不算评估（没有金融含义）
+            **(not_computed("agent/tool_save_alpha", f"数据来源 {self._data_source} 是合成数据") if synthetic
+               else from_workflow_metrics(metrics, source="agent/tool_save_alpha")),
             reasoning    = json.dumps({"data_source": self._data_source,
                                        "raw_metrics": metrics}, ensure_ascii=False),
         )

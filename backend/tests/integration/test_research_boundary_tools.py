@@ -93,8 +93,11 @@ class TestReadOnlyReport:
         assert broad["boundary"] is None
         assert broad["unrecorded_exposure"]["through"] == "2026-10-09"
         sugg = {s["option"]: s for s in broad["suggestions"]}
-        assert sugg["clean"]["test_start"] > "2026-10-09", "干净方案的 Test 起点必须晚于所有被看过的日期"
-        assert sugg["clean"]["needs_user_confirmation"] is True
+        # 审计决定 5：库里记录到的曝光只是下界 —— 这个选项不再叫"clean"，也不声称没被看过
+        after = sugg["after_recorded_exposure"]
+        assert after["test_start"] > "2026-10-09" and after["needs_user_confirmation"] is True
+        assert after["already_exposed"] is None and "不能据此称为干净" in after["meaning"]
+        assert sugg["future_window"]["already_exposed"] is False and "预登记" in sugg["future_window"]["meaning"]
         assert sqlite3.connect(db).execute(
             "select count(*) from sqlite_master where name='frozen_boundaries'").fetchone()[0] == 0
 
@@ -142,7 +145,7 @@ def test_an_old_schema_db_reports_inferred_exposure_from_research_activity(tmp_p
     broad = rep["datasets"]["us_broad_large"]
     ue = broad["unrecorded_exposure"]
     assert ue["inferred"] is True and ue["from"] == "2021-01-01" and ue["through"] == "2026-10-09"
-    assert {s["option"] for s in broad["suggestions"]} >= {"clean", "conventional"}
+    assert {s["option"] for s in broad["suggestions"]} >= {"after_recorded_exposure", "future_window", "conventional"}
     conv = {s["option"]: s for s in broad["suggestions"]}["conventional"]
     assert conv["already_exposed"] is True
 
@@ -163,3 +166,71 @@ def test_registration_is_a_dry_run_unless_confirmed(tmp_path):
     assert st == (pd.Timestamp("2026-10-12"), "registered")
     assert main(["--db", str(db), "--dataset", "us_broad_large", "--test-start", "2025-01-02",
                  "--actor", "x", "--reason", "改", "--confirm"]) == 2
+
+
+class TestExposureSummary:
+    """
+    2026-10-25 审计决定 5：汇总所有曝光来源、最后曝光区间和不确定项；无法证明时从新预登记的未来窗口开始；
+    纠正"Test 起点后移会缩短选择段"的表述 —— 展示实际 selection / validate / test 起止后说明真实代价。
+    """
+
+    def _artifacts(self, tmp_path):
+        import json
+        d = tmp_path / "preview"
+        d.mkdir()
+        (d / "reproposal_rehearsal.json").write_text(json.dumps({"versions": {"research_context": {
+            "dataset_key": "us_broad_large", "purpose": "reproposal_rehearsal", "test_start": "2024-10-24",
+            "selection_start": "2023-01-03", "selection_end": "2026-10-20", "boundary": "provisional"}}}),
+            encoding="utf-8")
+        copy = d / "rehearsal"
+        copy.mkdir()
+        _make_live_like_db(copy / "alphas.db", with_boundaries=False)
+        return d
+
+    def test_artifacts_on_disk_count_as_exposure_and_raise_the_last_exposed_day(self, tmp_path):
+        from tools.research.research_boundary_report import build_report
+        live = tmp_path / "live.db"
+        _make_live_like_db(live, with_boundaries=True)
+        rep = build_report(live, artifacts=[str(self._artifacts(tmp_path))])
+        e = rep["exposure_summary"]["us_broad_large"]
+        assert e["last_exposed"] == "2026-10-20", "本机预演用到的选择段没有计进曝光"
+        assert any("reproposal_rehearsal.json" in x["source"] for x in e["sources"])
+        assert any("副本库" in x["source"] for x in rep["exposure_summary"]["us_tech_large"]["sources"])
+
+    def test_what_the_tool_cannot_see_is_written_down_not_assumed_clean(self, tmp_path):
+        from tools.research.research_boundary_report import build_report
+        live = tmp_path / "live.db"
+        _make_live_like_db(live, with_boundaries=True)
+        e = build_report(live)["exposure_summary"]["us_tech_large"]
+        assert e["uncertain"] and any("手工回测" in u for u in e["uncertain"])
+        assert "下界" in e["advice"] and "未来窗口" in e["advice"]
+
+    def test_moving_the_test_start_later_lengthens_selection_and_shortens_test(self):
+        from tools.research.research_boundary_report import split_cost
+        rows = split_cost("2021-01-04", "2026-10-23", ["2024-10-24", "2026-10-13", "2026-10-26"])
+        a, b, c = rows
+        assert a["n_selection"] < b["n_selection"] < c["n_selection"], rows
+        assert a["n_test"] > b["n_test"] > c["n_test"] == 0, rows
+        assert b["selection"][0] == a["selection"][0] == "2021-01-04", "选择段起点不随 Test 起点变"
+        assert a["n_train"] + a["embargo_days"] + a["n_validate"] == a["n_selection"]
+
+    def test_the_cli_prints_the_summary_and_the_costs(self, tmp_path, capsys):
+        from tools.research.research_boundary_report import main
+        live = tmp_path / "live.db"
+        _make_live_like_db(live, with_boundaries=True)
+        assert main(["--db", str(live), "--assume", "us_broad_large=2021-01-04", "--data-end", "2026-10-23",
+                     "--candidate", "2026-10-13", "--artifacts", str(self._artifacts(tmp_path))]) == 0
+        out = capsys.readouterr().out
+        assert "曝光汇总 us_broad_large" in out and "候选 Test 起点的代价" in out and "变长" in out
+
+    def test_the_dry_run_report_format_is_read_too(self, tmp_path):
+        import json
+
+        from tools.research.research_boundary_report import scan_artifacts
+        d = tmp_path / "a"
+        d.mkdir()
+        (d / "factor_metrics_dry_run.json").write_text(json.dumps({"versions": {
+            "dataset": "us_broad_large", "segment": "selection", "selection": ["2021-01-04", "2024-09-25"],
+            "test_start": "2024-10-24"}}), encoding="utf-8")
+        c = scan_artifacts([str(d)])["contexts"]
+        assert c and c[0]["dataset_key"] == "us_broad_large" and c[0]["selection_end"] == "2024-09-25"

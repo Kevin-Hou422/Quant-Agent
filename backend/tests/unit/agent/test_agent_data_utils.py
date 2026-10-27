@@ -644,8 +644,9 @@ class TestBacktestCoreOutput:
 
     def test_every_documented_key_is_present(self, monkeypatch):
         out = _core(1.5, 1.0, monkeypatch)
+        # 审计决定 2：IC 均值（is_ic）之外另给真正的 IC-IR 与有效观测数
         assert set(out) == {"is_sharpe", "oos_sharpe", "is_return", "is_turnover",
-                            "is_ic", "overfitting_score", "is_overfit", "summary"}
+                            "is_ic", "is_ic_ir", "is_ic_n", "overfitting_score", "is_overfit", "summary"}
 
     def test_metrics_are_read_from_the_in_sample_report(self, monkeypatch):
         """

@@ -187,7 +187,8 @@ class TestMetrics:
 
     def test_the_result_carries_all_three_keys(self):
         got = quick_ic_eval("rank(close)", _noise(3))
-        assert set(got) == {"ic_ir", "ann_turnover", "sharpe"}, (
+        # 审计决定 2：另给落库用的统一口径（均值、有效观测、mean/std(ddof=1)）；ic_ir / sharpe 仍是 GP 适应度
+        assert set(got) == {"ic_ir", "ann_turnover", "sharpe", "ic_mean", "ic_n", "ic_ir_ddof1"}, (
             f"返回的键集合是 {sorted(got)}")
 
     def test_sharpe_mirrors_ic_ir(self):

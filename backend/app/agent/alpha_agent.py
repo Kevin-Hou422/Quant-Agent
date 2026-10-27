@@ -89,6 +89,9 @@ def _quick_eval(
     return quick_ic_eval(dsl, dataset)
 
 
+from app.core.alpha_engine.ic_metrics import ic_fields  # noqa: E402
+
+
 class AlphaAgent:
     def __init__(
         self,
@@ -115,8 +118,11 @@ class AlphaAgent:
                     dsl          = result_dsl,
                     hypothesis   = hypothesis,
                     sharpe       = metrics.get("sharpe", 0.0),
-                    ic_ir        = (lambda v: 0.0 if v is None else float(v))(metrics.get("ic_ir")),
                     ann_turnover = metrics.get("ann_turnover", 0.0),
+                    # 审计决定 2：均值与 IC-IR 分列；这条路径是筛选用的收盘到收盘 1 日 IC（不是 c2 标签）
+                    **ic_fields(metrics.get("ic_mean"), metrics.get("ic_ir_ddof1"), metrics.get("ic_n"),
+                                source="alpha_agent/quick_ic_eval（收盘到收盘 1 日收益，筛选用）",
+                                segment="full_panel_screen"),
                     reasoning    = log.to_json(),
                     status       = "candidate",
                 )

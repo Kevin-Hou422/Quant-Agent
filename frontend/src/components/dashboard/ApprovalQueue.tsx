@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Inbox, Check, X, RefreshCw } from 'lucide-react'
 import { apiFetchPending, apiApproveAlpha, apiRejectAlpha } from '../../api/client'
 import type { PendingAlpha } from '../../types'
+import { icSummary } from '../../utils/icDisplay'
 
 /**
  * FE-9 (Phase 9.4): 待批准队列 —— 默认模式的人机接口。
@@ -85,7 +86,7 @@ export default function ApprovalQueue({ onChange }: { onChange?: () => void }) {
               <div className="min-w-0 flex-1">
                 <div className="text-[11px] font-mono text-slate-300 truncate">{it.dsl}</div>
                 <div className="text-[10px] text-slate-500 truncate">
-                  #{it.alpha_id} · {it.hypothesis || '—'} · Sharpe {it.sharpe.toFixed(2)} · IC-IR {it.ic_ir.toFixed(2)}
+                  #{it.alpha_id} · {it.hypothesis || '—'} · Sharpe {it.sharpe.toFixed(2)} · {icSummary(it)}
                 </div>
                 {(it.sparse_fields?.length ?? 0) > 0 && (
                   <div

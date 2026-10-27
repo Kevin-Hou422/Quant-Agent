@@ -161,5 +161,6 @@ class TestProposalEvaluatesTheFrozenSpec:
         monkeypatch.setattr(es, "band_then_reproject", spy_band)
         ds = _make_dataset(120, 8)
         strategy_net_returns({"a": ds["close"].rank(axis=1)}, ds, aum=1e4, no_trade_band=0.01)
-        assert vols[0] is not None and vols[0] > 0, "门没有做和每日循环一样的目标波动缩放"
+        # 2026-10-25 审计 §4.2 起传的是逐决策日的估计（Series）；最后一个决策日有正值
+        assert vols[0] is not None and float(vols[0].iloc[-1]) > 0, "门没有做和每日循环一样的目标波动缩放"
         assert projected == [1] and vols[1] is None                      # 带后硬约束投影、不再传波动

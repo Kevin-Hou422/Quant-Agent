@@ -1,6 +1,7 @@
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import { useQuantWorkspace } from '../../hooks/useQuantWorkspace'
 import { RefreshCw, ExternalLink } from 'lucide-react'
+import { icSummary } from '../../utils/icDisplay'
 
 const statusColor: Record<string, string> = {
   active:      'bg-emerald-500',
@@ -65,9 +66,7 @@ export default function LeftLedgerPane() {
                     {rec.sharpe?.toFixed(2) ?? '—'}
                   </span>
                 </span>
-                {rec.ic_ir != null && (
-                  <span>IC-IR <span className="text-sky-400">{rec.ic_ir.toFixed(2)}</span></span>
-                )}
+                <span data-testid={`ledger-ic-${rec.id}`}>{icSummary(rec)}</span>
               </div>
               {rec.created_at && (
                 <div className="text-[10px] text-slate-700 ml-4 mt-0.5">

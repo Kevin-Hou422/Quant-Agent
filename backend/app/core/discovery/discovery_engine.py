@@ -189,6 +189,7 @@ class DiscoveryEngine:
 
     @staticmethod
     def _save_candidate(store, dsl, family, regime, m, explanation) -> Optional[int]:
+        from app.core.alpha_engine.ic_metrics import from_workflow_metrics
         from app.db.alpha_store import AlphaResult
         try:
             return store.save(AlphaResult(
@@ -196,8 +197,8 @@ class DiscoveryEngine:
                 hypothesis=f"auto-discovery | family={family} | regime={regime}",
                 sharpe=float(m.get("is_sharpe") or 0.0),
                 ann_return=float(m.get("is_return") or 0.0),
-                ic_ir=float(m.get("is_ic") or 0.0),
                 ann_turnover=float(m.get("is_turnover") or 0.0),
+                **from_workflow_metrics(m, source="discovery"),     # 审计决定 2：均值与 IC-IR 分列
                 reasoning=explanation or "",
                 # status 默认 candidate（Phase 9.3）
             ))

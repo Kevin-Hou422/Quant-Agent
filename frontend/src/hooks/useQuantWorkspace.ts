@@ -356,7 +356,9 @@ export function useQuantWorkspace() {
           dsl,
           hypothesis:   activeTab?.label ?? dsl.slice(0, 40),
           sharpe:       is?.sharpe_ratio      ?? 0,
-          ic_ir:        is?.ic_ir             ?? 0,
+          // 审计决定 2：IC 均值与 IC-IR 分列，没有就留空（不是 0）
+          ic_ir:        is?.ic_ir             ?? null,
+          ic_mean:      is?.mean_ic           ?? null,
           ann_turnover: is?.ann_turnover      ?? 0,
           ann_return:   is?.annualized_return ?? 0,
         })
@@ -447,7 +449,8 @@ export function useQuantWorkspace() {
           metrics: {
             sharpe_ratio:      m?.is_sharpe      ?? null,
             annualized_return: m?.is_return      ?? null,
-            ic_ir:             m?.is_ic          ?? null,
+            mean_ic:           m?.is_ic          ?? null,   // is_ic 是 IC 均值，不是 IC-IR
+            ic_ir:             m?.is_ic_ir       ?? null,
           } as any,
           type: 'message',
         })
@@ -471,7 +474,8 @@ export function useQuantWorkspace() {
             annualized_return: m?.is_return      ?? null,
             ann_turnover:      m?.is_turnover    ?? null,
             max_drawdown:      m?.is_max_dd      ?? null,
-            ic_ir:             m?.is_ic_ir       ?? m?.is_ic ?? null,
+            // 审计决定 2：没有 IC-IR 就留空，不拿 IC 均值顶替
+            ic_ir:             m?.is_ic_ir       ?? null,
             mean_ic:           m?.is_mean_ic     ?? m?.is_ic ?? null,
           },
           oos_metrics: m?.oos_sharpe != null ? {
@@ -479,7 +483,7 @@ export function useQuantWorkspace() {
             annualized_return: m.oos_return      ?? null,
             ann_turnover:      m.oos_turnover    ?? null,
             max_drawdown:      m.oos_max_dd      ?? null,
-            ic_ir:             m.oos_ic_ir       ?? m.oos_ic ?? null,
+            ic_ir:             m.oos_ic_ir       ?? null,
             mean_ic:           m.oos_mean_ic     ?? m.oos_ic ?? null,
             deflated_sharpe:   m.oos_deflated_sharpe ?? null,   // FE-4.2
           } : null,

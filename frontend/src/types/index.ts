@@ -212,12 +212,21 @@ export interface ChatMessage {
   isStreaming?: boolean
 }
 
+/**
+ * IC 的评估状态（后端 app/core/alpha_engine/ic_metrics.py；审计决定 2：IC 均值与 IC-IR 分列）。
+ * legacy_unknown = 改口径之前写入的旧行：ic_ir 列里多半是 IC 均值，原值保留但不能当 IC-IR 读。
+ */
+export type IcStatus =
+  | 'evaluated' | 'not_computed' | 'never_evaluated' | 'legacy_unknown' | 'values_without_provenance'
+
 export interface AlphaRecord {
   id: number
   dsl: string
   hypothesis?: string
   sharpe?: number
-  ic_ir?: number
+  ic_ir?: number | null
+  ic_mean?: number | null
+  ic_status?: IcStatus
   ann_turnover?: number
   ann_return?: number
   status?: string
@@ -274,7 +283,9 @@ export interface PendingAlpha {
   dsl:        string
   hypothesis: string
   sharpe:     number
-  ic_ir:      number
+  ic_ir:      number | null
+  ic_mean?:   number | null
+  ic_status?: IcStatus
   /** FE-10：表达式用到的基本面字段；只用价格的因子为空数组 */
   sparse_fields?:   { name: string; class: FundamentalFieldClass; note: string }[]
   /** 用到基本面字段时的可见规则（披露日之后第一个交易日起可见 …） */

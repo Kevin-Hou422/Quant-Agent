@@ -104,6 +104,20 @@ def snapshot_live(db: Path, out: Path) -> dict:
     return rep
 
 
+def _revision_reasons(r: dict) -> List[str]:
+    """
+    审计决定 3："#1/#2 的旧算法纠错，与使用 moomoo/c2/新边界重新评估，是不同修订理由，不能合并成'只修两条错误值'。"
+    逐条写出这条记录若要改，各是哪种理由（写回时分开记进修订链）。
+    """
+    out = []
+    if r.get("writer") == "discovery":
+        out.append("列语义纠错：旧 ic_ir 列存的是样本内 IC 均值 → 移到 ic_mean，ic_ir 按统一口径重算或置空")
+    if r.get("evaluated_before") is False:
+        out.append("未评估：旧值 0 不是评估结果 → 标 never_evaluated，不补造旧验证历史")
+    out.append("新版本重评估：当前代码 / 时钟 c2 / 研究选择段 / 本次价格源（与纠错是不同的修订理由）")
+    return out
+
+
 def _writer(hypothesis: str, reasoning: str) -> tuple:
     text = f"{hypothesis or ''} {reasoning or ''}"
     for marker, name, meaning in WRITERS:
@@ -117,18 +131,28 @@ def inventory(copy: Path) -> List[dict]:
     try:
         cols = [r[1] for r in con.execute("PRAGMA table_info(alpha_records)")]
         want = [c for c in ("id", "dsl", "status", "created_at", "hypothesis", "reasoning", "sharpe", "ann_return",
-                            "ic_ir", "ann_turnover", "clock_version") if c in cols]
+                            "ic_ir", "ic_mean", "ic_metrics", "ann_turnover", "clock_version") if c in cols]
         rows = [dict(zip(want, r)) for r in con.execute(f"SELECT {', '.join(want)} FROM alpha_records ORDER BY id")]
     finally:
         con.close()
+    from types import SimpleNamespace
+
+    from app.core.alpha_engine.ic_metrics import EVALUATED, LEGACY_UNKNOWN, status_of
     out = []
     for r in rows:
         writer, meaning = _writer(r.get("hypothesis"), r.get("reasoning"))
-        stored = {k: r.get(k) for k in ("sharpe", "ann_return", "ic_ir", "ann_turnover")}
+        stored = {k: r.get(k) for k in ("sharpe", "ann_return", "ic_ir", "ic_mean", "ann_turnover")}
+        st = status_of(SimpleNamespace(ic_metrics=r.get("ic_metrics")))
+        # 审计决定 2："不再靠所有指标是否为 0 推断 evaluated"：有 ic_metrics 就照它；旧行只有一种写入路径能确定
+        # （基准种子入库时没有任何评估），其余记 None = 不知道
+        if st["status"] != LEGACY_UNKNOWN:
+            evaluated = st["status"] == EVALUATED
+        else:
+            evaluated = False if writer == "baseline_seed" else None
         out.append({"id": r["id"], "dsl": r["dsl"], "status": r["status"], "created_at": str(r.get("created_at")),
                     "clock_version": r.get("clock_version") or "c1（列不存在或为空 = 2026-10-20 之前）",
-                    "writer": writer, "ic_ir_column_holds": meaning,
-                    "evaluated": any(abs(float(v or 0.0)) > 0 for v in stored.values()), "stored": stored})
+                    "writer": writer, "ic_ir_column_holds": meaning, "ic_status": st["status"],
+                    "evaluated": evaluated, "stored": stored})
     return out
 
 
@@ -187,6 +211,7 @@ def dry_run(copy: Path, dataset: str, start: Optional[str], end: Optional[str],
         from app.core.data_engine.dataset_registry import (
             load_registry_dataset as loader,
         )
+    from app.core.alpha_engine.ic_metrics import ic_fields
     with _settings_pointing_at(work):
         panel = loader(dataset, start=start, end=end).data
         ctx = open_research(panel, dataset, "factor_metrics_dry_run")
@@ -197,7 +222,11 @@ def dry_run(copy: Path, dataset: str, start: Optional[str], end: Optional[str],
                 rep = bt.run(r["dsl"], sel).is_report
                 f = lambda v: None if v is None or (isinstance(v, float) and np.isnan(v)) else float(v)   # noqa: E731
                 r["recomputed"] = {"mean_ic": f(rep.mean_ic), "ic_ir": f(rep.ic_ir), "sharpe": f(rep.sharpe_ratio),
-                                   "ann_turnover": f(rep.ann_turnover)}
+                                   "ann_turnover": f(rep.ann_turnover), "n_obs": int(rep.ic_n_obs)}
+                # 按统一口径（审计决定 2）将要写成什么 —— 只预演，不写
+                r["proposed_fields"] = ic_fields(rep.mean_ic, rep.ic_ir, rep.ic_n_obs,
+                                                 source="factor_metrics_dry_run", segment="selection",
+                                                 window=[str(ctx.selection_start), str(ctx.selection_end)])
             except Exception as exc:
                 r["recomputed"] = {"mean_ic": None, "ic_ir": None, "sharpe": None, "ann_turnover": None,
                                    "error": f"{type(exc).__name__}: {exc}"}
@@ -207,6 +236,7 @@ def dry_run(copy: Path, dataset: str, start: Optional[str], end: Optional[str],
                        for r in inv})
     for r in inv:
         r["evaluated_before"] = r.pop("evaluated")
+        r["revision_reasons"] = _revision_reasons(r)
         r["rank_by_stored"] = old_rank[r["id"]]
         r["rank_by_recomputed_mean_ic"] = new_rank[r["id"]]
     ident = identify(sel)
@@ -223,8 +253,9 @@ def dry_run(copy: Path, dataset: str, start: Optional[str], end: Optional[str],
                               "price_source": str(getattr(settings, "price_source", ""))}},
         "records": inv,
         "exposure": _exposure(copy),
-        "note": ("旧值原样保留（本工具不写库）。`ic_ir` 列在多数写入路径里存的是样本内 IC 均值 —— 新值两种口径都给；"
-                 "该列以后存什么、要不要写回，等你决定。"),
+        "note": ("旧值原样保留（本工具不写库）。旧行的 `ic_ir` 列在多数写入路径里存的是样本内 IC 均值；按审计决定 2，"
+                 "新值分成 ic_mean 与 ic_ir 两列（proposed_fields），每条的修订理由分开列（revision_reasons）。"
+                 "写回活库要你看过差异后另行确认。"),
     }
     report_dir = Path(report_dir or copy.parent.parent)
     path = report_dir / "factor_metrics_dry_run.json"
