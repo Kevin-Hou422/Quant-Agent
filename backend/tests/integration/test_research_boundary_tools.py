@@ -234,3 +234,43 @@ class TestExposureSummary:
             "test_start": "2024-10-24"}}), encoding="utf-8")
         c = scan_artifacts([str(d)])["contexts"]
         assert c and c[0]["dataset_key"] == "us_broad_large" and c[0]["selection_end"] == "2024-09-25"
+
+
+class TestFutureWindowIsComputedAtRegistration:
+    """
+    2026-10-30 用户决定："2026-10-28 已经过去，不再使用这个日期。请在实际登记准备时，按当天和交易所日历重新计算'登记日之后
+    的下一个交易日'。"——起点不预先写死，登记那一刻算；冻结日期不能清洗已看过的数据。
+    """
+
+    @pytest.mark.parametrize("now,expected", [
+        ("2026-10-30T20:00:00Z", "2026-11-02"),      # 周五美东 16:00 登记 → 下周一
+        ("2026-10-31T03:00:00Z", "2026-11-02"),      # UTC 已是周六、美东还是周五 23:00 → 仍按周五算
+        ("2026-11-02T14:00:00Z", "2026-11-03"),      # 周一开盘前登记 → 周二（当天不算"之后"）
+        ("2026-11-26T15:00:00Z", "2026-11-27"),      # 感恩节登记 → 次日（半日市也是交易日）
+        ("2026-12-24T22:00:00Z", "2026-12-28")])     # 平安夜登记 → 跳过圣诞与周末
+    def test_next_session_is_the_session_after_the_exchange_date_of_registration(self, now, expected):
+        from tools.research.register_research_boundary import resolve_test_start
+        start, _today = resolve_test_start("next-session", now=now)
+        assert str(start.date()) == expected
+
+    def test_the_plan_says_whether_the_start_was_unseen_when_registered(self, tmp_path):
+        from tools.research.register_research_boundary import plan
+        db = tmp_path / "live.db"
+        _make_live_like_db(db, with_boundaries=False)
+        fut = plan(db, "us_broad_large", "next-session", now="2026-10-30T20:00:00Z")
+        assert fut["test_start"] == "2026-11-02" and fut["unseen_at_registration"] is True
+        past = plan(db, "us_broad_large", "2026-10-28", now="2026-10-30T20:00:00Z")
+        assert past["unseen_at_registration"] is False and "不是未见的未来窗口" in past["rule"]
+
+    def test_confirming_recomputes_at_the_moment_of_writing(self, tmp_path, monkeypatch):
+        from app.db.trial_ledger import BoundaryStore
+        from tools.research import register_research_boundary as reg
+        db = tmp_path / "live.db"
+        _make_live_like_db(db, with_boundaries=False)
+        real = reg.resolve_test_start
+        calls = iter(["2026-10-30T20:00:00Z", "2026-11-02T22:00:00Z"])         # 预演在周五、写库时已到周一收盘后
+        monkeypatch.setattr(reg, "resolve_test_start", lambda ts, now=None: real(ts, now=next(calls)))
+        assert reg.main(["--db", str(db), "--dataset", "us_broad_large", "--test-start", "next-session",
+                         "--actor", "Kevin-Hou422", "--reason", "未来窗口", "--confirm"]) == 0
+        st = BoundaryStore(db_url=f"sqlite:///{db.as_posix()}").status("us_broad_large")
+        assert st == (pd.Timestamp("2026-11-03"), "registered")

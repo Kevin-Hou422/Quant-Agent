@@ -17,7 +17,12 @@ backup.py — 每日一致性快照备份（长期可行的数据安全方案）
 4. **保留 N 份**：按时间倒序保留，旧的删除。
 5. **清单**（2026-10-25 审计 R2）：快照目录里写 `manifest.json` —— 每一项的取得时刻、方式、源路径与快照文件哈希、
    逐表行数 / 主键 / 内容摘要与业务不变量（`app.tasks.snapshot_manifest`）。各项**逐个**取得，不在同一个事务里：
-   每个库各自一致；跨库 / PIT 的一致只在取快照期间调度停着时成立，清单如实记 `cross_item_consistent`。
+   每个库各自一致；跨库 / PIT 的一致只在取快照期间没有写入时成立。
+   `cross_item_consistent` 不再固定写 false，而是**证明出来的**（复审 21cd90b："单次备份成功不等于多库和 PIT 是同一
+   时间点；请明确如何在停写窗口证明所需一致性"）：开始取第一项之前、取完最后一项之后，各记一次每一项的**已提交内容**
+   （主库与 -wal 的内容哈希和大小、PIT 每个文件的哈希）；两次完全相同 → 这段时间里没有任何一项被写过，各项副本代表
+   同一个时间点 → true，并记下窗口的起止；任何一项变了 → false，写明是哪一项。-shm 是共享内存索引，读者也会改它，
+   不算已提交内容；-wal 不存在与 0 字节同义（都没有未合并的帧）。调度在跑时这里如实是 false。
 6. **结果要传播**（2026-10-25 审计 R4："daily_backup_job 在备份失败时只记 error 日志而正常返回"）：每次备份
    （成功或失败）都写 `<backup_dir>/last_backup.json`；`backup_health` 读它给预检（健康门），调度任务失败时发
    backup_failed 告警，命令行 `python -m app.tasks.backup` 失败退出码 1。
@@ -141,6 +146,22 @@ def prune_snapshots(backup_root: Path, keep: int) -> List[str]:
     return pruned
 
 
+def _committed_state(main_db: Optional[Path], sch_db: Optional[Path], pit: Optional[Path]) -> dict:
+    """各项的已提交内容（证明停写窗口用；见模块说明第 5 条）。"""
+    from app.tasks.restore import _file_digests
+    from app.tasks.snapshot_manifest import file_state
+
+    def db(path: Optional[Path]):
+        if path is None or not path.exists():
+            return None
+        main, wal = file_state(path), file_state(Path(str(path) + "-wal"))
+        no_frames = (not wal["exists"]) or wal["size"] == 0
+        return {"sha256": main["sha256"], "size": main["size"],
+                "wal": None if no_frames else {"sha256": wal["sha256"], "size": wal["size"]}}
+    return {"main_db": db(main_db), "scheduler_db": db(sch_db),
+            "pit_store": _file_digests(pit) if pit is not None and pit.exists() else None}
+
+
 def run_daily_backup(backup_dir: Optional[str] = None,
                      keep: Optional[int] = None, *,
                      database_url: Optional[str] = None, scheduler_db_url: Optional[str] = None,
@@ -162,8 +183,17 @@ def run_daily_backup(backup_dir: Optional[str] = None,
                       "items": {}, "cross_item_consistent": False,
                       "consistency": "每个 SQLite 库在各自的读事务里一致（VACUUM INTO）；各项依次取得，不是同一时刻"}
 
-    # 1) 主库（因子/审批/IC/成交/策略配置 —— 审计资产）
     main_db = _sqlite_path_from_url(database_url or getattr(settings, "database_url", ""))
+    sch_db = _sqlite_path_from_url(scheduler_db_url or getattr(settings, "scheduler_db_url", ""))
+    pit = Path(pit_store_dir or getattr(settings, "pit_store_dir", "pit_store")).expanduser()
+    window_open = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    try:
+        before = _committed_state(main_db, sch_db, pit)
+    except Exception as exc:
+        logger.error("[backup] 记不下取快照前的状态（跨项一致无从证明）: %s", exc)
+        before = {"error": str(exc)}
+
+    # 1) 主库（因子/审批/IC/成交/策略配置 —— 审计资产）
     if main_db and main_db.exists():
         try:
             n = snapshot_sqlite(main_db, snap / f"{main_db.name}")
@@ -177,7 +207,6 @@ def run_daily_backup(backup_dir: Optional[str] = None,
         res.errors.append("main_db: 不存在或非 sqlite")
 
     # 2) 调度库（可重建，但一并备份便于整机恢复）
-    sch_db = _sqlite_path_from_url(scheduler_db_url or getattr(settings, "scheduler_db_url", ""))
     if sch_db and sch_db.exists():
         try:
             n = snapshot_sqlite(sch_db, snap / sch_db.name)
@@ -188,7 +217,6 @@ def run_daily_backup(backup_dir: Optional[str] = None,
             res.errors.append(f"scheduler_db: {exc}")
 
     # 3) PIT —— **最不可再生**的部分（前向数据买不回来）
-    pit = Path(pit_store_dir or getattr(settings, "pit_store_dir", "pit_store")).expanduser()
     if pit.exists() and any(pit.rglob("*.parquet")):
         try:
             n = snapshot_tree(pit, snap / "pit_store")
@@ -200,6 +228,21 @@ def run_daily_backup(backup_dir: Optional[str] = None,
             res.ok = False; res.errors.append(f"pit: {exc}")
     else:
         logger.info("[backup] PIT 为空，跳过（尚未开始前向积累）")
+
+    try:
+        after = _committed_state(main_db, sch_db, pit)
+    except Exception as exc:
+        logger.error("[backup] 记不下取快照后的状态（跨项一致无从证明）: %s", exc)
+        after = {"error": str(exc)}
+    changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+    manifest["cross_item_consistent"] = not changed and "error" not in before
+    manifest["quiet_window"] = {"opened_at": window_open,
+                                "closed_at": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+                                "changed_during_backup": changed, "before": before, "after": after}
+    manifest["consistency"] = (
+        "取快照的整段时间里各项的已提交内容都没变：各项副本代表同一个时间点（窗口起止见 quiet_window）"
+        if manifest["cross_item_consistent"] else
+        f"取快照期间这些项被写过：{changed} —— 各项各自一致，但不是同一时间点（要跨项一致：停掉服务和调度后再跑）")
 
     snap.mkdir(parents=True, exist_ok=True)
     if snap.exists():

@@ -102,27 +102,38 @@ def test_flattening_under_the_kill_switch_does_not_need_a_permit(tmp_path):
 
 # ── 无人值守 ─────────────────────────────────────────────
 
-def _evidence(tmp_path):
+@pytest.fixture(scope="module")
+def recorded(tmp_path_factory):
+    """八个场景在替身券商上真的走一遍的证据（复审 21cd90b：许可绑定**经过判定**的证据，不是"文件存在"）。"""
+    from tests.integration.test_simulate_acceptance import record_all_scenarios
+    return record_all_scenarios(tmp_path_factory.mktemp("acceptance"))
+
+
+def _evidence(tmp_path, recorded):
+    import shutil
     p = tmp_path / "simulate_acceptance.jsonl"
-    p.write_text('{"scenario": "submit_and_fill", "step": "verdict"}\n', encoding="utf-8")
+    if not p.exists():
+        shutil.copy(recorded, p)
     return p
 
 
-def _unattended(e, tmp_path, health=lambda s, now: [], **kw):
+def _unattended(e, tmp_path, recorded, health=lambda s, now: [], **kw):
+    from app.core.execution.acceptance_evidence import contract_of_settings
     kw.setdefault("code", "abc123abc123")
     kw.setdefault("spec_hash", "h" * 64)
+    kw.setdefault("contract", contract_of_settings())
     return rp.issue(e.es, mode="unattended", actor="tester", reason="无人值守", account=ACC, hours=48,
-                    acceptance_evidence=str(_evidence(tmp_path)), settings=e.settings, now=e.clock(),
+                    acceptance_evidence=str(_evidence(tmp_path, recorded)), settings=e.settings, now=e.clock(),
                     health=health, **kw)
 
 
 @pytest.mark.parametrize("kw,needle", [
     ({"code": "abc123abc123+dirty"}, "固定的代码版本"), ({"code": "unknown"}, "固定的代码版本"),
     ({"spec_hash": ""}, "规格"), ({"health": lambda s, now: ["通知未就绪：没确认过"]}, "通知未就绪")])
-def test_an_unattended_permit_is_refused_unless_every_binding_holds(tmp_path, kw, needle):
+def test_an_unattended_permit_is_refused_unless_every_binding_holds(tmp_path, recorded, kw, needle):
     e = _guarded(tmp_path)
     with pytest.raises(rp.PermitRefused, match=needle):
-        _unattended(e, tmp_path, **kw)
+        _unattended(e, tmp_path, recorded, **kw)
     assert rp.current(e.es) is None
 
 
@@ -133,16 +144,18 @@ def test_an_unattended_permit_needs_acceptance_evidence(tmp_path):
                  now=e.clock(), code="abc123abc123", spec_hash="h", health=lambda s, now: [])
 
 
-def test_unattended_readiness_is_rechecked_not_computed_once(tmp_path):
+def test_unattended_readiness_is_rechecked_not_computed_once(tmp_path, recorded):
     """签发时通知就绪；之后通知失败 / 验收证据被改 / 规格变了 → 下一次核对就不通过。"""
+    from app.core.execution.acceptance_evidence import contract_of_settings
     e = _guarded(tmp_path)
-    _unattended(e, tmp_path)
-    base = dict(account=ACC, settings=e.settings, now=e.clock(), code="abc123abc123", spec_hash="h" * 64)
+    _unattended(e, tmp_path, recorded)
+    base = dict(account=ACC, settings=e.settings, now=e.clock(), code="abc123abc123", spec_hash="h" * 64,
+                contract=contract_of_settings())
     assert rp.evaluate(e.es, health=lambda s, now: [], **base).allowed
     d = rp.evaluate(e.es, health=lambda s, now: ["通知未就绪：确认之后有 1 条通知失败"], **base)
     assert not d.allowed and "通知未就绪" in d.reasons[0]
     assert not rp.evaluate(e.es, health=lambda s, now: [], **{**base, "spec_hash": "x" * 64}).allowed
-    _evidence(tmp_path).write_text("改过\n", encoding="utf-8")
+    _evidence(tmp_path, recorded).write_text("改过\n", encoding="utf-8")
     d = rp.evaluate(e.es, health=lambda s, now: [], **base)
     assert not d.allowed and any("验收证据" in r for r in d.reasons)
 

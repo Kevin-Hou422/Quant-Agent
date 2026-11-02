@@ -462,3 +462,9 @@ class ExecutionStore:
     def events(self, limit: int = 50) -> List[ExecEvent]:
         with self._Session() as s:
             return list(s.scalars(select(ExecEvent).order_by(ExecEvent.id.desc()).limit(limit)))
+
+    def events_of(self, kind: str, limit: int = 50) -> List[ExecEvent]:
+        """某一类事件，新的在前。"""
+        with self._Session() as s:
+            return list(s.scalars(select(ExecEvent).where(ExecEvent.kind == kind)
+                                  .order_by(ExecEvent.id.desc()).limit(limit)))

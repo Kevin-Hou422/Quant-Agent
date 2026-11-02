@@ -171,9 +171,11 @@ class TestSchedulerEntry:
 
 
 PROVEN_EQUIVALENT = {
-    "app/core/execution/intraday_watchdog.py ×1 — L72 `self._stale_alerted = False` -> `True`（构造函数里的初值）":
-        "第一拍时 `_fingerprint` 还是 None，`_stale` 必然走\"指纹变了\"那条分支，把 `_stale_alerted` 重置为 False；"
-        "在那之前没有任何地方读它。见 test_the_initial_alert_flag_is_irrelevant（把初值改成 True 照样只告警一次）。",
+    "app/core/execution/intraday_watchdog.py ×0 — L72 `self._stale_alerted = False` -> `True`（构造函数里的初值；已不等价，已被杀死）":
+        "（复审 21cd90b 之后的关键路径复核：放行边界 2 把新鲜度改成逐只判定后，指纹变化不再重置这个标志，初值改成 True "
+        "会让第一拍的陈旧告警不发 —— 不再等价；该点已被现有用例杀死，留作记录。）原证明：第一拍时 `_fingerprint` 还是 None，"
+        "`_stale` 必然走\"指纹变了\"那条分支，把 `_stale_alerted` 重置为 False；在那之前没有任何地方读它。"
+        "见 test_the_initial_alert_flag_is_irrelevant。",
 }
 
 

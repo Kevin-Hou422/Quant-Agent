@@ -7,7 +7,8 @@ run_permit.py — 运行许可的命令行（签发 / 查看 / 撤销；规则�
   python -m app.tasks.run_permit issue --mode supervised --account <acc_id> --hours 8 --max-order-notional 2000 \\
       --actor <你> --reason "…" [--exec-db <执行库>]
   python -m app.tasks.run_permit issue --mode unattended --account <acc_id> --hours 72 \\
-      --acceptance-evidence <simulate_acceptance.jsonl> --actor <你> --reason "…"
+      --acceptance-evidence <simulate_acceptance.jsonl> --actor <你> --reason "…" \\
+      [--waive-uncovered partial_fill_then_cancel="当天没出现部分成交"]   （只对未覆盖的场景；失败的不能豁免）
   python -m app.tasks.run_permit revoke --actor <你> --reason "…"
 
 缺省执行库 = settings.database_url。签发不满足条件 → 退出码 2，什么都不写。
@@ -41,6 +42,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--hours", type=float)
     ap.add_argument("--max-order-notional", type=float)
     ap.add_argument("--acceptance-evidence")
+    ap.add_argument("--waive-uncovered", action="append", default=[], metavar="SCENARIO=REASON")
     ap.add_argument("--actor", default="")
     ap.add_argument("--reason", default="")
     a = ap.parse_args(argv)
@@ -58,8 +60,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not (a.mode and a.account and a.hours):
             print("签发要给 --mode --account --hours")
             return EXIT_REFUSED
+        bad = [w for w in a.waive_uncovered if "=" not in w]
+        if bad:
+            print(f"--waive-uncovered 要写成 场景=理由：{bad}")
+            return EXIT_REFUSED
+        waive = dict(w.split("=", 1) for w in a.waive_uncovered)
         p = rp.issue(store, mode=a.mode, actor=a.actor, reason=a.reason, account=a.account, hours=a.hours,
-                     max_order_notional=a.max_order_notional, acceptance_evidence=a.acceptance_evidence)
+                     max_order_notional=a.max_order_notional, acceptance_evidence=a.acceptance_evidence,
+                     waive_uncovered=waive or None)
         print(json.dumps(p, ensure_ascii=False, indent=1))
         return EXIT_OK
     except rp.PermitRefused as exc:

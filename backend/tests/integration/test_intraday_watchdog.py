@@ -36,6 +36,7 @@ class Clock:
 def _watchdog(e, clock, factory=None, alerts=None, **kw):
     from app.core.execution.intraday_watchdog import IntradayWatchdog
     alerts = alerts if alerts is not None else []
+    kw.setdefault("health_store", e.es)                # 每拍结论落在这个用例自己的执行库（不落共享库）
     e.om._clock = clock
     return IntradayWatchdog(make_order_manager=factory or (lambda: e.om), now=clock,
                             alert=alerts.append, **kw), alerts
@@ -279,7 +280,8 @@ class TestFreshnessIsAboutTimeNotValues:
         assert wd.tick()["freshness"] == "unproven"
         clock.t += timedelta(minutes=11)
         out = wd.tick()
-        assert out["status"] == "ok" and out["freshness"] == "unproven"
+        # 复审 21cd90b：没跌穿也不报 ok —— 证明不了新鲜（无人值守许可读到 unproven 会停止新增风险）
+        assert out["status"] == "unproven_ok" and out["freshness"] == "unproven"
         assert [(a.severity, "无法证明" in a.title) for a in alerts] == [("warning", True)]
         _drop(e, 0.40)
         clock.t += timedelta(minutes=1)
@@ -296,6 +298,8 @@ class TestFreshnessIsAboutTimeNotValues:
         monkeypatch.setattr(e.gw, "quotes", quotes)
         wd, alerts = _watchdog(e, Clock(OPEN_D3 + timedelta(minutes=5)), stale_after_s=600)
         out = wd.tick()
-        assert out["status"] == "ok" and out["freshness"] == "fresh"
+        # 复审 21cd90b："不把'至少一只新鲜'等同于'全部持仓新鲜'"：整体是 partial（以前报 fresh / ok）；停牌只提醒、照常判断
+        assert out["status"] == "partial_ok" and out["freshness"] == "partial"
+        assert out["names"] == {"AAA": "fresh", "BBB": "stale", "CCC": "stale"}
         assert sorted(a.title for a in alerts) == ["盘中巡检：BBB 的行情时间偏旧", "盘中巡检：CCC 的行情时间偏旧"]
         assert {a.severity for a in alerts} == {"warning"}

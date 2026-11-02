@@ -169,7 +169,9 @@ def test_the_product_backup_writes_a_manifest_and_the_drill_checks_against_the_s
     assert rep["ok"] is True
     snap = Path(rep["paths"]["snapshot"])
     man = sm.read_manifest(snap)
-    assert man is not None and man["ok"] is True and man["cross_item_consistent"] is False
+    # 演练期间没有任何写入：跨项一致是证明出来的（复审 21cd90b；以前固定写 false）
+    assert man is not None and man["ok"] is True and man["cross_item_consistent"] is True
+    assert man["quiet_window"]["changed_during_backup"] == []
     item = man["items"]["alphas.db"]
     assert item["method"] == "vacuum_into" and item["description"]["tables"]["alpha_records"]["rows"] == 3
     assert rep["verification"]["frozen_source"] == str(snap / "alphas.db")
@@ -182,3 +184,46 @@ def test_the_boundary_report_refuses_a_write_inside_its_window(writer, monkeypat
     _commit_during_copy(monkeypatch, w)
     with pytest.raises(SourceChanged):
         build_report(db)
+
+
+def test_a_write_during_the_backup_makes_cross_item_consistency_false_and_names_the_item(tmp_path, monkeypatch):
+    """复审 21cd90b："单次备份成功不等于多库和 PIT 是同一时间点"：取完主库之后、取 PIT 之前另一个连接提交了一行。"""
+    from app.tasks import backup
+    root = tmp_path / "live"
+    root.mkdir()
+    db = _business_db(root / "alphas.db")
+    pit = root / "pit"
+    pit.mkdir()
+    (pit / "a.parquet").write_bytes(b"x")
+    real = backup.snapshot_tree
+
+    def write_then_tree(src, dest):
+        con = sqlite3.connect(db)
+        con.execute("UPDATE exec_state SET value = 'changed' WHERE key = 'kill_switch'")
+        con.commit()
+        con.close()
+        return real(src, dest)
+    monkeypatch.setattr(backup, "snapshot_tree", write_then_tree)
+    res = backup.run_daily_backup(str(tmp_path / "bk"), database_url=f"sqlite:///{db.as_posix()}",
+                                  scheduler_db_url="sqlite:///" + (root / "none.db").as_posix(),
+                                  pit_store_dir=str(pit))
+    man = sm.read_manifest(Path(res.snapshot_dir))
+    assert res.ok and man["cross_item_consistent"] is False
+    assert man["quiet_window"]["changed_during_backup"] == ["main_db"] and "main_db" in man["consistency"]
+
+
+def test_without_writes_the_backup_proves_one_point_in_time(tmp_path):
+    from app.tasks import backup
+    root = tmp_path / "live"
+    root.mkdir()
+    db = _business_db(root / "alphas.db")
+    pit = root / "pit"
+    pit.mkdir()
+    (pit / "a.parquet").write_bytes(b"x")
+    res = backup.run_daily_backup(str(tmp_path / "bk"), database_url=f"sqlite:///{db.as_posix()}",
+                                  scheduler_db_url="sqlite:///" + (root / "none.db").as_posix(),
+                                  pit_store_dir=str(pit))
+    man = sm.read_manifest(Path(res.snapshot_dir))
+    assert man["cross_item_consistent"] is True
+    w = man["quiet_window"]
+    assert w["opened_at"] <= w["closed_at"] and w["before"]["pit_store"] == w["after"]["pit_store"]

@@ -49,6 +49,10 @@ def main(argv: Optional[List[str]] = None, dispatcher=None) -> int:
         return 0
     ok, why = d.unattended_readiness()
     print(("就绪：" if ok else "未就绪：") + why)
+    from app.core.alerting.dispatcher import read_channel_fault
+    fault = read_channel_fault()
+    if fault:
+        print(f"告警通道故障记录：{fault}（故障之后重新 test + confirm 才算恢复）")
     for e in d.history()[-20:]:
         print(f"  {e['at'][:19]}  {e['severity']:<8} {e['kind']:<28} {e['status']:<13} {e['title']}")
     return 0 if ok else 1

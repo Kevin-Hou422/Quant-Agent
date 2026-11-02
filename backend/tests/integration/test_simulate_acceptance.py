@@ -374,3 +374,44 @@ class TestOnlyTheTargetEventCounts:
         right = self._cycle("unknown_order", {"blocked": "reconcile_discrepancy"}, at="2025-03-05T21:06:00+00:00")
         checks = {c["name"]: c["ok"] for c in sa._check_unknown_order([ext, filled, right])}
         assert checks["外部单成交后对账报差异并阻断调仓"] is True
+
+
+def record_all_scenarios(root, code: str = "abc123abc123"):
+    """
+    在替身券商上把八个场景各走一遍（就是 TestScenarios 的流程），合成一份完整的证据文件；代码版本钉成 `code`
+    （许可要绑定固定提交）。无人值守许可、Go/No-Go 的用例用它 —— 而不是手写几行"通过"的结论。
+    """
+    import app.core.data_engine.input_identity as ii
+    lines = []
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(ii, "code_version", lambda: code)
+        for scen in sa.SCENARIOS:
+            d = root / scen
+            d.mkdir(parents=True)
+            getattr(TestScenarios(), f"test_{scen}")(d)
+            lines += (d / sa.EVIDENCE_NAME).read_text(encoding="utf-8").splitlines()
+    out = root / sa.EVIDENCE_NAME
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out
+
+
+def test_verify_and_the_permit_use_the_same_judgement(tmp_path):
+    """复审 21cd90b：验收结果由统一的判定生成 —— verify 记下的结论与 acceptance_evidence.assess 的重算一致。"""
+    from app.core.execution import acceptance_evidence as ae
+    ev = record_all_scenarios(tmp_path)
+    j = ae.assess(ev, account=ACC, code="abc123abc123", contract=ae.contract_of_settings())
+    assert j["ok"], ae.reasons(j)
+    last = {}
+    for r in sa.read_evidence(ev):
+        if r["step"] == "verdict":
+            last[r["scenario"]] = r["data"]["passed"]
+    assert last == {s: True for s in sa.SCENARIOS}
+    assert {s: v["status"] for s, v in j["scenarios"].items()} == {s: ae.PASSED for s in sa.SCENARIOS}
+    assert sa.CHECKS is ae.CHECKS and sa.SCENARIOS is ae.SCENARIOS
+
+
+def test_every_record_carries_the_execution_contract(tmp_path):
+    from app.core.execution.acceptance_evidence import contract_of_settings
+    e = _env(tmp_path)
+    row = _session(e, tmp_path).snapshot("submit_and_fill")
+    assert row["contract"] == contract_of_settings() and len(row["contract"]) == 16

@@ -769,7 +769,9 @@ class OrderManager:
         rep.capital = {"slice_equity": round(float(equity), 2), "buying_power": round(float(power), 2),
                        "invested": round(invested, 2), "planned_buy": round(buys, 2),
                        "planned_sell": round(sells, 2),
+                       "remaining_cash": round(float(power) - buys, 2),
                        "utilization_after_buys": (round((invested + buys) / equity, 4) if equity > 0 else None)}
+        self._record_plan(decision_date, build, dec, rep)
         for i, o in enumerate(dec.approved):
             # 复审 2026-10-19 N01：熔断可能在这一批发送途中被开启（API / 另一个进程先落库、不等账户锁）。
             # 每一张调仓单发出之前读**最新**的持久化状态；开了就停下余下的单，转去撤单 + 全平。
@@ -792,6 +794,35 @@ class OrderManager:
                     decision_date, rep.n_planned, rep.n_duplicate, rep.n_gate_rejected,
                     rep.n_submitted, rep.n_submit_errors)
         return rep
+
+    def _record_plan(self, decision_date, build, dec, rep: ExecutionReport) -> None:
+        """
+        这一轮的调仓计划落库（exec_events `cycle_plan`；2026-10-30 用户决定"满仓买入力首轮保留整张拒绝"）：
+        计划单、资金占用、被拒原因、剩余现金；以及**上一个决策日因资金不足被拒的买单，这一轮怎么重新决策的**。
+        被拒的买单不会自动重发 —— 下一轮按当时的目标、持仓与资金重新算；记下的是决策，不是成交，也不承诺次日能成交。
+        """
+        row = lambda o, why=None: {"ticker": o.ticker, "side": o.side, "qty": o.qty,                   # noqa: E731
+                                   "limit": o.limit_price, "notional": round(o.qty * o.limit_price, 2),
+                                   **({"reason": why} if why else {})}
+        approved = [row(o) for o in dec.approved]
+        rejected = [row(o, why) for o, why in dec.rejected]
+        planned = {(o.ticker, o.side) for o in build.orders}
+        prev = next((json.loads(e.payload or "{}") for e in self.store.events_of("cycle_plan", 30)
+                     if json.loads(e.payload or "{}").get("decision_date", "") < str(decision_date)), None)
+        redecided = []
+        for r in (prev or {}).get("rejected", []):
+            if r.get("reason") != "insufficient_buying_power":
+                continue
+            key = (r["ticker"], r["side"])
+            now = (next((("approved", a["qty"]) for a in approved if (a["ticker"], a["side"]) == key), None)
+                   or next(((f"rejected:{x['reason']}", x["qty"]) for x in rejected if (x["ticker"], x["side"]) == key),
+                           None)
+                   or (("already_final_today", None) if key in planned else ("not_planned", None)))
+            redecided.append({"ticker": r["ticker"], "side": r["side"], "rejected_qty": r["qty"],
+                              "rejected_on": prev["decision_date"], "this_cycle": now[0], "qty_now": now[1]})
+        self.store.add_event("cycle_plan", actor="order_manager", reason=str(decision_date), payload={
+            "decision_date": str(decision_date), "capital": rep.capital, "approved": approved, "rejected": rejected,
+            "skipped": build.skipped, "n_duplicate": rep.n_duplicate, "previous_rejections": redecided})
 
     def _independent_quotes(self, tickers: List[str], rep: ExecutionReport) -> dict:
         """待交易标的的独立报价（F09）。取不到 → 空表：减仓照常，新开仓在下单门被拦下。"""

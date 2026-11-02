@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -142,3 +143,44 @@ def test_the_cli_prints_readable_paths(tmp_path, capsys):
     target = tmp_path / "恢复演练"
     assert main([rep["paths"]["snapshot"], str(target)]) == 0
     assert "恢复演练" in capsys.readouterr().out
+
+
+class TestRealSnapshotDrill:
+    """
+    复审 21cd90b："准备一份可复跑清单，覆盖……备份成功及恢复后的完整性、关键表内容和业务不变量；订单认领、在途订单、成交、
+    熔断状态、正式证据和冻结边界。"真实快照模式：恢复到隔离目录，对照快照文件本身与它的清单。
+    """
+
+    def _snapshot(self, tmp_path):
+        from tools.ops.recovery_drill import run_synthetic_drill
+        rep = run_synthetic_drill(tmp_path / "make")
+        return Path(rep["paths"]["snapshot"])
+
+    def test_a_clean_snapshot_restores_and_reports_the_facts_to_reconcile(self, tmp_path):
+        from tools.ops.recovery_drill import run_snapshot_drill
+        rep = run_snapshot_drill(self._snapshot(tmp_path), tmp_path / "work")
+        assert rep["ok"] is True and rep["scope"] == "real_snapshot" and rep["cross_item_consistent"] is True
+        facts = rep["databases"]["alphas.db"]["facts_after_restore"]
+        assert {"kill_switch", "orders_in_flight"} <= set(facts)
+        assert rep["pit_files_checked"] > 0 and rep["pit_mismatches"] == []
+
+    def test_a_damaged_snapshot_file_fails_the_drill(self, tmp_path):
+        import sqlite3
+
+        from tools.ops.recovery_drill import run_snapshot_drill
+        snap = self._snapshot(tmp_path)
+        man = json.loads((snap / "manifest.json").read_text(encoding="utf-8"))
+        name = next(k for k in man["items"]["pit_store.zip"]["files"])
+        man["items"]["pit_store.zip"]["files"][name] = "0" * 64                    # 清单与 PIT 包对不上
+        (snap / "manifest.json").write_text(json.dumps(man), encoding="utf-8")
+        rep = run_snapshot_drill(snap, tmp_path / "work")
+        assert rep["ok"] is False and rep["pit_mismatches"] == [name]
+        con = sqlite3.connect(snap / "alphas.db")
+        assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        con.close()
+
+    def test_the_command_line_takes_a_snapshot(self, tmp_path, capsys):
+        from tools.ops.recovery_drill import main
+        snap = self._snapshot(tmp_path)
+        assert main(["--from-snapshot", str(snap), "--work", str(tmp_path / "work")]) == 0
+        assert '"scope": "real_snapshot"' in capsys.readouterr().out

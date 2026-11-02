@@ -188,11 +188,13 @@ class TestTransitions:
         assert rows[0].actor == "human", "决策主体默认应为 human（人批准）"
 
     PROVEN_EQUIVALENT = {
-        "app/db/strategy_store.py ×1 — L108 `sessionmaker(..., expire_on_commit=False)` → True":
-            "所有 commit 的方法（save / update_status / record_decision）都在"
+        "app/db/strategy_store.py ×1 — L108 `sessionmaker(..., expire_on_commit=False)` → True（运行槽之后在 L142）":
+            "所有 commit 的方法（save / update_status / record_decision / apply_transitions）都在"
             "**同一个 session 内**读取需要的字段（过期后自动 refresh 仍拿得到）；"
-            "get / latest_active / get_decisions 走只读 session，不触发过期。"
-            "两种取值都观察不到差别。",
+            "get / query / running / latest_running / latest_active / get_decisions 走只读 session，不触发过期。"
+            "start_running 自己开 Session 并显式写了 expire_on_commit=False，不用这个工厂。"
+            "update_status 返回的对象在生产代码里没人读（唯一的策略调用方 router 的驳回接口丢弃返回值）。"
+            "两种取值都观察不到差别（复审 21cd90b 之后的关键路径复核再次存活，按运行槽之后的代码重核过）。",
     }
 
     def test_every_survivor_has_a_written_proof(self):
@@ -204,7 +206,7 @@ class TestTransitions:
         """L108 等价性的机械验证：读方法体里不出现 commit。"""
         import inspect
         import app.db.strategy_store as ss
-        for name in ("get", "latest_active", "get_decisions"):
+        for name in ("get", "query", "running", "latest_running", "latest_active", "get_decisions"):
             src = inspect.getsource(getattr(ss.StrategyStore, name))
             assert ".commit()" not in src, (
                 f"{name} 在返回 ORM 对象前提交了事务 —— expire_on_commit 会变得可观测")

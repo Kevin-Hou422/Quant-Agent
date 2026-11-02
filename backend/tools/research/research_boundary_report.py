@@ -402,8 +402,9 @@ def _suggest(d: dict) -> List[dict]:
         out.append({
             "option": "future_window", "test_start": str(future.date()), "needs_user_confirmation": True,
             "already_exposed": False,
-            "meaning": ("从今天之后的下一个交易日开始、先预登记：在登记之前不可能有人看过。代价是 Test 从 0 开始、"
-                        "只随新数据增长；统计门槛不因此降低")})
+            "meaning": (f"从登记日之后的下一个交易日开始、先预登记：在登记之前不可能有人看过。{future.date()} 是按出报告"
+                        "这一天算的；真正登记时用 `register_research_boundary.py --test-start next-session`，按登记那一刻"
+                        "重新算（不要照抄这个日期）。代价是 Test 从 0 开始、只随新数据增长；统计门槛不因此降低")})
         conv = _next_session_after(pd.Timestamp(seen_end) - pd.DateOffset(years=CONVENTIONAL_TEST_YEARS))
         out.append({
             "option": "conventional", "test_start": str(conv.date()), "needs_user_confirmation": True,

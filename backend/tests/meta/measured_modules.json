@@ -3,10 +3,10 @@
  "_selection_rule": "一个模块可能有多轮测量。取**同一点数下击杀数最高**的那轮 —— 本项目的工作流只往测试里加断言、不删，故固定点数下击杀率单调不减。不用文件 mtime：多模块批次会在单模块复测之后仍在写盘，mtime 会指错。",
  "_note_state_file_missing": "标了 state_file_missing 的模块：A 档确实测量过（台账有逐条存活分析），但当时的 progress 状态文件后来被清理，数字取自台账而非状态文件。重跑一次即可回到自动生成的口径。",
  "totals": {
-  "modules_with_mutants": 103,
-  "total_points": 2876,
-  "total_survived": 160,
-  "total_killed": 2716
+  "modules_with_mutants": 110,
+  "total_points": 3352,
+  "total_survived": 171,
+  "total_killed": 3181
  },
  "modules": {
   "app/agent/_agent.py": {
@@ -1234,17 +1234,27 @@
    ]
   },
   "app/db/strategy_store.py": {
-   "points": 13,
-   "killed": 12,
-   "survived": 1,
-   "kill_rate": 92.3,
+   "points": 24,
+   "killed": 22,
+   "survived": 2,
+   "kill_rate": 91.7,
    "tests": [
+    "tests/integration/test_running_slot.py",
+    "tests/integration/test_running_slot_edges.py",
+    "tests/integration/test_strategy_approval_transitions.py",
+    "tests/integration/test_strategy_contract.py",
+    "tests/integration/test_strategy_proposal_verdict.py",
+    "tests/integration/test_strategy_state_permissions.py",
+    "tests/unit/db/test_strategy_config_endpoints.py",
+    "tests/unit/db/test_strategy_store_and_config_build.py",
     "tests/unit/db/test_strategy_store_schema.py"
    ],
-   "source": "progress_final2.json",
+   "source": "复审 21cd90b 之后的关键路径复核：首轮按导入选路（不含 tests/meta）+ 存活点补测轮（逐点施加同一变异、只跑新补的用例），按变异点取并集；点数按现行源码（补测时删掉的冗余写法不再产生点）",
    "all_runs": [
     38.5,
-    92.3
+    92.3,
+    87.5,
+    91.7
    ]
   },
   "app/db/trial_ledger.py": {
@@ -1601,21 +1611,24 @@
    ]
   },
   "app/core/execution/intraday_watchdog.py": {
-   "points": 36,
-   "killed": 35,
-   "survived": 1,
-   "kill_rate": 97.2,
+   "points": 62,
+   "killed": 60,
+   "survived": 2,
+   "kill_rate": 96.8,
    "tests": [
+    "tests/integration/test_acceptance_evidence_binding.py",
+    "tests/integration/test_alerting_edges.py",
+    "tests/integration/test_go_no_go.py",
     "tests/integration/test_intraday_watchdog.py",
     "tests/integration/test_intraday_watchdog_edges.py",
-    "tests/integration/test_kill_switch_mid_batch.py",
-    "tests/integration/test_order_manager_edge_paths.py",
-    "tests/integration/test_quote_contract_boundaries.py"
+    "tests/integration/test_watchdog_coverage.py"
    ],
-   "source": "D5 关键路径复核（资金切片 / 认领 / 熔断）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "source": "复审 21cd90b 之后的关键路径复核：首轮按导入选路（不含 tests/meta）+ 存活点补测轮（逐点施加同一变异、只跑新补的用例），按变异点取并集；点数按现行源码（补测时删掉的冗余写法不再产生点）",
    "all_runs": [
     61.1,
-    97.2
+    97.2,
+    88.7,
+    96.8
    ]
   },
   "app/db/evidence_store.py": {
@@ -1708,24 +1721,150 @@
     78.6,
     100.0
    ]
+  },
+  "app/core/execution/run_permit.py": {
+   "points": 48,
+   "killed": 47,
+   "survived": 1,
+   "kill_rate": 97.9,
+   "tests": [
+    "tests/integration/test_acceptance_evidence_binding.py",
+    "tests/integration/test_alert_persistence.py",
+    "tests/integration/test_forward_daily_end_to_end.py",
+    "tests/integration/test_go_no_go.py",
+    "tests/integration/test_permit_and_evidence_edges.py",
+    "tests/integration/test_phase12_execution_wiring.py",
+    "tests/integration/test_run_permit.py",
+    "tests/integration/test_simulate_acceptance.py",
+    "tests/integration/test_watchdog_coverage.py"
+   ],
+   "source": "复审 21cd90b 之后的关键路径复核：首轮按导入选路（不含 tests/meta）+ 存活点补测轮（逐点施加同一变异、只跑新补的用例），按变异点取并集；点数按现行源码（补测时删掉的冗余写法不再产生点）",
+   "all_runs": [
+    87.8,
+    97.9
+   ]
+  },
+  "app/core/execution/acceptance_evidence.py": {
+   "points": 137,
+   "killed": 137,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_acceptance_evidence_binding.py",
+    "tests/integration/test_go_no_go.py",
+    "tests/integration/test_permit_and_evidence_edges.py",
+    "tests/integration/test_run_permit.py",
+    "tests/integration/test_simulate_acceptance.py"
+   ],
+   "source": "复审 21cd90b 之后的关键路径复核：首轮按导入选路（不含 tests/meta）+ 存活点补测轮（逐点施加同一变异、只跑新补的用例），按变异点取并集；点数按现行源码（补测时删掉的冗余写法不再产生点）",
+   "all_runs": [
+    74.1,
+    100.0
+   ]
+  },
+  "app/tasks/run_permit.py": {
+   "points": 9,
+   "killed": 9,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_acceptance_evidence_binding.py",
+    "tests/integration/test_permit_and_evidence_edges.py",
+    "tests/integration/test_run_permit.py"
+   ],
+   "source": "复审 21cd90b 之后的关键路径复核：首轮按导入选路（不含 tests/meta）+ 存活点补测轮（逐点施加同一变异、只跑新补的用例），按变异点取并集；点数按现行源码（补测时删掉的冗余写法不再产生点）",
+   "all_runs": [
+    55.6,
+    100.0
+   ]
+  },
+  "app/core/execution/order_intent.py": {
+   "points": 140,
+   "killed": 134,
+   "survived": 6,
+   "kill_rate": 95.7,
+   "tests": [
+    "tests/integration/test_frozen_order_intent_ledger.py",
+    "tests/integration/test_limit_fill_and_session_boundaries.py",
+    "tests/integration/test_order_intent_edges.py",
+    "tests/unit/backtest_engine/test_rebalance_accounting.py",
+    "tests/unit/db/test_paper_broker_accounting.py"
+   ],
+   "source": "复审 21cd90b 之后的关键路径复核：首轮按导入选路（不含 tests/meta）+ 存活点补测轮（逐点施加同一变异、只跑新补的用例），按变异点取并集；点数按现行源码（补测时删掉的冗余写法不再产生点）",
+   "all_runs": [
+    65.0,
+    95.7
+   ]
+  },
+  "app/tasks/snapshot_manifest.py": {
+   "points": 38,
+   "killed": 36,
+   "survived": 2,
+   "kill_rate": 94.7,
+   "tests": [
+    "tests/integration/test_go_no_go.py",
+    "tests/integration/test_snapshot_consistency.py",
+    "tests/integration/test_snapshot_manifest_edges.py"
+   ],
+   "source": "复审 21cd90b 之后的关键路径复核：首轮按导入选路（不含 tests/meta）+ 存活点补测轮（逐点施加同一变异、只跑新补的用例），按变异点取并集；点数按现行源码（补测时删掉的冗余写法不再产生点）",
+   "all_runs": [
+    71.1,
+    94.7
+   ]
+  },
+  "app/core/alerting/dispatcher.py": {
+   "points": 58,
+   "killed": 58,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_alert_persistence.py",
+    "tests/integration/test_alerting.py",
+    "tests/integration/test_alerting_edges.py",
+    "tests/integration/test_api_execution.py",
+    "tests/integration/test_go_no_go.py",
+    "tests/integration/test_run_outcome_propagation.py",
+    "tests/unit/execution/test_golive.py"
+   ],
+   "source": "复审 21cd90b 之后的关键路径复核：首轮按导入选路（不含 tests/meta）+ 存活点补测轮（逐点施加同一变异、只跑新补的用例），按变异点取并集；点数按现行源码（补测时删掉的冗余写法不再产生点）",
+   "all_runs": [
+    75.9,
+    100.0
+   ]
+  },
+  "app/tasks/alerts.py": {
+   "points": 9,
+   "killed": 9,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": [
+    "tests/integration/test_alert_persistence.py",
+    "tests/integration/test_alerting.py",
+    "tests/integration/test_alerting_edges.py"
+   ],
+   "source": "复审 21cd90b 之后的关键路径复核：首轮按导入选路（不含 tests/meta）+ 存活点补测轮（逐点施加同一变异、只跑新补的用例），按变异点取并集；点数按现行源码（补测时删掉的冗余写法不再产生点）",
+   "all_runs": [
+    77.8,
+    100.0
+   ]
   }
  },
  "proof_reconciliation": {
   "_doc": "存活变异的处置对账状态。这是本轮交付**已知未闭合**的唯一缺口，写在这里是为了它不会被忘掉。",
-  "modules_with_survivors": 44,
-  "total_survivors": 161,
+  "modules_with_survivors": 57,
+  "total_survivors": 171,
   "proof_files_in_suite": 44,
-  "proof_entries_in_suite": 118,
+  "proof_entries_in_suite": 130,
   "per_file_accounting": "自洽：44 个文件的 PROVEN_EQUIVALENT 条目数与各自声明的存活数逐个相等（由 test_lessons_enforced.py::TestLessonX 强制）",
   "module_level_attribution": "已逐模块对账（2026-09-16）：见 survivor_disposition",
   "why_not": "PROVEN_EQUIVALENT 的键是自由文本（如 'L124 (weights < -tol) → <='），不带模块路径；按 import 归属会错判（risk_gate 的 10 条证明在它自己的文件里，而那个文件并不直接 import 该模块）。所以无法机械地把 138 个存活逐条对上 97 条证明。",
   "what_is_established": "① app/ 下 88 个有变异点的模块全部测量过（本文件对账）；② 每个写了证明的文件，条目数与它声明的存活数一致；③ 每条证明说明 ≥40 字、点名的验证用例真实存在。 ④ 已被反例推翻的证明单独登记在 REFUTED_EQUIVALENCE，并配一条固化反例的可执行用例。",
   "how_to_close": "已完成：97 条键全部改写成 `<模块路径> ×<覆盖点数> — <描述>`，由 test_every_proof_key_declares_its_module_and_point_count 强制格式，由 test_survivor_disposition_reconciles_per_module 逐模块对账。遗留的不是『对不上账』，而是『22 个存活项确实没处置』，见 survivor_disposition。",
   "ratchet": {
-   "proof_entries_min": 118,
+   "proof_entries_min": 130,
    "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
    "refuted_entries_min": 2,
-   "unmeasured_points_max": 2654
+   "unmeasured_points_max": 2357
   },
   "refuted_by_counterexample": {
    "count": 2,
@@ -1751,11 +1890,11 @@
  },
  "measurement_scope": {
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
-  "measured_points": 2876,
+  "measured_points": 3352,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
   "current_plan_points": 5530,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-  "unmeasured_points": 2654,
+  "unmeasured_points": 2357,
   "newly_in_scope_modules": [
    "app/core/risk_engine/factor_model.py",
    "app/core/execution/broker_gateway.py",
@@ -1779,13 +1918,7 @@
    "app/db/corporate_actions.py",
    "app/api/loopback_guard.py",
    "app/core/alerting/desktop_notifier.py",
-   "app/core/alerting/dispatcher.py",
    "app/core/alerting/events.py",
-   "app/tasks/alerts.py",
-   "app/core/execution/order_intent.py",
-   "app/tasks/snapshot_manifest.py",
-   "app/core/execution/run_permit.py",
-   "app/tasks/run_permit.py",
    "app/core/alpha_engine/validation_policy.py",
    "app/core/alpha_engine/ic_metrics.py"
   ],
@@ -2318,6 +2451,14 @@
     "why": "按审计修 R1（冻结委托 order_intent，两套模拟引擎改为消费它）、R2（停写窗口快照 + 清单 + 业务不变量 snapshot_manifest）、R3（运行许可 run_permit）、R4（拒单分类 / 记录失败 / 备份健康）、R7（唯一运行槽）、R8（验收判定按时序）、版本化表达式校验政策（validation_policy）。新模块与改动产生的变异点。 另含 R5（基准规则 b2）、R6（巡检新鲜度只认行情时间）。 另含 IC 双字段（ic_metrics）、min_variance 配对、目标波动逐日估计。",
     "how_it_was_handled": "**未做逐点变异复核**。每项都按审计原话写了有区分力的用例，并用 HEAD（eca36e3）与工作区各跑一遍审计场景，HEAD 复现缺陷、工作区修正（证据文件见追踪表）。唯一做了的单点复核：strategy_contract L185（validate=False→True）被 test_validation_policy 杀死。",
     "owed": "这 341 个点欠逐点复核（数小时级，须先征得同意）。"
+   },
+   {
+    "date": "2026-10-30 (复审固定提交 21cd90b 的三个放行边界与用户决定)",
+    "from": 2654,
+    "to": 2837,
+    "why": "复审放行边界 1（验收判定挪进产品代码 acceptance_evidence：逐场景重算、账户 / 代码 / 执行合同 / 文件哈希绑定，无人值守许可签发与每轮核对、Go/No-Go 共用）、放行边界 2（盘中巡检逐只持仓判定、每拍结论落库、许可读取）、放行边界 3（告警事件写不进去时记到执行库、就绪判断读取、结果未知与损坏行不算就绪）；用户决定：满仓买入力的每日计划记录（order_manager.cycle_plan）、备份跨项一致的证明（backup._committed_state）。",
+    "how_it_was_handled": "三个边界都先在 HEAD（21cd90b）导出副本上跑反例复现（C:\\QuantAgentEnv\review-repro\repro_at_21cd90b.json），再在工作区上跑同一脚本确认修正（repro_working_tree.json）；每条要求按原话写了用例。关键路径变异复核已开跑（运行许可与验收证据、冻结订单意图、快照清单、运行槽、告警与巡检，528 点，选路 = 导入了该模块的测试文件 + 间接用到的验收用例，不含 tests/meta），已完成并记进 critical_path_review（9 个模块、528 + 改写后新增的点，存活全部处置：杀死或机械验证的等价证明），本数随之下调。",
+    "owed": "order_manager（cycle_plan）、backup（_committed_state）、execution_store（events_of）新增的点不在本轮复核的模块里，仍计在未测量点数中。acceptance_evidence 冻结之后改写的 _acc 已单点复核（杀死）。"
    }
   ],
   "critical_path_review": [
@@ -2469,13 +2610,88 @@
      "before": 2697,
      "after": 2313
     }
+   },
+   {
+    "batch": "复审 21cd90b 之后：运行许可与验收证据 / 冻结订单意图与买入力 / 快照清单 / 运行槽 / 告警与盘中巡检",
+    "timing": "首轮 10184 秒（2.8 小时，冻结副本 C:\\QuantAgentEnv\\mutation-src，隔离环境 venv；选路 = 导入了该模块的测试文件 + 间接用到的验收用例，不含 tests/meta）；strategy_store 的导入选路 25 个文件基线超过 300 秒单点超时（判为没测，不是 0%），改用直接用到 StrategyStore 的 8 个文件、单点超时 600 秒重跑 914 秒；补测轮约 900 秒（逐点施加同一变异，只跑新补的用例）",
+    "modules": {
+     "app/core/execution/run_permit.py": {
+      "points": 48,
+      "killed": 47,
+      "survived_after_followup": 1,
+      "first_round_kill_rate": 87.8,
+      "first_round_points": 49
+     },
+     "app/core/execution/acceptance_evidence.py": {
+      "points": 137,
+      "killed": 137,
+      "survived_after_followup": 0,
+      "first_round_kill_rate": 74.1,
+      "first_round_points": 139
+     },
+     "app/tasks/run_permit.py": {
+      "points": 9,
+      "killed": 9,
+      "survived_after_followup": 0,
+      "first_round_kill_rate": 55.6
+     },
+     "app/core/execution/order_intent.py": {
+      "points": 140,
+      "killed": 134,
+      "survived_after_followup": 6,
+      "first_round_kill_rate": 65.0
+     },
+     "app/tasks/snapshot_manifest.py": {
+      "points": 38,
+      "killed": 36,
+      "survived_after_followup": 2,
+      "first_round_kill_rate": 71.1
+     },
+     "app/db/strategy_store.py": {
+      "points": 24,
+      "killed": 22,
+      "survived_after_followup": 2,
+      "first_round_kill_rate": 87.5
+     },
+     "app/core/alerting/dispatcher.py": {
+      "points": 58,
+      "killed": 58,
+      "survived_after_followup": 0,
+      "first_round_kill_rate": 75.9
+     },
+     "app/core/execution/intraday_watchdog.py": {
+      "points": 62,
+      "killed": 60,
+      "survived_after_followup": 2,
+      "first_round_kill_rate": 88.7
+     },
+     "app/tasks/alerts.py": {
+      "points": 9,
+      "killed": 9,
+      "survived_after_followup": 0,
+      "first_round_kill_rate": 77.8
+     }
+    },
+    "what_was_found": [
+     "SQLite 上运行槽的 BEGIN IMMEDIATE 去掉也没有用例发现（并发场景恰好由唯一索引兜住）—— 补了执行顺序的核对",
+     "主库旁边的回滚日志（-journal）判定、报错里点名的是哪个文件：都没有用例 —— 补了",
+     "验收判定的时序边界（恰好在开盘 / 收盘那一刻）、部分成交的『撤单前已成交 / 撤单后部分』、崩溃恢复的三个条件：各自单独翻转都没有用例发现 —— 逐个补了",
+     "满仓买入力：买单金额恰好等于可用资金照发；空头按绝对值占用资金 —— 补了",
+     "等价性证明的机械验证改成『把同一变异施加到函数副本上、随机输入逐元素比对』，并且双向：变异工具运行时模块已是变异式，单向写法会因找不到原式而红、把等价变异记成杀死（本轮当场发现：order_intent 4 个点一度被这样虚报为杀死）",
+     "三处冗余写法直接删掉（acceptance_evidence 的日程起点与撤单后对账、run_permit 的单笔上限判断），不再产生等价变异"
+    ],
+    "unmeasured_points": {
+     "before": 2837,
+     "after": 2357,
+     "note": "before 是清单原记的数；按现行源码实为 2833（补测时删掉冗余写法少了 4 个点）"
+    }
    }
   ]
  },
  "survivor_disposition": {
   "_doc": "存活变异的**逐模块**处置对账。外部审计 2026-09-15 指出原来的『每个文件条目数 == 自己声明的存活数』只是文件内自洽，跨文件汇总从未对过账。现在证明键带模块前缀与覆盖点数（`<模块> ×N — 描述`），可以逐模块机械对账。",
-  "total_survivors": 161,
-  "proven_points": 136,
+  "total_survivors": 171,
+  "proven_points": 147,
   "unproven_points": 25,
   "unproven_by_module": {
    "app/core/alpha_engine/fast_ops.py": 3,

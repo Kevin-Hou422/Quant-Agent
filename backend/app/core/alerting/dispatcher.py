@@ -11,8 +11,18 @@ dispatcher.py — 告警的落盘、去重、重试与送达状态（2026-10-22 
                   handed_to_os（交给了操作系统 —— **不等于有人看见**）/ failed（重试用尽）
     confirmation  人现场确认某条测试通知确实看见了
 
-无人值守就绪 = 最近 `confirm_valid_days` 天内有一次现场确认，且确认之后没有送达失败的事件。
+无人值守就绪 = 最近 `confirm_valid_days` 天内有一次现场确认，且确认之后：
+    · 没有送达失败的事件
+    · 没有结果未知的事件（写了事件行、却没有送达结论 —— 进程在通知途中退出、结论行没写进去）
+    · 事件文件没有读不出来的行（损坏的那一行可能正是一条失败）
+    · 没有"事件根本没写进去"的告警通道故障（复审 21cd90b）
 文件写进去了不算通知成功；通知交给系统了也不算有人看见。
+
+告警通道故障（复审 21cd90b："事件无法持久化、通知结果未知或通道失败时，应有可靠的健康状态使无人值守新增风险受阻；
+不以一条日志代替可供许可判断的状态"）：`emit_safely` 写事件文件失败时，把故障记到**另一份存储** —— 执行库的
+exec_state `alert_channel_fault`（首次 / 最近时刻、次数、错误、哪条告警），并记 exec_events；执行库也写不进去时，
+至少留在本进程里（`_PROCESS_FAULTS`）。就绪判断读它：故障晚于最近一次现场确认 → 不就绪。重启不清除；修好通道后
+重新 `alerts test` + `confirm`（确认晚于故障）才恢复 —— 没有自动清除。
 """
 
 from __future__ import annotations
@@ -31,6 +41,10 @@ from app.core.alerting.events import AlertEvent
 logger = logging.getLogger(__name__)
 
 NOTIFY_SEVERITIES = ("warning", "critical")
+FAULT_KEY = "alert_channel_fault"
+#: 执行库也写不进去时的最后一层：本进程里记得（就绪判断同样读）
+_PROCESS_FAULTS: List[dict] = []
+_UNSET = object()
 
 
 @dataclass
@@ -85,10 +99,11 @@ class AlertDispatcher:
                 fh.flush()
 
     def _rows(self) -> List[dict]:
+        self.corrupt_lines: List[int] = []
         if not self.path.exists():
             return []
         out = []
-        with open(self.path, encoding="utf-8") as fh:
+        with open(self.path, encoding="utf-8", errors="replace") as fh:
             for i, line in enumerate(fh):
                 line = line.strip()
                 if not line:
@@ -96,6 +111,7 @@ class AlertDispatcher:
                 try:
                     out.append(json.loads(line))
                 except ValueError as exc:
+                    self.corrupt_lines.append(i + 1)
                     logger.error("[alerts] 事件文件第 %d 行读不出来（跳过）: %s", i + 1, exc)
         return out
 
@@ -192,9 +208,20 @@ class AlertDispatcher:
         self._append({"type": "confirmation", "event_id": event_id, "actor": actor, "at": self.now().isoformat()})
         logger.warning("[alerts] %s 现场确认测试通知 %s 可见", actor, event_id)
 
-    def unattended_readiness(self) -> Tuple[bool, str]:
+    def unattended_readiness(self, channel_fault=_UNSET) -> Tuple[bool, str]:
+        """`channel_fault`：执行库里记的告警通道故障（缺省读缺省执行库；只读工具从副本读出来传进来，None = 没有）。"""
         now = self.now()
-        hist = self.history()
+        try:
+            hist = self.history()
+        except OSError as exc:
+            logger.error("[alerts] 事件文件读不了: %s", exc)
+            return False, f"事件文件 {self.path} 读不了（{exc}）—— 证明不了通知通道可用"
+        if channel_fault is _UNSET:
+            try:
+                channel_fault = read_channel_fault()
+            except Exception as exc:
+                logger.error("[alerts] 读不到告警通道故障记录: %s", exc)
+                return False, f"读不到告警通道故障记录（{exc}）—— 证明不了告警都写进去了"
         confirmed = [e for e in hist if e.get("confirmed_at")]
         if not confirmed:
             return False, ("桌面通知没有现场确认可见过 —— 不能称为无人值守就绪。"
@@ -208,13 +235,58 @@ class AlertDispatcher:
         if failed:
             return False, (f"确认之后有 {len(failed)} 条告警通知失败（最近：{failed[-1]['title']}）—— "
                            f"通知通道不可达时不能称为无人值守就绪")
+        unknown = [e for e in hist if e["status"] == "written" and e.get("severity") in NOTIFY_SEVERITIES
+                   and datetime.fromisoformat(e["at"]) >= at]
+        if unknown:
+            return False, (f"确认之后有 {len(unknown)} 条告警没有送达结论（最近：{unknown[-1]['title']}）—— "
+                           f"通知结果未知，不能当作送达")
+        if self.corrupt_lines:
+            return False, (f"事件文件有 {len(self.corrupt_lines)} 行读不出来（第 {self.corrupt_lines[:5]} 行…）—— "
+                           f"证明不了其中没有失败")
+        faults = [f for f in ([channel_fault] if channel_fault else []) + _PROCESS_FAULTS
+                  if datetime.fromisoformat(f["last_at"]) >= at]
+        if faults:
+            f = faults[0]
+            return False, (f"确认之后告警事件没能写进事件文件 {f.get('count', 1)} 次（最近 {f['last_at']}：{f.get('title')}，"
+                           f"{f.get('error')}）—— 修好后重新 `alerts test` 并 `confirm`")
         return True, f"{last['confirmed_by']} 于 {at.date()} 现场确认可见；此后没有通知失败"
 
 
+def read_channel_fault(store=None) -> Optional[dict]:
+    """执行库里记的告警通道故障（没有 → None）。"""
+    if store is None:
+        from app.db.execution_store import ExecutionStore
+        store = ExecutionStore()
+    raw = store.get_state(FAULT_KEY)
+    return json.loads(raw) if raw else None
+
+
+def record_channel_fault(ev: AlertEvent, exc: BaseException, now: Optional[datetime] = None, store=None) -> bool:
+    """告警没写进事件文件：把故障记到执行库（另一份存储），供无人值守就绪判断。返回是否落库。"""
+    at = (now or datetime.now(timezone.utc)).isoformat()
+    fault = {"first_at": at, "last_at": at, "count": 1, "kind": ev.kind, "title": ev.title,
+             "severity": ev.severity, "error": f"{type(exc).__name__}: {exc}"}
+    _PROCESS_FAULTS.append(fault)
+    try:
+        prev = read_channel_fault(store)
+        if store is None:
+            from app.db.execution_store import ExecutionStore
+            store = ExecutionStore()
+        if prev:
+            fault = {**fault, "first_at": prev.get("first_at", at), "count": int(prev.get("count", 0)) + 1}
+        store.set_state(FAULT_KEY, json.dumps(fault, ensure_ascii=False))
+        store.add_event("alert_channel_fault", actor="alerting", reason=fault["error"], payload=fault)
+        return True
+    except Exception as exc2:
+        logger.critical("[alerts] 告警通道故障也没能记进执行库（只留在本进程里）: %s", exc2)
+        return False
+
+
 def emit_safely(ev: AlertEvent, dispatcher: Optional[AlertDispatcher] = None) -> Optional[DeliveryReport]:
-    """给交易循环 / 调度器用：告警本身出错只记日志，不打断调用方。"""
+    """给交易循环 / 调度器用：告警本身出错不打断调用方 —— 但故障要落成无人值守能读到的状态（不只是一条日志）。"""
     try:
         return (dispatcher or AlertDispatcher()).emit(ev)
     except Exception as exc:
         logger.error("[alerts] 告警没有写进事件文件（%s：%s）: %s", ev.kind, ev.title, exc)
+        record_channel_fault(ev, exc, now=dispatcher.now() if dispatcher is not None else None)
         return None

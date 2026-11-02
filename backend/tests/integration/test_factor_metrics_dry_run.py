@@ -135,3 +135,88 @@ class TestDryRun:
         monkeypatch.setattr(settings, "database_url", f"sqlite:///{live.as_posix()}")
         with pytest.raises(fm.PreviewRefused, match="副本"):
             fm.dry_run(live, "synthetic_test", None, None, loader=_loader)
+
+
+class TestWritebackPlan:
+    """
+    2026-10-30 用户决定 4："请先在一致快照副本上完成预演，列出：每条记录旧值、新值、来源、样本、算法和时钟版本；旧算法纠错
+    与使用 moomoo/c2/新边界重新评估的不同修订理由；受影响的排序、准入和历史结论；修订记录、回滚步骤和恢复验证。完成差异后
+    交我确认；不要直接写活库。"
+    """
+
+    def _copy(self, tmp_path, old_schema=False):
+        db = _live(tmp_path)
+        if old_schema:                                         # 活库现状：还没有 ic_mean / ic_metrics 两列
+            con = sqlite3.connect(db)
+            con.execute("ALTER TABLE alpha_records DROP COLUMN ic_mean")
+            con.execute("ALTER TABLE alpha_records DROP COLUMN ic_metrics")
+            con.commit()
+            con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            con.close()
+        return db, Path(fm.snapshot_live(db, tmp_path / "preview")["copy"])
+
+    @pytest.mark.parametrize("old_schema", [False, True])
+    def test_the_fix_is_rehearsed_with_revisions_rollback_and_restore_on_copies_only(self, tmp_path, old_schema):
+        live, copy = self._copy(tmp_path, old_schema)
+        before = _fingerprint(live), _fingerprint(copy)
+        plan = fm.writeback_plan(copy, tmp_path / "plan")
+        assert (_fingerprint(live), _fingerprint(copy)) == before, "活库与快照副本都不能被写"
+        assert plan["migration"]["add_columns"] == (["ic_mean", "ic_metrics"] if old_schema else [])
+        fix = {c["id"]: c for c in plan["fix"]}
+        assert set(fix) == {1, 2, 3} and plan["fix_unresolved"] == []
+        assert fix[1]["new"]["ic_mean"] == pytest.approx(-0.02) and fix[1]["new"]["ic_ir"] is None
+        assert json.loads(fix[1]["new"]["ic_metrics"])["status"] == "values_without_provenance"
+        assert json.loads(fix[3]["new"]["ic_metrics"])["status"] == "never_evaluated"
+        assert {c["reason_kind"] for c in plan["fix"]} == {fm.FIX}
+        r = plan["rehearsal"]
+        assert r["after_apply"]["ok"] is True and r["after_apply"]["revision_rows_added"] == 3
+        assert r["logical_rollback"] == {**r["logical_rollback"], "original_columns_restored": True,
+                                         "revision_rows_removed": True}
+        assert r["physical_rollback"]["ok"] is True
+        ranks = plan["affected"]["ranks"]
+        assert ranks[2]["by_ic_ir_before"] == 1 and (ranks[2]["by_ic_mean_after"], ranks[1]["by_ic_mean_after"]) == (1, 2)
+        assert plan["affected"]["admission"][1]["status_changes"].startswith("无")
+
+    def test_a_value_that_changed_since_planning_aborts_the_whole_transaction(self, tmp_path):
+        _live_db, copy = self._copy(tmp_path)
+        plan = fm.writeback_plan(copy, tmp_path / "plan")
+        work = tmp_path / "w.db"
+        import shutil
+        shutil.copy2(copy, work)
+        con = sqlite3.connect(work)
+        con.execute("UPDATE alpha_records SET ic_ir = 0.5 WHERE id = 2")         # 计划之后有人改了这一行
+        con.commit()
+        con.close()
+        before = _fingerprint(work)[0]
+        with pytest.raises(RuntimeError, match="#2"):
+            fm._apply_fix(work, plan["fix"], "tester", "2026-10-30T00:00:00+00:00")   # noqa: SLF001
+        con = sqlite3.connect(work)
+        assert con.execute("SELECT count(*) FROM alpha_decisions WHERE decision = 'metric_fix'").fetchone()[0] == 0
+        assert con.execute("SELECT ic_ir FROM alpha_records WHERE id = 1").fetchone()[0] == pytest.approx(-0.02)
+        con.close()
+        assert _fingerprint(work)[0] == before
+
+    @pytest.mark.parametrize("src,boundary,executable", [("yahoo", "provisional", False), ("moomoo", "provisional", False),
+                                                         ("moomoo", "registered", True)])
+    def test_reevaluation_is_a_separate_set_and_only_moomoo_on_a_registered_boundary_is_executable(
+            self, tmp_path, src, boundary, executable):
+        _live_db, copy = self._copy(tmp_path)
+        from app.core.alpha_engine.ic_metrics import ic_fields
+        rep = {"versions": {"algorithm": "RealisticBacktester", "code_version": "abc", "boundary": boundary,
+                            "data": {"price_source": src}},
+               "records": [{"id": 1, "proposed_fields": ic_fields(0.01, 0.2, 300, source="dry", segment="selection",
+                                                                  window=["2021-01-04", "2026-10-02"])}]}
+        p = tmp_path / "dry.json"
+        p.write_text(json.dumps(rep), encoding="utf-8")
+        plan = fm.writeback_plan(copy, tmp_path / "plan", reevaluation=p)
+        re = plan["reevaluation"]
+        assert re["executable"] is executable and re["changes"][0]["reason_kind"] == fm.REEVAL
+        c = re["changes"][0]
+        assert (c["n_obs"], c["price_source"], c["window"]) == (300, src, ["2021-01-04", "2026-10-02"])
+        assert {x["reason_kind"] for x in plan["fix"]} == {fm.FIX}             # 两种理由不合并
+
+    def test_the_command_line_writes_only_the_plan(self, tmp_path, capsys):
+        _live_db, copy = self._copy(tmp_path)
+        assert fm.main(["writeback-plan", "--copy", str(copy), "--out", str(tmp_path / "plan")]) == 0
+        assert (tmp_path / "plan" / "writeback_plan.json").exists()
+        assert '"writes": "rehearsal copies only' in capsys.readouterr().out

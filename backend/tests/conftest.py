@@ -99,6 +99,13 @@ def _hermetic_run_flags(tmp_path_factory):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_alert_fault_carried_over(monkeypatch):
+    """告警通道故障的进程内记录（复审 21cd90b）：一条用例里的故障不能让后面用例的无人值守就绪判断失败。"""
+    from app.core.alerting import dispatcher
+    monkeypatch.setattr(dispatcher, "_PROCESS_FAULTS", [])
+
+
 @pytest.fixture
 def fresh_db(tmp_path, monkeypatch):
     """
