@@ -798,19 +798,22 @@ class OrderManager:
     def _record_plan(self, decision_date, build, dec, rep: ExecutionReport) -> None:
         """
         这一轮的调仓计划落库（exec_events `cycle_plan`；2026-10-30 用户决定"满仓买入力首轮保留整张拒绝"）：
-        计划单、资金占用、被拒原因、剩余现金；以及**上一个决策日因资金不足被拒的买单，这一轮怎么重新决策的**。
-        被拒的买单不会自动重发 —— 下一轮按当时的目标、持仓与资金重新算；记下的是决策，不是成交，也不承诺次日能成交。
+        计划单、资金占用、被拒原因、资金不足缩了量的买单（原数量 → 实发数量）、剩余现金；
+        以及**上一个决策日因资金不足被拒或缩量的买单，这一轮怎么重新决策的**。
+        被拒 / 没买够的部分不会自动重发 —— 下一轮按当时的目标、持仓与资金重新算；记下的是决策，不是成交，也不承诺次日能成交。
         """
         row = lambda o, why=None: {"ticker": o.ticker, "side": o.side, "qty": o.qty,                   # noqa: E731
                                    "limit": o.limit_price, "notional": round(o.qty * o.limit_price, 2),
                                    **({"reason": why} if why else {})}
         approved = [row(o) for o in dec.approved]
         rejected = [row(o, why) for o, why in dec.rejected]
+        resized = [{**row(o), "planned_qty": q, "reason": "insufficient_buying_power"} for o, q in dec.resized]
         planned = {(o.ticker, o.side) for o in build.orders}
         prev = next((json.loads(e.payload or "{}") for e in self.store.events_of("cycle_plan", 30)
                      if json.loads(e.payload or "{}").get("decision_date", "") < str(decision_date)), None)
         redecided = []
-        for r in (prev or {}).get("rejected", []):
+        short = [{**r, "qty": r["planned_qty"] - r["qty"]} for r in (prev or {}).get("resized", [])]
+        for r in (prev or {}).get("rejected", []) + short:
             if r.get("reason") != "insufficient_buying_power":
                 continue
             key = (r["ticker"], r["side"])
@@ -822,7 +825,7 @@ class OrderManager:
                               "rejected_on": prev["decision_date"], "this_cycle": now[0], "qty_now": now[1]})
         self.store.add_event("cycle_plan", actor="order_manager", reason=str(decision_date), payload={
             "decision_date": str(decision_date), "capital": rep.capital, "approved": approved, "rejected": rejected,
-            "skipped": build.skipped, "n_duplicate": rep.n_duplicate, "previous_rejections": redecided})
+            "resized": resized, "skipped": build.skipped, "n_duplicate": rep.n_duplicate, "previous_rejections": redecided})
 
     def _independent_quotes(self, tickers: List[str], rep: ExecutionReport) -> dict:
         """待交易标的的独立报价（F09）。取不到 → 空表：减仓照常，新开仓在下单门被拦下。"""

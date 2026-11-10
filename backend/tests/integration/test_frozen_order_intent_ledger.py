@@ -43,10 +43,30 @@ def _fill(side, lim, o, h, lo):
     return o if o >= lim else (lim if h >= lim else None)
 
 
+def _scale_buys(orders, power):
+    """
+    资金不足时的缩量（手写，不用产品代码）：买单要的钱 > 可用资金 → 每张 × (资金 / 要的钱)、整股向下取整；
+    再按"舍掉的零头从大到小、相同按代码"每张各补一股，补了会超资金的跳过。缩到 0 股的不发。卖单不动。
+    """
+    buys = [o for o in orders if o[1] > 0]
+    need = sum(q * lim for _, _, q, lim in buys)
+    if not buys or round(need, 6) <= round(power, 6):
+        return orders
+    ratio = max(power, 0.0) / need
+    exact = {k: q * ratio for k, _, q, _ in buys}
+    got = {k: math.floor(exact[k] + 1e-9) for k in exact}
+    spent = sum(got[k] * lim for k, _, _, lim in buys)
+    for k, _, q, lim in sorted(buys, key=lambda o: (-round(exact[o[0]] - got[o[0]], 9), o[0])):
+        if power > 0 and got[k] < q and round(spent + lim, 6) <= round(power, 6):
+            got[k] += 1
+            spent += lim
+    return [o for o in orders if o[1] < 0] + [(k, s, got[k], lim) for k, s, _, lim in buys if got[k] > 0]
+
+
 def _hand_ledger(bars, w, capital, vol=None, mpp=1.0, fee_bps=0.0, long_only_cash=True):
     """
-    股数 + 现金。T 收盘：数量 = trunc(w × T 收盘权益 / T 收盘价) − 现有股数（整股）；纯多头时买单按
-    "卖单在前、买单按代码顺序"累计 数量 × 限价，超出（T 收盘权益 − T 收盘持仓市值）的买单不发。
+    股数 + 现金。T 收盘：数量 = trunc(w × T 收盘权益 / T 收盘价) − 现有股数（整股）；纯多头时全部买单的
+    数量 × 限价 超出可用资金（T 收盘权益 − T 收盘持仓市值）→ 全部买单按同一比例缩量（`_scale_buys`，手写）。
     T+1：按限价规则成交；成交量 ≤ floor(截至 T 的 ADV × 参与率 / 开盘价)；DAY 单不成交就作废（剩余量不留到下一天）。
     返回每日收盘净值 / 初始资金，以及逐日成交 {(日期, 代码): (股数, 价格)}。
     """
@@ -72,14 +92,7 @@ def _hand_ledger(bars, w, capital, vol=None, mpp=1.0, fee_bps=0.0, long_only_cas
                     orders.append((k, side, q, _tick_limit(c[k], side)))
             orders = [o for o in orders if o[1] < 0] + [o for o in orders if o[1] > 0]
             if long_only_cash:
-                power, spent, kept = eq - sum(abs(sh[k] * c[k]) for k in names), 0.0, []
-                for o in orders:
-                    if o[1] > 0:
-                        if round(spent + o[2] * o[3], 6) > round(power, 6):
-                            continue
-                        spent += o[2] * o[3]
-                    kept.append(o)
-                orders = kept
+                orders = _scale_buys(orders, eq - sum(abs(sh[k] * c[k]) for k in names))
             for k, side, q, lim in orders:
                 p = _fill(side, lim, open_.loc[d, k], high.loc[d, k], low.loc[d, k])
                 if p is None:
@@ -174,7 +187,7 @@ def test_a_day_order_that_missed_is_refrozen_the_next_day(tmp_path):
 
 
 def _two_names():
-    """A、B 两只；第 2 天从 A 全换到 B —— 卖 A 的钱当天不能拿来买 B（买入力不预支未成交卖单）。"""
+    """A、B 两只；第 2 天从 A 全换到 B —— 卖 A 的钱当天不能拿来买 B（买入力不预支未成交卖单），只能先用手里的现金买一部分。"""
     rows = [[(100, 100, 100, 100), (50, 50, 50, 50)],
             [(100, 101, 99, 100), (50, 51, 49, 50)],
             [(100, 101, 99, 101), (50, 51, 49, 51)],
@@ -190,8 +203,10 @@ def test_a_rotation_waits_for_the_sale_cash_like_the_broker(tmp_path):
     bars, w = _two_names()
     hand, fills = _hand_ledger(bars, w, 100_000.0)
     idx = bars["close"].index
-    assert fills[(idx[3], "A")][0] < 0 and (idx[3], "B") not in fills, "卖 A 的同一天不能用这笔钱买 B"
-    assert fills[(idx[4], "B")][0] > 0
+    # 换仓那天：手里只有约 5% 的现金，买 B 的单缩到这笔现金买得起的股数（不是整张不发，也不是预支卖 A 的钱）
+    first_b, px_b = fills[(idx[3], "B")]
+    assert fills[(idx[3], "A")][0] < 0 and 0 < first_b * px_b <= 5_100.0, "卖 A 的同一天不能用这笔钱买 B"
+    assert fills[(idx[4], "B")][0] > first_b, "卖 A 的钱到账后，下一天才买足"
     bt, pb = _engines(bars, w, 100_000.0, tmp_path)
     assert bt == pytest.approx(np.asarray(hand), abs=1e-12) and pb == pytest.approx(np.asarray(hand), abs=1e-12)
 

@@ -144,13 +144,14 @@ class PaperBroker:
         pre_w = drift_weights(prev_w, on_chg)
         tgt = (target_w.reindex(tickers).fillna(0.0).to_numpy(dtype=float) if target_w is not None
                else pre_w.copy())
-        rejected = {}
+        rejected, resized = {}, set()
         if target_w is not None and self.initial_capital > 0:
             # 昨收冻结的委托（2026-10-25 审计 R1）：数量在昨收按 v_prev 与昨收参考价冻结，不按开盘市值重新解释
             pre_w, want, px, plan = open_targets(
                 tgt, prev_w, pre_w, v_prev, v_open, p_prev, o_eff, o_raw, h_raw, l_raw, tickers,
                 decision_date, date, self.band, self.whole_shares, tradable=~stale)
             rejected = {r["ticker"]: r["reason"] for r in plan.rejected}
+            resized = {r["ticker"] for r in plan.resized}
         elif target_w is not None:
             # 初始资金 0 = 只看权重：没有权益就冻结不出股数，目标权重按限价规则直接撮合（与 BacktestEngine 同）
             from app.core.clock import limit_fill_prices
@@ -192,16 +193,22 @@ class PaperBroker:
         pv = max(v_open, 0.0)
         for i, tk in enumerate(tickers):
             # 没交易、没持仓、也没有未成交的意图 → 跳过；一笔**完全没成交**的订单（c2 限价没碰到）必须留记录，
-            # 冻结时就因资金不足没发的买单也留记录（insufficient_buying_power，未成交量 = 目标与调仓前之差）
+            # 冻结时就因资金不足没发的买单也留记录（insufficient_buying_power，未成交量 = 目标与调仓前之差）；
+            # 资金不足缩了量的买单：委托的那部分正常成交时，把没委托的差额记成 buying_power_resized
             unfilled = float(fr.unfilled_d[i])
+            shrunk = tk in resized and abs(unfilled) <= 1e-12
             if tk in rejected:
                 unfilled = float(tgt[i] - pre_w[i])
+            elif shrunk:
+                unfilled = float(tgt[i] - want[i])
             if abs(delta[i]) < 1e-12 and abs(filled[i]) < 1e-12 and abs(unfilled) <= 1e-12:
                 continue
             # 未成交的原因分得开（用户决策 #2）：limit_not_reached（限价没碰到）/ participation（成交量打满）/
             # net_exposure_*（整组新增订单被缩减 / 暂缓，否则部分成交会把净敞口推出限额）
             if tk in rejected:
                 reject = rejected[tk]
+            elif shrunk:
+                reject = "buying_power_resized"
             elif abs(unfilled) <= 1e-12:
                 reject = ""
             elif limit_blocked[i]:

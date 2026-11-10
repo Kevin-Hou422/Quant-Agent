@@ -778,7 +778,7 @@ cd backend  && pytest -q          # ~5550 tests, ~40 min. No test may reach the 
 # on a mirror of the working tree without any .env (decision D3):
 py -3.12 backend/tools/env/isolated_test_env.py create   # once: C:\QuantAgentEnv\lock-test
 py -3.12 backend/tools/env/isolated_test_env.py stage    # mirror the working tree (.env* never copied)
-py -3.12 backend/tools/env/isolated_test_env.py run -- -q
+py -3.12 backend/tools/env/isolated_test_env.py run -- -q   # ~23 min on AC power; reports suspend time and battery use
 cd frontend && npm run test       # 121 passed (11 files)
 cd frontend && npx tsc -b         # type check (what CI runs; `--noEmit` on the root tsconfig checks nothing)
 ```

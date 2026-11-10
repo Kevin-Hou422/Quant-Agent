@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -135,6 +135,8 @@ class GateContext:
 class GateDecision:
     approved: List[PlannedOrder] = field(default_factory=list)
     rejected: List[Tuple[PlannedOrder, str]] = field(default_factory=list)
+    #: 资金不足缩了量的买单：(缩量后的单, 原数量)。缩量后的单在 approved 里
+    resized:  List[Tuple[PlannedOrder, int]] = field(default_factory=list)
     halted:   str = ""                       # 整体熔断原因（kill_switch / daily_loss）
     notes:    List[str] = field(default_factory=list)
 
@@ -145,6 +147,8 @@ class GateDecision:
             "halted": self.halted,
             "rejected": [{"client_id": o.client_id, "ticker": o.ticker, "side": o.side,
                           "qty": o.qty, "reason": r} for o, r in self.rejected],
+            "resized": [{"client_id": o.client_id, "ticker": o.ticker, "planned_qty": q, "qty": o.qty,
+                         "reason": "insufficient_buying_power"} for o, q in self.resized],
             "notes": list(self.notes),
         }
 
@@ -327,9 +331,25 @@ def check(orders: List[PlannedOrder], ctx: GateContext, limits: PreTradeLimits) 
     sector_cap = (None if limits.max_sector_weight is None
                   else limits.max_sector_weight * limits.max_gross)
 
+    # 可用资金不够付全部买单 → 先把买单按同一比例缩到买得起（order_intent.BUYING_POWER_RULE，与模拟冻结同一函数），
+    # 再逐张过下面的风控。先缩再查：满仓换仓时买单按原数量算最坏敞口必然超总敞口上限，缩到剩余资金之内才有意义。
+    # 熔断时不是全平的单反正不发，不参与分配。
+    from app.core.execution.order_intent import scale_buys_to_power
+    buys = [o for o in orders if o.side == "BUY" and not (ctx.kill_switch and o.purpose != PURPOSE_FLATTEN)]
+    scaled: Dict[str, int] = {}
+    if buys:
+        new = scale_buys_to_power([o.qty for o in buys], [o.limit_price for o in buys],
+                                  None if power is None else power - buy_spent, True, [o.ticker for o in buys])
+        scaled = {o.client_id: int(n) for o, n in zip(buys, new)}
+
     for o in orders:
         if ctx.kill_switch and o.purpose != PURPOSE_FLATTEN:
             dec.rejected.append((o, "kill_switch_engaged")); continue
+        planned_qty = o.qty
+        if o.client_id in scaled and scaled[o.client_id] != o.qty:
+            if scaled[o.client_id] <= 0:
+                dec.rejected.append((o, "insufficient_buying_power")); continue
+            o = replace(o, qty=scaled[o.client_id])
         if o.ticker in ctx.quarantined and increases_risk(float(ctx.current_qty.get(o.ticker, 0.0)), o.signed_qty):
             dec.rejected.append((o, "corporate_action_quarantine")); continue
 
@@ -402,11 +422,7 @@ def check(orders: List[PlannedOrder], ctx: GateContext, limits: PreTradeLimits) 
             if worse and round(max(abs(hi), abs(lo)) / equity, _W_DIGITS) > limits.max_net:
                 undo("exceeds_net_limit"); continue
 
-        if o.side == "BUY":
-            cost = float(o.qty) * float(o.limit_price)
-            if power is None or round(buy_spent + cost, _USD_DIGITS) > round(power, _USD_DIGITS):
-                undo("insufficient_buying_power"); continue
-            buy_spent += cost
-
+        if o.qty != planned_qty:
+            dec.resized.append((o, planned_qty))
         dec.approved.append(o)
     return dec

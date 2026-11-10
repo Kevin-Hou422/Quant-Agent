@@ -174,3 +174,67 @@ class TestChildEnvironment:
             assert k not in env
         assert env["VIRTUAL_ENV"] == str(venv) and env["PATH"].startswith(str(venv / "Scripts"))
         assert env["OPENBLAS_NUM_THREADS"] == "1"
+
+
+class TestRunTimingIsComparable:
+    """
+    一次全量回归报了 4.5 小时（同一套用例接着电源只要 23 分钟）：系统睡眠记录显示笔记本中途待机 3 个多小时，
+    其余时间在用电池。`run` 要自己量出待机、报出电源，并请求系统别因空闲待机。
+    """
+
+    @staticmethod
+    def _clock(times):
+        it = iter(times)
+        return lambda: next(it)
+
+    def test_time_the_machine_spent_suspended_is_measured_and_load_jitter_is_not(self):
+        # 每 5 秒一拍：正常 → 晚到 20 秒（负载）→ 中间隔了 3 小时 27 分（待机）→ 正常
+        w = ite.SuspendWatch(interval=5.0, slack=30.0, clock=self._clock([0, 5, 30, 35, 35 + 12_420, 12_460]))
+        for _ in range(5):
+            w.tick()
+        assert w.suspended == 12_415.0 and [g["seconds"] for g in w.gaps] == [12_415]
+
+    def test_a_gap_exactly_at_the_slack_is_not_a_suspend(self):
+        w = ite.SuspendWatch(interval=5.0, slack=30.0, clock=self._clock([0, 35, 70.5]))
+        w.tick()
+        assert w.suspended == 0.0
+        w.tick()
+        assert w.suspended == 30.5
+
+    def test_the_report_says_when_the_duration_cannot_be_compared(self):
+        ac, batt = {"ac": True, "battery_pct": 90, "saver": False}, {"ac": False, "battery_pct": 40, "saver": True}
+        assert ite.run_report(1383.0, 0.0, ac, ac) == ["[env] 用时 1383 秒（期间机器没有待机）"]
+        slept = ite.run_report(16197.0, 12415.0, ac, ac)
+        assert "待机 12415 秒" in slept[0] and "实际在跑 3782 秒" in slept[0] and "不能当作测试变慢的证据" in slept[1]
+        on_battery = ite.run_report(4400.0, 0.0, ac, batt)
+        assert len(on_battery) == 2 and "用电池" in on_battery[1] and "40%" in on_battery[1] and "节电模式" in on_battery[1]
+        assert "读不到" in ite.run_report(10.0, 0.0, {"ac": None}, {"ac": None})[1]
+
+    def test_a_run_asks_the_system_to_stay_awake_and_records_itself(self, tmp_path, capsys):
+        import json
+        calls = []
+        runner = FakeRunner()
+        code = ite.run_pytest(["py", "-m", "pytest", "-q"], tmp_path, {"PATH": "x"}, tmp_path / ite.RUN_HISTORY, ["-q"],
+                              runner=runner, watch=ite.SuspendWatch(interval=0.01),
+                              power=lambda: {"ac": False, "battery_pct": 55, "saver": False},
+                              awake=lambda on: calls.append(on) or True)
+        assert code == 0 and calls == [True, False], "先请求不待机，结束后（含出错）撤销"
+        assert "用电池" in capsys.readouterr().out
+        (row,) = [json.loads(x) for x in (tmp_path / ite.RUN_HISTORY).read_text(encoding="utf-8").splitlines()]
+        assert row["args"] == ["-q"] and row["returncode"] == 0 and row["power_start"]["ac"] is False
+        assert row["suspended_s"] == 0.0 and row["keep_awake_requested"] is True
+
+    def test_the_stay_awake_request_is_withdrawn_even_if_the_run_blows_up(self, tmp_path):
+        calls = []
+
+        def boom(*a, **k):
+            raise OSError("解释器不见了")
+        with pytest.raises(OSError):
+            ite.run_pytest(["py"], tmp_path, {}, tmp_path / ite.RUN_HISTORY, [], runner=boom,
+                           watch=ite.SuspendWatch(interval=0.01), power=lambda: {"ac": True},
+                           awake=lambda on: calls.append(on) or True)
+        assert calls == [True, False]
+
+    def test_power_status_never_guesses(self):
+        st = ite.power_status()
+        assert set(st) == {"ac", "battery_pct", "saver"} and st["ac"] in (True, False, None)

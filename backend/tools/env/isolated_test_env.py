@@ -15,6 +15,10 @@ stage   把仓库工作树（git 跟踪的 + 没被忽略的新文件）镜像�
         为什么要镜像：测试从仓库的 backend/ 跑会读到那里的活 .env（Settings 的 env_file=".env"）。
         `.env*` 一律不拷（`*.example` 模板除外）；工作树里删掉的文件也从镜像里删掉。
 run     在镜像的 backend/ 里用这个 venv 跑 pytest；子进程只带白名单环境变量（系统里设的配置变量不进测试）。
+        运行期间请求系统不要待机，结束时报告：墙上用时、其中机器待机了多久、开始 / 结束时是不是在用电池；
+        每次运行在 <root>/<name>/run_history.jsonl 追加一行。来由：一次全量回归报了 4.5 小时，查系统睡眠记录是
+        笔记本中途待机了 3 个多小时，剩下的时间在用电池（降频，实测慢约 3 倍）；接着电源同一套用例 23 分钟。
+        耗时只有在"没待机、接着电源"时才能互相比较。
 
 只用标准库：用任何 3.12 解释器都能跑，不依赖要被安装的包。
 """
@@ -29,6 +33,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Mapping, Optional
@@ -184,6 +190,125 @@ def child_env(base: Mapping[str, str], venv: Path) -> Dict[str, str]:
     return env
 
 
+# ---------------------------------------------------------------------- 运行时的机器状态
+RUN_HISTORY = "run_history.jsonl"
+_ES_CONTINUOUS, _ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+
+
+def power_status() -> dict:
+    """{"ac": 接着电源?, "battery_pct": 电量, "saver": 节电模式?}；不是 Windows / 取不到 → 值为 None（不猜）。"""
+    out = {"ac": None, "battery_pct": None, "saver": None}
+    if os.name != "nt":
+        return out
+    try:
+        import ctypes
+
+        class _Status(ctypes.Structure):
+            _fields_ = [("ACLineStatus", ctypes.c_ubyte), ("BatteryFlag", ctypes.c_ubyte),
+                        ("BatteryLifePercent", ctypes.c_ubyte), ("SystemStatusFlag", ctypes.c_ubyte),
+                        ("BatteryLifeTime", ctypes.c_ulong), ("BatteryFullLifeTime", ctypes.c_ulong)]
+        st = _Status()
+        if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(st)):
+            out["ac"] = {0: False, 1: True}.get(int(st.ACLineStatus))
+            out["battery_pct"] = int(st.BatteryLifePercent) if st.BatteryLifePercent <= 100 else None
+            out["saver"] = bool(st.SystemStatusFlag & 1)
+    except (OSError, AttributeError) as exc:
+        print(f"[env] 读不到电源状态: {exc}", file=sys.stderr)
+    return out
+
+
+def keep_awake(on: bool) -> bool:
+    """请求系统在运行期间不要因空闲待机（合盖 / 电量耗尽仍会待机 —— 所以另有 SuspendWatch 量出来）。返回是否生效。"""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        flags = _ES_CONTINUOUS | (_ES_SYSTEM_REQUIRED if on else 0)
+        return bool(ctypes.windll.kernel32.SetThreadExecutionState(flags))
+    except (OSError, AttributeError) as exc:
+        print(f"[env] 设不了防待机: {exc}", file=sys.stderr)
+        return False
+
+
+class SuspendWatch:
+    """
+    量出运行期间机器待机了多久：每 `interval` 秒记一次墙上时间，两次之间隔得比 interval + slack 还久，
+    多出来的就是机器没在跑的时间（待机 / 休眠）。负载再重，一个只睡觉的线程也不会晚到几十秒。
+    """
+
+    def __init__(self, interval: float = 5.0, slack: float = 30.0, clock: Callable[[], float] = time.time):
+        self.interval, self.slack, self.clock = float(interval), float(slack), clock
+        self.suspended = 0.0
+        self.gaps: List[dict] = []
+        self._last = clock()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def tick(self) -> None:
+        now = self.clock()
+        gap = now - self._last
+        if gap > self.interval + self.slack:
+            self.suspended += gap - self.interval
+            self.gaps.append({"from": datetime.fromtimestamp(self._last, timezone.utc).isoformat(timespec="seconds"),
+                              "seconds": round(gap - self.interval)})
+        self._last = now
+
+    def start(self) -> "SuspendWatch":
+        def loop():
+            while not self._stop.wait(self.interval):
+                self.tick()
+        self._thread = threading.Thread(target=loop, name="suspend-watch", daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> float:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.interval + 1)
+        self.tick()
+        return self.suspended
+
+
+def run_report(wall: float, suspended: float, before: dict, after: dict) -> List[str]:
+    """运行结束时给人看的几行：用时、待机、电源；耗时不可比的情况明说。"""
+    lines = [f"[env] 用时 {wall:.0f} 秒" + (f"，其中机器待机 {suspended:.0f} 秒（实际在跑 {wall - suspended:.0f} 秒）"
+                                           if suspended >= 1 else "（期间机器没有待机）")]
+    if suspended >= 1:
+        lines.append("[env] 注意：pytest 自己报的耗时包含待机的时间，不能当作测试变慢的证据")
+    on_battery = before.get("ac") is False or after.get("ac") is False
+    if on_battery:
+        pct = after.get("battery_pct")
+        lines.append("[env] 注意：这次运行（至少一部分）在用电池" + (f"（结束时电量 {pct}%）" if pct is not None else "")
+                     + (" 且开着节电模式" if before.get("saver") or after.get("saver") else "")
+                     + " —— 本机实测用电池比接电源慢约 3 倍，这个耗时不能与接电源时的比较")
+    elif before.get("ac") is None:
+        lines.append("[env] 电源状态读不到 —— 耗时能不能与以前比较，无从判断")
+    return lines
+
+
+def run_pytest(cmd: List[str], cwd: Path, env: Mapping[str, str], history: Path, args: List[str],
+               runner: Runner = subprocess.run, watch: Optional[SuspendWatch] = None,
+               power: Callable[[], dict] = power_status, awake: Callable[[bool], bool] = keep_awake,
+               clock: Callable[[], float] = time.time) -> int:
+    before, t0 = power(), clock()
+    kept = awake(True)
+    watch = (watch or SuspendWatch()).start()
+    try:
+        code = runner(cmd, cwd=str(cwd), env=dict(env)).returncode
+    finally:
+        suspended = watch.stop()
+        awake(False)
+    wall, after = clock() - t0, power()
+    for line in run_report(wall, suspended, before, after):
+        print(line)
+    row = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "args": list(args), "returncode": code,
+           "wall_s": round(wall, 1), "suspended_s": round(suspended, 1), "active_s": round(wall - suspended, 1),
+           "suspend_gaps": watch.gaps, "power_start": before, "power_end": after, "keep_awake_requested": kept}
+    with open(history, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return code
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     repo = Path(__file__).resolve().parents[3]
     ap = argparse.ArgumentParser(description="OneDrive 之外按 requirements.lock 建的独立测试环境")
@@ -213,8 +338,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
         args = [x for x in a.pytest_args if x != "--"]
         venv = target / "venv"
-        return subprocess.run([str(_venv_python(venv)), "-m", "pytest", *args], cwd=str(target / "repo" / "backend"),
-                              env=child_env(os.environ, venv)).returncode
+        return run_pytest([str(_venv_python(venv)), "-m", "pytest", *args], target / "repo" / "backend",
+                          child_env(os.environ, venv), target / RUN_HISTORY, args)
     except EnvRefused as exc:
         print(f"拒绝：{exc}")
         return 2

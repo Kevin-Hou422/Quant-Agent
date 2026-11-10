@@ -10,8 +10,9 @@ order_intent.py — 盘后冻结的订单意图：券商计划、纸账本、研
 合同（时钟 c2）：
     决策    T 收盘之后：数量 = trunc(目标权重 × T 收盘切片权益 / T 收盘参考价) − 现有股数（整股，向零取整），
             限价 = 参考价 × (1 ± 限价带) 按最小价位取整（买向下、卖向上）—— 就是券商的 `build_rebalance_orders`
-    资金    买单按顺序累计"数量 × 限价"，超过可用资金（切片权益 − T 收盘持仓市值；未成交卖单的现金不预支）
-            → 这张买单不发（insufficient_buying_power）—— 与下单门的买入力检查同一规则；只对纯多头账本适用
+    资金    全部买单的"数量 × 限价"超过可用资金（切片权益 − T 收盘持仓市值；未成交卖单的现金不预支）
+            → **全部买单按同一比例缩量**（`scale_buys_to_power`，规则名 BUYING_POWER_RULE 进可执行规格的执行合同）；
+            缩到 0 股的那张不发（insufficient_buying_power）—— 与下单门同一函数；模拟里只对纯多头账本适用
     有效    DAY 单，有效 session = T 之后的下一个交易日
     撮合    开盘在限价内 → 开盘价；否则当日最高 / 最低触及限价 → 限价；否则不成交（limit_not_reached）。
             日线 high/low 触及只是撮合近似：不代表能排到队、不保证成交。
@@ -21,13 +22,13 @@ order_intent.py — 盘后冻结的订单意图：券商计划、纸账本、研
 
 两种形态、同一套规则：`freeze_rebalance` 产出逐单的 `OrderIntent`（整股时直接包装券商的 `build_rebalance_orders`）；
 两个模拟引擎逐日调用数组版 `freeze_arrays`（逐单对象版让 1000 天 × 50 只的回测慢 30 倍）。两者逐股、逐限价、
-逐张资金拒单一致，由 tests/integration/test_frozen_order_intent_ledger.py 的随机对照钉住。
+逐张资金缩量一致，由 tests/integration/test_frozen_order_intent_ledger.py 的随机对照钉住。
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import List, Mapping, Optional
 
@@ -37,6 +38,10 @@ import pandas as pd
 TIME_IN_FORCE = "DAY"
 #: 股数从权重反推时的取整容差：整股账本里的持仓只经整股成交改变，反推出来离整数在这个范围内就是整数
 SHARE_TOL = 1e-6
+#: 可用资金不够付全部买单时怎么办。进可执行规格的 execution 段：规则一变就是另一份执行合同（规格哈希、验收证据都不继承）。
+#:   reject_whole_order   （到 2026-10-30 为止）按代码顺序累计，超出的那张买单整张不发 —— 隔离评估：平均只投入 76–87% 权益
+#:   scale_buys_pro_rata  全部买单按同一比例缩量、整股向下取整，再按"被舍掉的零头从大到小"逐股补回，直到再买一股就超资金
+BUYING_POWER_RULE = "scale_buys_pro_rata"
 
 
 @dataclass(frozen=True)
@@ -70,6 +75,7 @@ class IntentPlan:
     intents:  List[OrderIntent] = field(default_factory=list)
     rejected: List[dict] = field(default_factory=list)     # 冻结时就不发的（资金不足）
     skipped:  List[dict] = field(default_factory=list)     # 不需要 / 不能下（无参考价、无交易带、碎股差额）
+    resized:  List[dict] = field(default_factory=list)     # 资金不足缩了量的买单（原数量 → 缩后数量）
 
 
 def shares_from_weights(weights: np.ndarray, equity: float, prices: np.ndarray, whole_shares: bool) -> np.ndarray:
@@ -83,6 +89,36 @@ def shares_from_weights(weights: np.ndarray, equity: float, prices: np.ndarray, 
     return sh
 
 
+def scale_buys_to_power(qty, limit, power: Optional[float], whole_shares: bool, names) -> np.ndarray:
+    """
+    可用资金 `power` 不够付全部买单（Σ 数量 × 限价）时的缩量（BUYING_POWER_RULE）。够付 → 原样返回。
+        不按整股   每张 × power / 需要的钱
+        整股       每张 floor(数量 × 比例)；剩下的钱按"被舍掉的零头从大到小、零头相同按代码"逐张各补一股，买不起的跳过
+    比例对所有买单相同：不因为代码排在后面就整张买不到。结果不超过原数量，Σ 数量 × 限价 ≤ power（按 6 位小数比较）。
+    power 缺失 / 非有限 / ≤ 0 → 全部为 0。
+    """
+    q = np.asarray(qty, dtype=float)
+    lim = np.asarray(limit, dtype=float)
+    if not len(q):
+        return q.copy()
+    if power is None or not math.isfinite(float(power)) or float(power) <= 0:
+        return np.zeros(len(q))
+    power = float(power)
+    need = float(np.sum(q * lim))
+    if round(need, 6) <= round(power, 6):
+        return q.copy()
+    exact = q * (power / need)
+    if not whole_shares:
+        return exact
+    out = np.floor(exact + 1e-9)
+    spent = float(np.sum(out * lim))
+    for i in sorted(range(len(q)), key=lambda j: (-round(float(exact[j] - out[j]), 9), str(names[j]))):
+        if out[i] < q[i] and round(spent + float(lim[i]), 6) <= round(power, 6):
+            out[i] += 1.0
+            spent += float(lim[i])
+    return out
+
+
 def freeze_rebalance(target_weights: pd.Series, current_qty: Mapping[str, float], ref_prices: pd.Series,
                      equity: float, decision_date, *, band_bps: float, book_id: int = 0,
                      whole_shares: bool = True, buying_power: Optional[float] = None, spec_hash: str = "",
@@ -91,7 +127,8 @@ def freeze_rebalance(target_weights: pd.Series, current_qty: Mapping[str, float]
                      gross_cap: Optional[float] = None) -> IntentPlan:
     """
     决策日收盘后冻结调仓意图。整股时数量与限价就是券商 `build_rebalance_orders` 给出的（同一个函数）；
-    `buying_power` 给了就按下单门的规则拒掉超出资金的买单。权益 ≤ 0 → 不冻结任何意图（不交易）。
+    `buying_power` 给了就按下单门的规则把买单缩到买得起（缩到 0 的记进 rejected，缩了量的记进 resized）。
+    权益 ≤ 0 → 不冻结任何意图（不交易）。
     """
     from app.core.execution.order_builder import build_rebalance_orders, round_to_tick
     plan = IntentPlan()
@@ -140,14 +177,21 @@ def freeze_rebalance(target_weights: pd.Series, current_qty: Mapping[str, float]
             (sells if side == "SELL" else buys).append(o)
         raw = sells + buys
     long_only = all(i.target_qty >= 0 and i.current_qty >= 0 for i in raw)
-    spent = 0.0
+    buys = [i for i in raw if i.side == "BUY"]
+    scaled = {}
+    if buys and buying_power is not None and long_only:
+        new = scale_buys_to_power([i.qty for i in buys], [i.limit_price for i in buys], buying_power, whole_shares,
+                                  [i.ticker for i in buys])
+        scaled = {i.ticker: float(n) for i, n in zip(buys, new)}
     for i in raw:
-        if i.side == "BUY" and buying_power is not None and long_only:
-            cost = i.qty * i.limit_price
-            if round(spent + cost, 6) > round(float(buying_power), 6):
-                plan.rejected.append({"ticker": i.ticker, "qty": i.qty, "reason": "insufficient_buying_power"})
-                continue
-            spent += cost
+        n = scaled.get(i.ticker, i.qty) if i.side == "BUY" else i.qty
+        if n <= (0.0 if whole_shares else 1e-12):
+            plan.rejected.append({"ticker": i.ticker, "qty": i.qty, "reason": "insufficient_buying_power"})
+            continue
+        if n != i.qty:
+            plan.resized.append({"ticker": i.ticker, "qty": i.qty, "resized_qty": n,
+                                 "reason": "insufficient_buying_power"})
+            i = replace(i, qty=n)
         plan.intents.append(i)
     return plan
 
@@ -170,11 +214,13 @@ def _tick_round(raw: np.ndarray, buy: np.ndarray) -> np.ndarray:
 
 
 def freeze_arrays(target_w: np.ndarray, cur_sh: np.ndarray, ref_px: np.ndarray, equity: float, band: float,
-                  whole_shares: bool, buying_power: Optional[float], names: List[str]) -> tuple:
+                  whole_shares: bool, buying_power: Optional[float], names: List[str],
+                  info: Optional[dict] = None) -> tuple:
     """
     `freeze_rebalance` 的数组版（两个模拟引擎逐日调用；逐单对象版太慢）。同一套规则：数量 = trunc(w·E/ref) − 现有
-    （整股时 floor），限价按最小价位取整，先卖后买、各按名字排序，纯多头时买单按顺序累计"数量 × 限价"超出资金即拒。
-    只处理参考价有效的名字（调用方保证）。返回 (有符号委托股数, 限价, 被资金规则拒掉的布尔掩码)。
+    （整股时 floor），限价按最小价位取整，纯多头时买单按 `scale_buys_to_power` 缩到可用资金之内。
+    只处理参考价有效的名字（调用方保证）。返回 (有符号委托股数, 限价, 被资金规则缩到 0 的布尔掩码)。
+    `info` 给了就写进 info["resized"]：资金不足缩了量（没缩到 0）的布尔掩码。
     两版逐股一致由 tests/integration/test_frozen_order_intent_ledger.py 的随机对照钉住。
     """
     w = np.nan_to_num(np.asarray(target_w, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
@@ -203,14 +249,14 @@ def freeze_arrays(target_w: np.ndarray, cur_sh: np.ndarray, ref_px: np.ndarray, 
     qty = np.where(active, np.sign(delta) * q, 0.0)
     limit = np.where(active, lim, np.nan)
     if buying_power is not None and active.any() and bool(np.all((target[active] >= 0) & (cur[active] >= 0))):
-        spent, power = 0.0, round(float(buying_power), 6)
-        for i in sorted(np.flatnonzero(active & buy), key=lambda j: names[j]):
-            cost = float(q[i]) * float(lim[i])
-            if round(spent + cost, 6) > power:
-                rejected[i] = True
-                continue
-            spent += cost
-        qty = np.where(rejected, 0.0, qty)
+        idx = np.flatnonzero(active & buy)
+        new = scale_buys_to_power(q[idx], lim[idx], buying_power, whole_shares, [names[j] for j in idx])
+        gone = new <= (0.0 if whole_shares else 1e-12)
+        rejected[idx[gone]] = True
+        if info is not None:
+            info["resized"] = np.zeros(n, dtype=bool)
+            info["resized"][idx[~gone & (new != q[idx])]] = True
+        qty[idx] = np.where(gone, 0.0, new)
         limit = np.where(rejected, np.nan, limit)
     return qty, limit, rejected
 
@@ -233,6 +279,7 @@ class OpenPlan:
     signed_qty: np.ndarray
     limit: np.ndarray
     rejected: List[dict] = field(default_factory=list)
+    resized: List[dict] = field(default_factory=list)
 
 
 def open_targets(target_w, prev_w, pre, equity, v_open, ref_px, o_eff, open_, high, low, tickers,
@@ -250,12 +297,15 @@ def open_targets(target_w, prev_w, pre, equity, v_open, ref_px, o_eff, open_, hi
     invested = float(np.nansum(np.abs(prev_w))) * float(equity)
     tw = np.where(ok, np.nan_to_num(np.asarray(target_w, dtype=float), nan=0.0), 0.0)
     px_ref = np.where(ok, ref_px, 1.0)
+    info: dict = {}
     qty, limit, rej = freeze_arrays(np.where(ok, tw, 0.0), np.where(ok, cur_sh, 0.0), px_ref, equity, band,
-                                    whole_shares, float(equity) - invested, names)
+                                    whole_shares, float(equity) - invested, names, info)
     qty, limit = np.where(ok, qty, 0.0), np.where(ok, limit, np.nan)
     plan = OpenPlan(signed_qty=qty, limit=limit,
                     rejected=[{"ticker": names[i], "reason": "insufficient_buying_power"}
-                              for i in np.flatnonzero(rej & ok)])
+                              for i in np.flatnonzero(rej & ok)],
+                    resized=[{"ticker": names[i], "reason": "buying_power_resized"}
+                             for i in np.flatnonzero(info.get("resized", np.zeros(len(names), dtype=bool)) & ok)])
     px = limit_fill_array(qty, limit, open_, high, low)
     pre_exact, after = np.array(pre, dtype=float), np.array(pre, dtype=float)
     if v_open > 0:

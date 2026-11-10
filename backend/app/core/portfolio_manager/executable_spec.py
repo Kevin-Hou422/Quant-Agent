@@ -32,7 +32,8 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 #: 2：加入 universe / execution / submission（复审 2026-10-19 §5.2）
-SPEC_VERSION = 3          # v3（2026-10-25 审计）：加 `validation`（表达式校验政策的版本、摘要与结果）
+#: 3（2026-10-25 审计）：加 `validation`（表达式校验政策的版本、摘要与结果）
+SPEC_VERSION = 4          # v4：execution 加 `buying_power_rule`（资金不足时买单按比例缩量，取代整张拒绝）
 
 #: 每日循环 / 提案 / 策略门共用的信号处理参数（此前三处各写一份字面量）。
 #: delay 取自时钟（c2 = 0：T 收盘的信息就用于 T 的决策，T+1 执行由引擎负责；见 app/core/clock.py）
@@ -122,8 +123,10 @@ def _universe_section(dataset: str) -> dict:
 
 def _execution_section(settings) -> dict:
     """执行账户与下单 / 报价规则（下单门与订单管理实际读取的那几项）。"""
+    from app.core.execution.order_intent import BUYING_POWER_RULE
     from app.core.execution.pretrade_gate import REGULAR_CLOSE_TOL
     return {
+        "buying_power_rule": BUYING_POWER_RULE,
         "account_firm": str(getattr(settings, "moomoo_security_firm", "")),
         "account_id": int(getattr(settings, "moomoo_trd_acc_id", 0) or 0),
         "limit_band_bps": _r(getattr(settings, "exec_limit_band_bps", 0.0)),

@@ -101,11 +101,14 @@ Phase 13.1）。
 - [ ] 本周有没有 `over_budget=true` 的 holdout 使用？哪一段、为什么要再看一次（§1.1）。
 
 **每月：**
-- [ ] 全量回归（当前约 5,550 条、约 40 分钟）在独立测试环境里跑（D3）：
+- [ ] 全量回归（当前约 6,100 条；**接着电源、不待机时约 23 分钟**）在独立测试环境里跑（D3）：
       `py -3.12 tools/env/isolated_test_env.py stage` 后 `… run -- -q`（`C:\QuantAgentEnv\lock-test`，按 `requirements.lock` 装，
       源码镜像不含 `.env`，子进程只带白名单环境变量，`OPENBLAS_NUM_THREADS=1`）；别与别的测试并发 ——
       本机内存紧时会出现 OpenBLAS 分配失败的假红。测试不许连外网（`tests/network_guard.py`）；真实数据源用例
-      （`live_source`）另跑：`QA_LIVE_SOURCES=1`，SEC 那条还要 `EDGAR_USER_AGENT`。+ 依赖升级窗口
+      （`live_source`）另跑：`QA_LIVE_SOURCES=1`，SEC 那条还要 `EDGAR_USER_AGENT`。
+      `run` 结束时会报用时、其中机器待机了多久、是不是在用电池，并在 `C:\QuantAgentEnv\lock-test\run_history.jsonl`
+      记一行。这台机器是笔记本：用电池时同一套用例慢约 3 倍，中途待机的时间会算进 pytest 报的耗时（实际发生过一次
+      "4.5 小时"）。耗时只在"接着电源、没待机"时互相比较；长时间的运行（全量回归、变异复核）接上电源、别合盖。+ 依赖升级窗口
       （在此窗口内做 pip/npm 升级并跑全量；升级要新建环境，不改 `lock-test`）。
 - [ ] 查 `evidence_revisions`：有没有被拒绝的证据改写尝试？每一条都要能说清楚为什么同一天会算出两个数。
 - [ ] 运行**成本模型校准报告**（Task 8.2，`monthly_cost_calibration_job` 自动产出
