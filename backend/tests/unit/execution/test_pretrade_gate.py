@@ -155,13 +155,15 @@ def test_held_position_without_any_price_makes_gross_unpriceable():
     assert _reasons(dec) == {"A": "gross_unpriceable"}
 
 
-def test_buying_power_is_cumulative_at_limit_price_and_ignores_sell_proceeds():
+def test_buying_power_is_counted_at_limit_price_and_ignores_sell_proceeds():
     orders = [_o("S", "SELL", 50, cur=50),                   # 卖出所得不计入
               _o("A", "BUY", 50, limit=100.0),               # $5000
-              _o("B", "BUY", 50, limit=100.0),               # 累计 $10000（恰好）
-              _o("C", "BUY", 1, limit=100.0)]                # 累计 $10100 → 拒
+              _o("B", "BUY", 50, limit=100.0),               # 合计 $10000（恰好）
+              _o("C", "BUY", 1, limit=100.0)]                # 合计 $10100 > $10000 → 全部买单按比例缩，合计正好 100 股
     dec = check(orders, _ctx(cur={"S": 50}, adv={**BIG_ADV, "S": 1e9}, power=10_000.0), LIM)
-    assert _ok(dec) == {"S", "A", "B"} and _reasons(dec) == {"C": "insufficient_buying_power"}
+    assert {o.ticker: o.qty for o in dec.approved} == {"S": 50, "A": 50, "B": 49, "C": 1} and _reasons(dec) == {}
+    without_c = check(orders[:3], _ctx(cur={"S": 50}, adv={**BIG_ADV, "S": 1e9}, power=10_000.0), LIM)
+    assert {o.ticker: o.qty for o in without_c.approved} == {"S": 50, "A": 50, "B": 50} and without_c.resized == []
 
 
 def test_rejected_orders_do_not_consume_budget():
@@ -209,7 +211,9 @@ def test_buying_back_a_short_needs_buying_power_too():
     lim = PreTradeLimits(**{**LIM.__dict__, "allow_short": True})
     dec = check([_o("S", "BUY", 10, cur=-10)],
                 _ctx(cur={"S": -10}, adv={"S": 1e9}, power=500.0), lim)
-    assert _reasons(dec) == {"S": "insufficient_buying_power"}, "回补空头同样要花现金"
+    assert {o.ticker: o.qty for o in dec.approved} == {"S": 4}, "回补空头同样要花现金：500 只够 4 股（限价 100.5）"
+    dec = check([_o("S", "BUY", 10, cur=-10)], _ctx(cur={"S": -10}, adv={"S": 1e9}, power=100.0), lim)
+    assert _reasons(dec) == {"S": "insufficient_buying_power"}
 
 
 @pytest.mark.parametrize("equity", [0.0, -1.0, float("nan"), float("inf"), None])

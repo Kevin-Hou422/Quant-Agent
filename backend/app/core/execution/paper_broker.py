@@ -196,21 +196,18 @@ class PaperBroker:
             # 冻结时就因资金不足没发的买单也留记录（insufficient_buying_power，未成交量 = 目标与调仓前之差）；
             # 资金不足缩了量的买单：委托的那部分正常成交时，把没委托的差额记成 buying_power_resized
             unfilled = float(fr.unfilled_d[i])
-            shrunk = tk in resized and abs(unfilled) <= 1e-12
             if tk in rejected:
                 unfilled = float(tgt[i] - pre_w[i])
-            elif shrunk:
-                unfilled = float(tgt[i] - want[i])
             if abs(delta[i]) < 1e-12 and abs(filled[i]) < 1e-12 and abs(unfilled) <= 1e-12:
                 continue
             # 未成交的原因分得开（用户决策 #2）：limit_not_reached（限价没碰到）/ participation（成交量打满）/
             # net_exposure_*（整组新增订单被缩减 / 暂缓，否则部分成交会把净敞口推出限额）
             if tk in rejected:
                 reject = rejected[tk]
-            elif shrunk:
-                reject = "buying_power_resized"
             elif abs(unfilled) <= 1e-12:
                 reject = ""
+                if tk in resized:                # 委托的部分成交了，没委托的差额记下来
+                    reject, unfilled = "buying_power_resized", float(tgt[i] - want[i])
             elif limit_blocked[i]:
                 reject = "limit_not_reached"
             elif abs(want[i] - pre_w[i]) > cap_trade_w[i] + 1e-12:

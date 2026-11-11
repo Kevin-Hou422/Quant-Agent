@@ -4,9 +4,9 @@
  "_note_state_file_missing": "标了 state_file_missing 的模块：A 档确实测量过（台账有逐条存活分析），但当时的 progress 状态文件后来被清理，数字取自台账而非状态文件。重跑一次即可回到自动生成的口径。",
  "totals": {
   "modules_with_mutants": 110,
-  "total_points": 3352,
-  "total_survived": 171,
-  "total_killed": 3181
+  "total_points": 3376,
+  "total_survived": 172,
+  "total_killed": 3204
  },
  "modules": {
   "app/agent/_agent.py": {
@@ -776,18 +776,21 @@
    ]
   },
   "app/core/execution/paper_broker.py": {
-   "points": 27,
-   "killed": 24,
+   "points": 28,
+   "killed": 25,
    "survived": 3,
-   "kill_rate": 88.9,
+   "kill_rate": 89.3,
    "tests": [
+    "tests/integration/test_buying_power_scaling.py",
+    "tests/integration/test_cycle_plan_record.py",
     "tests/unit/db/test_paper_broker_accounting.py"
    ],
-   "source": "MUTATION_LEDGER.md（A 档收口表）",
+   "source": "资金不足按比例缩量（2026-11-11）之后：本次改动新增的点逐点施加同一变异、跑相关用例（判据同 verify_mutant），其余点沿用上一轮复核；被删掉的旧资金规则的点从点数里扣掉",
    "state_file_missing": true,
    "note": "L119（两个比较符）与 L127 原登记为等价变异，2026-09-15 外部审计给出反例推翻。2026-09-16 补 TestSubEpsilonPositionsAreADeliberatePolicy（5 条），逐个 verify_mutant 复核：三条全部 [OK] 变异被杀死。 2026-09-18 修 A-6 前半（target=1.0 → |tgt| 之和）新引入 1 个变异点（L108 `np.abs(` 删除 → 总敞口变净敞口），由新增的多空用例 [0.3,-0.3] 当场覆盖，verify_mutant 复核 [OK] 被杀死。",
    "all_runs": [
-    88.5
+    88.5,
+    89.3
    ]
   },
   "app/core/gp_engine/alpha_pool.py": {
@@ -1529,13 +1532,15 @@
    ]
   },
   "app/core/execution/order_manager.py": {
-   "points": 137,
-   "killed": 134,
+   "points": 139,
+   "killed": 136,
    "survived": 3,
    "kill_rate": 97.8,
    "tests": [
     "tests/integration/test_api_execution.py",
+    "tests/integration/test_buying_power_scaling.py",
     "tests/integration/test_corporate_action_quarantine.py",
+    "tests/integration/test_cycle_plan_record.py",
     "tests/integration/test_daily_ingest_health_gate.py",
     "tests/integration/test_forward_daily_end_to_end.py",
     "tests/integration/test_intraday_watchdog.py",
@@ -1548,9 +1553,10 @@
     "tests/unit/execution/test_order_builder.py",
     "tests/unit/execution/test_order_manager.py"
    ],
-   "source": "D5 关键路径复核（资金切片 / 认领 / 熔断）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "source": "资金不足按比例缩量（2026-11-11）之后：本次改动新增的点逐点施加同一变异、跑相关用例（判据同 verify_mutant），其余点沿用上一轮复核；被删掉的旧资金规则的点从点数里扣掉",
    "all_runs": [
     81.8,
+    97.8,
     97.8
    ]
   },
@@ -1587,12 +1593,14 @@
    ]
   },
   "app/core/execution/pretrade_gate.py": {
-   "points": 98,
-   "killed": 97,
+   "points": 105,
+   "killed": 104,
    "survived": 1,
    "kill_rate": 99.0,
    "tests": [
+    "tests/integration/test_buying_power_scaling.py",
     "tests/integration/test_corporate_action_quarantine.py",
+    "tests/integration/test_cycle_plan_record.py",
     "tests/integration/test_intraday_watchdog.py",
     "tests/integration/test_intraday_watchdog_edges.py",
     "tests/integration/test_kill_switch_mid_batch.py",
@@ -1604,9 +1612,10 @@
     "tests/unit/execution/test_order_quotes.py",
     "tests/unit/execution/test_pretrade_gate.py"
    ],
-   "source": "D5 关键路径复核（资金切片 / 认领 / 熔断）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "source": "资金不足按比例缩量（2026-11-11）之后：本次改动新增的点逐点施加同一变异、跑相关用例（判据同 verify_mutant），其余点沿用上一轮复核；被删掉的旧资金规则的点从点数里扣掉",
    "all_runs": [
     92.9,
+    99.0,
     99.0
    ]
   },
@@ -1779,21 +1788,24 @@
    ]
   },
   "app/core/execution/order_intent.py": {
-   "points": 140,
-   "killed": 134,
-   "survived": 6,
-   "kill_rate": 95.7,
+   "points": 154,
+   "killed": 147,
+   "survived": 7,
+   "kill_rate": 95.5,
    "tests": [
+    "tests/integration/test_buying_power_scaling.py",
+    "tests/integration/test_cycle_plan_record.py",
     "tests/integration/test_frozen_order_intent_ledger.py",
     "tests/integration/test_limit_fill_and_session_boundaries.py",
     "tests/integration/test_order_intent_edges.py",
     "tests/unit/backtest_engine/test_rebalance_accounting.py",
     "tests/unit/db/test_paper_broker_accounting.py"
    ],
-   "source": "复审 21cd90b 之后的关键路径复核：首轮按导入选路（不含 tests/meta）+ 存活点补测轮（逐点施加同一变异、只跑新补的用例），按变异点取并集；点数按现行源码（补测时删掉的冗余写法不再产生点）",
+   "source": "资金不足按比例缩量（2026-11-11）之后：本次改动新增的点逐点施加同一变异、跑相关用例（判据同 verify_mutant），其余点沿用上一轮复核；被删掉的旧资金规则的点从点数里扣掉",
    "all_runs": [
     65.0,
-    95.7
+    95.7,
+    95.5
    ]
   },
   "app/tasks/snapshot_manifest.py": {
@@ -1852,7 +1864,7 @@
  "proof_reconciliation": {
   "_doc": "存活变异的处置对账状态。这是本轮交付**已知未闭合**的唯一缺口，写在这里是为了它不会被忘掉。",
   "modules_with_survivors": 57,
-  "total_survivors": 171,
+  "total_survivors": 172,
   "proof_files_in_suite": 44,
   "proof_entries_in_suite": 130,
   "per_file_accounting": "自洽：44 个文件的 PROVEN_EQUIVALENT 条目数与各自声明的存活数逐个相等（由 test_lessons_enforced.py::TestLessonX 强制）",
@@ -1890,7 +1902,7 @@
  },
  "measurement_scope": {
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
-  "measured_points": 3352,
+  "measured_points": 3376,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
   "current_plan_points": 5530,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
@@ -2685,13 +2697,48 @@
      "after": 2357,
      "note": "before 是清单原记的数；按现行源码实为 2833（补测时删掉冗余写法少了 4 个点）"
     }
+   },
+   {
+    "batch": "资金不足按比例缩量（BUYING_POWER_RULE = scale_buys_pro_rata，2026-11-11 用户授权处理）",
+    "timing": "新增 40 个点逐点复核两轮：首轮 574 秒（9 个存活：4 个是新写的冗余保护，删掉；5 个是断言不够紧，收紧）；复测 350 秒",
+    "modules": {
+     "app/core/execution/order_intent.py": {
+      "removed_points": 12,
+      "new_points": 26,
+      "new_survived": 1,
+      "points": 154,
+      "survived": 7
+     },
+     "app/core/execution/pretrade_gate.py": {
+      "removed_points": 4,
+      "new_points": 11,
+      "new_survived": 0,
+      "points": 105,
+      "survived": 1
+     },
+     "app/core/execution/order_manager.py": {
+      "removed_points": 0,
+      "new_points": 2,
+      "new_survived": 0,
+      "points": 139,
+      "survived": 3
+     },
+     "app/core/execution/paper_broker.py": {
+      "removed_points": 0,
+      "new_points": 1,
+      "new_survived": 0,
+      "points": 28,
+      "survived": 3
+     }
+    },
+    "survivors": "order_intent scale_buys_to_power 的 `round(need) <= round(power)` -> `<`：等价（恰好够钱时比例为 1.0，结果相同），证明与机械验证见 tests/integration/test_buying_power_scaling.py"
    }
   ]
  },
  "survivor_disposition": {
   "_doc": "存活变异的**逐模块**处置对账。外部审计 2026-09-15 指出原来的『每个文件条目数 == 自己声明的存活数』只是文件内自洽，跨文件汇总从未对过账。现在证明键带模块前缀与覆盖点数（`<模块> ×N — 描述`），可以逐模块机械对账。",
-  "total_survivors": 171,
-  "proven_points": 147,
+  "total_survivors": 172,
+  "proven_points": 148,
   "unproven_points": 25,
   "unproven_by_module": {
    "app/core/alpha_engine/fast_ops.py": 3,

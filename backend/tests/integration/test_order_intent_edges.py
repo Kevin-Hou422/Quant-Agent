@@ -105,9 +105,12 @@ def test_a_leftover_below_one_share_is_not_a_whole_share_order():
 # ── 资金规则 ─────────────────────────────────────────────
 
 def test_a_buy_that_uses_exactly_the_buying_power_is_sent():
-    """50 股 × 限价 100.50 = 5025.00：可用资金恰好 5025 → 照发；少一分 → 整张拒绝。"""
+    """50 股 × 限价 100.50 = 5025.00：可用资金恰好 5025 → 照发；少一分 → 缩到买得起的 49 股；连一股都买不起 → 不发。"""
     assert [i.qty for i in _fr({"AAA": 0.5}, {}, {"AAA": 100.0}, buying_power=5025.0).intents] == [50.0]
     plan = _fr({"AAA": 0.5}, {}, {"AAA": 100.0}, buying_power=5024.99)
+    assert [i.qty for i in plan.intents] == [49.0] and plan.rejected == []
+    assert plan.resized == [{"ticker": "AAA", "qty": 50.0, "resized_qty": 49.0, "reason": "insufficient_buying_power"}]
+    plan = _fr({"AAA": 0.5}, {}, {"AAA": 100.0}, buying_power=100.49)
     assert plan.intents == [] and [r["reason"] for r in plan.rejected] == ["insufficient_buying_power"]
     qty, _, rej = oi.freeze_arrays(np.array([0.5]), np.array([0.0]), np.array([100.0]), 10_000.0, 0.005, True,
                                    5025.0, ["AAA"])
@@ -155,9 +158,9 @@ def test_a_zero_reference_or_open_price_freezes_no_order_for_that_name():
 
 
 def test_a_short_position_uses_up_buying_power_too():
-    """可用资金 = 权益 − 已投入的总敞口（空头按绝对值）：空 20% 时只剩 80%，买 90% 的单整张拒绝。"""
+    """可用资金 = 权益 − 已投入的总敞口（空头按绝对值）：空 20% 时只剩 80%，买 90% 的单缩到 8000 买得起的 79 股。"""
     _, _, _, plan = _open([0.0, -0.2], [0.9, -0.2], [100.0, 50.0], [100.0, 50.0])
-    assert plan.signed_qty[0] == 0.0 and [r["ticker"] for r in plan.rejected] == ["AAA"]
+    assert plan.signed_qty[0] == 79.0 and plan.rejected == [] and [r["ticker"] for r in plan.resized] == ["AAA"]
     _, _, _, plan = _open([0.0, -0.2], [0.7, -0.2], [100.0, 50.0], [100.0, 50.0])
     assert plan.signed_qty[0] == 70.0 and plan.rejected == []
 

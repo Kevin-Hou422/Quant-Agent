@@ -34,6 +34,15 @@ WIDE = PreTradeLimits(max_name_weight=1.0, max_gross=2.0, max_participation_pct=
 
 # ── 规则本身 ─────────────────────────────────────────────
 
+def test_float_noise_does_not_cost_a_share():
+    """
+    2 股 @0.7、14 股 @0.2（要 4.2），手里 3.3：B 的 14 × 3.3 / 4.2 = 11，浮点里算成 10.999999999999998。
+    floor 成 10 也不吃亏：零头最大，第一个补回来 → B 11 股，A 1 股（再补 A 要 3.6 > 3.3）。
+    """
+    assert 14 * (3.3 / 4.2) < 11
+    assert oi.scale_buys_to_power([2, 14], [0.7, 0.2], 3.3, True, ["A", "B"]).tolist() == [1.0, 11.0]
+
+
 def test_enough_money_changes_nothing():
     q = oi.scale_buys_to_power([50, 30], [100.0, 20.0], 5_600.0, True, ["A", "B"])
     assert q.tolist() == [50.0, 30.0]                                # 恰好够（5000 + 600）也不缩
@@ -69,9 +78,9 @@ def test_the_rule_never_overspends_and_treats_every_buy_alike(seed):
     ratio = power / need
     assert spent <= power + 1e-6 and (got <= q).all() and (got == np.floor(got)).all()
     # 同一比例：每张都落在 floor(原数量 × 比例) 与它 + 1 之间 —— 没有哪一张因为排在后面而整张买不到
-    assert ((got >= np.floor(q * ratio + 1e-9)) & (got <= np.floor(q * ratio + 1e-9) + 1)).all()
+    assert ((got >= np.floor(q * ratio)) & (got <= np.floor(q * ratio) + 1)).all()
     # 钱用完了：没补到那一股的，都是因为再买一股就超资金（或已经是原数量）
-    base = np.floor(q * ratio + 1e-9)
+    base = np.floor(q * ratio)
     for i in range(n):
         assert got[i] > base[i] or got[i] == q[i] or spent + lim[i] > power + 1e-6
     # 与输入顺序无关（只与代码有关）
@@ -135,6 +144,8 @@ def test_orders_stopped_by_the_kill_switch_take_no_share_of_the_money():
     orders = [_o("A", "BUY", 50, limit=100.0), _o("S", "BUY", 10, cur=-10, limit=100.0, purpose=PURPOSE_FLATTEN)]
     dec = check(orders, _ctx(cur={"S": -10}, adv={**BIG_ADV, "S": 1e9}, power=1_000.0, kill=True), lim)
     assert _qty(dec) == {"S": 10} and [(o.ticker, why) for o, why in dec.rejected] == [("A", "kill_switch_engaged")]
+    dec = check(orders, _ctx(cur={"S": -10}, adv={**BIG_ADV, "S": 1e9}, power=500.0, kill=True), lim)
+    assert _qty(dec) == {"S": 5}, "全平的买单照样受资金约束（500 / 限价 100 → 5 股）；被熔断拦下的 A 不分钱"
 
 
 # ── 券商计划 = 模拟冻结 ──────────────────────────────────
@@ -190,7 +201,10 @@ def test_the_paper_ledger_records_the_part_it_could_not_afford(tmp_path):
     PaperBroker(store=store, cost_params=_params(), initial_capital=100_000.0, limit_band_bps=50.0).replay(
         1, w, bars["close"], vol, ohlc=bars)
     (b,) = [f for f in store.fills_on(1, idx[3].date()) if f.ticker == "B"]
-    assert b.reject_reason == "buying_power_resized" and 0 < b.traded_weight < 0.06 and b.unfilled_weight > 0.85
+    assert b.reject_reason == "buying_power_resized" and 0 < b.traded_weight < 0.06
+    assert b.unfilled_weight == pytest.approx(0.95 - b.traded_weight, abs=0.005)
+    (a,) = [f for f in store.fills_on(1, idx[1].date()) if f.ticker == "A"]
+    assert a.reject_reason == "" and a.unfilled_weight == 0.0, "钱够的买单照常成交，不标缩量"
 
 
 # ── 订单管理：实发数量、计划记录、下一轮 ─────────────────────
@@ -240,3 +254,40 @@ def test_the_rule_is_part_of_the_execution_contract(monkeypatch):
     before = ae.contract_of_settings(settings)
     monkeypatch.setattr(oi, "BUYING_POWER_RULE", "reject_whole_order")
     assert ae.contract_of_settings(settings) != before, "规则变了，旧规则下的现场验收证据不能继承"
+
+
+# ── 等价变异 ─────────────────────────────────────────────
+
+PROVEN_EQUIVALENT = {
+    "app/core/execution/order_intent.py ×1 — scale_buys_to_power 里 `if round(need, 6) <= round(power, 6)` -> `<`":
+        "两式只在要的钱恰好等于资金时不同：原式原样返回；变异式往下算，比例 power / need 恰好是 1.0，"
+        "exact = 数量 × 1.0 = 原数量（整数），floor 不变，补股时 spent + 限价 > power，一股也不补 —— 结果相同。"
+        "见 test_a_mutated_scaling_gives_identical_quantities（同一变异施加到函数副本，随机输入含恰好够钱的情形）。",
+}
+
+
+def test_a_mutated_scaling_gives_identical_quantities():
+    import inspect
+    import textwrap
+    code = textwrap.dedent(inspect.getsource(oi.scale_buys_to_power))
+    old, new = "if round(need, 6) <= round(power, 6):", "if round(need, 6) < round(power, 6):"
+    a, b = (old, new) if old in code else (new, old)            # 双向：变异工具运行时源码已是变异式
+    assert code.count(a) == 1 and b not in code
+    ns = dict(vars(oi))
+    exec(compile(code.replace(a, b), "<mutant>", "exec"), ns)      # noqa: S102
+    other = ns["scale_buys_to_power"]
+    rng = np.random.default_rng(3)
+    for _ in range(300):
+        n = int(rng.integers(1, 6))
+        q = rng.integers(1, 50, n).astype(float)
+        lim = np.round(rng.uniform(1.0, 50.0, n), 2)
+        need = float(np.sum(q * lim))
+        for power in (need, need * float(rng.uniform(0.3, 1.0)), need + 1.0):
+            for whole in (True, False):
+                names = [f"T{i}" for i in range(n)]
+                np.testing.assert_array_equal(oi.scale_buys_to_power(q, lim, power, whole, names),
+                                              other(q, lim, power, whole, names))
+
+
+def test_every_survivor_has_a_written_proof():
+    assert len(PROVEN_EQUIVALENT) == 1

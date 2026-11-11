@@ -230,8 +230,11 @@ def test_open_buys_consume_buying_power():
                          max_daily_loss=.05, max_price_deviation=.15)
     ctx = GateContext(equity=100000., buying_power=8000., current_qty={}, broker_prices={},
                       adv_usd={"BBB": 1e9}, open_orders=[OpenOrder("CCC", "BUY", 40.0, 100.0)])
-    dec = check(o, ctx, lim)       # 在途 4000 + 本单 5000 > 8000
-    assert [r for _, r in dec.rejected] == ["insufficient_buying_power"]
+    dec = check(o, ctx, lim)       # 在途 4000 + 本单 5000 > 8000 → 本单缩到剩下的 4000 买得起的 40 股
+    assert dec.rejected == [] and [(x.ticker, x.qty, planned) for x, planned in dec.resized] == [("BBB", 40, 50)]
+    ctx = GateContext(equity=100000., buying_power=4050., current_qty={}, broker_prices={},
+                      adv_usd={"BBB": 1e9}, open_orders=[OpenOrder("CCC", "BUY", 40.0, 100.0)])
+    assert [r for _, r in check(o, ctx, lim).rejected] == ["insufficient_buying_power"]      # 剩 50：一股都买不起
 
 
 def test_net_and_sector_limits_are_enforced_at_the_order_layer():

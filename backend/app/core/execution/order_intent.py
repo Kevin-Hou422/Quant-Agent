@@ -95,25 +95,27 @@ def scale_buys_to_power(qty, limit, power: Optional[float], whole_shares: bool, 
         不按整股   每张 × power / 需要的钱
         整股       每张 floor(数量 × 比例)；剩下的钱按"被舍掉的零头从大到小、零头相同按代码"逐张各补一股，买不起的跳过
     比例对所有买单相同：不因为代码排在后面就整张买不到。结果不超过原数量，Σ 数量 × 限价 ≤ power（按 6 位小数比较）。
-    power 缺失 / 非有限 / ≤ 0 → 全部为 0。
+    power 缺失 / 非有限 → 全部为 0；≤ 0 按 0（一股都买不了）。
     """
     q = np.asarray(qty, dtype=float)
     lim = np.asarray(limit, dtype=float)
     if not len(q):
         return q.copy()
-    if power is None or not math.isfinite(float(power)) or float(power) <= 0:
+    if power is None or not math.isfinite(float(power)):
         return np.zeros(len(q))
-    power = float(power)
+    power = max(float(power), 0.0)
     need = float(np.sum(q * lim))
     if round(need, 6) <= round(power, 6):
         return q.copy()
     exact = q * (power / need)
     if not whole_shares:
         return exact
-    out = np.floor(exact + 1e-9)
+    # 资金不足 ⇒ 比例 < 1 ⇒ 每张 floor(exact) ≤ 原数量 − 1，下面每张至多补一股，不会超过原数量。
+    # 浮点噪声把整数算成 49.999…：零头最大，排第一个补回来。
+    out = np.floor(exact)
     spent = float(np.sum(out * lim))
     for i in sorted(range(len(q)), key=lambda j: (-round(float(exact[j] - out[j]), 9), str(names[j]))):
-        if out[i] < q[i] and round(spent + float(lim[i]), 6) <= round(power, 6):
+        if round(spent + float(lim[i]), 6) <= round(power, 6):
             out[i] += 1.0
             spent += float(lim[i])
     return out

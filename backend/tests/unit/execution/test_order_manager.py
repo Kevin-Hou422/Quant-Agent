@@ -375,15 +375,16 @@ def test_orders_are_sized_by_the_slice_not_the_account(tmp_path):
 
 
 def test_the_slice_does_not_borrow_from_the_rest_of_the_account(tmp_path):
-    """账户买入力 $1M，但切片只有 $100k：目标合计 150% 时，买到 $100k 为止，其余被拒。"""
+    """账户买入力 $1M，但切片只有 $100k：目标合计 150% 时，三张买单按同一比例缩到合计不超过 $100k。"""
     e = _env(tmp_path, cash=1_000_000.0)
     e.om.limits = PreTradeLimits(max_name_weight=1.0, max_gross=2.0, max_participation_pct=.10,
                                  max_daily_loss=.05, max_price_deviation=.15)
     rep = _cycle(e, D1, w={"AAA": .6, "BBB": .5, "CCC": .4})
     spent = sum(q * p for _, _, q, p, _ in _placed(e))
-    assert spent <= 100_000.0
-    assert {r["reason"] for r in rep.gate["rejected"]} == {"insufficient_buying_power"}
-    assert rep.n_submitted >= 1 and spent > 50_000.0
+    assert 99_900.0 < spent <= 100_000.0
+    assert rep.gate["rejected"] == [] and rep.n_submitted == 3
+    shrink = {r["ticker"]: r["qty"] / r["planned_qty"] for r in rep.gate["resized"]}
+    assert set(shrink) == {"AAA", "BBB", "CCC"} and max(shrink.values()) - min(shrink.values()) < 0.001
 
 
 def test_slice_pnl_drives_the_day_return_and_the_equity_curve(tmp_path):

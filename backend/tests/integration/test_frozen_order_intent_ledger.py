@@ -54,7 +54,7 @@ def _scale_buys(orders, power):
         return orders
     ratio = max(power, 0.0) / need
     exact = {k: q * ratio for k, _, q, _ in buys}
-    got = {k: math.floor(exact[k] + 1e-9) for k in exact}
+    got = {k: math.floor(exact[k]) for k in exact}
     spent = sum(got[k] * lim for k, _, _, lim in buys)
     for k, _, q, lim in sorted(buys, key=lambda o: (-round(exact[o[0]] - got[o[0]], 9), o[0])):
         if power > 0 and got[k] < q and round(spent + lim, 6) <= round(power, 6):
