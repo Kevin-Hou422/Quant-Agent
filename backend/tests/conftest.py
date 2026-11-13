@@ -100,6 +100,21 @@ def _hermetic_run_flags(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _host_power_isolated(monkeypatch):
+    """
+    这台测试机的电源状态不进用例（2026-11-14 加了上线预检 host_power 与调度器防待机）：
+    预检读到的是"接着电源、空闲不睡、合盖不动作"；调度器启动时不真的去改系统的待机状态。
+    测 host_power 本身的用例自己换回去。
+    """
+    from app.core import host_power
+    from app.core.execution import golive
+    monkeypatch.setattr(golive, "_read_host_power", lambda: (
+        {"ac": True, "battery_pct": 100, "saver": False},
+        {"lid_action": 0, "standby_idle_s": 0, "hibernate_idle_s": 0}))
+    monkeypatch.setattr(host_power, "_set_execution_state", lambda flags: True)
+
+
+@pytest.fixture(autouse=True)
 def _no_alert_fault_carried_over(monkeypatch):
     """告警通道故障的进程内记录（复审 21cd90b）：一条用例里的故障不能让后面用例的无人值守就绪判断失败。"""
     from app.core.alerting import dispatcher

@@ -33,7 +33,7 @@ JOBS = ["daily_backup", "daily_monitor", "daily_trading", "daily_trading_retry",
         "monthly_cost_calibration"]
 TRADE_CHECKS = ["execution_mode", "scheduler", "scheduler_jobs", "storage", "storage_writable",
                 "calendar", "dataset", "price_source", "strategy", "target_vol_off", "alert_channel",
-                "backup", "intraday_watchdog", "fundamentals"]
+                "backup", "intraday_watchdog", "host_power", "fundamentals"]
 CONNECT_CHECKS = ["opend", "broker_account", "account_funds", "kill_switch", "reconcile"]
 
 

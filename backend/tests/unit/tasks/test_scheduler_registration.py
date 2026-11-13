@@ -107,9 +107,9 @@ class TestJobRegistration:
             ids = {j.id for j in s.get_jobs()}
         finally:
             _safe_shutdown(s)
-        assert ids == {"daily_monitor", "daily_trading", "daily_trading_retry",
+        assert ids == {"daily_monitor", "daily_trading", "daily_trading_retry", "daily_trading_catchup",
                        "monthly_cost_calibration", "nightly_discovery", "daily_backup",
-                       "alerts_retry"}, ids                      # D15：补发送达失败的告警
+                       "alerts_retry"}, ids                      # D15：补发送达失败的告警；按时没跑成的补跑
 
     def test_backup_defaults_to_on_when_the_setting_is_absent(self, jobs_db, monkeypatch):
         """
@@ -140,7 +140,7 @@ class TestJobRegistration:
         first = create_scheduler(db_url=jobs_db)
         first.start()
         try:
-            assert len(first.get_jobs()) == 7
+            assert len(first.get_jobs()) == 8
         finally:
             first.shutdown(wait=False)
 
@@ -151,7 +151,7 @@ class TestJobRegistration:
             ids = {j.id for j in second.get_jobs()}
         finally:
             second.shutdown(wait=False)
-        assert ids == {"daily_monitor", "daily_trading", "daily_trading_retry",
+        assert ids == {"daily_monitor", "daily_trading", "daily_trading_retry", "daily_trading_catchup",
                        "monthly_cost_calibration", "nightly_discovery", "daily_backup",
                        "alerts_retry"}, (
             f"复用同一个 jobstore 重建后任务不全：{ids} —— "
@@ -319,10 +319,15 @@ class TestJobBodies:
         assert out == {"ingest_accepted": True}
 
     def test_daily_trading_skips_on_non_trading_days(self, monkeypatch):
+        """非交易日、而且最近一个已收盘交易日已经跑成 → 不跑（没跑成的那种是补跑，见 test_host_sleep_and_catchup.py）。"""
         called = {"n": 0}
         import app.tasks.daily_ingest as di
         import app.core.data_engine.market_calendar as mc
         monkeypatch.setattr(mc, "is_trading_day", lambda d: False)
+        class _AllDone(dict):
+            def get(self, key, default=None):
+                return {"done": True}
+        monkeypatch.setattr(sched_mod, "_runs", lambda store=None: _AllDone())
         monkeypatch.setattr(di, "run_daily_pipeline",
                             lambda *a, **kw: called.update(n=called["n"] + 1))
         out = sched_mod.daily_trading_job()

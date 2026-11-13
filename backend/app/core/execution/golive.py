@@ -292,6 +292,7 @@ def run_preflight(
     jobs: Optional[Callable[[], List[str]]] = None,
     strategy_check: Optional[Callable] = None,
     fundamentals_check: Optional[Callable] = None,
+    host_power: Optional[Callable[[], tuple]] = None,
 ) -> PreflightReport:
     """
     逐项检查，两层（见 LAYER_*）。连券商的检查会**真的对账一次**（与 `/execution/reconcile`
@@ -388,6 +389,8 @@ def run_preflight(
             f"盘中巡检已开启，每 {wd_s} 秒一拍" if wd_ok else
             (f"盘中巡检间隔 {wd_s} 秒不在 10–300 秒内" if wd_on else
              "盘中巡检没有开启（INTRADAY_WATCHDOG_ENABLED）—— 熔断只在收盘后检查，不能无人值守"))
+    ok, detail = host_power_check(*(host_power() if host_power else _read_host_power()))
+    rep.add("host_power", ok, detail)
     try:
         if fundamentals_check is not None:
             ok, detail, blocking = fundamentals_check(settings)
@@ -435,6 +438,32 @@ def run_preflight(
             ok, detail = False, f"数据源取数失败：{exc}"
         rep.add("data_source", ok, detail)
     return rep
+
+
+def _read_host_power() -> tuple:
+    from app.core.host_power import power_settings, power_status
+    return power_status(), power_settings()
+
+
+def host_power_check(status: dict, power: dict) -> tuple:
+    """
+    这台机器在交易时段会不会睡着（2026-11-14）：机器睡着时调度器、盘中巡检、日亏熔断都不运行。
+    没接电源 / 接电源时空闲会睡 / 接电源时合盖会睡 → 不通过（宁可不跑，不跑错）。
+    不是 Windows → 不检查；读不到某一项 → 不通过并写明（证明不了不会睡）。
+    """
+    import os
+    from app.core.host_power import power_problems
+    if os.name != "nt":
+        return True, "不是 Windows，不检查电源设置"
+    unknown = [k for k, v in (("是否接电源", status.get("ac")), ("合盖动作", power.get("lid_action")),
+                              ("空闲睡眠", power.get("standby_idle_s")),
+                              ("空闲休眠", power.get("hibernate_idle_s"))) if v is None]
+    problems = power_problems(status, power) + [f"读不到{k}" for k in unknown]
+    if problems:
+        return False, ("这台机器会在交易时段睡着：" + "；".join(problems)
+                       + "（设置 → 系统 → 电源；合盖：powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0"
+                       " 然后 powercfg /setactive SCHEME_CURRENT）")
+    return True, f"接着电源（电量 {status.get('battery_pct')}%），空闲不睡眠，合盖不采取任何操作"
 
 
 def storage_not_writable(settings, cwd: Optional[Path] = None) -> List[str]:

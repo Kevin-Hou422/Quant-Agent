@@ -46,6 +46,9 @@ KINDS = {
     # 调度
     "scheduled_job_failed":  "调度任务抛错",
     "scheduled_job_missed":  "调度任务错过了执行时间",
+    "daily_run_catchup":     "按时没跑成的每日交易，在下一个时段开盘前补跑",
+    "daily_run_missed":      "每日交易过了补跑时限也没跑成（这一天没有调仓）",
+    "host_suspended":        "运行调度器的机器睡着了一段时间（期间调度、巡检、熔断都没运行）",
     # 风险
     "kill_switch":           "熔断开关被拉起 / 确认",
     "intraday_watchdog":     "盘中巡检发现问题或采取了动作",

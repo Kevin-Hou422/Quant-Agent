@@ -7,6 +7,10 @@ scheduler.py — APScheduler 定时任务框架（Task 5.3）
   任务定义与 next_run_time 从数据库恢复，不丢失。
 - misfire_grace_time=3600：停机期间错过的任务在重启后 1 小时内补跑一次，
   超过则跳过并记日志（coalesce=True 合并多次错过为一次）。
+- 机器睡着（2026-11-14）：调度器跑在笔记本上，每日交易排在 21:30 UTC（北京时间 05:30）。启动时请求系统别因空闲待机
+  （app/core/host_power.KeepAwake），并量出实际睡了多久（SuspendWatch → 严重告警）；按时没跑成的每日交易由
+  `daily_trading_catchup` 在**下一个交易时段开盘之前**补上（决策日 = 最近一个已收盘的交易日，与摄取 / 执行同一定义），
+  开盘之后就不补了（委托是给那个时段的），只告警。
 - 时区显式配置（settings.scheduler_timezone，默认 UTC），避免 Windows
   本地时区歧义。
 - 默认注册的任务：
@@ -25,6 +29,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _scheduler = None                     # 模块级单例
+_host_guards: list = []               # 调度器运行期间：防待机 + 量待机
 
 
 # ---------------------------------------------------------------------------
@@ -53,17 +58,163 @@ def daily_monitor_job() -> None:
         )
 
 
-def daily_trading_job() -> dict:
+def daily_trading_job(now=None) -> dict:
     """
     每日管线 + 结论进告警（D15：每一种结论 —— 包括非交易日、日历不可用这些提前返回 —— 都走同一个出口）。
+    跑完记下这一次对应的决策日、数据有没有到那一天（补跑据此判断还欠不欠）。
     """
     import pandas as _pd
-    out = _run_daily_trading()
-    _emit_daily_outcome(out, str(_pd.Timestamp.utcnow().tz_localize(None).normalize().date()))
-    return out
+    from datetime import datetime, timezone
+    from contextlib import ExitStack
+    from app.db.process_lock import ProcessLockTimeout
+    now = now or datetime.now(timezone.utc)
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(_daily_run_lock())
+        except ProcessLockTimeout:
+            logger.warning("[scheduler] 另一个每日任务正在运行，本次不重复运行")
+            return {"skipped": "daily_run_in_progress"}
+        out = _run_daily_trading(now)
+        _record_run(out, now)
+        _emit_daily_outcome(out, str(_pd.Timestamp(now).tz_convert("UTC").tz_localize(None).normalize().date()))
+        return out
 
 
-def _run_daily_trading() -> dict:
+def _daily_run_lock():
+    """普通、重试和补跑共用跨进程锁；与券商账户锁分开，覆盖摄取到运行记录。"""
+    from app.core.execution.order_manager import _account_lock_dir
+    from app.db.process_lock import lock_path_for, process_lock
+    return process_lock(lock_path_for("scheduler", "daily-trading", _account_lock_dir()), timeout_s=0.0)
+
+
+# ---------------------------------------------------------------------------
+# 按时没跑成的每日交易：在下一个交易时段开盘之前补上
+# ---------------------------------------------------------------------------
+
+#: 补跑检查的间隔；开盘前留出的余量（委托要在开盘前到券商）；每个决策日最多补跑几次（数据源一直没发布时别空转一夜）
+CATCHUP_EVERY_MIN = 10
+CATCHUP_OPEN_MARGIN_MIN = 15
+CATCHUP_MAX_ATTEMPTS = 6
+RUNS_KEY = "daily_trading_runs"
+
+
+def decision_window(now):
+    """(决策日, 补跑截止时刻)：决策日 = 最近一个已收盘的交易日；截止 = 它之后那个交易日开盘前 CATCHUP_OPEN_MARGIN_MIN 分钟。"""
+    from datetime import timedelta
+    from app.core.data_engine.market_calendar import last_closed_session, next_trading_day, session_open_utc
+    s = last_closed_session(now)
+    nxt_open = session_open_utc(next_trading_day(s))
+    deadline = None if nxt_open is None else nxt_open - timedelta(minutes=CATCHUP_OPEN_MARGIN_MIN)
+    return s.date(), deadline
+
+
+def _runs(store=None) -> dict:
+    import json
+    from app.db.execution_store import ExecutionStore
+    raw = (store or ExecutionStore()).get_state(RUNS_KEY)
+    return json.loads(raw) if raw else {}
+
+
+def _record_run(out: dict, now, store=None) -> None:
+    """仅在数据到齐且交易管线确实成功时标记 done；失败可重试，未知提交由执行层对账。"""
+    import json
+    try:
+        from app.config import settings
+        from app.core.data_engine.pit_store import PITStore
+        from app.db.execution_store import ExecutionStore
+        store = store or ExecutionStore()
+        s, _ = decision_window(now)
+        last = PITStore(settings.pit_store_dir).latest_timestamp(settings.paper_dataset)
+        reached = last is not None and last.date() >= s
+        from app.tasks.forward import EXIT_OK, classify_run
+        # 无新 bar 时也可能通过 PIT 完成交易；必须有成功的执行报告，不能仅凭数据日期。
+        done = (reached and not out.get("skipped")
+                and (out.get("ingest_accepted") is True or out.get("reason") == "no_new_bar")
+                and classify_run(out)[0] == EXIT_OK)
+        runs = _runs(store)
+        prev = runs.get(str(s), {})
+        runs[str(s)] = {"done": bool(done or prev.get("done")), "attempts": int(prev.get("attempts", 0)) + 1,
+                        "last_at": now.isoformat(timespec="seconds"),
+                        "data_through": str(last.date()) if last is not None else None,
+                        "outcome": out.get("skipped") or out.get("reason") or out.get("reject_reason") or "ran"}
+        store.set_state(RUNS_KEY, json.dumps(dict(sorted(runs.items())[-30:]), ensure_ascii=False))
+    except Exception as exc:
+        logger.error("[scheduler] 每日运行记录没写进执行库（补跑判断会再跑一次）: %s", exc)
+
+
+def daily_trading_catchup_job(now=None) -> Optional[str]:
+    """
+    每 CATCHUP_EVERY_MIN 分钟一次：最近一个已收盘交易日的每日交易还没跑成（机器睡着 / 关机 / 进程没起 / 数据晚到），
+    且两次定时运行（DAILY_TRADING_AT、DAILY_TRADING_RETRY_AT）都已过点、下一个时段还没开盘 → 现在补跑。
+    开盘之后就不补了，发严重告警。返回做了什么（给测试与日志看）。
+    """
+    from contextlib import ExitStack
+    from app.db.process_lock import ProcessLockTimeout
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(_daily_run_lock())
+        except ProcessLockTimeout:
+            logger.info("[scheduler] 每日任务正在运行，补跑检查等下一次")
+            return "busy"
+        return _daily_trading_catchup_locked(now)
+
+
+def _daily_trading_catchup_locked(now=None) -> Optional[str]:
+    from datetime import datetime, timedelta, timezone
+    import pandas as _pd
+    from app.config import settings
+    from app.core.alerting.dispatcher import emit_safely
+    from app.core.alerting.events import AlertEvent
+    from app.core.data_engine.market_calendar import CalendarUnavailable
+    now = now or datetime.now(timezone.utc)
+    try:
+        s, deadline = decision_window(now)
+    except CalendarUnavailable as exc:
+        logger.error("[scheduler] 补跑检查：交易日历不可用（不补跑）: %s", exc)
+        return "calendar_unavailable"
+    tz = str(getattr(settings, "scheduler_timezone", "UTC") or "UTC")
+    retry_at = _pd.Timestamp(datetime(s.year, s.month, s.day, *DAILY_TRADING_RETRY_AT)).tz_localize(tz)
+    if now < retry_at.to_pydatetime() + timedelta(minutes=CATCHUP_EVERY_MIN):
+        return "regular_runs_pending"
+    rec = _runs().get(str(s), {})
+    if rec.get("done"):
+        return "done"
+    if deadline is None or now >= deadline:
+        emit_safely(AlertEvent(kind="daily_run_missed", severity="critical",
+                               title=f"{s} 的每日交易没有跑成，已过补跑时限",
+                               detail=f"下一个交易时段开盘前（{deadline}）没能补上（尝试 {rec.get('attempts', 0)} 次；"
+                                      f"最后一次 {rec.get('outcome', '没有运行')}）—— 这一天没有调仓",
+                               dedup_key=f"daily_run_missed:{s}"))
+        return "missed"
+    if int(rec.get("attempts", 0)) >= CATCHUP_MAX_ATTEMPTS:
+        return "gave_up"
+    emit_safely(AlertEvent(kind="daily_run_catchup", severity="warning", title=f"补跑 {s} 的每日交易",
+                           detail=f"按时没跑成（{rec.get('outcome', '没有运行记录：进程没在跑或机器睡着')}）；"
+                                  f"在 {deadline} 之前补上",
+                           dedup_key=f"daily_run_catchup:{s}:{int(rec.get('attempts', 0))}"))
+    daily_trading_job(now)
+    return "ran"
+
+
+def _on_host_suspended(start, end, seconds) -> None:
+    """机器睡了一段（SuspendWatch）：严重告警 + 执行库事件。睡着期间调度器、盘中巡检、日亏熔断都没有运行。"""
+    from app.core.alerting.dispatcher import emit_safely
+    from app.core.alerting.events import AlertEvent
+    mins = seconds / 60.0
+    logger.error("[scheduler] 机器睡了 %.0f 分钟（%s → %s）：期间调度器与盘中巡检没有运行", mins, start, end)
+    emit_safely(AlertEvent(kind="host_suspended", severity="critical", title=f"运行调度器的机器睡了 {mins:.0f} 分钟",
+                           detail=f"{start.isoformat(timespec='seconds')} → {end.isoformat(timespec='seconds')}："
+                                  "这段时间调度任务、盘中巡检、日亏熔断都没有运行；错过的每日交易会在下一个时段开盘前补跑",
+                           dedup_key=f"host_suspended:{start.isoformat(timespec='seconds')}"))
+    try:
+        from app.db.execution_store import ExecutionStore
+        ExecutionStore().add_event("host_suspended", actor="scheduler", reason=f"{mins:.0f} 分钟",
+                                   payload={"from": start.isoformat(), "to": end.isoformat(), "seconds": round(seconds)})
+    except Exception as exc:
+        logger.error("[scheduler] 待机事件没写进执行库: %s", exc)
+
+
+def _run_daily_trading(now=None) -> dict:
     """
     Task 7.1/7.3 + Phase 11：每日**前向增量**摄取（健康门）→ 交易循环。
 
@@ -77,9 +228,15 @@ def _run_daily_trading() -> dict:
     from app.config import settings
     import pandas as _pd
 
-    today = _pd.Timestamp.utcnow().tz_localize(None).normalize()
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+    today = _pd.Timestamp(now).tz_convert("UTC").tz_localize(None).normalize()
     try:
         trading = is_trading_day(today)
+        if not trading:
+            # 非交易日的定时运行：最近一个已收盘交易日还欠着（机器睡过了那天的运行）→ 这次就是补跑
+            s, deadline = decision_window(now)
+            trading = not _runs().get(str(s), {}).get("done") and deadline is not None and now < deadline
     except CalendarUnavailable as exc:
         # **判不出今天是不是交易日 → 不交易**（fail-closed）。
         # 让异常直接冒出去会变成一条不透明的 APScheduler job error；
@@ -89,7 +246,7 @@ def _run_daily_trading() -> dict:
     if not trading:
         logger.info("[scheduler] %s 非美股交易日 → 跳过每日摄取/交易", today.date())
         return {"skipped": "not_a_trading_day", "date": str(today.date())}
-    out = run_daily_pipeline(settings.paper_dataset, settings.paper_start, incremental=True)
+    out = run_daily_pipeline(settings.paper_dataset, settings.paper_start, incremental=True, now=now)
     if out.get("ingest_accepted"):
         logger.info(
             "[daily_trading_job] 完成 | 健康=%.3f | %d 因子 | %d 告警 | %d 错误",
@@ -299,6 +456,13 @@ def create_scheduler(
                 name    = "每日交易循环补跑（数据延迟兜底）",
                 replace_existing = True,
             )
+            sched.add_job(
+                daily_trading_catchup_job,
+                trigger = IntervalTrigger(minutes=CATCHUP_EVERY_MIN, timezone=timezone),
+                id      = "daily_trading_catchup",
+                name    = "每日交易补跑（按时没跑成时，下一个时段开盘前补上）",
+                replace_existing = True, max_instances = 1, coalesce = True, misfire_grace_time = 60,
+            )
             # Task 8.2：每月 1 号成本模型校准（产出建议报告，不自动改 CostParams）
             sched.add_job(
                 monthly_cost_calibration_job,
@@ -347,6 +511,12 @@ def start_scheduler(db_url: Optional[str] = None, timezone: str = "UTC"):
         return _scheduler
     _scheduler = create_scheduler(db_url=db_url, timezone=timezone)
     _scheduler.start()
+    from app.core.host_power import KeepAwake, SuspendWatch
+    awake = KeepAwake().start()
+    _host_guards[:] = [awake, SuspendWatch(_on_host_suspended).start()]
+    (logger.info if awake.granted else logger.warning)(
+        "[scheduler] 防待机请求%s（合盖 / 电量耗尽仍会睡着 —— 睡着会被量出来并告警）",
+        "已生效" if awake.granted else "没有生效（不是 Windows 或系统拒绝）")
     logger.info(
         "[scheduler] 已启动 | jobs=%s",
         [f"{j.id}(next={j.next_run_time})" for j in _scheduler.get_jobs()],
@@ -361,6 +531,9 @@ def shutdown_scheduler() -> None:
         _scheduler.shutdown(wait=False)
         logger.info("[scheduler] 已停止")
     _scheduler = None
+    for g in _host_guards:
+        g.stop()
+    _host_guards.clear()
 
 
 def get_scheduler_status() -> dict:
