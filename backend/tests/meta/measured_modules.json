@@ -4,9 +4,9 @@
  "_note_state_file_missing": "标了 state_file_missing 的模块：A 档确实测量过（台账有逐条存活分析），但当时的 progress 状态文件后来被清理，数字取自台账而非状态文件。重跑一次即可回到自动生成的口径。",
  "totals": {
   "modules_with_mutants": 110,
-  "total_points": 3376,
+  "total_points": 3380,
   "total_survived": 172,
-  "total_killed": 3204
+  "total_killed": 3208
  },
  "modules": {
   "app/agent/_agent.py": {
@@ -1825,8 +1825,8 @@
    ]
   },
   "app/core/alerting/dispatcher.py": {
-   "points": 58,
-   "killed": 58,
+   "points": 62,
+   "killed": 62,
    "survived": 0,
    "kill_rate": 100.0,
    "tests": [
@@ -1838,7 +1838,7 @@
     "tests/integration/test_run_outcome_propagation.py",
     "tests/unit/execution/test_golive.py"
    ],
-   "source": "复审 21cd90b 之后的关键路径复核：首轮按导入选路（不含 tests/meta）+ 存活点补测轮（逐点施加同一变异、只跑新补的用例），按变异点取并集；点数按现行源码（补测时删掉的冗余写法不再产生点）",
+   "source": "复审 21cd90b 的 58 点按关键路径复核记录；2026-11-14 告警去重新增 4 点在独立副本逐点变异，tests/integration/test_alerting.py::TestDedupAndRetry 均检出。62 点为两次结果并集，不代表本次重测了原有 58 点。",
    "all_runs": [
     75.9,
     100.0
@@ -1876,7 +1876,7 @@
    "proof_entries_min": 130,
    "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
    "refuted_entries_min": 2,
-   "unmeasured_points_max": 2357
+   "unmeasured_points_max": 2412
   },
   "refuted_by_counterexample": {
    "count": 2,
@@ -1902,12 +1902,13 @@
  },
  "measurement_scope": {
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
-  "measured_points": 3376,
+  "measured_points": 3380,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-  "current_plan_points": 5530,
+  "current_plan_points": 5792,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-  "unmeasured_points": 2357,
+  "unmeasured_points": 2412,
   "newly_in_scope_modules": [
+   "app/core/host_power.py",
    "app/core/risk_engine/factor_model.py",
    "app/core/execution/broker_gateway.py",
    "app/core/execution/order_builder.py",
@@ -2232,6 +2233,14 @@
   "_closed": "app/db/_sqlite_utils.py 已补测：它是算子补齐后唯一新进入范围的模块，此前一条测试都没有。首测 0.0% → 补 tests/unit/db/test_sqlite_hardening.py → verify_mutant 单点复核确认被杀。其余 862 个点仍未测。",
   "_product_fix_policy": "修产品代码会引入新的变异点，而新点默认是未测量的 —— 棘轮会立刻判红（2026-09-18 修 A-6 时实际发生）。规矩：**修完立刻用 verify_mutant 逐个复核新点**，杀掉就记进本清单、未测量数不变；杀不掉就当场补用例。不许靠调高 unmeasured_points_max 放行。 补充（2026-09-20 实践）：**批量复核不能与编辑并行** —— 沙箱复制实时工作区，改到一半的测试文件会让基线红、结论全部失真。 补充（2026-09-20，A-2）：**`_xfail(raises=...)` 挡不住同类型的错误原因**。A-2 那条用例的前置守卫 `assert np.nanstd(...) != 0.0` 与目标断言都是 AssertionError，而它构造的 `np.full(60, 0.001)` 的 nanstd 恰好是精确 0.0（该值给 0 还是 2e-19 取决于长度的浮点运气：n=30/80/100 给 2.168e-19，n=40/50/60/70 给 0.0），于是这条 xfail 从未验证过 A-2 —— 与 A-1、C-1 同一形态，第三例。构造\"无真实波动\"的序列要用 1 ulp 扰动（`np.nextafter`），与长度无关。",
   "_raises": [
+   {
+    "date": "2026-11-14 (主机电源 / 调度补跑与告警严重度去重)",
+    "from": 2357,
+    "to": 2412,
+    "why": "固定提交 d2f5167 的主机电源与调度补跑等改动使实际欠测数由 2357 增至 2412（其中 host_power 新模块 25 点）。本批告警去重净增 4 点，已在独立副本逐点变异并由 TestDedupAndRetry 检出，计入已测范围。",
+    "how_it_was_handled": "主机电源 / 调度补跑等新增 55 个欠测点仅重新枚举并登记，本次没有逐点复核，不将其记为已测；告警新增 4 点与此前 58 点结果取并集，不称全部 62 点本次重测。",
+    "owed": "复核主机电源 / 调度补跑等新增的 55 个欠测点，逐点报告存活和等价证明。"
+   },
    {
     "date": "2026-09-20",
     "from": 862,

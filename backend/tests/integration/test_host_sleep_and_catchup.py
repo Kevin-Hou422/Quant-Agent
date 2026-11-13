@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
@@ -32,6 +33,7 @@ SET_OK = {"lid_action": 0, "standby_idle_s": 0, "hibernate_idle_s": 0}
 
 # ── 上线预检 ─────────────────────────────────────────────
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows power policy is only enforced on Windows")
 @pytest.mark.parametrize("status,power,needle", [
     ({"ac": False, "battery_pct": 40, "saver": False}, SET_OK, "没有接电源（在用电池，剩 40%）"),
     (AC_OK, {**SET_OK, "standby_idle_s": 1800}, "空闲 30 分钟会睡眠"),
@@ -46,11 +48,13 @@ def test_power_settings_that_would_put_the_machine_to_sleep_fail_the_preflight(s
     assert ok is False and needle in detail and "powercfg" in detail
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows power policy is only enforced on Windows")
 def test_a_machine_that_stays_awake_passes():
     ok, detail = host_power_check(AC_OK, SET_OK)
     assert ok is True and "合盖不采取任何操作" in detail
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows power policy is only enforced on Windows")
 def test_the_preflight_includes_the_power_check_as_blocking(tmp_path):
     from tests.unit.execution.test_golive import _env
     _ctx, _es, _ps, _calls, run = _env(tmp_path)
@@ -66,6 +70,12 @@ def test_the_preflight_includes_the_power_check_as_blocking(tmp_path):
         golive._read_host_power = real
     (c,) = [c for c in rep.checks if c.name == "host_power"]
     assert not c.ok and rep.ready is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Non-Windows behavior")
+def test_other_platforms_skip_windows_power_policy():
+    ok, detail = host_power_check({}, {})
+    assert ok is True and "不是 Windows" in detail
 
 
 def test_reading_the_real_machine_never_guesses():
@@ -98,12 +108,15 @@ def test_sleep_is_measured_and_load_jitter_is_not():
 
 def test_a_failing_report_does_not_stop_the_watch():
     ticks = iter([0.0, 1000.0, 2000.0])
+    attempts = []
 
     def boom(*a):
+        attempts.append(a)
         raise OSError("告警写不进去")
     w = hp.SuspendWatch(boom, interval=15.0, slack=60.0, clock=lambda: next(ticks))
     w.tick()
     w.tick()                                           # 没有抛出
+    assert len(attempts) == 2                         # 第二次异常间隔也尝试报告
 
 
 def test_a_detected_sleep_is_alerted_and_recorded(fresh_db, monkeypatch):

@@ -74,6 +74,42 @@ class TestClassificationAndPersistence:
 
 class TestDedupAndRetry:
 
+    @pytest.mark.parametrize("first,second,expected_notifications", [
+        ("info", "warning", 1),
+        ("info", "critical", 1),
+        ("warning", "critical", 2),
+    ])
+    def test_more_severe_event_is_not_suppressed(self, tmp_path, first, second, expected_notifications):
+        notifier = Notifier()
+        dispatcher = _dispatcher(tmp_path, notifier, dedup_minutes=60)
+        dispatcher.emit(_ev(severity=first))
+        result = dispatcher.emit(_ev(severity=second))
+        assert result.status == "handed_to_os"
+        assert len(notifier.calls) == expected_notifications
+
+    def test_lower_severity_after_a_delivered_critical_is_suppressed(self, tmp_path):
+        notifier = Notifier()
+        dispatcher = _dispatcher(tmp_path, notifier, dedup_minutes=60)
+        dispatcher.emit(_ev(severity="critical"))
+        assert dispatcher.emit(_ev(severity="warning")).status == "suppressed"
+        assert len(notifier.calls) == 1
+
+    def test_failed_delivery_does_not_suppress_a_later_event_with_the_same_key(self, tmp_path):
+        notifier = Notifier(fail_first=1)
+        dispatcher = _dispatcher(tmp_path, notifier, retry_attempts=1)
+        assert dispatcher.emit(_ev(severity="warning")).status == "failed"
+        assert dispatcher.emit(_ev(severity="critical")).status == "handed_to_os"
+        assert len(notifier.calls) == 2
+
+    def test_a_warning_only_written_to_file_cannot_suppress_a_warning_notification(self, tmp_path):
+        notifier = Notifier()
+        dispatcher = _dispatcher(tmp_path, notifier, dedup_minutes=60)
+        dispatcher._append({"type": "event", "event_id": "old", "severity": "warning",
+                            "dedup_key": "ingest:us_tech_large", "at": T0.isoformat()})
+        dispatcher._status("old", "file_only", T0)
+        assert dispatcher.emit(_ev(severity="warning")).status == "handed_to_os"
+        assert len(notifier.calls) == 1
+
     def test_a_repeat_within_the_window_is_suppressed_not_resent(self, tmp_path):
         n, clock = Notifier(), Clock()
         d = _dispatcher(tmp_path, n, clock, dedup_minutes=60)

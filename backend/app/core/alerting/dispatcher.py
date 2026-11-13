@@ -36,7 +36,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from app.core.alerting.events import AlertEvent
+from app.core.alerting.events import AlertEvent, SEVERITIES
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +139,7 @@ class AlertDispatcher:
         self._append({"type": "event", "event_id": eid, "kind": ev.kind, "severity": ev.severity,
                       "title": ev.title, "detail": ev.detail, "dedup_key": ev.dedup_key, "extra": ev.extra,
                       "at": now.isoformat()})
-        if self._recently_sent(ev.dedup_key, now, exclude=eid):
+        if self._recently_sent(ev.dedup_key, now, exclude=eid, severity=ev.severity):
             self._status(eid, "suppressed", now)
             return DeliveryReport(eid, "suppressed")
         if ev.severity not in NOTIFY_SEVERITIES:
@@ -147,12 +147,18 @@ class AlertDispatcher:
             return DeliveryReport(eid, "file_only")
         return self._deliver(eid, ev.title, ev.detail, ev.severity)
 
-    def _recently_sent(self, key: str, now: datetime, exclude: str) -> bool:
+    def _recently_sent(self, key: str, now: datetime, exclude: str, severity: str) -> bool:
+        """只有同等级或更严重的先前事件才能去重；需通知的事件必须真的交给过系统。"""
         for e in self.history():
             if e["event_id"] == exclude or e.get("dedup_key") != key:
                 continue
             if e["status"] not in ("handed_to_os", "file_only"):
                 continue                                         # 失败的不算发过：重复事件应当再试
+            previous_severity = e.get("severity")
+            if previous_severity not in SEVERITIES or SEVERITIES.index(previous_severity) < SEVERITIES.index(severity):
+                continue
+            if severity in NOTIFY_SEVERITIES and e["status"] != "handed_to_os":
+                continue                                         # 仅写文件不等于发过通知
             if now - datetime.fromisoformat(e["at"]) < self.dedup:
                 return True
         return False
