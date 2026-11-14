@@ -74,8 +74,32 @@ def _build(result=None, *, now=NOW, run=RUN, spec="h", exec_store=None, paper=No
 
 class TestMissingFields:
 
+    def test_target_holdings_are_not_order_deltas(self):
+        out = _build(_result(execution={"orders": [{"ticker": "A", "side": "SELL", "qty": 3, "result": "submitted"}],
+                                       "build": {"target_qty": {"A": 7.0, "B": 4.0}, "skipped": []}}))
+        assert out["target_shares"] == {"A": 7.0, "B": 4.0}
+        assert out["order_deltas"] == [{"ticker": "A", "qty": -3.0, "result": "submitted"}]
+
+    def test_target_holdings_without_new_orders_are_still_recorded(self):
+        out = _build(_result(execution={"orders": [], "build": {"target_qty": {"A": 7.0}, "skipped": []}}))
+        assert out["target_shares"] == {"A": 7.0}
+        assert out["order_deltas"] == []
+        assert "target_shares" not in out["missing"]
+
+    def test_partial_unknown_target_and_resized_order_remain_distinct(self):
+        out = _build(_result(execution={"orders": [{"ticker": "A", "side": "BUY", "qty": 3, "result": "submitted"}],
+                                       "build": {"target_qty": {"A": 20.0, "B": None}, "skipped": []}}))
+        assert out["target_shares"] == {"A": 20.0, "B": None}
+        assert out["order_deltas"] == [{"ticker": "A", "qty": 3.0, "result": "submitted"}]
+        assert "参考价" in out["missing"]["target_shares"]
+
+    def test_old_execution_reports_do_not_guess_target_holdings_from_orders(self):
+        out = _build()
+        assert out["target_shares"] is None
+        assert "target_shares" in out["missing"]
+
     def test_a_complete_day_has_none_of_the_conditional_gaps(self):
-        out = _build(exec_store=_Exec())
+        out = _build(_result(execution={"build": {"target_qty": {"A": 10.0}, "skipped": []}}), exec_store=_Exec())
         for k in ("expected_session", "target_shares", "cash", "unfilled", "benchmark", "benchmark.universe"):
             assert k not in out["missing"], (k, out["missing"])
         assert out["expected_session"] == "2025-03-05" and out["formal"] is True

@@ -44,6 +44,13 @@ def test_share_counts_and_limits_are_exact():
     assert o["AAA"].client_id == "qaR-1-20250303-AAA-B"
 
 
+def test_target_holdings_include_unchanged_missing_and_sold_positions():
+    res = _build({"AAA": 0.10, "BBB": 0.02, "MISSING": 0.1},
+                 cur={"AAA": 100, "BBB": 100, "OLD": 50},
+                 px={"AAA": 50.0, "BBB": 20.0, "OLD": 10.0})
+    assert res.target_qty == {"AAA": 200.0, "BBB": 100.0, "MISSING": None, "OLD": 0.0}
+
+
 def test_delta_against_current_position_and_sells_first():
     res = _build({"AAA": 0.10, "BBB": 0.02}, cur={"AAA": 100, "BBB": 300, "OLD": 50},
                  px={"AAA": 50.0, "BBB": 20.0, "OLD": 10.0})

@@ -733,7 +733,7 @@ class OrderManager:
             band_bps=self.limit_band_bps, allow_short=self.limits.allow_short,
             no_trade_band=no_trade_band, name_cap=self.limits.max_name_weight,
             gross_cap=self.limits.max_gross)
-        rep.build = {"skipped": build.skipped, "notes": build.notes,
+        rep.build = {"skipped": build.skipped, "notes": build.notes, "target_qty": build.target_qty,
                      "max_rounding_drift": max((abs(v) for v in build.rounding.values()), default=0.0)}
         fresh = [o for o in build.orders if not self.store.is_final_for_day(o.client_id)]
         rep.n_planned = len(build.orders)

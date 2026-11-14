@@ -13,9 +13,9 @@
 |---|---|---|---|---|
 | A 现场验收（八场景） | 不涉及策略 | **验收专用执行库**（`--exec-db`） | 验收执行库里的**人工联调许可**（supervised，≤ 24 小时、单笔上限） | 否：订单与证据都在验收库里 |
 | B 工程联调（可选） | `approved → integration` | 正式执行库 | 正式执行库里的 supervised 许可，每天续签 | 否：integration 的权限就是不计证据、不计正式天数 |
-| C 正式但未验证的纸交易 | `approved / integration → paper_running`（你批准） | 正式执行库 | supervised 每天续签（人工值守）；或满足条件后签 unattended | 是：从进入 paper_running 起 |
-| D 无人值守 | 仍是 `paper_running` | 正式执行库 | unattended（≤ 7 天，到期重新核验、续签） | 是 |
-| E 已验证 | `paper_running → verified_active`（只能经验证门） | 正式执行库 | 同上 | 是 |
+| C 正式但未验证的纸交易 | `approved / integration → paper_running`（你批准） | 正式执行库 | supervised 每天续签（人工值守）；或满足条件后签 unattended | 满足正式启动和逐日资格后计入 |
+| D 无人值守 | 仍是 `paper_running` | 正式执行库 | unattended（≤ 7 天，到期重新核验、续签） | 满足正式启动和逐日资格后计入 |
+| E 已验证 | `paper_running → verified_active`（只能经验证门） | 正式执行库 | 同上 | 满足正式启动和逐日资格后计入 |
 
 要点：
 

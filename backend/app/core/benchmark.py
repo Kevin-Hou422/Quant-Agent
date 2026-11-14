@@ -16,6 +16,7 @@ SPY 第二基准后排；低仓位策略对满仓基准的差额不要直接称�
                  100、缺失、120 两天都记 0、累计 0%，恢复段被永久漏记）。最后可信价只往回找，不用未来价格回填
     公司行动     有成分被公司行动检查隔离（未知公司行动）→ 估值不可信，**当天暂停发布**（return = None，
                  另给 provisional_return 标明是暂定的、隔离成分按 0）；b1 把它当成稳定的 0 收益发布
+    非有限值     当日价格或计算所得收益不是有限数 → 估值不可信、暂停发布，不把无穷数写入基准
     第二基准     SPY 后排，本版不提供
     差额的叫法   "相对满仓等权基准的差额"；策略净敞口低于满仓时它不是 alpha —— 另给按实际净敞口折算的差额，
                  它用日末敞口乘全天基准收益，只是**近似代理**，不是精确的 alpha
@@ -24,6 +25,7 @@ SPY 第二基准后排；低仓位策略对满仓基准的差额不要直接称�
 from __future__ import annotations
 
 import hashlib
+import math
 from typing import Dict, Iterable, List, Optional
 
 import numpy as np
@@ -38,7 +40,8 @@ BENCHMARK_RULES: Dict[str, str] = {
     "return_window": "收盘(T−1) → 收盘(T)，与模拟账本 / 券商的收盘估值同一窗口",
     "price": "数据集的复权收盘价（拆股 / 分红按数据源复权）",
     "missing_price": ("缺价成分按最后可信价持有、当日收益记 0、留在分母；价格恢复当天按 今收 / 最后可信价 结清；"
-                      "缺价名单、比例与各自的最后可信日写进记录（不删后再平均，不用未来价回填）"),
+                      "缺价名单、比例与各自的最后可信日写进记录（不删后再平均，不用未来价回填）；"
+                      "非有限价格或收益暂停发布"),
     "corporate_actions": "有成分处于未知公司行动隔离 → 估值不可信，当天暂停发布（return=None），另给暂定值与名单",
     "secondary": "SPY 第二基准后排，本版不提供",
     "excess": "相对满仓等权基准的差额不是 alpha；另给按日末净敞口折算的差额（近似代理）",
@@ -80,7 +83,7 @@ def ew_universe_return(close: pd.DataFrame, day, universe: Optional[List[str]],
         return out
     prev_day = close.index[pos - 1]
     out["window"] = [str(pd.Timestamp(prev_day).date()), str(day.date())]
-    rets, missing, held, settled = [], [], [], {}
+    rets, missing, held, settled, invalid = [], [], [], {}, []
     for t in names:
         if t in q:
             held.append(t)
@@ -91,23 +94,41 @@ def ew_universe_return(close: pd.DataFrame, day, universe: Optional[List[str]],
             rets.append(0.0)
             continue
         b = close.at[day, t]
+        if pd.notna(b) and not np.isfinite(float(b)):
+            invalid.append(t)
+            missing.append(t)
+            rets.append(0.0)
+            continue
         last = _last_trusted(close[t], pos - 1)            # 只往回找：T−1 及更早
         if pd.notna(b) and float(b) > 0 and last is not None:
-            rets.append(float(b) / last[1] - 1.0)
+            r = float(b) / last[1] - 1.0
+            if not np.isfinite(r):
+                invalid.append(t)
+                missing.append(t)
+                rets.append(0.0)
+                continue
+            rets.append(r)
             if last[0] != prev_day:                         # 缺价之后恢复：这一天结清缺价期间的变化
                 settled[t] = str(pd.Timestamp(last[0]).date())
         else:
             missing.append(t)
             rets.append(0.0)
-    value = float(np.mean(rets))
+    # 先除以成分数再求和，避免多个有限收益在求和时溢出、但平均值本身仍可表示。
+    try:
+        value = math.fsum(r / len(rets) for r in rets)
+    except OverflowError:
+        value = float("nan")
+    aggregate_valid = bool(np.isfinite(value))
     out["missing"] = sorted(missing)
     out["missing_share"] = len(missing) / len(names)
     out["quarantined"] = sorted(held)
+    out["invalid_prices"] = sorted(invalid)
     out["settled_since"] = settled
-    out["valuation_trusted"] = not held
-    if held:
-        out["provisional_return"] = value
-        out["why_none"] = f"成分 {sorted(held)} 处于未知公司行动隔离：估值不可信，当天暂停发布（暂定值另列）"
+    out["valuation_trusted"] = not held and not invalid and aggregate_valid
+    if held or invalid or not aggregate_valid:
+        out["provisional_return"] = value if aggregate_valid else None
+        out["why_none"] = (f"公司行动隔离成分 {sorted(held)}；非有限价格成分 {sorted(invalid)}："
+                           "价格或基准收益非有限，或存在公司行动隔离；估值不可信，当天暂停发布（暂定值另列）")
     else:
         out["return"] = value
     return out

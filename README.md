@@ -476,7 +476,7 @@ powershell -ExecutionPolicy Bypass -File scripts\start_forward.ps1 [-RegisterLog
   store a hashed spec — component expressions, frozen weights, method, AUM, no-trade band, risk
   limits and vol-estimation window, signal parameters, broker/short flags, dataset and price source,
   the universe (ticker hash), the execution account and order/quote rules, and the submission
-  schedule (spec v2, review §5.2). The daily loop trades exactly that spec and stops rebalancing if
+  schedule (initially spec v2, review §5.2; the current executable spec is v4). The daily loop trades exactly that spec and stops rebalancing if
   any runtime parameter differs; configs approved before 2026-10-18 have no spec and must be
   re-proposed and re-approved (roadmap D13).
 - **One strategy contract** (review N05-e). `strategy_contract.StrategyContract` is frozen at
@@ -534,11 +534,12 @@ powershell -ExecutionPolicy Bypass -File scripts\start_forward.ps1 [-RegisterLog
   that cannot be computed are `None` with a reason). A day is *formal* only after a human start
   record (unique start time, spec hash, code version, data identity, environment) and only if it ran
   between the decision-day close and the next open with execution live; late reruns cannot overwrite
-  a formal day. No formal forward has been started. The benchmark is the equal-weight universe
+  a formal day. The formal start and current readiness require live-environment evidence. The benchmark is the equal-weight universe
   with rules fixed in advance (`backend/app/core/benchmark.py`, decision D16): members frozen when
   the formal forward starts, daily rebalance, close-to-close window, and a member with a missing price
-  or a quarantined corporate action is held at a 0 return *in the denominator* (never dropped and
-  re-averaged). The plain difference to this fully-invested benchmark is labelled as such — it is
+  is held at a 0 return *in the denominator* until it recovers, when the change from the last trusted
+  price is settled; quarantined corporate actions or non-finite prices/returns suspend publication.
+  The plain difference to this fully-invested benchmark is labelled as such — it is
   not alpha for a low-exposure book — and an exposure-matched difference is recorded next to it;
   SPY as a second benchmark is deferred. Operating limits (the intraday breaker watchdog and the
   desktop alerts both need an on-site check before unattended running; restores are only rehearsed on
@@ -550,7 +551,7 @@ powershell -ExecutionPolicy Bypass -File scripts\start_forward.ps1 [-RegisterLog
   broker order gate may reduce but never add risk on that name; broker share counts that disagree
   with the ledger by a split-like ratio are annotated for reconciliation. The full corporate-action
   ledger is still deferred.
-- **The daily job runs twice** (21:30 UTC and a 22:45 UTC retry for late data). Every run reconciles
+- **The daily job has two scheduled runs** (21:30 and 22:45 in the configured scheduler timezone, UTC by default), plus periodic catch-up within its decision window. Every run reconciles
   and continues a pending flatten even when there is no new bar or the ingest is rejected; reruns are
   idempotent (client-id dedupe at the broker, `last_pnl_date` resume in the simulated book).
 - **Live data must not sit in a cloud-synced folder.** With forward trading enabled, the service
@@ -818,7 +819,7 @@ Passing tests are treated as a weak signal on their own. Three mechanisms back t
 | Forward incremental ingest, PIT append, DST-aware calendar, replay/forward split | ✅ Phase 11 (code; not yet exercised live) |
 | Point-in-time fundamentals (SEC EDGAR), sparse DSL field classes, `fund_rank`, fundamental discovery directions | ✅ Phase 10 (run against live EDGAR + moomoo on the 95-name universe; no fundamental factor validated yet) |
 | Risk attribution + structured covariance | ✅ Phase R.2 (part) |
-| moomoo paper execution: reconciliation/crash recovery, pre-trade gate, two-step kill switch, sim-vs-paper fidelity, live T3 providers, execution panel | ✅ Phase 12 + FE-12 (code; **not yet run against a live OpenD gateway**) |
+| moomoo paper execution: reconciliation/crash recovery, pre-trade gate, two-step kill switch, sim-vs-paper fidelity, live T3 providers, execution panel | ✅ Phase 12 + FE-12 (code; live OpenD preflight and historical-data queries recorded; supervised order-cycle acceptance pending) |
 | External review 2026-10-18 (F01–F14): health-gate hard checks, re-fetch on re-adjustment, frozen Test boundaries + overlap-metered holdout, selection-only research paths, trial counting at the search layer, executable strategy spec, archived-signal forward evidence per strategy version, atomic order claims + account lock, independent quotes, weight drift, content-hashed cost cache, factor-return min-variance, SUE/8-K alignment, single-transaction approvals | ✅ (see the roadmap's fix log; the strategy approved before 2026-10-18 must be re-proposed — D13) |
 | Re-review 2026-10-19 (N01–N09, §5, §7.3): mid-batch kill switch, input identity on evidence, open-time archive deadline, health gate on the consumed panel, freeze-then-evaluate proposals, quote sessions, trial-run lifecycle, pre-trade-value costs + post-trade renormalisation (checked against a share + cash ledger), one research context, one strategy contract, spec v2, broker-account lock, formal-forward daily records | ✅ code (per-item status in `backend/docs/RE_REVIEW_FIX_TRACKER.md`; mutation review owed — D5) |
 | Decisions of 2026-10-22, operations: desktop alerts + persistent event file with delivery status, intraday breaker watchdog, loopback-only API, isolated restore + synthetic recovery drill | ✅ code (on-site checks owed: notification visibility, watchdog on a live OpenD, live-database restore — `backend/docs/DECISION_IMPLEMENTATION_TRACKER.md`) |

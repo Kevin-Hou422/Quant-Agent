@@ -27,8 +27,9 @@ forward_record.py — 正式前向的启动记录与每日记录（复审 2026-1
     `formal_performance()` —— 启动前的决策产生的收益不算正式成绩；
   · 策略状态不允许正式天数（工程联调等，见 strategy_states）→ 不正式。
 
-基准（2026-10-22 D16）：等权宇宙，规则预先固定在 `app/core/benchmark.py`（股票池在正式前向启动时冻结、每日再平衡、
-收盘到收盘窗口、缺价与被隔离的成分按 0 收益留在分母）。相对满仓基准的差额不叫 alpha，另给按净敞口折算的差额；
+基准（D16）：等权宇宙，规则预先固定在 `app/core/benchmark.py`（股票池在正式前向启动时冻结、每日再平衡、
+收盘到收盘窗口；b2 对缺价使用最后可信价格并在恢复时结清，对公司行动隔离或非有限值暂停发布）。
+相对满仓基准的差额不叫 alpha，另给按净敞口折算的差额；
 SPY 第二基准后排。
 """
 
@@ -350,11 +351,19 @@ def build_daily_record(result: Dict[str, Any], *, strategy_id: int, spec_hash: s
     # ---- 目标权重 / 股数
     out["target_weights"] = result.get("execution_target")
     orders = [o for o in (ex.get("orders") or [])] if isinstance(ex, dict) else []
-    out["target_shares"] = {str(o.get("ticker")): (int(o.get("qty", 0)) * (1 if str(o.get("side", "")).upper()
-                                                                           .startswith("B") else -1))
-                            for o in orders if o.get("ticker")}
-    if not orders:
-        missing["target_shares"] = f"本轮没有订单计划（{ex.get('blocked') or result.get('reason') or '无'}）"
+    build = (ex.get("build") or {}) if isinstance(ex, dict) else {}
+    targets = build.get("target_qty") if isinstance(build, dict) else None
+    # 这是按决策日价格/权益换算、无交易带与资金缩量之前的目标持仓，不是实际成交或订单增量。
+    out["target_shares"] = dict(targets) if isinstance(targets, dict) else None
+    out["order_deltas"] = [{"ticker": str(o["ticker"]),
+                            "qty": (float(o.get("qty", 0)) if str(o.get("side", "")).upper().startswith("B")
+                                    else -float(o.get("qty", 0))),
+                            "result": o.get("result")}
+                           for o in orders if o.get("ticker")]
+    if out["target_shares"] is None:
+        missing["target_shares"] = "执行报告未提供目标持仓股数；不能用订单增减量推断"
+    elif any(q is None for q in out["target_shares"].values()):
+        missing["target_shares"] = "部分标的缺少参考价，目标持仓股数未知"
 
     # ---- 未成交原因：本轮被拒 / 被带跳过 / 发送失败；之前决策日的单到终态仍没成交完
     unfilled: List[Dict[str, Any]] = []
@@ -416,7 +425,7 @@ def build_daily_record(result: Dict[str, Any], *, strategy_id: int, spec_hash: s
     paper_ret = _f(getattr(paper, "net_ret", None))
     out["net_return"] = {"broker": broker_ret, "paper": paper_ret}
     # D16：等权宇宙，规则预先固定（app/core/benchmark.py）—— 成分取正式前向启动时冻结的名单；
-    # 缺价 / 被公司行动检查隔离的成分按 0 收益留在分母，不删后再平均
+    # 缺价成分保留分母并在恢复时结清；公司行动隔离或非有限值时暂停发布。
     from app.core.benchmark import BENCHMARK_NAME, EXCESS_LABEL, ew_universe_return
     frozen_universe = None
     if forward_run is not None and getattr(forward_run, "benchmark", None):

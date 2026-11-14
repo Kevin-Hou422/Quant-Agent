@@ -3,10 +3,10 @@
  "_selection_rule": "一个模块可能有多轮测量。取**同一点数下击杀数最高**的那轮 —— 本项目的工作流只往测试里加断言、不删，故固定点数下击杀率单调不减。不用文件 mtime：多模块批次会在单模块复测之后仍在写盘，mtime 会指错。",
  "_note_state_file_missing": "标了 state_file_missing 的模块：A 档确实测量过（台账有逐条存活分析），但当时的 progress 状态文件后来被清理，数字取自台账而非状态文件。重跑一次即可回到自动生成的口径。",
  "totals": {
-  "modules_with_mutants": 110,
-  "total_points": 3380,
+  "modules_with_mutants": 111,
+  "total_points": 3390,
   "total_survived": 172,
-  "total_killed": 3208
+  "total_killed": 3218
  },
  "modules": {
   "app/agent/_agent.py": {
@@ -1666,9 +1666,18 @@
     96.5
    ]
   },
+  "app/core/benchmark.py": {
+   "points": 11,
+   "killed": 11,
+   "survived": 0,
+   "kill_rate": 100.0,
+   "tests": ["tests/integration/test_equal_weight_benchmark.py"],
+   "source": "2026-11-14 只逐点复核本批新增的 11 个基准变异点，11 个均被该测试文件检出；当前模块共 28 点，另 17 点仍未测量，不能把这 11 点的结果当成全模块覆盖。",
+   "all_runs": [100.0]
+  },
   "app/db/forward_record.py": {
-   "points": 146,
-   "killed": 139,
+   "points": 145,
+   "killed": 138,
    "survived": 7,
    "kill_rate": 95.2,
    "tests": [
@@ -1682,7 +1691,7 @@
     "tests/integration/test_strategy_state_permissions.py",
     "tests/integration/test_trial_ledger_edges.py"
    ],
-   "source": "D5 关键路径复核（证据 / 研究计数 / 恢复）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "source": "D5 关键路径复核（证据 / 研究计数 / 恢复）：首轮按导入选路 + 存活点补测轮，按变异点取并集；2026-11-14 删除旧的 if not orders 已测点（在旧版本单点变异由 test_daily_record_assembly 检出），不将它继续计入。",
    "all_runs": [
     45.9,
     95.2
@@ -1876,7 +1885,7 @@
    "proof_entries_min": 130,
    "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
    "refuted_entries_min": 2,
-   "unmeasured_points_max": 2412
+   "unmeasured_points_max": 2409
   },
   "refuted_by_counterexample": {
    "count": 2,
@@ -1902,11 +1911,11 @@
  },
  "measurement_scope": {
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
-  "measured_points": 3380,
+  "measured_points": 3390,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-  "current_plan_points": 5792,
+  "current_plan_points": 5799,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-  "unmeasured_points": 2412,
+  "unmeasured_points": 2409,
   "newly_in_scope_modules": [
    "app/core/host_power.py",
    "app/core/risk_engine/factor_model.py",
@@ -1925,7 +1934,6 @@
    "app/core/alpha_engine/fields.py",
    "app/db/process_lock.py",
    "app/core/data_engine/fundamentals/quality.py",
-   "app/core/benchmark.py",
    "app/core/data_engine/corporate_actions.py",
    "app/core/lifecycle/fundamentals_policy.py",
    "app/db/corporate_actions.py",
@@ -1936,6 +1944,10 @@
    "app/core/alpha_engine/ic_metrics.py"
   ],
   "per_module_delta": {
+   "app/core/benchmark.py": {
+    "measured": 11,
+    "now_planned": 28
+   },
    "app/agent/_agent.py": {
     "measured": 16,
     "now_planned": 22

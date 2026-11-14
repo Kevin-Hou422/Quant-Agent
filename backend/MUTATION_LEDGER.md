@@ -7,7 +7,7 @@
 | 你想知道的 | 去哪看 | 谁保证它不过期 |
 |---|---|---|
 | 每个模块的点数 / 击杀数 / 存活数 | `tests/meta/measured_modules.json` | `tests/meta/test_invariants.py::TestEveryModuleIsMeasured` —— `app/` 下有变异点却不在清单里的模块直接判红 |
-| 还欠哪些产品缺陷没修 | `tests/meta/test_known_defects.py` | 每条一个 `xfail(strict=True)`，每次运行的 `N xfailed` 就是欠账数；修好变 XPASS → 判失败，强制同步 |
+| 已登记的产品缺陷 | `tests/meta/test_known_defects.py` | 每条一个 `xfail(strict=True)`；运行结果反映本清单的登记状态。其他审计发现与前向准备见 `ULTIMATE_GOAL_ROADMAP.md` |
 | 某个存活变异为什么是等价的 | 各测试文件的 `PROVEN_EQUIVALENT` | `test_lessons_enforced.py::TestLessonX` —— 说明少于 40 字、点名了不存在的验证用例、缺少存活数声明，都判红 |
 | 怎么自己复跑一遍 | `tools/mutation/README.md` | `TestLessonW` 检查工具仍在隔离副本里跑、变异器没被静默丢弃 |
 
@@ -18,7 +18,7 @@
 
 拆成可判定的三条：
 
-1. **覆盖**：`app/` 下每个有变异点的模块都被测量过 —— 已达成，见上表第一行。
+1. **覆盖**：`app/` 下每个有变异点的模块都进入清单；逐点测量进度以 `tests/meta/measured_modules.json` 为准。
 2. **强度**：每一个存活变异，要么被新测试杀死，要么有**书面且可机械验证**的
    等价性证明。"可机械验证"指证明本身也是一条可执行断言，而不是在注释里写一句
    "我认为它们等价"。

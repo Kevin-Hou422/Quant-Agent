@@ -64,6 +64,7 @@ class BuildResult:
     skipped:  List[dict] = field(default_factory=list)        # [{ticker, reason}]
     rounding: Dict[str, float] = field(default_factory=dict)  # ticker → 实际可达权重 − 目标权重
     notes:    List[str] = field(default_factory=list)
+    target_qty: Dict[str, Optional[float]] = field(default_factory=dict)  # 带前目标持仓；无参考价 = None
 
 
 def make_client_id(purpose: str, book_id: int, stamp: str, ticker: str, side: str) -> str:
@@ -148,11 +149,13 @@ def build_rebalance_orders(
         cur = float(current_qty.get(tk, 0.0))
         px = ref_prices.get(tk, np.nan)
         if not _finite_pos(px):
+            out.target_qty[tk] = None
             out.skipped.append({"ticker": tk, "reason": "no_reference_price",
                                 "current_qty": cur, "target_weight": w})
             continue
         px = float(px)
         target = float(math.trunc(w * equity / px))
+        out.target_qty[tk] = target
         out.rounding[tk] = target * px / equity - w
         delta = target - cur
         if delta == 0:

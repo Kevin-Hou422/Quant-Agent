@@ -49,6 +49,42 @@ def _run(universe):
 
 class TestEqualWeightUniverseBenchmark:
 
+    @pytest.mark.parametrize("invalid", [np.inf, -np.inf])
+    def test_nonfinite_current_price_does_not_publish_a_trusted_return(self, invalid):
+        from app.core.benchmark import ew_universe_return
+        close = pd.DataFrame({"A": [100.0, invalid], "B": [50.0, 55.0]}, index=_IDX)
+        result = ew_universe_return(close, _IDX[-1], ["A", "B"])
+        assert result["return"] is None
+        assert result["valuation_trusted"] is False
+        assert result["invalid_prices"] == ["A"]
+
+    def test_finite_prices_whose_ratio_overflows_do_not_publish_a_return(self):
+        from app.core.benchmark import ew_universe_return
+        close = pd.DataFrame({"A": [1e-308, 1e308]}, index=_IDX)
+        result = ew_universe_return(close, _IDX[-1], ["A"])
+        assert result["return"] is None
+        assert result["valuation_trusted"] is False
+        assert result["invalid_prices"] == ["A"]
+
+    def test_large_finite_cross_sectional_average_is_calculated_without_overflow(self):
+        from app.core.benchmark import ew_universe_return
+        close = pd.DataFrame({"A": [1.0, 1e308], "B": [1.0, 1e308]}, index=_IDX)
+        result = ew_universe_return(close, _IDX[-1], ["A", "B"])
+        assert result["return"] == pytest.approx(1e308)
+        assert result["valuation_trusted"] is True
+
+    def test_extreme_average_never_emits_a_nonfinite_trusted_return(self):
+        import sys
+        from app.core.benchmark import ew_universe_return
+        close = pd.DataFrame({t: [1.0, sys.float_info.max] for t in ("A", "B", "C")}, index=_IDX)
+        result = ew_universe_return(close, _IDX[-1], ["A", "B", "C"])
+        if result["return"] is None:  # 不同平台的舍入可能让 fsum 报溢出
+            assert result["valuation_trusted"] is False
+        else:
+            assert np.isfinite(result["return"])
+            assert result["return"] == pytest.approx(sys.float_info.max)
+            assert result["valuation_trusted"] is True
+
     def test_a_missing_price_stays_in_the_denominator(self):
         close = pd.DataFrame({"A": [100.0, 110.0], "B": [50.0, 50.0], "C": [20.0, np.nan], "D": [10.0, 9.8]},
                              index=_IDX)
