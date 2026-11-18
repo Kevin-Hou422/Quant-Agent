@@ -106,6 +106,16 @@ DECISION_FIELDS = ("decision_date", "strategy_id", "spec_hash", "clock_version",
                    "signal_archived_at", "targets_generated_at", "expected_session", "target_weights",
                    "target_shares")
 
+PERFORMANCE_FIELDS = ("net_return", "excess_return", "costs", "drawdown")
+OUTCOME_EVIDENCE_FIELDS = ("fills", "actual_sessions", "cash", "positions", "total_assets", "unfilled", "anomalies")
+PERFORMANCE_KEYS = {
+    "net_return": {"broker", "paper"},
+    "excess_return": {"label", "broker_vs_full_benchmark", "paper_vs_full_benchmark",
+                      "paper_exposure_matched", "broker_exposure_matched"},
+    "costs": {"paper_cost_bps", "broker_slippage_bps", "broker_fees"},
+    "drawdown": {"paper", "broker"},
+}
+
 
 def environment_version() -> Dict[str, Any]:
     from importlib import metadata
@@ -253,10 +263,10 @@ class ForwardRecordStore:
                                                      ForwardDay.decision_date == day)).first()
             evs = list(s.scalars(select(ForwardDayEvent).where(
                 ForwardDayEvent.strategy_id == int(strategy_id), ForwardDayEvent.decision_date == day)
-                .order_by(ForwardDayEvent.recorded_at, ForwardDayEvent.id)).all())
+                .order_by(ForwardDayEvent.id)).all())
         out = [] if row is None else [{"kind": "decision", "recorded_at": str(row.recorded_at),
                                        "payload": json.loads(row.payload)}]
-        return out + [{"kind": e.kind, "recorded_at": str(e.recorded_at), "payload": json.loads(e.payload)}
+        return out + [{"kind": e.kind, "event_id": e.id, "recorded_at": str(e.recorded_at), "payload": json.loads(e.payload)}
                       for e in evs]
 
     def previous_decision(self, strategy_id: int, decision_date) -> Optional[Dict[str, Any]]:
@@ -268,18 +278,101 @@ class ForwardRecordStore:
                             .order_by(ForwardDay.decision_date.desc()).limit(1)).first()
         return None if row is None else json.loads(row.payload)
 
+    def confirm_outcome_revision(self, strategy_id: int, decision_date, event_id: int, *, actor: str, reason: str) -> int:
+        """确认一条已对账的结果修订；保留原决策、修订及确认人和理由。"""
+        if not str(actor or "").strip() or not str(reason or "").strip():
+            raise ValueError("确认结果修订须填写操作人与理由")
+        if self._engine.dialect.name != "sqlite":
+            raise ValueError("结果修订确认需要 SQLite 的写入锁")
+        sid = int(strategy_id)
+        day = pd.Timestamp(decision_date).date()
+        with self._Session() as s:
+            s.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            base_row = s.scalars(select(ForwardDay).where(ForwardDay.strategy_id == sid,
+                                                          ForwardDay.decision_date == day)).first()
+            event = s.get(ForwardDayEvent, int(event_id))
+            if base_row is None or event is None or event.kind != "revision" or event.strategy_id != sid or event.decision_date != day:
+                raise ValueError("找不到该策略和日期的结果修订")
+            latest = s.scalars(select(ForwardDayEvent).where(ForwardDayEvent.strategy_id == sid,
+                                                            ForwardDayEvent.decision_date == day,
+                                                            ForwardDayEvent.kind == "revision")
+                               .order_by(ForwardDayEvent.id.desc()).limit(1)).first()
+            if latest is None or latest.id != event.id:
+                raise ValueError("已有更新的修订，请重新核对最新结果")
+            base = json.loads(base_row.payload)
+            revision = json.loads(event.payload)
+            previous = self.previous_decision(sid, day)
+            if not _eligible_outcome(base, previous):
+                raise ValueError("原记录没有可确认的正式收益归属")
+            if revision.get("spec_hash") != base.get("spec_hash") or revision.get("outcome") != base.get("outcome"):
+                raise ValueError("修订的规格或收益归属与原记录不一致")
+            if revision.get("reconcile_status") not in ("clean", "baseline", "accepted"):
+                raise ValueError("结果修订需要已对账的账户快照")
+            if any(k not in revision for k in PERFORMANCE_FIELDS):
+                raise ValueError("结果修订缺少业绩字段")
+            snapshot = {k: revision[k] for k in PERFORMANCE_FIELDS}
+            for field, required in PERFORMANCE_KEYS.items():
+                section = snapshot[field]
+                if not isinstance(section, dict) or not required.issubset(section):
+                    raise ValueError(f"结果修订的 {field} 字段不完整")
+                for key, value in section.items():
+                    if field == "excess_return" and key == "label":
+                        if not isinstance(value, str):
+                            raise ValueError("结果修订的基准说明不完整")
+                    elif value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value)):
+                        raise ValueError(f"结果修订的 {field}.{key} 不是有限数值")
+            payload = {"source_event_id": event.id, "actor": str(actor).strip(), "reason": str(reason).strip(),
+                       "spec_hash": base.get("spec_hash"), "outcome": base.get("outcome"), "performance": snapshot,
+                       "reconcile_status": revision["reconcile_status"],
+                       "evidence": {k: revision.get(k) for k in OUTCOME_EVIDENCE_FIELDS}}
+            blob = json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)
+            confirmation = ForwardDayEvent(strategy_id=sid, decision_date=day, kind="outcome_confirm",
+                                           recorded_at=_naive_utc(datetime.now(timezone.utc)), payload=blob)
+            s.add(confirmation)
+            s.commit()
+            return confirmation.id
+
     def formal_performance(self, strategy_id: int) -> List[Dict[str, Any]]:
         """
         正式成绩：只收"前一个决策是正式的"那些天的实现收益（启动前的决策产生的收益不算）。
         每条 = {decision_date: 产生收益的决策日, outcome_date: 收益实现日, net_return, excess_return, …}
         """
         out = []
-        for r in self.days(strategy_id):
+        rows = self.days(strategy_id)
+        previous = None
+        for r in rows:
             o = r.get("outcome") or {}
-            if o.get("counts"):
+            if _eligible_outcome(r, previous):
+                values = {k: r.get(k) for k in PERFORMANCE_FIELDS}
+                evidence = {k: r.get(k) for k in OUTCOME_EVIDENCE_FIELDS}
+                reconcile_status = r.get("reconcile_status")
+                pending = []
+                confirmation = None
+                for event in self.history(strategy_id, r["decision_date"])[1:]:
+                    revision = event["payload"]
+                    if event["kind"] == "revision":
+                        changed = (revision.get("spec_hash") != r.get("spec_hash") or revision.get("outcome") != o
+                                   or revision.get("reconcile_status") != reconcile_status
+                                   or any(revision.get(k) != evidence[k] for k in OUTCOME_EVIDENCE_FIELDS)
+                                   or any(revision.get(k) != values[k] for k in PERFORMANCE_FIELDS))
+                        if changed:
+                            pending.append(event["event_id"])
+                    elif event["kind"] == "outcome_confirm":
+                        values = revision["performance"]
+                        evidence = revision["evidence"]
+                        reconcile_status = revision["reconcile_status"]
+                        confirmation = {k: revision[k] for k in ("source_event_id", "actor", "reason")}
+                        pending = []
+                net = values.get("net_return")
+                broker_return = net.get("broker") if isinstance(net, dict) else None
+                status = ("pending_review" if pending else "unreconciled" if reconcile_status not in
+                          ("clean", "baseline", "accepted") else "incomplete" if broker_return is None
+                          else "confirmed" if confirmation else "original")
                 out.append({"decision_date": o.get("of_decision"), "outcome_date": r["decision_date"],
-                            "net_return": r.get("net_return"), "excess_return": r.get("excess_return"),
-                            "costs": r.get("costs"), "drawdown": r.get("drawdown")})
+                            **({k: None for k in PERFORMANCE_FIELDS} if status in ("pending_review", "unreconciled") else values),
+                            "performance_status": status,
+                            "pending_revision_ids": pending, "confirmation": confirmation})
+            previous = r
         return out
 
 
@@ -539,6 +632,14 @@ def _has_decision(rec: Dict[str, Any]) -> bool:
     """这条记录里有没有真正的决策（目标权重非空）。"""
     tw = (rec.get("decision") or {}).get("target_weights") or rec.get("target_weights")
     return bool(tw)
+
+
+def _eligible_outcome(record: Dict[str, Any], previous: Optional[Dict[str, Any]]) -> bool:
+    """收益归属须与上一条正式决策及规格一致。"""
+    outcome = record.get("outcome") or {}
+    return bool(previous and previous.get("formal") is True and _has_decision(previous)
+                and outcome.get("counts") is True and outcome.get("of_decision") == previous.get("decision_date")
+                and record.get("spec_hash") and record.get("spec_hash") == previous.get("spec_hash"))
 
 
 def _f(v) -> Optional[float]:
