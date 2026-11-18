@@ -219,7 +219,11 @@ def permit_items(exec_db: Optional[Path], settings: dict, head: str, acceptance_
     state = _exec_state(Path(exec_db))
     p = _json(state.get("run_permit"))
     from app.core.execution.intraday_watchdog import blocking_reasons
-    wd = blocking_reasons(SimpleNamespace(get_state=state.get))
+    if "intraday_watchdog_interval_s" in settings:
+        wd = blocking_reasons(SimpleNamespace(get_state=state.get),
+                              interval_s=settings["intraday_watchdog_interval_s"])
+    else:
+        wd = ["配置导出缺少盘中巡检间隔，无法核验心跳期限"]
     out.append(_item("盘中巡检最近一拍", not wd, "; ".join(wd) or
                      (f"{_json(state.get('intraday_watchdog'))}" if state.get("intraday_watchdog") else
                       "还没有巡检记录（巡检在交易时段里才跑）"), gates=(UNATTENDED,)))

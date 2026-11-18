@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from datetime import datetime, timezone
 
 import pytest
 
@@ -25,6 +26,7 @@ from tests.integration.test_simulate_acceptance import record_all_scenarios
 ACC = 2001
 CODE = "abc123abc123"
 SPEC_H = "h" * 64
+NOW = datetime(2026, 10, 30, 15, 1, tzinfo=timezone.utc)
 
 
 @pytest.fixture(scope="module")
@@ -41,7 +43,7 @@ def evidence(recorded, tmp_path):
 
 def _settings():
     from app.config import settings
-    return settings.model_copy(update={"price_source": "moomoo"})
+    return settings.model_copy(update={"price_source": "moomoo", "intraday_watchdog_enabled": True})
 
 
 def _store(tmp_path):
@@ -52,7 +54,11 @@ def _store(tmp_path):
 def _issue(tmp_path, evidence, **kw):
     kw.setdefault("code", CODE)
     kw.setdefault("contract", ae.contract_of_settings())
-    st = kw.pop("store", None) or _store(tmp_path)
+    st = kw.pop("store", None)
+    if st is None:
+        st = _store(tmp_path)
+        st.set_state("intraday_watchdog", json.dumps({"at": NOW.isoformat(), "state": "no_positions", "names": {}}))
+    kw.setdefault("now", NOW)
     return st, rp.issue(st, mode="unattended", actor="tester", reason="无人值守", account=kw.pop("account", ACC),
                         hours=48, acceptance_evidence=str(evidence), settings=_settings(), spec_hash=SPEC_H,
                         health=lambda s, now: [], **kw)
@@ -61,6 +67,7 @@ def _issue(tmp_path, evidence, **kw):
 def _evaluate(st, **kw):
     kw.setdefault("code", CODE)
     kw.setdefault("contract", ae.contract_of_settings())
+    kw.setdefault("now", NOW)
     return rp.evaluate(st, account=ACC, settings=_settings(), spec_hash=SPEC_H, health=lambda s, now: [], **kw)
 
 

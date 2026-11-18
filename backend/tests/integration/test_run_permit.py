@@ -24,7 +24,7 @@ BACKEND = Path(__file__).resolve().parents[2]
 
 def _settings(**kw):
     from app.config import settings
-    return settings.model_copy(update={"price_source": "moomoo", **kw})
+    return settings.model_copy(update={"price_source": "moomoo", "intraday_watchdog_enabled": True, **kw})
 
 
 def _guarded(tmp_path, settings=None):
@@ -119,6 +119,11 @@ def _evidence(tmp_path, recorded):
 
 def _unattended(e, tmp_path, recorded, health=lambda s, now: [], **kw):
     from app.core.execution.acceptance_evidence import contract_of_settings
+    from app.core.data_engine.market_calendar import last_closed_session, session_close_utc
+    now = e.clock()
+    close = session_close_utc(last_closed_session(now))
+    e.es.set_state("intraday_watchdog", json.dumps({"at": (close - timedelta(seconds=30)).isoformat(),
+                                                     "state": "no_positions", "names": {}}))
     kw.setdefault("code", "abc123abc123")
     kw.setdefault("spec_hash", "h" * 64)
     kw.setdefault("contract", contract_of_settings())
@@ -158,6 +163,20 @@ def test_unattended_readiness_is_rechecked_not_computed_once(tmp_path, recorded)
     _evidence(tmp_path, recorded).write_text("改过\n", encoding="utf-8")
     d = rp.evaluate(e.es, health=lambda s, now: [], **base)
     assert not d.allowed and any("验收证据" in r for r in d.reasons)
+
+
+def test_unattended_permit_blocks_when_watchdog_stops_or_is_disabled(tmp_path, recorded):
+    from app.core.execution.acceptance_evidence import contract_of_settings
+    e = _guarded(tmp_path)
+    _unattended(e, tmp_path, recorded)
+    base = dict(account=ACC, settings=e.settings, now=e.clock(), code="abc123abc123", spec_hash="h" * 64,
+                contract=contract_of_settings(), health=lambda s, now: [])
+    assert rp.evaluate(e.es, **base).allowed
+    later = rp.evaluate(e.es, **{**base, "now": e.clock() + timedelta(days=1)})
+    assert not later.allowed and any("盘中巡检" in reason for reason in later.reasons)
+    disabled = e.settings.model_copy(update={"intraday_watchdog_enabled": False})
+    decision = rp.evaluate(e.es, **{**base, "settings": disabled})
+    assert not decision.allowed and any("巡检未开启" in reason for reason in decision.reasons)
 
 
 def test_the_real_health_check_reads_notifications_and_backups(tmp_path):

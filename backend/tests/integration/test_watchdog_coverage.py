@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import json
 from datetime import datetime as _dt
-from datetime import timedelta
+from datetime import timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -112,13 +113,14 @@ class TestEachHoldingIsJudged:
 
 class TestNoFalseStaleness:
 
-    def test_a_cash_only_account_is_never_stale_and_never_blocks(self, tmp_path):
+    def test_a_cash_only_account_is_never_stale_and_never_blocks(self, tmp_path, monkeypatch):
         from tests.unit.execution.test_order_manager import _env
         e = _env(tmp_path)
         wd, alerts = _watchdog(e, Clock(NOW), stale_after_s=600)
+        monkeypatch.setattr(wd, "_check_loss", lambda *_: {"status": "ok"})
         out = wd.tick()
         assert out["freshness"] == "no_positions" and alerts == []
-        assert iw.blocking_reasons(e.es) == []
+        assert iw.blocking_reasons(e.es, now=NOW) == []
 
     def test_unchanged_prices_with_moving_quote_times_stay_fresh(self, tmp_path, monkeypatch):
         e = _world(tmp_path)
@@ -131,7 +133,7 @@ class TestNoFalseStaleness:
             out = wd.tick()
             assert out["freshness"] == "fresh" and out["status"] == "ok"
             clock.t += timedelta(minutes=5)
-        assert alerts == [] and iw.blocking_reasons(e.es) == []
+        assert alerts == [] and iw.blocking_reasons(e.es, now=clock.t - timedelta(minutes=5)) == []
 
 
 class TestEffectOnUnattended:
@@ -143,7 +145,7 @@ class TestEffectOnUnattended:
     def test_the_last_tick_decides_whether_new_risk_may_be_added(self, tmp_path, monkeypatch, asof, blocks):
         e = _world(tmp_path)
         _tick(e, monkeypatch, asof)
-        assert bool(iw.blocking_reasons(e.es)) is blocks, iw.blocking_reasons(e.es)
+        assert bool(iw.blocking_reasons(e.es, now=NOW)) is blocks, iw.blocking_reasons(e.es, now=NOW)
 
     def test_a_disconnect_blocks_and_the_recovery_tick_releases(self, tmp_path, monkeypatch):
         from app.core.execution.broker_gateway import BrokerError
@@ -159,12 +161,12 @@ class TestEffectOnUnattended:
         wd, alerts = _watchdog(e, clock, factory=factory, unreachable_alert_after=2, stale_after_s=600)
         for _ in range(2):
             assert wd.tick()["status"] == "broker_unreachable"
-        assert _recorded(e)["state"] == "unreachable" and iw.blocking_reasons(e.es)
+        assert _recorded(e)["state"] == "unreachable" and iw.blocking_reasons(e.es, now=clock.t)
         assert [a.severity for a in alerts] == ["critical"]
         state["down"] = False
         clock.t += timedelta(minutes=1)
         out = wd.tick()
-        assert out["status"] == "ok" and iw.blocking_reasons(e.es) == []
+        assert out["status"] == "ok" and iw.blocking_reasons(e.es, now=clock.t) == []
         assert alerts[-1].severity == "info" and "恢复" in alerts[-1].title
 
     def test_a_restarted_process_sees_the_last_tick(self, tmp_path, monkeypatch):
@@ -173,7 +175,7 @@ class TestEffectOnUnattended:
         e = _world(tmp_path)
         _tick(e, monkeypatch, {"BBB": None})
         fresh_store = ExecutionStore(db_url=str(e.es._engine.url))                    # noqa: SLF001
-        assert iw.blocking_reasons(fresh_store)
+        assert iw.blocking_reasons(fresh_store, now=NOW)
 
     def test_a_corrupt_record_blocks(self, tmp_path):
         from tests.unit.execution.test_order_manager import _env
@@ -186,3 +188,98 @@ class TestEffectOnUnattended:
         e = _world(tmp_path)
         _tick(e, monkeypatch, {"BBB": None})
         assert any("盘中巡检" in r for r in rp._store_health(e.es))                    # noqa: SLF001
+
+
+class TestHeartbeatForUnattended:
+    @staticmethod
+    def store(at=None, state="fresh", names=None):
+        record = {"at": at, "state": state, "names": {"AAA": "fresh"} if names is None else names}
+        return SimpleNamespace(get_state=lambda _key: json.dumps(record))
+
+    def test_missing_and_expired_records_block(self):
+        missing = SimpleNamespace(get_state=lambda _key: None)
+        assert iw.blocking_reasons(missing, now=NOW)
+        assert iw.blocking_reasons(self.store(NOW.isoformat()), now=NOW) == []
+        assert iw.blocking_reasons(self.store((NOW - timedelta(seconds=181)).isoformat()), now=NOW)
+        assert iw.blocking_reasons(self.store((NOW - timedelta(seconds=180)).isoformat()), now=NOW) == []
+
+    def test_premarket_record_is_not_a_regular_session_heartbeat(self):
+        shortly_after_open = OPEN_D3 + timedelta(minutes=1)
+        before_open = OPEN_D3 - timedelta(minutes=1)
+        assert iw.blocking_reasons(self.store(before_open.isoformat()), now=shortly_after_open)
+        assert iw.blocking_reasons(self.store(OPEN_D3.isoformat()), now=shortly_after_open) == []
+
+    def test_missing_opening_time_blocks(self, monkeypatch):
+        monkeypatch.setattr(iw, "in_regular_session", lambda _now: True)
+        monkeypatch.setattr("app.core.data_engine.market_calendar.session_open_utc", lambda _day: None)
+        assert iw.blocking_reasons(self.store(NOW.isoformat()), now=NOW)
+
+    @pytest.mark.parametrize("at", [None, "bad", "2025-03-05T14:34:00", "2025-03-05T14:36:00+00:00"])
+    def test_invalid_or_future_timestamps_block(self, at):
+        assert iw.blocking_reasons(self.store(at), now=NOW)
+
+    def test_off_hours_use_the_latest_close_and_reject_older_sessions(self):
+        close = _dt(2025, 3, 7, 21, 0, tzinfo=timezone.utc)
+        latest = self.store((close - timedelta(seconds=30)).isoformat())
+        older = self.store((close - timedelta(minutes=4)).isoformat())
+        for when in (close + timedelta(minutes=30), _dt(2025, 3, 8, 12, tzinfo=timezone.utc),
+                     _dt(2025, 3, 10, 13, tzinfo=timezone.utc)):
+            assert iw.blocking_reasons(latest, now=when) == []
+            assert iw.blocking_reasons(older, now=when)
+            assert iw.blocking_reasons(self.store(close.isoformat()), now=when)
+
+    def test_unknown_state_bad_structure_and_bad_interval_block(self):
+        assert iw.blocking_reasons(self.store(NOW.isoformat(), state="unknown"), now=NOW)
+        assert iw.blocking_reasons(self.store(NOW.isoformat(), names=[]), now=NOW)
+        assert iw.blocking_reasons(SimpleNamespace(get_state=lambda _key: "[]"), now=NOW)
+        assert iw.blocking_reasons(self.store(NOW.isoformat(), names={"A": "unknown"}), now=NOW)
+        assert iw.blocking_reasons(self.store(NOW.isoformat(), state="no_positions"), now=NOW)
+        assert iw.blocking_reasons(self.store(NOW.isoformat(), names={}), now=NOW)
+        assert iw.blocking_reasons(self.store(NOW.isoformat(), names={"A": "stale"}), now=NOW)
+        assert iw.blocking_reasons(self.store(NOW.isoformat(), state="partial", names={"A": "fresh"}), now=NOW)
+        assert iw.blocking_reasons(self.store(NOW.isoformat(), state="partial", names={"A": "stale"}), now=NOW)
+        assert iw.blocking_reasons(self.store(NOW.isoformat(), state="partial", names={"A": "fresh", "B": "stale"}), now=NOW) == []
+        assert iw.blocking_reasons(self.store(NOW.isoformat()), now=NOW, interval_s=0)
+        for interval in (10, 300):
+            assert iw.blocking_reasons(self.store(NOW.isoformat()), now=NOW, interval_s=interval) == []
+        for interval in (9, 301):
+            assert iw.blocking_reasons(self.store(NOW.isoformat()), now=NOW, interval_s=interval)
+
+    def test_disabled_or_unavailable_watchdog_blocks(self, monkeypatch):
+        from app.core.execution import run_permit
+        from app.core.data_engine.market_calendar import CalendarUnavailable
+        st = self.store(NOW.isoformat())
+        assert run_permit._store_health(st, now=NOW, settings=SimpleNamespace(intraday_watchdog_enabled=False))  # noqa: SLF001
+        assert run_permit._store_health(st, now=NOW, settings=SimpleNamespace())  # noqa: SLF001
+        assert run_permit._store_health(st, now=NOW, settings=SimpleNamespace(intraday_watchdog_enabled=True)) == []  # noqa: SLF001
+        def unavailable(_now):
+            raise CalendarUnavailable("calendar down")
+        monkeypatch.setattr(iw, "in_regular_session", unavailable)
+        assert iw.blocking_reasons(st, now=NOW)
+
+    def test_missing_loss_baseline_never_reports_healthy(self, tmp_path):
+        from tests.unit.execution.test_order_manager import _env
+        e = _env(tmp_path)
+        wd, _alerts = _watchdog(e, Clock(NOW), stale_after_s=600)
+        assert wd.tick()["status"] == "no_baseline"
+        assert iw.blocking_reasons(e.es, now=NOW)
+
+    def test_loss_check_exception_clears_prior_health(self, tmp_path, monkeypatch):
+        e = _world(tmp_path)
+        wd, _alerts = _watchdog(e, Clock(NOW), stale_after_s=600)
+        def fail(*_args):
+            raise RuntimeError("loss check failed")
+        monkeypatch.setattr(wd, "_check_loss", fail)
+        with pytest.raises(RuntimeError, match="loss check failed"):
+            wd.tick()
+        assert iw.blocking_reasons(e.es, now=NOW)
+
+    def test_exception_before_loss_check_clears_prior_health(self, tmp_path, monkeypatch):
+        e = _world(tmp_path)
+        wd, _alerts = _watchdog(e, Clock(NOW), stale_after_s=600)
+        def fail(*_args):
+            raise RuntimeError("quote processing failed")
+        monkeypatch.setattr(wd, "_freshness", fail)
+        with pytest.raises(RuntimeError, match="quote processing failed"):
+            wd.tick()
+        assert iw.blocking_reasons(e.es, now=NOW)

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -31,7 +31,8 @@ def recorded(tmp_path_factory):
 
 def _settings():
     from app.config import settings
-    return settings.model_copy(update={"price_source": "moomoo", "risk_target_vol_ann": 0.0})
+    return settings.model_copy(update={"price_source": "moomoo", "risk_target_vol_ann": 0.0,
+                                       "intraday_watchdog_enabled": True})
 
 
 @pytest.fixture
@@ -56,6 +57,11 @@ def world(tmp_path, monkeypatch, recorded):
     shutil.copy(recorded, ev)
     edb = tmp_path / "exec.db"
     es = ExecutionStore(db_url=f"sqlite:///{edb.as_posix()}")
+    from app.core.execution.intraday_watchdog import in_regular_session
+    from app.core.data_engine.market_calendar import last_closed_session, session_close_utc
+    now = datetime.now(timezone.utc)
+    heartbeat = now if in_regular_session(now) else session_close_utc(last_closed_session(now)) - timedelta(seconds=30)
+    es.set_state("intraday_watchdog", json.dumps({"at": heartbeat.isoformat(), "state": "no_positions", "names": {}}))
     rp.issue(es, mode="unattended", actor="kevin", reason="go", account=2001, hours=48, acceptance_evidence=str(ev),
              settings=_settings(), code=CODE, spec_hash=spec_hash(spec), health=lambda s, now: [],
              contract=contract_of_spec(spec))
@@ -70,6 +76,7 @@ def world(tmp_path, monkeypatch, recorded):
     d.confirm_visible(d.send_test_notification(), actor="kevin")
     monkeypatch.setattr(g, "code_items", lambda: [g._item("固定代码提交", True, f"HEAD {HEAD}")])   # noqa: SLF001
     cfg = {"price_source": "moomoo", "execution_mode": "moomoo_paper", "intraday_watchdog_enabled": True,
+           "intraday_watchdog_interval_s": 60,
            "risk_target_vol_ann": 0.0}
     args = dict(db=db, dataset=DATASET, settings=cfg, exec_db=edb, evidence=ev, backup_dir=str(bk),
                 alert_events=str(events), acceptance_exec_db=adb)
@@ -96,6 +103,13 @@ def test_the_four_conclusions_are_separate(world):
     assert c["unattended"]["verdict"].startswith("可提交") and "人工确认" in c["unattended"]["verdict"]
     assert c["verified"]["verdict"] == "不满足"                                  # 刚开始收证据，没有前向天数
     assert any("verified_active" in b for b in c["verified"]["blockers"])
+
+
+def test_missing_watchdog_interval_blocks_unattended(world):
+    args, _ = world
+    cfg = {k: v for k, v in args["settings"].items() if k != "intraday_watchdog_interval_s"}
+    rep = g.build(**{**args, "settings": cfg})
+    assert any("巡检间隔" in b for b in rep["conclusions"]["unattended"]["blockers"])
 
 
 def test_a_scenario_edited_after_issuing_blocks_unattended(world):

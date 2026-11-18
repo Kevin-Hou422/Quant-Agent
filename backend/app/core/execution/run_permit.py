@@ -102,10 +102,14 @@ def _unattended_health(settings, now: datetime) -> List[str]:
     return out
 
 
-def _store_health(store) -> List[str]:
+def _store_health(store, *, now=None, settings=None) -> List[str]:
     """读执行库里的现场状态（不可注入：测试替换 health 也绕不过）。"""
     from app.core.execution.intraday_watchdog import blocking_reasons
-    return blocking_reasons(store)
+    if settings is None:
+        from app.config import settings
+    if not getattr(settings, "intraday_watchdog_enabled", False):
+        return ["盘中巡检未开启"]
+    return blocking_reasons(store, now=now, interval_s=getattr(settings, "intraday_watchdog_interval_s", 60))
 
 
 def issue(store, *, mode: str, actor: str, reason: str, account: int, hours: float,
@@ -153,7 +157,7 @@ def issue(store, *, mode: str, actor: str, reason: str, account: int, hours: flo
         judged = ae.assess(acceptance_evidence, account=int(account), code=code, contract=c, waived=waive_uncovered)
         if not judged["ok"]:
             raise PermitRefused("现场验收证据不支持无人值守：" + "；".join(ae.reasons(judged)))
-        problems = (health or _unattended_health)(settings, now) + _store_health(store)
+        problems = (health or _unattended_health)(settings, now) + _store_health(store, now=now, settings=settings)
         if problems:
             raise PermitRefused("；".join(problems))
         permit.update(spec_hash=h, acceptance_evidence={
@@ -222,7 +226,7 @@ def evaluate(store, *, account: Optional[int], settings=None, now: Optional[date
                                waived=ev.get("waived"))
             if not judged["ok"]:
                 why.append("现场验收证据按此刻的代码 / 规格判定不通过：" + "；".join(ae.reasons(judged)))
-        why += (health or _unattended_health)(settings, now) + _store_health(store)
+        why += (health or _unattended_health)(settings, now) + _store_health(store, now=now, settings=settings)
     return PermitDecision(not why, mode=p["mode"], reasons=why, max_order_notional=p.get("max_order_notional"),
                           expires_at=p["expires_at"])
 

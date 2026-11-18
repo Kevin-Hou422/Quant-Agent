@@ -251,6 +251,7 @@ class IntradayWatchdog:
                 if not got:
                     logger.info("[watchdog] 账户正被另一个进程操作 → 本拍跳过")
                     return {"status": "lock_busy"}
+                self._record(om.store, now, "unproven", detail="巡检尚未完成")
                 try:
                     acct, positions = om.gw.account(), om.gw.positions()
                 except BrokerError as exc:
@@ -262,16 +263,25 @@ class IntradayWatchdog:
                       tuple(sorted((tk, round(float(p.nominal_price), 6)) for tk, p in positions.items())))
                 fresh = self._freshness(om, positions, now)
                 stale = self._on_freshness(fresh, fp, now)
-                self._record(om.store, now, fresh["state"],
-                             {tk: v["state"] for tk, v in fresh["names"].items()}, fresh.get("detail", ""))
                 if om.store.kill_switch().get("engaged"):
                     if not positions:
                         return {"status": "breaker_active", "flat": True}
                     rep = om.maintain("intraday_watchdog: 熔断已开，续做全平")
                     return {"status": "breaker_active", "maintain": rep.to_dict()}
                 if stale:
+                    self._record(om.store, now, fresh["state"],
+                                 {tk: v["state"] for tk, v in fresh["names"].items()}, fresh.get("detail", ""))
                     return {"status": "stale_snapshot", "as_of": fresh.get("as_of"), "freshness": fresh}
-                res = self._check_loss(om, acct, now)
+                try:
+                    res = self._check_loss(om, acct, now)
+                except Exception:
+                    self._record(om.store, now, "unproven", detail="盘中亏损检查异常")
+                    raise
+                if res["status"] == "no_baseline":
+                    self._record(om.store, now, "unproven", detail="缺少可信基线，无法检查盘中亏损")
+                else:
+                    self._record(om.store, now, fresh["state"],
+                                 {tk: v["state"] for tk, v in fresh["names"].items()}, fresh.get("detail", ""))
                 if res["status"] == "ok" and fresh["state"] not in ("fresh", "no_positions"):
                     res["status"] = f"{fresh['state']}_ok"            # 没跌穿，但不是每只持仓都新鲜：不报 ok
                 return {**res, "freshness": fresh["state"],
@@ -321,20 +331,65 @@ def intraday_watchdog_job() -> dict:
     return out
 
 
-def blocking_reasons(store) -> list:
-    """无人值守许可每轮核对用：最近一拍巡检的结论里不允许新增风险的部分（没有记录 → 空）。"""
+def blocking_reasons(store, *, now=None, interval_s=60) -> list:
+    """检查最近巡检结论；盘外使用最近收盘前的巡检记录。"""
     raw = store.get_state(STATE_KEY)
     if not raw:
-        return []
+        return ["盘中巡检尚无记录，无法确认巡检正在运行"]
     try:
         rec = json.loads(raw)
-    except (TypeError, ValueError) as exc:
+        if not isinstance(rec, dict) or not isinstance(rec.get("names"), dict):
+            raise ValueError("记录结构不完整")
+        stamp = pd.Timestamp(rec["at"])
+        if pd.isna(stamp) or stamp.tzinfo is None:
+            raise ValueError("巡检时间缺少时区")
+        stamp = stamp.tz_convert("UTC")
+        current = pd.Timestamp(now or datetime.now(timezone.utc))
+        if pd.isna(current) or current.tzinfo is None:
+            raise ValueError("当前时间缺少时区")
+        current = current.tz_convert("UTC")
+        interval = float(interval_s)
+        if not 10 <= interval <= 300:
+            raise ValueError("巡检间隔超出 10–300 秒")
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
         logger.error("[watchdog] 巡检结论记录损坏: %s", exc)
         return ["盘中巡检的结论记录损坏 —— 证明不了巡检在看着持仓"]
-    names = rec.get("names") or {}
+    names = rec["names"]
     if rec.get("state") in BLOCKING_OVERALL:
         return [f"盘中巡检最近一拍（{rec.get('at')}）是 {rec['state']}：{rec.get('detail') or names}"]
     bad = {tk: st for tk, st in names.items() if st in DEFECT_STATES}
     if bad:
         return [f"盘中巡检最近一拍（{rec.get('at')}）有持仓的行情缺失 / 时间在未来 / 时区不可判定：{bad}"]
+    if rec.get("state") not in ("fresh", "partial", "no_positions"):
+        return ["盘中巡检结论状态无法识别"]
+    if any(st not in ("fresh", "stale") for st in names.values()):
+        return ["盘中巡检持仓状态无法识别"]
+    if rec["state"] == "no_positions" and names:
+        return ["盘中巡检的持仓状态不一致"]
+    if rec["state"] == "fresh" and (not names or any(st != "fresh" for st in names.values())):
+        return ["盘中巡检的持仓状态不一致"]
+    if rec["state"] == "partial" and ("fresh" not in names.values() or "stale" not in names.values()):
+        return ["盘中巡检的持仓状态不一致"]
+    if stamp > current:
+        return ["盘中巡检记录时间在未来"]
+    try:
+        if in_regular_session(current.to_pydatetime()):
+            from app.core.data_engine.market_calendar import session_open_utc
+            opening = session_open_utc(exchange_date(current.to_pydatetime()))
+            if opening is None or stamp < pd.Timestamp(opening):
+                return ["盘中巡检记录早于本交易时段"]
+            deadline = current
+        else:
+            from app.core.data_engine.market_calendar import last_closed_session, session_close_utc
+            close = session_close_utc(last_closed_session(current.to_pydatetime()))
+            if close is None:
+                raise ValueError("缺少最近收盘时间")
+            deadline = pd.Timestamp(close)
+            if stamp >= deadline:
+                return ["盘中巡检记录不在最近交易时段内"]
+    except Exception as exc:
+        logger.error("[watchdog] 交易时段无法核验: %s", exc)
+        return ["盘中巡检无法核验交易时段"]
+    if deadline - stamp > pd.Timedelta(seconds=max(120, 3 * interval)):
+        return ["盘中巡检记录已过期"]
     return []
