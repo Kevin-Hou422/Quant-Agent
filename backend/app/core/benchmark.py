@@ -25,11 +25,14 @@ SPY 第二基准后排；低仓位策略对满仓基准的差额不要直接称�
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 from typing import Dict, Iterable, List, Optional
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 BENCHMARK_NAME = "ew_universe"
 
@@ -116,7 +119,8 @@ def ew_universe_return(close: pd.DataFrame, day, universe: Optional[List[str]],
     # 先除以成分数再求和，避免多个有限收益在求和时溢出、但平均值本身仍可表示。
     try:
         value = math.fsum(r / len(rets) for r in rets)
-    except OverflowError:
+    except OverflowError as exc:
+        logger.warning("[benchmark] 等权收益汇总溢出，暂停发布: %s", exc)
         value = float("nan")
     aggregate_valid = bool(np.isfinite(value))
     out["missing"] = sorted(missing)

@@ -248,7 +248,9 @@ class TestDailyRunOutcomes:
         monkeypatch.setattr("app.core.alerting.dispatcher.AlertDispatcher.emit",
                             lambda self, ev: seen.append(ev) or None)
         monkeypatch.setattr("app.core.data_engine.market_calendar.is_trading_day", lambda d: False)
-        sch.daily_trading_job()
+        # 非交易日的调度仍可能补跑最近一个交易日；明确设为已过补跑窗口。
+        monkeypatch.setattr(sch, "decision_window", lambda now: (T0.date(), T0))
+        sch.daily_trading_job(now=T0)
         assert [e.kind for e in seen] == ["no_trading_day"]
 
 

@@ -110,5 +110,7 @@ def test_scheduler_skips_non_trading_day(monkeypatch):
                         lambda *a, **k: called.__setitem__("n", called["n"] + 1) or {})
     monkeypatch.setattr("app.core.data_engine.market_calendar.is_trading_day",
                         lambda *a, **k: False)
-    sch.daily_trading_job()
+    now = pd.Timestamp("2026-10-26 22:00", tz="UTC")
+    monkeypatch.setattr(sch, "decision_window", lambda _now: (now.date(), now))
+    assert sch.daily_trading_job(now=now)["skipped"] == "not_a_trading_day"
     assert called["n"] == 0                                # 非交易日 → 未调用管线

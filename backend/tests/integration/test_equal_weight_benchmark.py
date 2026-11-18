@@ -85,6 +85,20 @@ class TestEqualWeightUniverseBenchmark:
             assert result["return"] == pytest.approx(sys.float_info.max)
             assert result["valuation_trusted"] is True
 
+    def test_aggregate_overflow_is_reported_and_not_published(self, monkeypatch, caplog):
+        from app.core import benchmark
+
+        def overflow(_values):
+            raise OverflowError("sum overflow")
+
+        monkeypatch.setattr(benchmark.math, "fsum", overflow)
+        close = pd.DataFrame({"A": [100.0, 101.0]}, index=_IDX)
+        result = benchmark.ew_universe_return(close, _IDX[-1], ["A"])
+        assert result["return"] is None and result["valuation_trusted"] is False
+        assert any(record.name == benchmark.__name__ and record.levelname == "WARNING"
+                   and record.getMessage() == "[benchmark] 等权收益汇总溢出，暂停发布: sum overflow"
+                   for record in caplog.records)
+
     def test_a_missing_price_stays_in_the_denominator(self):
         close = pd.DataFrame({"A": [100.0, 110.0], "B": [50.0, 50.0], "C": [20.0, np.nan], "D": [10.0, 9.8]},
                              index=_IDX)
