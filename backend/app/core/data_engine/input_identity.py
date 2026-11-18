@@ -19,7 +19,6 @@ import hashlib
 import logging
 import subprocess
 from dataclasses import asdict, dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -63,15 +62,25 @@ class InputIdentity:
         return asdict(self)
 
 
-@lru_cache(maxsize=1)
 def code_version() -> str:
-    """git HEAD 的短哈希；工作区有未提交改动 → 后缀 +dirty；不是 git 环境 → "unknown"。"""
+    """每次重新读取 HEAD 与工作区；无法确认状态时返回 unknown。"""
     root = Path(__file__).resolve().parents[3]
     try:
-        head = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=root, capture_output=True,
-                              text=True, timeout=10).stdout.strip()
-        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=root,
-                               capture_output=True, text=True, timeout=10).stdout.strip()
+        head_result = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=root, capture_output=True,
+                                     text=True, timeout=10, check=True)
+        status_result = subprocess.run(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=root,
+                                       capture_output=True, text=True, timeout=10, check=True)
+        ignored_result = subprocess.run(
+            ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--",
+             ":(glob)app/**/*.py", ":(glob)app/**/*.pyw"],
+            cwd=root, capture_output=True, text=True, timeout=10, check=True)
+        head_after = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=root, capture_output=True,
+                                    text=True, timeout=10, check=True).stdout.strip()
+        head, dirty = head_result.stdout.strip(), status_result.stdout.strip()
+        if head != head_after:
+            logger.warning("[identity] 检查工作区时 HEAD 已改变")
+            return "unknown"
+        dirty = dirty or ignored_result.stdout
     except Exception as exc:
         logger.warning("[identity] 取不到代码版本: %s", exc)
         return "unknown"

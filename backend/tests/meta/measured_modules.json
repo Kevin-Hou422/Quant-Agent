@@ -4,9 +4,9 @@
  "_note_state_file_missing": "标了 state_file_missing 的模块：A 档确实测量过（台账有逐条存活分析），但当时的 progress 状态文件后来被清理，数字取自台账而非状态文件。重跑一次即可回到自动生成的口径。",
  "totals": {
   "modules_with_mutants": 111,
-  "total_points": 3390,
-  "total_survived": 172,
-  "total_killed": 3218
+  "total_points": 3398,
+  "total_survived": 173,
+  "total_killed": 3225
  },
  "modules": {
   "app/agent/_agent.py": {
@@ -1422,17 +1422,17 @@
    "note": "首测 0.0%（该模块此前一条测试都没有）。补 test_sqlite_hardening.py 后用 verify_mutant.py 单点复核：L28 `!=` → `==` 结论 [OK] 变异被杀死。"
   },
   "app/core/data_engine/input_identity.py": {
-   "points": 5,
-   "killed": 4,
-   "survived": 1,
-   "kill_rate": 80.0,
+   "points": 13,
+   "killed": 11,
+   "survived": 2,
+   "kill_rate": 84.6,
    "tests": [
     "tests/integration/test_evidence_input_identity.py",
     "tests/integration/test_input_identity_and_code_version.py",
     "tests/integration/test_trading_clock.py",
     "tests/unit/portfolio_manager/test_executable_spec.py"
    ],
-   "source": "D5 关键路径复核（健康 / 身份 / 时钟 / 规格与结论）：首轮按导入选路 + 存活点补测轮，按变异点取并集",
+   "source": "D5 关键路径复核原有 5 点；2026-11-19 新增 8 点在隔离副本逐点复核，7 点由代码身份用例检出，忽略源码列表的文本 / 字节输出一处存活并有等价性验证。13 点为结果并集，原有 5 点未在本批重测。",
    "all_runs": [
     0.0,
     80.0
@@ -1873,16 +1873,16 @@
  "proof_reconciliation": {
   "_doc": "存活变异的处置对账状态。这是本轮交付**已知未闭合**的唯一缺口，写在这里是为了它不会被忘掉。",
   "modules_with_survivors": 57,
-  "total_survivors": 172,
+  "total_survivors": 173,
   "proof_files_in_suite": 44,
-  "proof_entries_in_suite": 130,
+  "proof_entries_in_suite": 131,
   "per_file_accounting": "自洽：44 个文件的 PROVEN_EQUIVALENT 条目数与各自声明的存活数逐个相等（由 test_lessons_enforced.py::TestLessonX 强制）",
   "module_level_attribution": "已逐模块对账（2026-09-16）：见 survivor_disposition",
   "why_not": "PROVEN_EQUIVALENT 的键是自由文本（如 'L124 (weights < -tol) → <='），不带模块路径；按 import 归属会错判（risk_gate 的 10 条证明在它自己的文件里，而那个文件并不直接 import 该模块）。所以无法机械地把 138 个存活逐条对上 97 条证明。",
   "what_is_established": "① app/ 下 88 个有变异点的模块全部测量过（本文件对账）；② 每个写了证明的文件，条目数与它声明的存活数一致；③ 每条证明说明 ≥40 字、点名的验证用例真实存在。 ④ 已被反例推翻的证明单独登记在 REFUTED_EQUIVALENCE，并配一条固化反例的可执行用例。",
   "how_to_close": "已完成：97 条键全部改写成 `<模块路径> ×<覆盖点数> — <描述>`，由 test_every_proof_key_declares_its_module_and_point_count 强制格式，由 test_survivor_disposition_reconciles_per_module 逐模块对账。遗留的不是『对不上账』，而是『22 个存活项确实没处置』，见 survivor_disposition。",
   "ratchet": {
-   "proof_entries_min": 130,
+   "proof_entries_min": 131,
    "_doc": "证明条数只许增不许减（减少 = 有证明被删而存活项没被杀）；被反例推翻的条目数同样只许增不许减（减少 = 有人把被推翻的证明又写回去了）。97 → 95 是因为 L119/L127 两条被推翻，不是因为存活项被收口。",
    "refuted_entries_min": 2,
    "unmeasured_points_max": 2409
@@ -1911,9 +1911,9 @@
  },
  "measurement_scope": {
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
-  "measured_points": 3390,
+  "measured_points": 3398,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-  "current_plan_points": 5799,
+  "current_plan_points": 5807,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
   "unmeasured_points": 2409,
   "newly_in_scope_modules": [
@@ -2758,9 +2758,9 @@
  },
  "survivor_disposition": {
   "_doc": "存活变异的**逐模块**处置对账。外部审计 2026-09-15 指出原来的『每个文件条目数 == 自己声明的存活数』只是文件内自洽，跨文件汇总从未对过账。现在证明键带模块前缀与覆盖点数（`<模块> ×N — 描述`），可以逐模块机械对账。",
-  "total_survivors": 172,
-  "proven_points": 148,
-  "unproven_points": 25,
+  "total_survivors": 173,
+  "proven_points": 149,
+  "unproven_points": 24,
   "unproven_by_module": {
    "app/core/alpha_engine/fast_ops.py": 3,
    "app/core/backtest_engine/transaction_cost.py": 3,
