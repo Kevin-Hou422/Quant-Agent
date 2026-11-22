@@ -266,6 +266,8 @@ def test_a_run_is_recorded_as_done_only_when_the_data_reached_the_session(fresh_
     {"ingest_accepted": False, "reject_reason": "health_failed"},
     {"ingest_accepted": True, "portfolio": {"execution": {"mode": "moomoo_paper", "blocked": "run_permit"}}},
     {"ingest_accepted": True, "portfolio": {"execution": {"mode": "moomoo_paper", "n_submit_errors": 1}}},
+    {"ingest_accepted": True, "portfolio": {"execution": {"mode": "moomoo_paper", "build": {"skipped": [{"ticker": "AAA", "reason": "no_reference_price"}]}}}},
+    {"ingest_accepted": True, "portfolio": {"execution": {"mode": "moomoo_paper", "n_planned": 1, "n_submitted": 1, "quote_error": "unavailable"}}},
     {"ingest_accepted": False, "reason": "no_new_bar"},
     {"ingest_accepted": True, "portfolio": {"execution": {"mode": "moomoo_paper"}, "record_failures": [{"stage": "archive", "error": "failed"}]}},
 ])

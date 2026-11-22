@@ -41,6 +41,7 @@ KINDS = {
     "orders_rejected_abnormal": "本轮新单全部被数据 / 报价 / 估值异常或熔断拦下，实际没有下单",
     "orders_rejected_by_limits": "本轮新单全部被计划内风控缩减（限额 / 买入力），实际没有下单",
     "orders_partially_rejected": "部分新单因数据 / 报价 / 估值异常被拦下",
+    "execution_data_incomplete": "参考价或独立报价不完整，调仓结果需要核对",
     "record_write_failed":   "正式证据 / 每日记录 / 信号存档写入失败",
     "backup_failed":         "每日备份失败",
     # 调度
@@ -113,6 +114,13 @@ def execution_outcome(ex: dict) -> dict:
               + (f"；独立报价取不到：{ex['quote_error']}" if ex.get("quote_error") else ""))
     fresh = planned - dup
     out = {"rejections": counts, "detail": detail}
+    missing_prices = [s.get("ticker") for s in ((ex.get("build") or {}).get("skipped") or [])
+                      if s.get("reason") == "no_reference_price"]
+    if missing_prices or ex.get("quote_error"):
+        if missing_prices:
+            out["detail"] += f"；缺少参考价：{', '.join(str(t) for t in missing_prices)}"
+        return {**out, "kind": "execution_data_incomplete", "severity": "warning" if sent else "critical",
+                "status": "degraded" if sent else "failed"}
     if planned == 0 and sent == 0:
         return {**out, "kind": "no_orders_normal", "severity": "info", "status": "ok"}
     if fresh <= 0 and sent == 0:

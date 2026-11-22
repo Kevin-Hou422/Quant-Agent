@@ -16,6 +16,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.core.alerting.events import (
     GATE_REASON_CLASS,
     events_for_daily_run,
@@ -73,6 +75,37 @@ def test_a_partial_rejection_by_limits_completes_and_says_so():
 def test_orders_already_sent_earlier_are_a_normal_rerun():
     out = _out({"n_planned": 3, "n_submitted": 0, "n_duplicate": 3, "n_gate_rejected": 0})
     assert classify_run(out)[0] == EXIT_OK and _first(out) == ("orders_already_submitted", "info")
+
+
+@pytest.mark.parametrize("sent,expected,severity", [(0, EXIT_RUN_FAILED, "critical"),
+                                                 (1, EXIT_RUN_DEGRADED, "warning")])
+def test_missing_reference_price_is_reported_even_when_other_orders_are_sent(sent, expected, severity):
+    out = _out(_ex(sent, sent, [], build={"skipped": [{"ticker": "AAA", "reason": "no_reference_price"}]}))
+    code, detail = classify_run(out)
+    assert code == expected and "AAA" in detail
+    assert _first(out) == ("execution_data_incomplete", severity)
+
+
+@pytest.mark.parametrize("sent,expected,severity", [(0, EXIT_RUN_FAILED, "critical"),
+                                                 (1, EXIT_RUN_DEGRADED, "warning")])
+def test_quote_service_failure_is_reported_even_if_a_reducing_order_was_sent(sent, expected, severity):
+    out = _out(_ex(1, sent, [] if sent else ["no_independent_quote"], quote_error="quote service down"))
+    code, detail = classify_run(out)
+    assert code == expected and "quote service down" in detail
+    assert _first(out) == ("execution_data_incomplete", severity)
+
+
+@pytest.mark.parametrize("reason", ["no_trade_band", "fractional_remainder"])
+def test_normal_order_builder_skips_remain_successful(reason):
+    out = _out(_ex(0, 0, [], build={"skipped": [{"ticker": "AAA", "reason": reason}]}))
+    assert classify_run(out)[0] == EXIT_OK
+    assert _first(out) == ("no_orders_normal", "info")
+
+
+def test_missing_reference_price_takes_priority_over_duplicate_orders():
+    out = _out(_ex(1, 0, [], dup=1, build={"skipped": [{"ticker": "AAA", "reason": "no_reference_price"}]}))
+    assert classify_run(out)[0] == EXIT_RUN_FAILED
+    assert _first(out) == ("execution_data_incomplete", "critical")
 
 
 def test_rejections_without_listed_reasons_are_treated_as_abnormal():
