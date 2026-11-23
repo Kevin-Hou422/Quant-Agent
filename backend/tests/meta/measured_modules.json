@@ -4,9 +4,9 @@
  "_note_state_file_missing": "标了 state_file_missing 的模块：A 档确实测量过（台账有逐条存活分析），但当时的 progress 状态文件后来被清理，数字取自台账而非状态文件。重跑一次即可回到自动生成的口径。",
  "totals": {
   "modules_with_mutants": 112,
-  "total_points": 3468,
+  "total_points": 3504,
   "total_survived": 173,
-  "total_killed": 3295
+  "total_killed": 3331
  },
  "modules": {
   "app/core/alerting/events.py": {
@@ -1540,10 +1540,10 @@
    ]
   },
   "app/core/execution/order_manager.py": {
-   "points": 139,
-   "killed": 136,
+   "points": 142,
+   "killed": 139,
    "survived": 3,
-   "kill_rate": 97.8,
+   "kill_rate": 97.9,
    "tests": [
     "tests/integration/test_api_execution.py",
     "tests/integration/test_buying_power_scaling.py",
@@ -1551,6 +1551,7 @@
     "tests/integration/test_cycle_plan_record.py",
     "tests/integration/test_daily_ingest_health_gate.py",
     "tests/integration/test_forward_daily_end_to_end.py",
+    "tests/integration/test_formal_forward_daily_record.py",
     "tests/integration/test_intraday_watchdog.py",
     "tests/integration/test_intraday_watchdog_edges.py",
     "tests/integration/test_kill_switch_mid_batch.py",
@@ -1561,7 +1562,7 @@
     "tests/unit/execution/test_order_builder.py",
     "tests/unit/execution/test_order_manager.py"
    ],
-   "source": "资金不足按比例缩量（2026-11-11）之后：本次改动新增的点逐点施加同一变异、跑相关用例（判据同 verify_mutant），其余点沿用上一轮复核；被删掉的旧资金规则的点从点数里扣掉",
+   "source": "资金不足按比例缩量（2026-11-11）之后的复核结果；2026-11-23 收益快照来源新增 3 点在隔离副本逐点施加变异，全部由 test_formal_forward_daily_record.py 检出，其余点沿用先前复核。",
    "all_runs": [
     81.8,
     97.8,
@@ -1684,10 +1685,10 @@
    "all_runs": [100.0]
   },
   "app/db/forward_record.py": {
-   "points": 188,
-   "killed": 181,
+   "points": 221,
+   "killed": 214,
    "survived": 7,
-   "kill_rate": 96.3,
+   "kill_rate": 96.8,
    "tests": [
     "tests/integration/test_audit_table_schema.py",
     "tests/integration/test_daily_record_assembly.py",
@@ -1700,7 +1701,7 @@
     "tests/integration/test_strategy_state_permissions.py",
     "tests/integration/test_trial_ledger_edges.py"
    ],
-   "source": "D5 关键路径复核原有 145 点；2026-11-19 正式收益修订确认与资格检查新增 43 点在隔离副本逐点复核，全部由 test_forward_outcome_corrections.py 检出。188 点为结果并集，原有 145 点本批未重测。",
+   "source": "D5 原有 145 点及 2026-11-19 新增 43 点沿用先前复核；2026-11-23 新增 33 点在隔离副本逐点施加变异，补测后全部由 test_forward_outcome_corrections.py 和 test_daily_record_assembly.py 检出。221 点为结果并集，先前点本批未重测。",
    "all_runs": [
     45.9,
     95.2
@@ -1920,9 +1921,9 @@
  },
  "measurement_scope": {
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
-  "measured_points": 3468,
+  "measured_points": 3504,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-  "current_plan_points": 5877,
+  "current_plan_points": 5913,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
   "unmeasured_points": 2409,
   "newly_in_scope_modules": [

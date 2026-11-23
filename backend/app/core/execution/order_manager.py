@@ -134,6 +134,7 @@ class ReconcileReport:
     fills:         List[dict] = field(default_factory=list)
     adopted:       List[str] = field(default_factory=list)
     day_return:    Optional[float] = None
+    return_basis:  Optional[dict] = None
     # 供本周期后续步骤复用（不进 to_dict）
     account_obj:   Optional[AccountSnapshot] = None
     position_objs: Dict[str, BrokerPosition] = field(default_factory=dict)
@@ -477,7 +478,7 @@ class OrderManager:
 
         positions = {tk: {"qty": p.qty, "price": p.nominal_price, "market_val": p.market_val}
                      for tk, p in pos.items()}
-        self.store.add_snapshot(
+        current_snapshot = self.store.add_snapshot(
             market_date=market_date, account=acct, positions=positions,
             discrepancies=discrepancies + unresolved, status=status,
             note="" if q.history_ok else f"history_unavailable: {q.history_error}")
@@ -509,6 +510,12 @@ class OrderManager:
             positions=positions, discrepancies=discrepancies, unresolved=unresolved,
             awaiting_confirmation=awaiting,
             fills=fills, adopted=adopted, day_return=day_ret, history_ok=q.history_ok,
+            return_basis={"current_snapshot_id": current_snapshot.id,
+                          "current_market_date": str(current_snapshot.market_date),
+                          "current_taken_at": current_snapshot.taken_at.isoformat(),
+                          "previous_snapshot_id": prev.id if prev is not None else None,
+                          "previous_market_date": str(prev.market_date) if prev is not None else None,
+                          "previous_taken_at": prev.taken_at.isoformat() if prev is not None else None},
             account_obj=acct, position_objs=pos)
 
     def _expected_positions(self, trusted) -> Dict[str, float]:

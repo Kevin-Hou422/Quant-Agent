@@ -108,6 +108,11 @@ def test_the_second_day_settles_the_first_days_orders(world):
     assert rec["cash"] is not None and rec["positions"], "持仓现金没记"
     assert rec["costs"]["paper_cost_bps"] is not None and rec["costs"]["broker_slippage_bps"] is not None
     assert rec["net_return"]["paper"] is not None and rec["net_return"]["broker"] is not None
+    basis = rec["return_basis"]
+    assert basis["current_market_date"] == str(D2.date())
+    assert basis["previous_market_date"] == str(D1.date())
+    assert basis["previous_snapshot_id"] < basis["current_snapshot_id"]
+    assert basis["previous_taken_at"] and basis["current_taken_at"]
     # 2026-10-22 D16：相对满仓基准的差额（不叫 alpha）+ 按净敞口折算的差额；基准成分在启动时冻结
     ex = rec["excess_return"]
     assert None not in (ex["paper_vs_full_benchmark"], ex["broker_vs_full_benchmark"],

@@ -107,7 +107,8 @@ DECISION_FIELDS = ("decision_date", "strategy_id", "spec_hash", "clock_version",
                    "target_shares")
 
 PERFORMANCE_FIELDS = ("net_return", "excess_return", "costs", "drawdown")
-OUTCOME_EVIDENCE_FIELDS = ("fills", "actual_sessions", "cash", "positions", "total_assets", "unfilled", "anomalies")
+OUTCOME_EVIDENCE_FIELDS = ("fills", "actual_sessions", "cash", "positions", "total_assets", "unfilled", "anomalies",
+                           "benchmark", "exposure", "return_basis")
 PERFORMANCE_KEYS = {
     "net_return": {"broker", "paper"},
     "excess_return": {"label", "broker_vs_full_benchmark", "paper_vs_full_benchmark",
@@ -359,18 +360,33 @@ class ForwardRecordStore:
                             pending.append(event["event_id"])
                     elif event["kind"] == "outcome_confirm":
                         values = revision["performance"]
-                        evidence = revision["evidence"]
+                        evidence = {k: revision["evidence"].get(k) for k in OUTCOME_EVIDENCE_FIELDS}
                         reconcile_status = revision["reconcile_status"]
                         confirmation = {k: revision[k] for k in ("source_event_id", "actor", "reason")}
                         pending = []
                 net = values.get("net_return")
                 broker_return = net.get("broker") if isinstance(net, dict) else None
+                costs = values.get("costs")
+                fees = costs.get("broker_fees") if isinstance(costs, dict) else None
+                valid_broker_return = _valid_performance_number(broker_return)
+                valid_fees = _valid_performance_number(fees)
+                valid_snapshot = _valid_performance_snapshot(values)
                 status = ("pending_review" if pending else "unreconciled" if reconcile_status not in
-                          ("clean", "baseline", "accepted") else "incomplete" if broker_return is None
+                          ("clean", "baseline", "accepted") else "incomplete" if not valid_broker_return or not valid_fees or not valid_snapshot
                           else "confirmed" if confirmation else "original")
+                execution = previous.get("execution_summary") or {"status": "unknown", "reason": "历史记录缺少执行摘要"}
+                execution_revisions = [e["event_id"] for e in self.history(strategy_id, previous["decision_date"])[1:]
+                                       if e["kind"] == "revision" and
+                                       e["payload"].get("execution_summary") != previous.get("execution_summary")]
                 out.append({"decision_date": o.get("of_decision"), "outcome_date": r["decision_date"],
-                            **({k: None for k in PERFORMANCE_FIELDS} if status in ("pending_review", "unreconciled") else values),
+                            **({k: None for k in PERFORMANCE_FIELDS} if status in ("pending_review", "unreconciled", "incomplete") else values),
                             "performance_status": status,
+                            "performance_missing": (["net_return.broker"] if not valid_broker_return else []) +
+                                                   (["costs.broker_fees"] if not valid_fees else []) +
+                                                   (["invalid_performance_fields"] if not valid_snapshot else []),
+                            "decision_execution": {"initial": execution, "changed_revision_ids": execution_revisions},
+                            "settlement_evidence": evidence,
+                            "comparison_status": "requires_review",
                             "pending_revision_ids": pending, "confirmation": confirmation})
             previous = r
         return out
@@ -417,6 +433,7 @@ def build_daily_record(result: Dict[str, Any], *, strategy_id: int, spec_hash: s
     out: Dict[str, Any] = {"decision_date": str(day.date()), "strategy_id": int(strategy_id),
                            "spec_hash": spec_hash, "code_version": code_version(), "data_identity": identity,
                            "clock_version": clock_version()}
+    out["execution_summary"] = _execution_summary(ex)
 
     # ---- 信号 / 目标生成与存档时间
     out["targets_generated_at"] = now_n.isoformat()
@@ -517,6 +534,7 @@ def build_daily_record(result: Dict[str, Any], *, strategy_id: int, spec_hash: s
     broker_ret = _f(rec.get("day_return"))
     paper_ret = _f(getattr(paper, "net_ret", None))
     out["net_return"] = {"broker": broker_ret, "paper": paper_ret}
+    out["return_basis"] = rec.get("return_basis")
     # D16：等权宇宙，规则预先固定（app/core/benchmark.py）—— 成分取正式前向启动时冻结的名单；
     # 缺价成分保留分母并在恢复时结清；公司行动隔离或非有限值时暂停发布。
     from app.core.benchmark import BENCHMARK_NAME, EXCESS_LABEL, ew_universe_return
@@ -617,6 +635,8 @@ def build_daily_record(result: Dict[str, Any], *, strategy_id: int, spec_hash: s
         formal, why = False, "not_run_in_decision_window"           # 事后补跑 / 回放 / 盘中
     elif not isinstance(ex, dict) or ex.get("blocked") or not ex.get("mode") or not rec:
         formal, why = False, "execution_not_live"
+    elif ex.get("mode") == "off":
+        formal, why = False, "execution_not_live"
     elif not spec_hash:
         formal, why = False, "no_spec_hash"
     out["formal"], out["formal_reason"] = formal, why
@@ -632,6 +652,44 @@ def _has_decision(rec: Dict[str, Any]) -> bool:
     """这条记录里有没有真正的决策（目标权重非空）。"""
     tw = (rec.get("decision") or {}).get("target_weights") or rec.get("target_weights")
     return bool(tw)
+
+
+def _execution_summary(ex: Any) -> Dict[str, Any]:
+    """保留本轮提交结论；券商成交以之后的对账记录为准。"""
+    if not isinstance(ex, dict) or not ex.get("mode") or ex.get("mode") == "off":
+        return {"status": "unknown", "reason": "执行报告不可用或执行层关闭"}
+    if ex.get("blocked"):
+        return {"status": "blocked", "reason": str(ex["blocked"])}
+    keys = ("n_planned", "n_duplicate", "n_gate_rejected", "n_submitted", "n_submit_errors")
+    if any(type(ex.get(k)) is not int or ex[k] < 0 for k in keys):
+        return {"status": "unknown", "reason": "执行报告的订单计数不完整"}
+    counts = {k: ex[k] for k in keys}
+    if ex["n_submit_errors"]:
+        return {"status": "submission_unknown", "counts": counts, "reason": "下单异常，须对账确认"}
+    if sum(counts[k] for k in keys[1:]) != counts["n_planned"]:
+        return {"status": "unknown", "counts": counts, "reason": "执行报告的订单计数不一致"}
+    from app.core.alerting.events import execution_outcome
+    verdict = execution_outcome(ex)
+    return {"status": verdict["status"], "kind": verdict["kind"], "counts": counts,
+            "detail": verdict["detail"], "scope": "submission_only"}
+
+
+def _valid_performance_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and bool(np.isfinite(value))
+
+
+def _valid_performance_snapshot(values: Dict[str, Any]) -> bool:
+    for field, required in PERFORMANCE_KEYS.items():
+        section = values.get(field)
+        if not isinstance(section, dict) or not required.issubset(section):
+            return False
+        for key, value in section.items():
+            if field == "excess_return" and key == "label":
+                if not isinstance(value, str):
+                    return False
+            elif value is not None and not _valid_performance_number(value):
+                return False
+    return True
 
 
 def _eligible_outcome(record: Dict[str, Any], previous: Optional[Dict[str, Any]]) -> bool:

@@ -27,7 +27,7 @@ def _day(day, *, sid=1, formal=True, previous=None, value=None):
             "excess_return": {"label": "相对基准", "broker_vs_full_benchmark": None,
                               "paper_vs_full_benchmark": None, "paper_exposure_matched": None,
                               "broker_exposure_matched": None},
-            "costs": {"paper_cost_bps": None, "broker_slippage_bps": None, "broker_fees": None},
+            "costs": {"paper_cost_bps": None, "broker_slippage_bps": None, "broker_fees": 0.0},
             "drawdown": {"broker": None, "paper": None}}
 
 
@@ -87,6 +87,122 @@ def test_unreconciled_original_result_is_not_published(store):
     store.record_day(record)
     result = store.formal_performance(1)[0]
     assert result["performance_status"] == "unreconciled" and result["net_return"] is None
+
+
+@pytest.mark.parametrize("field,value", [("broker", None), ("broker", float("nan")),
+                                         ("broker", float("inf")), ("broker", True)])
+def test_nonfinite_or_missing_original_broker_return_is_not_published(store, field, value):
+    store.record_day(_day("2025-03-03"))
+    day = _day("2025-03-04", previous="2025-03-03", value=value)
+    store.record_day(day)
+    result = store.formal_performance(1)[0]
+    assert result["performance_status"] == "incomplete" and result["net_return"] is None
+    assert "net_return.broker" in result["performance_missing"]
+
+
+@pytest.mark.parametrize("fees", [None, float("nan"), float("inf"), True])
+def test_unknown_or_invalid_fees_prevent_publishing_performance(store, fees):
+    store.record_day(_day("2025-03-03"))
+    day = _day("2025-03-04", previous="2025-03-03", value=0.01)
+    day["costs"]["broker_fees"] = fees
+    store.record_day(day)
+    result = store.formal_performance(1)[0]
+    assert result["performance_status"] == "incomplete" and result["net_return"] is None
+    assert "costs.broker_fees" in result["performance_missing"]
+    assert store.days(1)[1]["net_return"]["broker"] == 0.01
+
+
+def test_fee_correction_requires_confirmation_before_performance_is_published(store):
+    store.record_day(_day("2025-03-03"))
+    day = _day("2025-03-04", previous="2025-03-03", value=0.01)
+    day["costs"]["broker_fees"] = None
+    store.record_day(day)
+    assert store.formal_performance(1)[0]["performance_status"] == "incomplete"
+    revision = _revise(store, day, costs={**day["costs"], "broker_fees": 1.25})
+    assert store.formal_performance(1)[0]["performance_status"] == "pending_review"
+    store.confirm_outcome_revision(1, day["decision_date"], revision, actor="reviewer", reason="核对券商费用")
+    result = store.formal_performance(1)[0]
+    assert result["performance_status"] == "confirmed" and result["costs"]["broker_fees"] == 1.25
+    assert result["comparison_status"] == "requires_review"
+
+
+def test_legacy_confirmation_without_new_evidence_keys_remains_readable(store):
+    base = _setup(store)
+    revision = _revise(store, base, net_return={"broker": 0.01, "paper": 0.01})
+    confirmation = store.confirm_outcome_revision(1, base["decision_date"], revision, actor="a", reason="核对")
+    with sqlite3.connect(store._engine.url.database) as con:  # noqa: SLF001
+        raw = con.execute("SELECT payload FROM forward_day_events WHERE id = ?", (confirmation,)).fetchone()[0]
+        payload = json.loads(raw)
+        for key in ("benchmark", "exposure", "return_basis"):
+            payload["evidence"].pop(key, None)
+        con.execute("UPDATE forward_day_events SET payload = ? WHERE id = ?", (json.dumps(payload), confirmation))
+    _revise(store, base, net_return={"broker": 0.01, "paper": 0.01})
+    result = store.formal_performance(1)[0]
+    assert result["performance_status"] == "confirmed"
+    assert result["settlement_evidence"]["return_basis"] is None
+
+
+@pytest.mark.parametrize("field", ["net_return", "costs", "drawdown", "excess_return"])
+def test_invalid_original_performance_sections_are_not_published(store, field):
+    store.record_day(_day("2025-03-03"))
+    day = _day("2025-03-04", previous="2025-03-03", value=0.01)
+    day[field]["unexpected_invalid_value"] = float("inf")
+    store.record_day(day)
+    result = store.formal_performance(1)[0]
+    assert result["performance_status"] == "incomplete" and result["net_return"] is None
+    assert "invalid_performance_fields" in result["performance_missing"]
+
+
+@pytest.mark.parametrize("change", [{"costs": None}, {"drawdown": {"broker": None}},
+                                   {"excess_return": {"label": None, "broker_vs_full_benchmark": None,
+                                                      "paper_vs_full_benchmark": None, "paper_exposure_matched": None,
+                                                      "broker_exposure_matched": None}}])
+def test_missing_performance_section_or_label_is_incomplete(store, change):
+    store.record_day(_day("2025-03-03"))
+    day = _day("2025-03-04", previous="2025-03-03", value=0.01)
+    day.update(change)
+    store.record_day(day)
+    result = store.formal_performance(1)[0]
+    assert result["performance_status"] == "incomplete" and result["net_return"] is None
+    assert "invalid_performance_fields" in result["performance_missing"]
+
+
+def test_decision_execution_and_outcome_evidence_are_kept_separate_across_reruns(store):
+    previous = _day("2025-03-03")
+    previous["execution_summary"] = {"status": "submission_unknown", "reason": "待对账"}
+    store.record_day(previous)
+    revision_id = _revise(store, previous, execution_summary={"status": "ok", "scope": "submission_only"})
+    outcome = _day("2025-03-04", previous="2025-03-03", value=0.01)
+    outcome["execution_summary"] = {"status": "blocked", "reason": "next decision"}
+    outcome["fills"] = [{"decision_date": "2025-03-03", "qty": 2}]
+    store.record_day(outcome)
+    result = store.formal_performance(1)[0]
+    assert result["decision_execution"]["initial"]["status"] == "submission_unknown"
+    assert result["decision_execution"]["changed_revision_ids"] == [revision_id]
+    assert result["settlement_evidence"]["fills"] == outcome["fills"]
+    assert result["comparison_status"] == "requires_review"
+
+
+def test_a_predecision_attempt_is_not_an_execution_revision(store):
+    attempt = _day("2025-03-03")
+    attempt["decision"] = {"target_weights": None}
+    attempt["target_weights"] = None
+    attempt["execution_summary"] = {"status": "blocked"}
+    store.record_day(attempt)
+    previous = _day("2025-03-03")
+    previous["execution_summary"] = {"status": "ok"}
+    store.record_day(previous)
+    store.record_day(_day("2025-03-04", previous="2025-03-03", value=0.01))
+    assert store.history(1, "2025-03-03")[1]["kind"] == "attempt"
+    assert store.formal_performance(1)[0]["decision_execution"]["changed_revision_ids"] == []
+
+
+@pytest.mark.parametrize("field", ["benchmark", "exposure", "return_basis"])
+def test_changed_valuation_evidence_requires_review(store, field):
+    base = _setup(store)
+    revision = _revise(store, base, **{field: {"changed": True}})
+    result = store.formal_performance(1)[0]
+    assert result["performance_status"] == "pending_review" and result["pending_revision_ids"] == [revision]
 
 
 def test_changed_fills_require_review_even_when_returns_are_unchanged(store):

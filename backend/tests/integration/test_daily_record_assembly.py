@@ -127,6 +127,54 @@ class TestMissingFields:
         assert _build()["anomalies"] == []
 
 
+class TestExecutionSummary:
+    @staticmethod
+    def execution(**changes):
+        report = {"n_planned": 1, "n_duplicate": 0, "n_gate_rejected": 0,
+                  "n_submitted": 1, "n_submit_errors": 0}
+        report.update(changes)
+        return report
+
+    def test_submission_is_distinct_from_fills_and_formal_decision(self):
+        result = _build(_result(execution=self.execution()))
+        assert result["formal"] is True
+        assert result["execution_summary"]["status"] == "ok"
+        assert result["execution_summary"]["scope"] == "submission_only"
+        assert result["fills"] == []
+
+    def test_submission_error_stays_unknown_even_when_decision_is_formal(self):
+        result = _build(_result(execution=self.execution(n_submitted=0, n_submit_errors=1)))
+        assert result["formal"] is True
+        assert result["execution_summary"]["status"] == "submission_unknown"
+
+    def test_gate_rejection_and_missing_reference_price_are_visible(self):
+        report = self.execution(n_submitted=0, n_gate_rejected=1,
+                                gate={"rejected": [{"reason": "no_independent_quote"}]})
+        assert _build(_result(execution=report))["execution_summary"]["kind"] == "orders_rejected_abnormal"
+        report = self.execution(n_planned=0, n_submitted=0,
+                                build={"skipped": [{"ticker": "A", "reason": "no_reference_price"}]})
+        assert _build(_result(execution=report))["execution_summary"]["status"] == "failed"
+
+    def test_legitimate_no_order_and_duplicate_are_distinct(self):
+        no_order = self.execution(n_planned=0, n_submitted=0)
+        duplicate = self.execution(n_duplicate=1, n_submitted=0)
+        assert _build(_result(execution=no_order))["execution_summary"]["kind"] == "no_orders_normal"
+        assert _build(_result(execution=duplicate))["execution_summary"]["kind"] == "orders_already_submitted"
+
+    @pytest.mark.parametrize("change", [{"n_submitted": None}, {"n_planned": True},
+                                       {"n_duplicate": -1}, {"n_submitted": 0}])
+    def test_incomplete_or_inconsistent_counts_are_unknown(self, change):
+        assert _build(_result(execution=self.execution(**change)))["execution_summary"]["status"] == "unknown"
+
+    def test_blocked_and_legacy_reports_are_identified(self):
+        assert _build(_result(execution=self.execution(blocked="halt")))["execution_summary"]["status"] == "blocked"
+        assert _build()["execution_summary"]["status"] == "unknown"
+
+    def test_disabled_execution_cannot_be_a_formal_decision(self):
+        result = _build(_result(execution=self.execution(mode="off")))
+        assert result["formal"] is False and result["formal_reason"] == "execution_not_live"
+
+
 class TestFills:
 
     def test_fills_get_their_decision_date_only_when_needed(self):
