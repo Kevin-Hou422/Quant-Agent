@@ -33,6 +33,8 @@ def classify_run(out: dict) -> tuple:
         return EXIT_OK, "非美股交易日，按计划不交易"
     if out.get("skipped"):
         return EXIT_RUN_FAILED, f"任务未执行：{out.get('skipped')} {out.get('error', '')}".strip()
+    if out.get("scheduler_state_error"):
+        return EXIT_RUN_FAILED, f"每日任务状态未确认：{out['scheduler_state_error']}"
     pf = out.get("portfolio") or {}
     if out.get("ingest_accepted") is False and out.get("reason") != "no_new_bar":
         return EXIT_RUN_FAILED, f"摄取被拒：{out.get('reject_reason')}"

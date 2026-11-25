@@ -309,6 +309,7 @@ class TestJobBodies:
         import app.tasks.daily_ingest as di
         import app.core.data_engine.market_calendar as mc
         monkeypatch.setattr(mc, "is_trading_day", lambda d: True)
+        monkeypatch.setattr(sched_mod, "_record_run", lambda out, now: None)
         monkeypatch.setattr(di, "run_daily_pipeline",
                             lambda *a, **kw: (seen.update(args=a, kw=kw),
                                               {"ingest_accepted": True})[1])

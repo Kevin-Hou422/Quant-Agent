@@ -233,6 +233,19 @@ class TestDailyRunOutcomes:
             "mode": "moomoo_paper", "blocked": "reconcile_discrepancy"}}}, run_date="2026-10-26")[0]
         assert normal.kind != skipped.kind and normal.severity == "info" and skipped.severity == "critical"
 
+    @pytest.mark.parametrize("portfolio,kind,severity", [
+        ({"error": "portfolio crashed"}, "portfolio_failed", "critical"),
+        ({"execution": {"mode": "moomoo_paper", "blocked": "reconcile_failed"}}, "execution_blocked", "critical"),
+        ({"execution": {"mode": "moomoo_paper", "n_submit_errors": 1}}, "order_submit_errors", "critical"),
+        ({"execution": {"mode": "moomoo_paper", "n_planned": 0, "n_submitted": 0}}, "no_orders_normal", "info"),
+        ({"execution": {"mode": "moomoo_paper", "n_planned": 1, "n_submitted": 1}}, "run_completed", "info"),
+    ])
+    def test_no_new_bar_does_not_hide_the_result_of_an_actual_rerun(self, portfolio, kind, severity):
+        from app.core.alerting.events import events_for_daily_run
+        out = {"ingest_accepted": False, "reason": "no_new_bar", "portfolio": portfolio}
+        event = events_for_daily_run(out, run_date="2026-10-26")[0]
+        assert (event.kind, event.severity) == (kind, severity)
+
     def test_new_corporate_action_flags_raise_their_own_warning(self):
         from app.core.alerting.events import events_for_daily_run
         evs = events_for_daily_run({"ingest_accepted": True, "portfolio": {

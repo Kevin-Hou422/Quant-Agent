@@ -4,18 +4,18 @@
  "_note_state_file_missing": "标了 state_file_missing 的模块：A 档确实测量过（台账有逐条存活分析），但当时的 progress 状态文件后来被清理，数字取自台账而非状态文件。重跑一次即可回到自动生成的口径。",
  "totals": {
   "modules_with_mutants": 112,
-  "total_points": 3504,
+  "total_points": 3521,
   "total_survived": 173,
-  "total_killed": 3331
+  "total_killed": 3348
  },
  "modules": {
   "app/core/alerting/events.py": {
-   "points": 1,
-   "killed": 1,
+   "points": 9,
+   "killed": 9,
    "survived": 0,
    "kill_rate": 100.0,
-   "tests": ["tests/integration/test_run_outcome_propagation.py"],
-   "source": "2026-11-22：本次新增的参考价判断经 verify_mutant 单点复核；模块原有 24 点仍未测量。"
+   "tests": ["tests/integration/test_run_outcome_propagation.py", "tests/integration/test_alerting.py"],
+   "source": "2026-11-22 参考价判断 1 点与 2026-11-25 重跑告警新增 8 点均在隔离副本逐点复核；本次移除的 4 个旧计划点未包含在已测量的参考价判断中，其余现存 20 点仍未测量。"
   },
   "app/agent/_agent.py": {
    "points": 16,
@@ -1400,14 +1400,15 @@
    ]
   },
   "app/tasks/scheduler.py": {
-   "points": 20,
-   "killed": 20,
+   "points": 29,
+   "killed": 29,
    "survived": 0,
    "kill_rate": 100.0,
    "tests": [
-    "tests/unit/tasks/test_scheduler_registration.py"
+    "tests/unit/tasks/test_scheduler_registration.py",
+    "tests/integration/test_host_sleep_and_catchup.py"
    ],
-   "source": "progress_c_rerun_2.json",
+   "source": "历史 20 点沿用 progress_c_rerun_2.json；2026-11-25 调度状态新增 9 点在隔离副本逐点复核，本次移除的 2 个旧计划点来自 2026-11-14 的补跑逻辑，原有测试记录未覆盖此范围。",
    "all_runs": [
     5.0,
     70.0,
@@ -1921,11 +1922,11 @@
  },
  "measurement_scope": {
   "_doc": "**已测量的 1980 个点是在旧变异器集合下枚举的。** 外部审计 2026-09-15 用四个微型探针证明那套算子有系统性缺口（`x >= .70` / `x / w` / `a+b` 各 0 个变异点，`a + b + c` 只变第一个加号）。算子补齐后同一份源码枚举出 2843 个点 —— 多出来的这些**从未测量**。写在这里是为了它不会被新数字盖过去。",
-  "measured_points": 3504,
+  "measured_points": 3521,
   "measured_under": "MUTATORS v1（13 个算子，每行每算子只取第一处匹配）",
-  "current_plan_points": 5913,
+  "current_plan_points": 5924,
   "current_plan_under": "MUTATORS v2（22 个算子，枚举每行的全部匹配位置）",
-  "unmeasured_points": 2409,
+  "unmeasured_points": 2403,
   "newly_in_scope_modules": [
    "app/core/host_power.py",
    "app/core/risk_engine/factor_model.py",
@@ -1954,8 +1955,12 @@
   ],
   "per_module_delta": {
    "app/core/alerting/events.py": {
-    "measured": 1,
-    "now_planned": 25
+    "measured": 9,
+    "now_planned": 29
+   },
+   "app/tasks/scheduler.py": {
+    "measured": 29,
+    "now_planned": 62
    },
    "app/core/benchmark.py": {
     "measured": 11,

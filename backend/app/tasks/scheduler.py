@@ -74,8 +74,15 @@ def daily_trading_job(now=None) -> dict:
         except ProcessLockTimeout:
             logger.warning("[scheduler] 另一个每日任务正在运行，本次不重复运行")
             return {"skipped": "daily_run_in_progress"}
-        out = _run_daily_trading(now)
-        _record_run(out, now)
+        try:
+            out = _run_daily_trading(now)
+        except Exception as exc:
+            _record_run({"skipped": "pipeline_exception", "error": f"{type(exc).__name__}: {exc}"}, now)
+            raise
+        if out.get("skipped") != "not_a_trading_day":
+            state_error = _record_run(out, now)
+            if state_error:
+                out["scheduler_state_error"] = state_error
         _emit_daily_outcome(out, str(_pd.Timestamp(now).tz_convert("UTC").tz_localize(None).normalize().date()))
         return out
 
@@ -115,7 +122,17 @@ def _runs(store=None) -> dict:
     return json.loads(raw) if raw else {}
 
 
-def _record_run(out: dict, now, store=None) -> None:
+def _alert_attempts_exhausted(session, rec) -> None:
+    from app.core.alerting.dispatcher import emit_safely
+    from app.core.alerting.events import AlertEvent
+    emit_safely(AlertEvent(kind="daily_run_attempts_exhausted", severity="critical",
+                           title=f"{session} 的每日交易已耗尽自动尝试次数",
+                           detail=f"尝试 {rec.get('attempts', 0)} 次；最后一次 {rec.get('outcome', '没有运行')}；"
+                                  f"{rec.get('detail', '')}。请核对订单状态并人工处理",
+                           dedup_key=f"daily_run_attempts_exhausted:{session}"))
+
+
+def _record_run(out: dict, now, store=None) -> Optional[str]:
     """仅在数据到齐且交易管线确实成功时标记 done；失败可重试，未知提交由执行层对账。"""
     import json
     try:
@@ -124,22 +141,48 @@ def _record_run(out: dict, now, store=None) -> None:
         from app.db.execution_store import ExecutionStore
         store = store or ExecutionStore()
         s, _ = decision_window(now)
-        last = PITStore(settings.pit_store_dir).latest_timestamp(settings.paper_dataset)
+        pit_error = None
+        try:
+            last = PITStore(settings.pit_store_dir).latest_timestamp(settings.paper_dataset)
+        except Exception as exc:
+            logger.error("[scheduler] 读取 PIT 最新日期失败，本次不能记为完成: %s", exc)
+            pit_error = str(exc)
+            last = None
         reached = last is not None and last.date() >= s
+        state_error = None
+        if pit_error is not None or (not reached and (out.get("ingest_accepted") is True or
+                                                       (out.get("portfolio") or {}).get("execution"))):
+            from app.core.alerting.dispatcher import emit_safely
+            from app.core.alerting.events import AlertEvent
+            state_error = pit_error or f"决策日 {s}；PIT 最新日期 {last}"
+            emit_safely(AlertEvent(kind="daily_run_data_state_unavailable", severity="critical",
+                                   title="每日交易数据日期无法核实",
+                                   detail=state_error,
+                                   dedup_key=f"daily_run_data_state_unavailable:{s}"))
         from app.tasks.forward import EXIT_OK, classify_run
         # 无新 bar 时也可能通过 PIT 完成交易；必须有成功的执行报告，不能仅凭数据日期。
+        code, verdict = classify_run(out)
         done = (reached and not out.get("skipped")
                 and (out.get("ingest_accepted") is True or out.get("reason") == "no_new_bar")
-                and classify_run(out)[0] == EXIT_OK)
+                and code == EXIT_OK)
         runs = _runs(store)
         prev = runs.get(str(s), {})
         runs[str(s)] = {"done": bool(done or prev.get("done")), "attempts": int(prev.get("attempts", 0)) + 1,
                         "last_at": now.isoformat(timespec="seconds"),
                         "data_through": str(last.date()) if last is not None else None,
-                        "outcome": out.get("skipped") or out.get("reason") or out.get("reject_reason") or "ran"}
+                        "outcome": out.get("skipped") or out.get("reason") or out.get("reject_reason") or "ran",
+                        "detail": out.get("error") or verdict}
         store.set_state(RUNS_KEY, json.dumps(dict(sorted(runs.items())[-30:]), ensure_ascii=False))
+        if not runs[str(s)]["done"] and runs[str(s)]["attempts"] >= CATCHUP_MAX_ATTEMPTS:
+            _alert_attempts_exhausted(s, runs[str(s)])
+        return state_error
     except Exception as exc:
         logger.error("[scheduler] 每日运行记录没写进执行库（补跑判断会再跑一次）: %s", exc)
+        from app.core.alerting.dispatcher import emit_safely
+        from app.core.alerting.events import AlertEvent
+        emit_safely(AlertEvent(kind="record_write_failed", severity="critical", title="每日任务运行状态写入失败",
+                               detail=str(exc), dedup_key="daily_run:state_write_failed"))
+        return f"每日任务运行状态写入失败：{exc}"
 
 
 def daily_trading_catchup_job(now=None) -> Optional[str]:
@@ -183,10 +226,12 @@ def _daily_trading_catchup_locked(now=None) -> Optional[str]:
         emit_safely(AlertEvent(kind="daily_run_missed", severity="critical",
                                title=f"{s} 的每日交易没有跑成，已过补跑时限",
                                detail=f"下一个交易时段开盘前（{deadline}）没能补上（尝试 {rec.get('attempts', 0)} 次；"
-                                      f"最后一次 {rec.get('outcome', '没有运行')}）—— 这一天没有调仓",
+                                      f"最后一次 {rec.get('outcome', '没有运行')}；{rec.get('detail', '')}）；"
+                                      "请核对已提交订单和账户持仓",
                                dedup_key=f"daily_run_missed:{s}"))
         return "missed"
     if int(rec.get("attempts", 0)) >= CATCHUP_MAX_ATTEMPTS:
+        _alert_attempts_exhausted(s, rec)
         return "gave_up"
     emit_safely(AlertEvent(kind="daily_run_catchup", severity="warning", title=f"补跑 {s} 的每日交易",
                            detail=f"按时没跑成（{rec.get('outcome', '没有运行记录：进程没在跑或机器睡着')}）；"

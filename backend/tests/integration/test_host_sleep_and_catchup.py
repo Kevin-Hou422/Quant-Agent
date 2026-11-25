@@ -179,6 +179,15 @@ def test_pipeline_lock_failure_is_not_misreported_as_an_overlapping_daily_run(tm
         sch.daily_trading_job()
 
 
+def test_regular_nontrading_day_skip_does_not_consume_an_attempt(fresh_db, monkeypatch):
+    monkeypatch.setattr(sch, "_run_daily_trading", lambda now: {"skipped": "not_a_trading_day"})
+    recorded = []
+    monkeypatch.setattr(sch, "_record_run", lambda out, now: recorded.append(out))
+    monkeypatch.setattr(sch, "_emit_daily_outcome", lambda *args: None)
+    assert sch.daily_trading_job(SAT_01)["skipped"] == "not_a_trading_day"
+    assert recorded == []
+
+
 # ── 按时没跑成的每日交易：补跑 ───────────────────────────
 
 FRI = date(2025, 3, 7)                                   # 周五；下周一 2025-03-10 开盘 13:30 UTC（夏令时已开始）
@@ -238,10 +247,121 @@ def test_after_the_deadline_it_is_not_run_but_alerted(world):
 
 def test_it_gives_up_after_the_maximum_attempts(world):
     alerts, runs = world
-    _record(FRI, done=False, attempts=sch.CATCHUP_MAX_ATTEMPTS)
-    assert sch.daily_trading_catchup_job(SAT_01) == "gave_up" and runs == [] and alerts == []
+    _record(FRI, done=False, attempts=sch.CATCHUP_MAX_ATTEMPTS, outcome="pipeline_exception", detail="broker timeout")
+    assert sch.daily_trading_catchup_job(SAT_01) == "gave_up" and runs == []
+    assert [(e.kind, e.severity) for e in alerts] == [("daily_run_attempts_exhausted", "critical")]
+    assert "broker timeout" in alerts[0].detail and "订单" in alerts[0].detail
     _record(FRI, done=False, attempts=sch.CATCHUP_MAX_ATTEMPTS - 1)
     assert sch.daily_trading_catchup_job(SAT_01) == "ran"
+
+
+def test_pipeline_exceptions_count_toward_the_limit_and_alert_immediately(fresh_db, monkeypatch):
+    from app.core.alerting import dispatcher
+    from app.core.data_engine import pit_store
+    sent = []
+    monkeypatch.setattr(dispatcher, "emit_safely", lambda event, d=None: sent.append(event))
+    monkeypatch.setattr(pit_store.PITStore, "latest_timestamp", lambda self, name="pit": pd.Timestamp("2025-03-07"))
+    def boom(now):
+        raise RuntimeError("broker timeout")
+    monkeypatch.setattr(sch, "_run_daily_trading", boom)
+    _record(FRI, done=False, attempts=sch.CATCHUP_MAX_ATTEMPTS - 1)
+    with pytest.raises(RuntimeError, match="broker timeout"):
+        sch.daily_trading_job(SAT_01)
+    record = sch._runs()[str(FRI)]
+    assert record["done"] is False and record["attempts"] == sch.CATCHUP_MAX_ATTEMPTS
+    assert record["outcome"] == "pipeline_exception" and "broker timeout" in record["detail"]
+    assert [(e.kind, e.severity) for e in sent] == [("daily_run_attempts_exhausted", "critical")]
+    assert sch.daily_trading_catchup_job(SAT_01) == "gave_up"
+
+
+def test_pit_read_failure_keeps_the_attempt_and_raises_an_alert(fresh_db, monkeypatch):
+    from app.core.alerting import dispatcher
+    from app.core.data_engine import pit_store
+    sent = []
+    monkeypatch.setattr(dispatcher, "emit_safely", lambda event, d=None: sent.append(event))
+    def boom(*args, **kwargs):
+        raise OSError("PIT unreadable")
+    monkeypatch.setattr(pit_store.PITStore, "latest_timestamp", boom)
+    error = sch._record_run({"ingest_accepted": True, "portfolio": {"execution": {"mode": "moomoo_paper"}}}, SAT_01)
+    assert error == "PIT unreadable"
+    record = sch._runs()[str(FRI)]
+    assert record["done"] is False and record["attempts"] == 1 and record["data_through"] is None
+    assert [(e.kind, e.severity) for e in sent] == [("daily_run_data_state_unavailable", "critical")]
+
+
+@pytest.mark.parametrize("last", [None, pd.Timestamp("2025-03-06")])
+def test_executed_run_with_missing_or_stale_pit_progress_is_critical(fresh_db, monkeypatch, last):
+    from app.core.alerting import dispatcher
+    from app.core.data_engine import pit_store
+    sent = []
+    monkeypatch.setattr(dispatcher, "emit_safely", lambda event, d=None: sent.append(event))
+    monkeypatch.setattr(pit_store.PITStore, "latest_timestamp", lambda self, name="pit": last)
+    sch._record_run({"ingest_accepted": False, "reason": "no_new_bar",
+                     "portfolio": {"execution": {"mode": "moomoo_paper"}}}, SAT_01)
+    assert sch._runs()[str(FRI)]["done"] is False
+    assert [(e.kind, e.severity) for e in sent] == [("daily_run_data_state_unavailable", "critical")]
+
+
+def test_success_on_the_last_attempt_does_not_raise_exhaustion(fresh_db, monkeypatch):
+    from app.core.alerting import dispatcher
+    from app.core.data_engine import pit_store
+    sent = []
+    monkeypatch.setattr(dispatcher, "emit_safely", lambda event, d=None: sent.append(event))
+    monkeypatch.setattr(pit_store.PITStore, "latest_timestamp", lambda self, name="pit": pd.Timestamp("2025-03-07"))
+    _record(FRI, done=False, attempts=sch.CATCHUP_MAX_ATTEMPTS - 1)
+    sch._record_run({"ingest_accepted": True, "portfolio": {"execution": {"mode": "moomoo_paper"}}}, SAT_01)
+    record = sch._runs()[str(FRI)]
+    assert record["done"] is True and record["attempts"] == sch.CATCHUP_MAX_ATTEMPTS
+    assert sent == []
+
+
+def test_run_state_write_failure_raises_an_alert(monkeypatch):
+    from app.core.alerting import dispatcher
+    from app.core.data_engine import pit_store
+    sent = []
+    monkeypatch.setattr(dispatcher, "emit_safely", lambda event, d=None: sent.append(event))
+    monkeypatch.setattr(pit_store.PITStore, "latest_timestamp", lambda self, name="pit": pd.Timestamp("2025-03-07"))
+    class BrokenStore:
+        def get_state(self, key):
+            return None
+        def set_state(self, key, value):
+            raise OSError("state disk full")
+    error = sch._record_run({"ingest_accepted": True, "portfolio": {"execution": {"mode": "moomoo_paper"}}}, SAT_01,
+                            store=BrokenStore())
+    assert "state disk full" in error
+    assert [(e.kind, e.severity) for e in sent] == [("record_write_failed", "critical")]
+    assert "state disk full" in sent[0].detail
+
+
+def test_unverified_scheduler_state_propagates_to_daily_result_and_exit_code(fresh_db, monkeypatch):
+    from app.core.alerting.events import events_for_daily_run
+    from app.tasks.forward import EXIT_RUN_FAILED, classify_run
+    out = {"ingest_accepted": True, "portfolio": {"execution": {"mode": "moomoo_paper"}}}
+    monkeypatch.setattr(sch, "_run_daily_trading", lambda now: out)
+    monkeypatch.setattr(sch, "_record_run", lambda out, now: "state disk full")
+    emitted = []
+    monkeypatch.setattr(sch, "_emit_daily_outcome", lambda result, day: emitted.extend(events_for_daily_run(result, day)))
+    result = sch.daily_trading_job(SAT_01)
+    assert result["scheduler_state_error"] == "state disk full"
+    assert classify_run(result)[0] == EXIT_RUN_FAILED
+    assert (emitted[0].kind, emitted[0].severity) == ("daily_run_state_unconfirmed", "critical")
+
+
+def test_an_exception_during_the_last_catchup_is_recorded_before_the_next_check(fresh_db, monkeypatch):
+    from app.core.alerting import dispatcher
+    from app.core.data_engine import pit_store
+    sent = []
+    monkeypatch.setattr(dispatcher, "emit_safely", lambda event, d=None: sent.append(event))
+    monkeypatch.setattr(pit_store.PITStore, "latest_timestamp", lambda self, name="pit": pd.Timestamp("2025-03-07"))
+    def boom(now):
+        raise RuntimeError("temporary failure")
+    monkeypatch.setattr(sch, "_run_daily_trading", boom)
+    _record(FRI, done=False, attempts=sch.CATCHUP_MAX_ATTEMPTS - 1)
+    with pytest.raises(RuntimeError, match="temporary failure"):
+        sch.daily_trading_catchup_job(SAT_01)
+    assert sch._runs()[str(FRI)]["attempts"] == sch.CATCHUP_MAX_ATTEMPTS
+    assert [event.kind for event in sent] == ["daily_run_catchup", "daily_run_attempts_exhausted"]
+    assert sch.daily_trading_catchup_job(SAT_01) == "gave_up"
 
 
 def test_a_run_is_recorded_as_done_only_when_the_data_reached_the_session(fresh_db, monkeypatch):
