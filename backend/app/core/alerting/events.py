@@ -42,6 +42,7 @@ KINDS = {
     "orders_rejected_by_limits": "本轮新单全部被计划内风控缩减（限额 / 买入力），实际没有下单",
     "orders_partially_rejected": "部分新单因数据 / 报价 / 估值异常被拦下",
     "execution_data_incomplete": "参考价或独立报价不完整，调仓结果需要核对",
+    "daily_loss_baseline_unavailable": "上一交易日日亏基线不可用，等待核对",
     "record_write_failed":   "正式证据 / 每日记录 / 信号存档写入失败",
     "backup_failed":         "每日备份失败",
     # 调度
@@ -85,7 +86,7 @@ GATE_REASON_CLASS = {
                            "no_decision_clock", "quote_in_future", "stale_quote", "quote_mismatch",
                            "quote_outside_session", "quote_stale_in_session", "no_adv", "gross_unpriceable",
                            "sector_unpriceable", "net_unpriceable", "equity_unavailable")},
-    **{r: "halt" for r in ("kill_switch_engaged", "daily_loss_halt")},
+    **{r: "halt" for r in ("kill_switch_engaged", "daily_loss_halt", "daily_loss_baseline_unavailable")},
     "corporate_action_quarantine": "quarantine",
     **{r: "limits" for r in ("would_short", "exceeds_adv_participation", "exceeds_name_limit",
                              "exceeds_gross_limit", "exceeds_sector_limit", "exceeds_net_limit",
@@ -119,9 +120,12 @@ def execution_outcome(ex: dict) -> dict:
     out = {"rejections": counts, "detail": detail}
     missing_prices = [s.get("ticker") for s in ((ex.get("build") or {}).get("skipped") or [])
                       if s.get("reason") == "no_reference_price"]
+    if missing_prices:
+        out["detail"] += f"；缺少参考价：{', '.join(str(t) for t in missing_prices)}"
+    if (ex.get("gate") or {}).get("halted") == "daily_loss_baseline_unavailable":
+        return {**out, "kind": "daily_loss_baseline_unavailable", "severity": "warning" if sent else "critical",
+                "status": "degraded" if sent else "failed"}
     if missing_prices or ex.get("quote_error"):
-        if missing_prices:
-            out["detail"] += f"；缺少参考价：{', '.join(str(t) for t in missing_prices)}"
         return {**out, "kind": "execution_data_incomplete", "severity": "warning" if sent else "critical",
                 "status": "degraded" if sent else "failed"}
     if planned == 0 and sent == 0:

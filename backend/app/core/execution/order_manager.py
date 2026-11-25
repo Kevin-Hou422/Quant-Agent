@@ -490,10 +490,14 @@ class OrderManager:
 
         # 日收益按**切片**算（上一可信快照 → 现在），不是按整个账户
         prev = self.store.trusted_before(market_date)
+        previous_session = last_trading_day(market_date - timedelta(days=1)).date()
         slice_now = self.slice_equity(acct.total_assets)
-        slice_prev = None if prev is None else self.slice_equity(prev.total_assets)
+        slice_prev = (self.slice_equity(prev.total_assets)
+                      if prev is not None and prev.market_date == previous_session else None)
         day_ret = (slice_now / slice_prev - 1.0
                    if slice_now is not None and slice_prev is not None and slice_prev > 0 else None)
+        if day_ret is not None and not math.isfinite(day_ret):
+            day_ret = None
 
         if status in ("baseline", "clean", "accepted"):
             self._record_book(market_date, acct, pos)
@@ -687,6 +691,9 @@ class OrderManager:
         # 以及日亏熔断时一切仍在途的**加风险**单（审计 F05：只拒新单不撤旧单，旧单照样成交）。
         daily_halt = (rec.day_return is not None
                       and rec.day_return <= -self.limits.max_daily_loss)
+        baseline_unavailable = (rec.day_return is None and
+                                (rec.return_basis or {}).get("previous_snapshot_id") is not None)
+        daily_halt = daily_halt or baseline_unavailable  # 两种情况都先撤掉在途加风险单
         cur_qty = {tk: p.qty for tk, p in rec.position_objs.items()}
         cancelled_ids: List[str] = []
         for row in self.store.open_orders(self.book_id):
@@ -753,7 +760,9 @@ class OrderManager:
             broker_prices={tk: p.nominal_price for tk, p in pos.items()},
             adv_usd=adv_usd, day_return=rec.day_return, kill_switch=False,
             open_orders=self._open_order_envelope(), sectors=sectors or {},
-            quotes=quotes, now=self._clock(), quarantined=quarantined), self.limits)
+            quotes=quotes, now=self._clock(), quarantined=quarantined,
+            daily_loss_unavailable=(rec.day_return is None and
+                                    (rec.return_basis or {}).get("previous_snapshot_id") is not None)), self.limits)
         cap = (rep.permit or {}).get("max_order_notional")
         if cap:
             # 人工联调许可的单笔金额上限（审计 R3："明确、限额的许可"）：减仓 / 全平不受它限制

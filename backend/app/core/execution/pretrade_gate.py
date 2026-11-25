@@ -127,6 +127,7 @@ class GateContext:
     #: 持仓里也没有券商价的（新开仓）不放行。没有"不传就跳过检查"的路径（R5 就是那条路径）。
     quotes:        Optional[Mapping[str, object]] = None
     now:           Optional[datetime] = None
+    daily_loss_unavailable: bool = False     # 已有历史快照但上一交易日基线不可用
     #: 疑似未知公司行动、处于隔离中的标的（2026-10-22 用户决定第 18 条）：只许减仓，不许加风险
     quarantined:   frozenset = frozenset()
 
@@ -305,6 +306,9 @@ def check(orders: List[PlannedOrder], ctx: GateContext, limits: PreTradeLimits) 
     elif daily_halt:
         dec.halted = "daily_loss_halt"
         dec.notes.append(f"账户日收益 {float(ctx.day_return):.2%} ≤ −{limits.max_daily_loss:.2%}：只放行减仓单")
+    elif ctx.daily_loss_unavailable:
+        dec.halted = "daily_loss_baseline_unavailable"
+        dec.notes.append("上一交易日日亏基线不可用：只放行减仓单")
     if ctx.day_return is None:
         dec.notes.append("无上一交易日快照，日亏熔断本轮无从判定")
 
@@ -382,6 +386,8 @@ def check(orders: List[PlannedOrder], ctx: GateContext, limits: PreTradeLimits) 
 
         if daily_halt and widened:
             undo("daily_loss_halt"); continue
+        if ctx.daily_loss_unavailable and widened:
+            undo("daily_loss_baseline_unavailable"); continue
         if not limits.allow_short and env.short_leg(o.ticker) < -DUST_QTY:
             undo("would_short"); continue
 

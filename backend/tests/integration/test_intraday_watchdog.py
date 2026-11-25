@@ -212,6 +212,7 @@ class TestFailureModes:
         e.ctx.now = "2025-03-05 09:31:00.000"
         wd, alerts = _watchdog(e, Clock(OPEN_D3 + timedelta(minutes=5)))
         assert wd.tick()["status"] == "no_baseline"
+        assert any(a.severity == "critical" and "日亏基线" in a.title for a in alerts)
 
 
 def test_the_preflight_requires_the_watchdog_for_unattended_running(tmp_path):

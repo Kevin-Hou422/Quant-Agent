@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -103,11 +103,11 @@ def test_a_flat_account_under_the_breaker_reports_flat(tmp_path):
 class _Om:
     """`_check_loss` 只用到的那几样：可信快照、切片权益、阈值、熔断落库、全平。"""
 
-    def __init__(self, prev_assets, thr=0.25):
+    def __init__(self, prev_assets, thr=0.25, prev_date=date(2025, 3, 4)):
         self.calls = []
         self.limits = SimpleNamespace(max_daily_loss=thr)
         self.store = SimpleNamespace(
-            trusted_before=lambda d: SimpleNamespace(total_assets=prev_assets),
+            trusted_before=lambda d: SimpleNamespace(total_assets=prev_assets, market_date=prev_date),
             set_kill_switch=lambda *a: self.calls.append(("set_kill_switch", a)),
             add_event=lambda *a: self.calls.append(("add_event", a)))
 
@@ -127,6 +127,28 @@ class TestLossCheck:
     def test_a_zero_baseline_is_no_verdict(self):
         assert self._wd()._check_loss(_Om(prev_assets=0.0), SimpleNamespace(total_assets=50.0), OPEN_UTC) == \
             {"status": "no_baseline"}
+
+    @pytest.mark.parametrize("prev_assets,current_assets", [(float("nan"), 50.0), (float("inf"), 50.0),
+                                                            (100.0, float("nan")), (100.0, float("inf"))])
+    def test_nonfinite_account_values_do_not_trigger_or_clear_the_breaker(self, prev_assets, current_assets):
+        om = _Om(prev_assets=prev_assets)
+        assert self._wd()._check_loss(om, SimpleNamespace(total_assets=current_assets), OPEN_UTC) == {"status": "no_baseline"}
+        assert om.calls == []
+
+    def test_a_snapshot_older_than_the_previous_session_is_not_a_daily_baseline(self):
+        om = _Om(prev_assets=100.0, prev_date=date(2025, 3, 3))
+        assert self._wd()._check_loss(om, SimpleNamespace(total_assets=50.0), OPEN_UTC) == {"status": "no_baseline"}
+        assert om.calls == []
+
+    def test_overflowed_return_has_no_verdict(self):
+        om = _Om(prev_assets=1e-308)
+        assert self._wd()._check_loss(om, SimpleNamespace(total_assets=1e308), OPEN_UTC) == {"status": "no_baseline"}
+        assert om.calls == []
+
+    def test_monday_uses_fridays_snapshot(self):
+        om = _Om(prev_assets=100.0, prev_date=date(2025, 3, 7))
+        monday = datetime(2025, 3, 10, 14, 0, tzinfo=timezone.utc)
+        assert self._wd()._check_loss(om, SimpleNamespace(total_assets=99.0), monday)["status"] == "ok"
 
     def test_a_loss_exactly_at_the_threshold_engages(self):
         om = _Om(prev_assets=100.0, thr=0.25)

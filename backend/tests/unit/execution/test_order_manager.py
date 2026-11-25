@@ -110,6 +110,57 @@ def test_first_cycle_establishes_baseline_and_submits_exact_orders(tmp_path):
     assert e.ps.latest_equity(LIVE_BOOK_ID) == pytest.approx(1.0)
 
 
+def test_reconciliation_does_not_call_a_two_session_change_a_daily_return(tmp_path):
+    e = _env(tmp_path)
+    e.clock.after_close(D1)
+    first = e.om.reconcile()
+    e.clock.after_close(D3)
+    result = e.om.reconcile()
+    assert first.status == "baseline" and result.status == "clean"
+    assert result.day_return is None
+    assert result.return_basis["previous_market_date"] == str(D1)
+
+
+def test_missing_previous_session_cancels_old_orders_and_blocks_new_risk(tmp_path):
+    e = _env(tmp_path)
+    _cycle(e, D1)
+    placed_before = len(_placed(e))
+    result = _cycle(e, D3)
+    assert result.reconcile["day_return"] is None
+    assert result.cancelled_stale
+    assert result.gate["halted"] == "daily_loss_baseline_unavailable"
+    assert {r["reason"] for r in result.gate["rejected"]} == {"daily_loss_baseline_unavailable"}
+    assert len(_placed(e)) == placed_before
+
+
+@pytest.mark.parametrize("day,should_cancel", [(D2, False), (D3, True)])
+def test_daily_baseline_controls_cancellation_of_same_day_risk_orders(tmp_path, day, should_cancel):
+    from app.core.execution.order_manager import ExecutionReport
+    e = _env(tmp_path)
+    e.clock.after_close(D1)
+    e.om.reconcile()
+    e.clock.after_close(day)
+    orders = build_rebalance_orders(pd.Series({"AAA": 0.1}), {}, pd.Series(PX1), 100_000.0, day,
+                                    book_id=LIVE_BOOK_ID, band_bps=50.0).orders
+    assert len(orders) == 1
+    submitted = e.om._submit(orders[0], day, ExecutionReport())  # noqa: SLF001
+    assert submitted["result"] == "submitted"
+    result = _cycle(e, day)
+    assert (orders[0].client_id in result.cancelled_stale) is should_cancel
+    assert (result.gate["halted"] == "daily_loss_baseline_unavailable") is should_cancel
+
+
+def test_nonfinite_reconciliation_return_is_left_unknown(tmp_path, monkeypatch):
+    e = _env(tmp_path)
+    e.clock.after_close(D1)
+    e.om.reconcile()
+    e.clock.after_close(D2)
+    e.ctx.account_override = {"total_assets": 100_001.0}
+    monkeypatch.setattr(e.om, "slice_equity", lambda total: 1e308 if total == 100_001.0 else 1e-308)
+    monkeypatch.setattr(e.om, "_record_book", lambda *args: None)
+    assert e.om.reconcile().day_return is None
+
+
 def test_next_day_fills_are_reconciled_into_position_store(tmp_path):
     e = _env(tmp_path)
     rep = _day2(e)

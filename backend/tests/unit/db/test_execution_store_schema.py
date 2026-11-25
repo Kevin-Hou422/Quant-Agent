@@ -385,6 +385,14 @@ class TestSnapshotsAndState:
         assert store.trusted_before(D1) is None
         assert [s.status for s in store.snapshots(limit=2)] == ["unstable", "accepted"]
 
+    def test_previous_snapshot_prefers_market_date_then_latest_id(self, store):
+        store.add_snapshot(market_date=D1, account=_acct(), positions={}, discrepancies=[], status="baseline")
+        store.add_snapshot(market_date=D2, account=_acct(), positions={}, discrepancies=[], status="clean")
+        later_d2 = store.add_snapshot(market_date=D2, account=_acct(), positions={}, discrepancies=[], status="accepted")
+        historical = store.add_snapshot(market_date=D1, account=_acct(), positions={}, discrepancies=[], status="clean")
+        assert store.latest_snapshot().id == historical.id
+        assert store.trusted_before(D3).id == later_d2.id
+
     def test_snapshot_text_is_stable_and_human_readable(self, store):
         a = store.add_snapshot(market_date=D1, account=_acct(),
                                positions={"BBB": {"qty": 1}, "AAA": {"qty": 2}},

@@ -416,7 +416,7 @@ class ExecutionStore:
                 select(ExecSnapshot)
                 .where(ExecSnapshot.status.in_(TRUSTED_SNAPSHOT),
                        ExecSnapshot.market_date < market_date)
-                .order_by(ExecSnapshot.id.desc()).limit(1)).first()
+                .order_by(ExecSnapshot.market_date.desc(), ExecSnapshot.id.desc()).limit(1)).first()
 
     def snapshots(self, limit: int = 30) -> List[ExecSnapshot]:
         with self._Session() as s:

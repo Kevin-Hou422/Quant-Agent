@@ -84,6 +84,33 @@ def test_daily_loss_halt_blocks_only_risk_increasing_orders():
     assert _ok(dec2) == {"A", "B"} and dec2.halted == ""
 
 
+def test_missing_daily_baseline_blocks_new_risk_but_allows_reductions():
+    from dataclasses import replace
+    orders = [_o("A", "SELL", 10, cur=50), _o("B", "BUY", 10)]
+    ctx = replace(_ctx(cur={"A": 50}, adv=BIG_ADV, day_return=None), daily_loss_unavailable=True)
+    dec = check(orders, ctx, LIM)
+    assert dec.halted == "daily_loss_baseline_unavailable"
+    assert _ok(dec) == {"A"} and _reasons(dec) == {"B": "daily_loss_baseline_unavailable"}
+    normal = check(orders, replace(ctx, daily_loss_unavailable=False), LIM)
+    assert _ok(normal) == {"A", "B"}
+
+
+@pytest.mark.parametrize("sent,expected,severity", [(0, "failed", "critical"), (1, "degraded", "warning")])
+def test_missing_daily_baseline_is_reported_even_without_rejected_orders(sent, expected, severity):
+    from app.core.alerting.events import execution_outcome
+    ex = {"n_planned": sent, "n_submitted": sent, "gate": {"halted": "daily_loss_baseline_unavailable"}}
+    result = execution_outcome(ex)
+    assert (result["kind"], result["status"], result["severity"]) == ("daily_loss_baseline_unavailable", expected, severity)
+
+
+def test_baseline_alert_retains_missing_reference_price_details():
+    from app.core.alerting.events import execution_outcome
+    ex = {"n_planned": 0, "n_submitted": 0, "gate": {"halted": "daily_loss_baseline_unavailable"},
+          "build": {"skipped": [{"ticker": "AAA", "reason": "no_reference_price"}]}}
+    result = execution_outcome(ex)
+    assert result["kind"] == "daily_loss_baseline_unavailable" and "AAA" in result["detail"]
+
+
 def test_daily_loss_at_exactly_the_limit_halts():
     dec = check([_o("B", "BUY", 10)], _ctx(adv=BIG_ADV, day_return=-0.05), LIM)
     assert _reasons(dec) == {"B": "daily_loss_halt"}

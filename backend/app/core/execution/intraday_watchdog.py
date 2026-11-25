@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
@@ -279,6 +280,8 @@ class IntradayWatchdog:
                     raise
                 if res["status"] == "no_baseline":
                     self._record(om.store, now, "unproven", detail="缺少可信基线，无法检查盘中亏损")
+                    self._event("critical", "盘中巡检：日亏基线不可用", "请核对上一交易日可信账户快照",
+                                f"no_baseline:{exchange_date(now)}")
                 else:
                     self._record(om.store, now, fresh["state"],
                                  {tk: v["state"] for tk, v in fresh["names"].items()}, fresh.get("detail", ""))
@@ -290,12 +293,19 @@ class IntradayWatchdog:
             self._close(om)
 
     def _check_loss(self, om, acct, now) -> dict:
-        prev = om.store.trusted_before(exchange_date(now))
+        from app.core.data_engine.market_calendar import last_trading_day
+        today = exchange_date(now)
+        prev = om.store.trusted_before(today)
+        previous_session = last_trading_day(today - timedelta(days=1)).date()
+        if prev is None or prev.market_date != previous_session:
+            return {"status": "no_baseline"}
         s_now = om.slice_equity(acct.total_assets)
-        s_prev = om.slice_equity(prev.total_assets) if prev is not None else None
-        if s_now is None or s_prev is None or s_prev <= 0:
+        s_prev = om.slice_equity(prev.total_assets)
+        if s_now is None or s_prev is None or not math.isfinite(s_now) or not math.isfinite(s_prev) or s_prev <= 0:
             return {"status": "no_baseline"}
         ret = s_now / s_prev - 1.0
+        if not math.isfinite(ret):
+            return {"status": "no_baseline"}
         thr = float(om.limits.max_daily_loss)
         if ret > -thr:
             return {"status": "ok", "slice_return": ret}
