@@ -170,7 +170,10 @@ def events_for_daily_run(out: dict, run_date: str) -> List[AlertEvent]:
     elif ex.get("mode") == "off":
         add("execution_off", "warning", "执行层关闭，没有下单", "EXECUTION_MODE=off")
     elif ex.get("blocked"):
-        add("execution_blocked", "critical", "执行被拦", ex.get("blocked"))
+        detail = str(ex.get("blocked"))
+        if ex.get("risk_cleanup"):
+            detail += f"；风险清理：{ex['risk_cleanup']}"
+        add("execution_blocked", "critical", "执行被拦", detail)
     elif ex.get("n_submit_errors"):
         add("order_submit_errors", "critical", f"{ex['n_submit_errors']} 张单下单异常",
             f"计划 {ex.get('n_planned', 0)} / 已下 {ex.get('n_submitted', 0)}")

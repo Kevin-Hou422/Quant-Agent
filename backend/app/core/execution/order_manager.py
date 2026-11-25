@@ -166,6 +166,7 @@ class ExecutionReport:
     gate:            Optional[dict] = None
     build:           Optional[dict] = None
     cancelled_stale: List[str] = field(default_factory=list)
+    risk_cleanup:    Optional[dict] = None
     flatten:         Optional[dict] = None
     quote_error:     str = ""                  # F09：独立报价取不到时的原因（新开仓因此被拦）
     permit:          Optional[dict] = None     # 本轮核对的运行许可（审计 R3）
@@ -632,6 +633,45 @@ class OrderManager:
                 rep.flatten = self._ensure_flatten(rec)
             return rep
 
+    def _handle_depleted_slice(self, rec: ReconcileReport, rep: ExecutionReport) -> ExecutionReport:
+        """切片耗尽后清理本 book 的调仓单；保留全平单，确认终态并补记撤单期间的成交。"""
+        from app.core.data_engine.market_calendar import CalendarUnavailable
+        cleanup = {"requested": [], "unconfirmed": [], "errors": [], "unknown_submission": []}
+        rep.risk_cleanup = cleanup
+        if rec.blocking:
+            cleanup["errors"].append({"stage": "initial_reconcile", "error": rec.status})
+        broker_ids = []
+        for row in self.store.open_orders(self.book_id):
+            if row.purpose == PURPOSE_FLATTEN:
+                continue
+            if row.status != ST_SUBMITTED or not row.broker_order_id:
+                cleanup["unknown_submission"].append(row.client_id)
+                continue
+            try:
+                self.gw.cancel(row.broker_order_id)
+                cleanup["requested"].append(row.client_id)
+                broker_ids.append(row.broker_order_id)
+            except BrokerError as exc:
+                logger.error("[exec] 切片耗尽后撤单失败 %s: %s", row.client_id, exc)
+                cleanup["errors"].append({"client_id": row.client_id, "error": str(exc)})
+        if broker_ids:
+            try:
+                cleanup["unconfirmed"] = self._await_terminal(broker_ids)
+                rec = self._reconcile(accept=False)
+                rep.reconcile = rec.to_dict()
+                if rec.blocking:
+                    cleanup["errors"].append({"stage": "reconcile", "error": rec.status})
+            except (BrokerError, CalendarUnavailable) as exc:
+                logger.error("[exec] 切片耗尽后的撤单确认或对账失败: %s", exc)
+                cleanup["errors"].append({"stage": "confirmation_or_reconcile", "error": str(exc)})
+        if self.store.kill_switch().get("engaged"):
+            rep.flatten = self._ensure_flatten(rec)
+            rep.blocked = "kill_switch_engaged"
+            return rep
+        rep.blocked = ("slice_depleted_cleanup_incomplete" if any(cleanup[k] for k in
+                       ("unconfirmed", "errors", "unknown_submission")) else "slice_depleted")
+        return rep
+
     def _run_cycle(self, target_weights, ref_prices, adv_usd, decision_date,
                    sectors=None, no_trade_band: float = 0.0, quarantined: frozenset = frozenset()) -> ExecutionReport:
         from app.core.data_engine.market_calendar import CalendarUnavailable
@@ -649,6 +689,9 @@ class OrderManager:
             rep.flatten = self._ensure_flatten(rec)
             rep.blocked = "kill_switch_engaged"
             return rep
+        equity_now = self.slice_equity(rec.account_obj.total_assets)
+        if equity_now is not None and equity_now <= 0:
+            return self._handle_depleted_slice(rec, rep)
         if rec.blocking:
             rep.blocked = f"reconcile_{rec.status}"
             return rep
@@ -681,11 +724,6 @@ class OrderManager:
                          base, self.paper_aum)
             rep.blocked = "account_smaller_than_paper_aum"
             return rep
-        if self.slice_equity(acct.total_assets) <= 0:
-            logger.error("[exec] 资金切片已亏完（切片权益 ≤ 0）→ 不交易")
-            rep.blocked = "slice_depleted"
-            return rep
-
         # 撤掉与本次调仓冲突的在途单：更早决策日的调仓单、**任何**残留的全平单
         # （熔断解除后，没成交完的全平卖单若不撤，会和新的调仓买单对冲打架），
         # 以及日亏熔断时一切仍在途的**加风险**单（审计 F05：只拒新单不撤旧单，旧单照样成交）。
@@ -730,6 +768,12 @@ class OrderManager:
                 rep.blocked = f"reconcile_{rec.status}"
                 return rep
             acct = rec.account_obj
+            equity_now = self.slice_equity(acct.total_assets)
+            if equity_now is None:
+                rep.blocked = "slice_equity_unavailable"
+                return rep
+            if equity_now <= 0:
+                return self._handle_depleted_slice(rec, rep)
 
         # 复审 2026-10-19 N01：撤单 / 等终态期间可能有人开了熔断 —— 建单之前再读一次
         if self.store.kill_switch().get("engaged"):
