@@ -20,7 +20,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 from sqlalchemy import (
     Column, Date, DateTime, Float, Integer, String, Text,
-    UniqueConstraint, create_engine, delete, select,
+    UniqueConstraint, create_engine, delete, select, null,
 )
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -77,16 +77,20 @@ class PaperDailyPnL(_Base):
 class DailyPnL:
     alpha_id:  int
     date:      str
-    gross_ret: float
-    net_ret:   float
-    cost_bps:  float
-    equity:    float
+    gross_ret: Optional[float]
+    net_ret:   Optional[float]
+    cost_bps:  Optional[float]
+    equity:    Optional[float]
 
 
 def _to_date(d) -> _date:
     return _date.fromisoformat(d) if isinstance(d, str) else (
         d.date() if isinstance(d, datetime) else d
     )
+
+
+def _nullable_float(value):
+    return null() if value is None else float(value)
 
 
 class PositionStore:
@@ -114,7 +118,7 @@ class PositionStore:
         self,
         alpha_id:  int,
         date,
-        positions: Dict[str, float],
+        positions: Dict[str, Optional[float]],
         fills:     List[dict],
         pnl:       DailyPnL,
     ) -> None:
@@ -125,22 +129,24 @@ class PositionStore:
             for tbl in (PaperPosition, PaperFill, PaperDailyPnL):
                 s.execute(delete(tbl).where(tbl.alpha_id == alpha_id, tbl.date == d))
             for tk, w in positions.items():
-                s.add(PaperPosition(alpha_id=alpha_id, date=d, ticker=tk, weight=float(w)))
+                s.add(PaperPosition(alpha_id=alpha_id, date=d, ticker=tk, weight=_nullable_float(w)))
             for f in fills:
                 s.add(PaperFill(
                     alpha_id=alpha_id, date=d, ticker=f["ticker"],
-                    target_weight=float(f.get("target_weight", 0.0)),
-                    filled_weight=float(f.get("filled_weight", 0.0)),
-                    fill_price=float(f.get("fill_price", 0.0)),
-                    cost_usd=float(f.get("cost_usd", 0.0)),
+                    target_weight=_nullable_float(f.get("target_weight", 0.0)),
+                    filled_weight=_nullable_float(f.get("filled_weight", 0.0)),
+                    fill_price=_nullable_float(f.get("fill_price", 0.0)),
+                    cost_usd=_nullable_float(f.get("cost_usd", 0.0)),
                     reject_reason=str(f.get("reject_reason", "")),
-                    traded_weight=float(f.get("traded_weight", 0.0)),
-                    unfilled_weight=float(f.get("unfilled_weight", 0.0)),
+                    traded_weight=_nullable_float(f.get("traded_weight", 0.0)),
+                    unfilled_weight=_nullable_float(f.get("unfilled_weight", 0.0)),
                 ))
             s.add(PaperDailyPnL(
                 alpha_id=alpha_id, date=d,
-                gross_ret=pnl.gross_ret, net_ret=pnl.net_ret,
-                cost_bps=pnl.cost_bps, equity=pnl.equity,
+                gross_ret=null() if pnl.gross_ret is None else pnl.gross_ret,
+                net_ret=null() if pnl.net_ret is None else pnl.net_ret,
+                cost_bps=null() if pnl.cost_bps is None else pnl.cost_bps,
+                equity=null() if pnl.equity is None else pnl.equity,
             ))
             s.commit()
 
@@ -156,16 +162,16 @@ class PositionStore:
             row = s.scalars(stmt).first()
             return row
 
-    def latest_positions(self, alpha_id: int) -> Dict[str, float]:
+    def latest_positions(self, alpha_id: int) -> Dict[str, Optional[float]]:
         """返回该 alpha 最近一日的持仓权重 dict（无则空）。"""
         last = self.last_pnl_date(alpha_id)
         return self._positions_on(alpha_id, last) if last is not None else {}
 
-    def latest_equity(self, alpha_id: int) -> float:
+    def latest_equity(self, alpha_id: int) -> Optional[float]:
         last = self.last_pnl_date(alpha_id)
         return self._equity_on(alpha_id, last) if last is not None else 1.0
 
-    def state_before(self, alpha_id: int, date) -> "tuple[float, Dict[str, float]]":
+    def state_before(self, alpha_id: int, date) -> "tuple[Optional[float], Dict[str, Optional[float]]]":
         """
         返回**严格早于 date** 的最近一日的 (equity, positions)——供 step 幂等/续跑：
         重跑第 t 日或崩溃续跑时，应基于 t-1 的状态，而非全局最近一日。
@@ -182,7 +188,7 @@ class PositionStore:
             return 1.0, {}
         return self._equity_on(alpha_id, prev), self._positions_on(alpha_id, prev)
 
-    def _positions_on(self, alpha_id: int, d) -> Dict[str, float]:
+    def _positions_on(self, alpha_id: int, d) -> Dict[str, Optional[float]]:
         with self._Session() as s:
             rows = s.scalars(
                 select(PaperPosition).where(
@@ -190,7 +196,7 @@ class PositionStore:
             ).all()
             return {r.ticker: r.weight for r in rows}
 
-    def _equity_on(self, alpha_id: int, d) -> float:
+    def _equity_on(self, alpha_id: int, d) -> Optional[float]:
         with self._Session() as s:
             row = s.scalars(
                 select(PaperDailyPnL).where(

@@ -290,7 +290,7 @@ export default function AlphaDashboard() {
                 <div className="flex flex-col gap-2 border-t border-slate-800 pt-3">
                   <div className="flex items-center gap-4 text-xs text-slate-400">
                     <span className="font-semibold text-violet-300">Paper Equity</span>
-                    <span>latest: <b className={`font-mono ${paper.latest_equity >= 1 ? 'text-emerald-400' : 'text-rose-400'}`}>{NUM(paper.latest_equity, 4)}</b></span>
+                    <span>latest: <b className={`font-mono ${paper.latest_equity == null ? 'text-slate-400' : paper.latest_equity >= 1 ? 'text-emerald-400' : 'text-rose-400'}`}>{NUM(paper.latest_equity, 4)}</b></span>
                     <span className="text-slate-600">{paper.n_days} days</span>
                     <span className="text-slate-600">{Object.keys(paper.positions).length} positions</span>
                   </div>

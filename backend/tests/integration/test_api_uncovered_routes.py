@@ -179,6 +179,17 @@ class TestPaperPnL:
         resp = client.get("/api/paper/1/pnl", params={"limit": 99999})
         assert resp.status_code == 422, f"超限 limit 未被拒：{resp.status_code}"
 
+    def test_unknown_pnl_and_position_weight_are_serialized_as_null(self, client):
+        from app.dependencies import get_store
+        from app.db.alpha_store import AlphaResult
+        from app.db.position_store import DailyPnL, PositionStore
+        aid = get_store().save(AlphaResult(dsl="rank(close)", hypothesis="unknown-pnl", sharpe=0.0, status="candidate"))
+        PositionStore().record_day(aid, "2024-01-02", {"AAPL": None}, [],
+                                   DailyPnL(aid, "2024-01-02", None, None, None, None))
+        body = _ok(client.get(f"/api/paper/{aid}/pnl"))
+        assert body["latest_equity"] is None and body["positions"] == {"AAPL": None}
+        assert all(body["points"][0][key] is None for key in ("gross_ret", "net_ret", "cost_bps", "equity"))
+
 
 # ---------------------------------------------------------------------------
 # SSE：/api/workflow/{generate,optimize}/stream

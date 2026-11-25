@@ -1960,18 +1960,18 @@ def scheduler_status() -> dict:
 
 class PaperPnLPoint(BaseModel):
     date:      str
-    net_ret:   float
-    gross_ret: float
-    cost_bps:  float
-    equity:    float
+    net_ret:   Optional[float]
+    gross_ret: Optional[float]
+    cost_bps:  Optional[float]
+    equity:    Optional[float]
 
 
 class PaperPnLResponse(BaseModel):
     alpha_id:      int
     points:        List[PaperPnLPoint]
-    latest_equity: float
+    latest_equity: Optional[float]
     n_days:        int
-    positions:     Dict[str, float]     # 当前持仓权重
+    positions:     Dict[str, Optional[float]]     # 当前持仓权重；未知时保留标的
 
 
 @router.get("/paper/{alpha_id}/pnl", response_model=PaperPnLResponse, tags=["Paper"])

@@ -305,10 +305,10 @@ export interface AlphaDecision {
 /** Phase 7 (FE-7.4): GET /api/paper/{id}/pnl */
 export interface PaperPnLData {
   alpha_id:      number
-  points:        Array<{ date: string; net_ret: number; gross_ret: number; cost_bps: number; equity: number }>
-  latest_equity: number
+  points:        Array<{ date: string; net_ret: number | null; gross_ret: number | null; cost_bps: number | null; equity: number | null }>
+  latest_equity: number | null
   n_days:        number
-  positions:     Record<string, number>
+  positions:     Record<string, number | null>
 }
 
 /** Phase 5 (FE-5.2): GET /api/alphas/{id}/ic_history */

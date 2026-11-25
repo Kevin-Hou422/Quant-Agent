@@ -55,6 +55,11 @@ from app.db.execution_store import (
 
 logger = logging.getLogger(__name__)
 
+
+def _finite_or_none(value: float) -> Optional[float]:
+    return value if math.isfinite(value) else None
+
+
 #: moomoo 纸交易账本在 PositionStore 里的 book id。
 #: 0 = 内部模拟组合账本（PORTFOLIO_BOOK_ID），正数 = 各 alpha 影子账本，负数不会冲突。
 LIVE_BOOK_ID = -1
@@ -501,7 +506,8 @@ class OrderManager:
             day_ret = None
 
         if status in ("baseline", "clean", "accepted"):
-            self._record_book(market_date, acct, pos)
+            self._record_book(market_date, acct, pos, day_ret=day_ret, previous_equity=slice_prev,
+                              history_ok=q.history_ok)
         if status in ("discrepancy", "unresolved", "unstable"):
             logger.error("[exec] 对账状态=%s → 本轮不下单 | 差异=%s | 未解决=%s",
                          status, discrepancies, unresolved)
@@ -535,38 +541,50 @@ class OrderManager:
         return expected                     # 零股噪声由调用方按 DUST_QTY 比较时吸收
 
     def _record_book(self, market_date: date, acct: AccountSnapshot,
-                     pos: Dict[str, BrokerPosition]) -> None:
+                     pos: Dict[str, BrokerPosition], *, day_ret: Optional[float],
+                     previous_equity: Optional[float], history_ok: bool) -> None:
         """把券商真相写进 PositionStore 的 LIVE_BOOK_ID 账本（与模拟账本同表、可并排比较）。"""
         from app.db.position_store import DailyPnL
         seq = self.slice_equity(acct.total_assets)     # None：账户还没出现过正资产
+        if seq is not None and not math.isfinite(seq):
+            seq = None
         ta = seq if seq is not None and seq > 0 else 0.0
-        equity = ta / self.paper_aum                    # 切片净值；切片归零记 0，而不是 x/0
-        prev_eq, _ = self.pstore.state_before(self.book_id, market_date)
-        net_ret = equity / prev_eq - 1.0 if prev_eq > 0 else 0.0
-        weights = {tk: p.market_val / ta for tk, p in pos.items() if ta > 0}
+        equity = _finite_or_none(seq / self.paper_aum) if seq is not None else None
+        net_ret = day_ret
+        weights = {tk: _finite_or_none(p.market_val / ta) if ta > 0 else None for tk, p in pos.items()}
 
         agg: Dict[str, dict] = {}
+        complete_cost = history_ok
         for f in self.store.fills(book_id=self.book_id):
             if f.fill_date != market_date:
                 continue
-            a = agg.setdefault(f.ticker, {"qty": 0.0, "notional": 0.0, "shortfall": 0.0})
+            a = agg.setdefault(f.ticker, {"qty": 0.0, "notional": 0.0, "shortfall": 0.0,
+                                          "cost_missing": False, "has_buy": False, "has_sell": False})
             a["qty"] += f.qty
             a["notional"] += f.qty * f.price
-            if f.ref_price > 0:                       # 补登单没有决策日参考价，不计入执行缺口
+            a["has_buy"] = a["has_buy"] or f.qty > 0
+            a["has_sell"] = a["has_sell"] or f.qty < 0
+            if f.ref_price is not None and math.isfinite(f.ref_price) and f.ref_price > 0:
                 a["shortfall"] += f.qty * (f.price - f.ref_price)
-        prev_usd = prev_eq * self.paper_aum
+            else:
+                complete_cost = False
+                a["cost_missing"] = True
         shortfall = sum(a["shortfall"] for a in agg.values())
-        cost_bps = shortfall / prev_usd * 1e4 if prev_usd > 0 else 0.0
+        cost_bps = (shortfall / previous_equity * 1e4
+                    if complete_cost and net_ret is not None and previous_equity is not None and previous_equity > 0 else None)
+        if cost_bps is not None:
+            cost_bps = _finite_or_none(cost_bps)
         fills = [{
-            "ticker": tk, "target_weight": 0.0, "filled_weight": weights.get(tk, 0.0),
-            "fill_price": (a["notional"] / a["qty"]) if abs(a["qty"]) > DUST_QTY else 0.0,
-            "cost_usd": a["shortfall"], "reject_reason": "",
-            "traded_weight": a["notional"] / ta if ta > 0 else 0.0, "unfilled_weight": 0.0,
+            "ticker": tk, "target_weight": None, "filled_weight": weights.get(tk, 0.0) if ta > 0 else None,
+            "fill_price": (_finite_or_none(a["notional"] / a["qty"])
+                           if abs(a["qty"]) > DUST_QTY and not (a["has_buy"] and a["has_sell"]) else None),
+            "cost_usd": None if a["cost_missing"] else _finite_or_none(a["shortfall"]), "reject_reason": "",
+            "traded_weight": _finite_or_none(a["notional"] / ta) if ta > 0 else None, "unfilled_weight": None,
         } for tk, a in sorted(agg.items())]
         self.pstore.record_day(
             self.book_id, market_date, weights, fills,
             DailyPnL(alpha_id=self.book_id, date=str(market_date),
-                     gross_ret=net_ret + cost_bps * 1e-4, net_ret=net_ret,
+                     gross_ret=None, net_ret=net_ret,
                      cost_bps=cost_bps, equity=equity))
 
     # ------------------------------------------------------------------

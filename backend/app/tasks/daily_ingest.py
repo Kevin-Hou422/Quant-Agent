@@ -403,7 +403,7 @@ def _held_without_close(data: Dict[str, pd.DataFrame]) -> str:
         from app.core.execution.order_manager import LIVE_BOOK_ID
         from app.db.position_store import PositionStore
         held = [tk for tk, w in (PositionStore().latest_positions(LIVE_BOOK_ID) or {}).items()
-                if abs(float(w)) > 1e-12]
+                if w is None or abs(float(w)) > 1e-12]
     except Exception as exc:
         logger.error("[daily_ingest] 读不到券商账本持仓 → 拒绝当日摄取: %s", exc)
         return f"读不到券商账本持仓，无法核对持仓标的的报价（{exc}）"

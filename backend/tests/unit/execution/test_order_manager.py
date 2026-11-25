@@ -157,7 +157,7 @@ def test_nonfinite_reconciliation_return_is_left_unknown(tmp_path, monkeypatch):
     e.clock.after_close(D2)
     e.ctx.account_override = {"total_assets": 100_001.0}
     monkeypatch.setattr(e.om, "slice_equity", lambda total: 1e308 if total == 100_001.0 else 1e-308)
-    monkeypatch.setattr(e.om, "_record_book", lambda *args: None)
+    monkeypatch.setattr(e.om, "_record_book", lambda *args, **kwargs: None)
     assert e.om.reconcile().day_return is None
 
 
@@ -179,7 +179,7 @@ def test_next_day_fills_are_reconciled_into_position_store(tmp_path):
     assert pnl.equity == pytest.approx(1.0013) and pnl.net_ret == pytest.approx(0.0013)
     # 执行缺口 200×0.2 + 400×0.05 + 500×0.02 = $70 → 70 / 100000 = 7 bps
     assert pnl.cost_bps == pytest.approx(7.0)
-    assert pnl.gross_ret == pytest.approx(0.0020)
+    assert pnl.gross_ret is None  # 券商费用明细未知，无法从账户权益反推出完整毛收益
     pos = e.ps.latest_positions(LIVE_BOOK_ID)
     assert pos["AAA"] == pytest.approx(10_200 / 100_130)
     fills = {f.ticker: f for f in e.ps.fills_on(LIVE_BOOK_ID, D2)}
@@ -718,7 +718,7 @@ def test_empty_account_does_not_divide_by_zero_and_baseline_waits_for_money(tmp_
     rec = e.om.reconcile()
     assert rec.day_return is None, "上一日资产为 0 时日收益无定义"
     pnl = e.ps.pnl_history(LIVE_BOOK_ID)[-1]
-    assert (pnl.equity, pnl.net_ret, pnl.cost_bps) == (0.0, 0.0, 0.0)
+    assert (pnl.equity, pnl.net_ret, pnl.cost_bps) == (None, None, None)
     assert e.es.get_state("baseline_total_assets") is None
     e.ctx.cash = 100_000.0                                          # 入金之后建立基线
     e.clock.after_close(D3)
@@ -741,8 +741,8 @@ def test_zero_total_assets_with_positions_and_fills_does_not_divide_by_zero(tmp_
     e.clock.after_close(D2)
     rec = e.om.reconcile()
     assert rec.account["total_assets"] == 0.0 and rec.positions["AAA"]["qty"] == 10.0
-    assert e.ps.latest_positions(LIVE_BOOK_ID) == {}
-    assert e.ps.fills_on(LIVE_BOOK_ID, D2)[0].traded_weight == 0.0
+    assert e.ps.latest_positions(LIVE_BOOK_ID) == {"AAA": None}
+    assert e.ps.fills_on(LIVE_BOOK_ID, D2)[0].traded_weight is None
 
 
 def test_adopted_orders_are_excluded_from_execution_shortfall(tmp_path):
@@ -754,7 +754,8 @@ def test_adopted_orders_are_excluded_from_execution_shortfall(tmp_path):
     e.ctx.open_session({"DDD": 50.0})
     e.clock.after_close(D2)
     e.om.reconcile()
-    assert e.ps.pnl_history(LIVE_BOOK_ID)[-1].cost_bps == 0.0, "没有决策日参考价的成交被算进了执行缺口"
+    assert e.ps.pnl_history(LIVE_BOOK_ID)[-1].cost_bps is None, "缺参考价时执行缺口未知"
+    assert e.ps.fills_on(LIVE_BOOK_ID, D2)[0].cost_usd is None
 
 
 def test_net_zero_daily_fills_report_no_fill_price(tmp_path):
@@ -767,8 +768,9 @@ def test_net_zero_daily_fills_report_no_fill_price(tmp_path):
         "1", po.client_id, "AAA", "BUY", 1, 50.25, "FILLED_ALL", 1.0, 50.0, "", "", ""), D2)
     e.es.apply_broker_state(po.client_id, BrokerOrder(       # 撤销到只剩 1 个零股阈值
         "1", po.client_id, "AAA", "BUY", 1, 50.25, "FILL_CANCELLED", DUST_QTY, 50.0, "", "", ""), D2)
-    e.om._record_book(D2, AccountSnapshot(100_000.0, 100_000.0, 100_000.0, 0.0, "USD"), {})
-    assert e.ps.fills_on(LIVE_BOOK_ID, D2)[0].fill_price == 0.0
+    e.om._record_book(D2, AccountSnapshot(100_000.0, 100_000.0, 100_000.0, 0.0, "USD"), {},
+                      day_ret=None, previous_equity=None, history_ok=True)
+    assert e.ps.fills_on(LIVE_BOOK_ID, D2)[0].fill_price is None
 
 
 def test_leftover_flatten_orders_are_cancelled_after_reset(tmp_path):
