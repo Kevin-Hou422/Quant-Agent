@@ -293,11 +293,10 @@ class IntradayWatchdog:
             self._close(om)
 
     def _check_loss(self, om, acct, now) -> dict:
-        from app.core.data_engine.market_calendar import last_trading_day
+        from app.db.execution_store import close_snapshot_eligible
         today = exchange_date(now)
         prev = om.store.trusted_before(today)
-        previous_session = last_trading_day(today - timedelta(days=1)).date()
-        if prev is None or prev.market_date != previous_session:
+        if not close_snapshot_eligible(prev, today, now):
             return {"status": "no_baseline"}
         s_now = om.slice_equity(acct.total_assets)
         s_prev = om.slice_equity(prev.total_assets)

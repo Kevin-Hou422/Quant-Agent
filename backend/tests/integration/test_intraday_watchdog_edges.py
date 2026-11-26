@@ -107,7 +107,8 @@ class _Om:
         self.calls = []
         self.limits = SimpleNamespace(max_daily_loss=thr)
         self.store = SimpleNamespace(
-            trusted_before=lambda d: SimpleNamespace(total_assets=prev_assets, market_date=prev_date),
+            trusted_before=lambda d: SimpleNamespace(total_assets=prev_assets, market_date=prev_date,
+                                                     taken_at=datetime.combine(prev_date, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=22)),
             set_kill_switch=lambda *a: self.calls.append(("set_kill_switch", a)),
             add_event=lambda *a: self.calls.append(("add_event", a)))
 

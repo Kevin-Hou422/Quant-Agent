@@ -29,7 +29,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import date as _date, datetime, timezone
+from datetime import date as _date, datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from sqlalchemy import (
@@ -62,6 +62,23 @@ RETRYABLE = frozenset({ST_GATE, ST_NOT_SUBMITTED})
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def close_snapshot_eligible(snapshot, market_date: _date, now: datetime) -> bool:
+    """核对前一交易日的快照采集窗口；行情和账户实际时点仍须另行验证。"""
+    from app.core.data_engine.market_calendar import last_trading_day, session_close_utc, session_open_utc
+    if snapshot is None or not isinstance(getattr(snapshot, "taken_at", None), datetime):
+        return False
+    previous = last_trading_day(market_date - timedelta(days=1)).date()
+    if getattr(snapshot, "market_date", None) != previous:
+        return False
+    close, opening = session_close_utc(previous), session_open_utc(market_date)
+    if close is None or opening is None:
+        return False
+    stamp = snapshot.taken_at
+    stamp = stamp.replace(tzinfo=timezone.utc) if stamp.tzinfo is None else stamp.astimezone(timezone.utc)
+    current = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
+    return close <= stamp < opening and stamp <= current
 
 
 def local_status_from_broker(broker_status: str, dealt_qty: float) -> str:
@@ -389,10 +406,13 @@ class ExecutionStore:
     # ------------------------------------------------------------------
 
     def add_snapshot(self, *, market_date, account, positions: Dict[str, dict],
-                     discrepancies: List[dict], status: str, note: str = "") -> ExecSnapshot:
+                     discrepancies: List[dict], status: str, note: str = "", taken_at: Optional[datetime] = None) -> ExecSnapshot:
         with self._Session() as s:
+            stamp = taken_at or _now()
+            if stamp.tzinfo is not None:
+                stamp = stamp.astimezone(timezone.utc).replace(tzinfo=None)
             snap = ExecSnapshot(
-                taken_at=_now(), market_date=market_date,
+                taken_at=stamp, market_date=market_date,
                 total_assets=float(account.total_assets), cash=float(account.cash),
                 power=float(account.power), market_val=float(account.market_val),
                 positions_json=json.dumps(positions, sort_keys=True),

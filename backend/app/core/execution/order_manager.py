@@ -50,7 +50,7 @@ from app.core.execution.pretrade_gate import (
     GateContext, OpenOrder, PreTradeLimits, check, increases_risk,
 )
 from app.db.execution_store import (
-    ST_PENDING, ST_SUBMITTED, ExecutionStore,
+    ST_PENDING, ST_SUBMITTED, ExecutionStore, close_snapshot_eligible,
 )
 
 logger = logging.getLogger(__name__)
@@ -487,7 +487,7 @@ class OrderManager:
         current_snapshot = self.store.add_snapshot(
             market_date=market_date, account=acct, positions=positions,
             discrepancies=discrepancies + unresolved, status=status,
-            note="" if q.history_ok else f"history_unavailable: {q.history_error}")
+            note="" if q.history_ok else f"history_unavailable: {q.history_error}", taken_at=now)
         if (self.store.get_state("baseline_total_assets") is None
                 and status in ("baseline", "clean", "accepted") and acct.total_assets > 0):
             # 净值基线 = 第一次在可信对账里看到的**正**资产（空账户之后才入金也能建立基线；
@@ -496,10 +496,9 @@ class OrderManager:
 
         # 日收益按**切片**算（上一可信快照 → 现在），不是按整个账户
         prev = self.store.trusted_before(market_date)
-        previous_session = last_trading_day(market_date - timedelta(days=1)).date()
         slice_now = self.slice_equity(acct.total_assets)
         slice_prev = (self.slice_equity(prev.total_assets)
-                      if prev is not None and prev.market_date == previous_session else None)
+                      if close_snapshot_eligible(prev, market_date, now) else None)
         day_ret = (slice_now / slice_prev - 1.0
                    if slice_now is not None and slice_prev is not None and slice_prev > 0 else None)
         if day_ret is not None and not math.isfinite(day_ret):
